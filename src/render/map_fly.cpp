@@ -374,17 +374,20 @@ void fly_frame_scene() {
     float R = 0.5f * std::sqrt(ex * ex + ey * ey + ez * ez);
     if (!std::isfinite(R) || R < 1.0f) { R = std::max(g_scene_radius, 1.0f); c = g_scene_center; }
 
-    // Stand back along -X at the scene's own scale, and clearly ABOVE the highest
-    // point in it rather than above its centre. R is the box half-DIAGONAL, which
+    // Stand back along -X at the scene's own scale, and clearly ABOVE everything
+    // in it rather than level with its centre. R is the box half-DIAGONAL, which
     // overestimates what actually has to fit on screen, so the pull-back is well
     // under 1R -- at 1.15R the map sat in the middle of the view as a postage stamp.
-    g_fly_pos = {c.x - R * 0.62f, c.y, hi.z + R * 0.28f};
+    //
+    // ABOVE means the SMALLEST z, not the largest: GW2's +Z points down (kWorldUp).
+    // Starting at `hi.z + ...` put the camera under the map looking up through it.
+    g_fly_pos = {c.x - R * 0.62f, c.y, lo.z - R * 0.28f};
     Vec3 aim{c.x - g_fly_pos.x, c.y - g_fly_pos.y, c.z - g_fly_pos.z};
     g_fly_fwd = norm(aim);
-    // Level horizon: up is world +Z projected perpendicular to forward.
-    Vec3 right = cross(g_fly_fwd, Vec3{0, 0, 1});
+    // Level horizon: up is world up projected perpendicular to forward.
+    Vec3 right = cross(kWorldUp, g_fly_fwd);   // basis convention: right = up x fwd
     if (dot(right, right) < 1e-6f) right = Vec3{0, 1, 0};
-    g_fly_up = norm(cross(norm(right), g_fly_fwd));
+    g_fly_up = norm(cross(g_fly_fwd, norm(right)));
 
     // Cross the scene in a few seconds, and see across all of it.
     g_fly_speed = std::clamp(R * 0.5f, 20.0f, 20000.0f);

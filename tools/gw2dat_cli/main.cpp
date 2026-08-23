@@ -1143,8 +1143,29 @@ void cmd_map(const Args& a) {
         if (terr.hasRect) tj["rect"] = {terr.rect[0], terr.rect[1], terr.rect[2], terr.rect[3]};
     }
     j["terrain"] = std::move(tj);
-    j["collision"] = {{"present", coll.present}, {"hasWater", coll.hasWater}, {"waterZ", coll.waterZ},
-                      {"verts", coll.verts.size() / 3}, {"tris", coll.indices.size() / 3}};
+    json cj = {{"present", coll.present}, {"hasWater", coll.hasWater}, {"waterZ", coll.waterZ},
+               {"verts", coll.verts.size() / 3}, {"tris", coll.indices.size() / 3}};
+    if (!coll.verts.empty()) {
+        float clo[3] = {1e30f, 1e30f, 1e30f}, chi[3] = {-1e30f, -1e30f, -1e30f};
+        for (size_t i = 0; i + 2 < coll.verts.size(); i += 3)
+            for (int k = 0; k < 3; ++k) {
+                clo[k] = std::min(clo[k], coll.verts[i + k]);
+                chi[k] = std::max(chi[k], coll.verts[i + k]);
+            }
+        cj["boundsMin"] = {clo[0], clo[1], clo[2]};
+        cj["boundsMax"] = {chi[0], chi[1], chi[2]};
+    }
+    for (const auto& kv : coll.counts) cj[kv.first] = kv.second;
+    j["collision"] = std::move(cj);
+    {
+        auto zones = ex.parseMapZones();
+        std::unordered_map<uint32_t,int> zu;
+        json zs2 = json::array();
+        for (const auto& z : zones) zu[z.fileId]++;
+        for (size_t i = 0; i < zones.size() && i < 5; ++i)
+            zs2.push_back({{"fileId",zones[i].fileId},{"pos",{zones[i].pos[0],zones[i].pos[1],zones[i].pos[2]}}});
+        j["zones"] = {{"placements", zones.size()}, {"uniqueModels", zu.size()}, {"sample", zs2}};
+    }
     emit(j);
 }
 

@@ -121,7 +121,26 @@ inline void quatMul(const float a[4], const float b[4], float o[4]) {
     o[3] = a[3]*b[3] - a[0]*b[0] - a[1]*b[1] - a[2]*b[2];
 }
 
-// ---- scene placement helpers (GW2 is Z-up, so yaw is a rotation about Z) ----
+// ---- scene placement helpers (GW2's vertical axis is Z, so yaw is about Z) ----
+
+// Which way is UP in GW2 world space.
+//
+// The vertical axis is Z, but it points DOWN: +Z goes into the ground. Tyria3D,
+// whose map placement matches the client exactly, maps GW2 (x,y,z) into its own
+// Y-up space as (x, -z, -y) -- its up (+Y) is **-gw.z**. Map heightfields agree:
+// a map's ground sits at a POSITIVE z (the 179282 test map is z=+100 almost
+// everywhere) with peaks at larger values still.
+//
+// So a map camera that treats +Z as up is underneath the world looking up
+// through it: terrain reads inside-out (hills become craters), and anything
+// hugging the ground -- the collision mesh, zone scatter -- ends up hidden
+// behind the terrain plane, which is what made those two layer toggles look
+// like they did nothing.
+//
+// This is a VIEWER convention only. Geometry, prop transforms and the client
+// matrix in sceneWorld() below stay exactly as ArenaNet stores them.
+constexpr Vec3 kWorldUp{0, 0, -1};
+
 inline Mat4 rotZ(float a) {
     Mat4 r = identity();
     float c = std::cos(a), s = std::sin(a);

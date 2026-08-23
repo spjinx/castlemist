@@ -822,15 +822,37 @@ public:
         return m;
     }
 
-    // Map zone model: a zone's def model placed at the zone footprint centroid.
-    // (Approximation of GW2's zone scatter system -- one representative placement
-    // per zone rather than the full per-instance scatter.)
+    // One scattered zone instance: which model, and where it lands.
+    //
+    // `pos[2]` is the zone's own `zPos`; the caller replaces it with the sampled
+    // terrain height when it has a heightfield (which is what the game does --
+    // zone foliage sits ON the ground, not on a per-zone plane).
     struct MapZoneInst {
         uint32_t fileId = 0;
         float pos[3] = {0, 0, 0};
         float scale = 1.0f;
     };
 
+    /// @brief `zon2` -> the map's scattered zone models (foliage, rocks, ground clutter).
+    ///
+    /// GW2 does not store a zone's instances as a list of transforms. A zone owns a
+    /// RECTANGLE of cells on a fixed 48-unit grid (`vertRect`, in cell coordinates
+    /// relative to the map rect), and `flags[]` is a **run-length encoded walk over
+    /// those cells**: byte pairs of (cells to skip, flag). A non-zero flag plants
+    /// one instance in the cell the walk has reached, and `flag >> 4` selects which
+    /// of the zone def's `layerDefArray[]` entries (1-based) supplies the model.
+    ///
+    /// This replaces an approximation that placed a SINGLE model per zone at the
+    /// polygon centroid, and took its fileId from the zone def's own `defFilename`
+    /// -- which is the zone definition, not a renderable model, so it had no GEOM
+    /// chunk and every zone silently loaded nothing. That is why the Zones toggle
+    /// appeared to do nothing at all.
+    ///
+    /// Ported from Tyria3D's ZoneRenderer, which places zones correctly. Kept
+    /// faithful to it, which means the per-layer scatter jitter the game applies
+    /// (`scaleRange`, `rotRange`, `instanceScaleJitter`, `probability`, `noise`)
+    /// is NOT yet reproduced: every instance lands centred on its cell, unrotated,
+    /// at scale 1, using `modelArray[0]`.
     std::vector<MapZoneInst> parseMapZones() {
         std::vector<MapZoneInst> out;
         std::string root; uint16_t ver = 0;
@@ -838,8 +860,23 @@ public:
         if (!z || root.empty()) return out;
         size_t off; json f;
 
-        // zoneDefArray: token -> def model fileId.
-        std::unordered_map<uint32_t, uint32_t> defFile;
+        // The map's world rect (parm chunk) is the origin the cell grid hangs off.
+        float rectX0 = 0, rectY0 = 0;
+        {
+            std::string proot; uint16_t pver = 0;
+            size_t parm = findChunk("parm", &proot, &pver);
+            size_t po; json pf;
+            if (!parm || proot.empty() || !fieldOffset(proot, "rect", po, pf)) return out;
+            rectX0 = rdf(parm + po);
+            rectY0 = rdf(parm + po + 4);
+        }
+
+        // World units per zone cell. 48 = 32 + 16, the constant Tyria3D uses.
+        constexpr float kCell = 48.0f;
+        constexpr size_t kMaxPlacements = 400000; // a busy map is tens of thousands
+
+        // zoneDefArray: token -> (its layer defs' first model fileId, 1-based).
+        std::unordered_map<uint32_t, std::vector<uint32_t>> layerModels;
         if (fieldOffset(root, "zoneDefArray", off, f)) {
             std::string dt = f["element"].value("struct", std::string());
             int ds = typeSize(dt);
@@ -848,31 +885,72 @@ public:
                 size_t e = base + (size_t)i * ds;
                 size_t o; json ff;
                 uint32_t tok = fieldOffset(dt, "token", o, ff) ? rd32(e + o) : 0;
-                uint32_t fid = decodeFilename(dt, e);
-                if (tok) defFile[tok] = fid;
+                if (!tok) continue;
+                std::vector<uint32_t> models;
+                if (fieldOffset(dt, "layerDefArray", o, ff)) {
+                    std::string lt = ff["element"].value("struct", std::string());
+                    int ls = typeSize(lt);
+                    uint32_t ln = 0; size_t lb = arrayAt(e + o, ln);
+                    for (uint32_t k = 0; lb && ls > 0 && k < ln; ++k) {
+                        size_t le = lb + (size_t)k * ls;
+                        uint32_t fid = 0;
+                        size_t mo; json mf;
+                        if (fieldOffset(lt, "modelArray", mo, mf)) {
+                            std::string mt = mf["element"].value("struct", std::string());
+                            int ms = typeSize(mt);
+                            uint32_t mn = 0; size_t mb = arrayAt(le + mo, mn);
+                            if (mb && ms > 0 && mn > 0) fid = decodeFilename(mt, mb); // modelArray[0]
+                        }
+                        models.push_back(fid);
+                    }
+                }
+                layerModels[tok] = std::move(models);
             }
         }
-        // zoneArray: each zone -> its def model at the polygon centroid + zPos.
-        if (fieldOffset(root, "zoneArray", off, f)) {
-            std::string zt = f["element"].value("struct", std::string());
-            int zs = typeSize(zt);
-            uint32_t n = 0; size_t base = arrayAt(z + off, n);
-            for (uint32_t i = 0; base && zs > 0 && i < n; ++i) {
-                size_t e = base + (size_t)i * zs;
-                size_t o; json ff;
-                uint32_t tok = fieldOffset(zt, "defToken", o, ff) ? rd32(e + o) : 0;
-                auto it = defFile.find(tok);
-                if (it == defFile.end() || !it->second) continue;
-                float zpos = fieldOffset(zt, "zPos", o, ff) ? rdf(e + o) : 0;
-                float cx = 0, cy = 0; uint32_t vc = 0;
-                if (fieldOffset(zt, "vertices", o, ff)) {
-                    uint32_t vn = 0; size_t vb = arrayAt(e + o, vn);
-                    for (uint32_t v = 0; vb && v < vn; ++v) { cx += rdf(vb + 8u*v); cy += rdf(vb + 8u*v + 4); ++vc; }
-                }
+        if (layerModels.empty()) return out;
+
+        if (!fieldOffset(root, "zoneArray", off, f)) return out;
+        std::string zt = f["element"].value("struct", std::string());
+        int zs = typeSize(zt);
+        uint32_t n = 0; size_t base = arrayAt(z + off, n);
+        for (uint32_t i = 0; base && zs > 0 && i < n; ++i) {
+            size_t e = base + (size_t)i * zs;
+            size_t o; json ff;
+            uint32_t tok = fieldOffset(zt, "defToken", o, ff) ? rd32(e + o) : 0;
+            auto it = layerModels.find(tok);
+            if (it == layerModels.end() || it->second.empty()) continue;
+            const std::vector<uint32_t>& models = it->second;
+
+            int32_t vr[4] = {0, 0, 0, 0};
+            if (!fieldOffset(zt, "vertRect", o, ff)) continue;
+            for (int k = 0; k < 4; ++k) vr[k] = (int32_t)rd32(e + o + 4u * k);
+            int32_t cols = vr[2] - vr[0];   // zone width in cells
+            if (cols <= 0) continue;
+
+            float zpos = fieldOffset(zt, "zPos", o, ff) ? rdf(e + o) : 0;
+
+            if (!fieldOffset(zt, "flags", o, ff)) continue;
+            uint32_t fn = 0; size_t fb = arrayAt(e + o, fn);
+            if (!fb || fn < 2) continue;
+
+            // Run-length walk: (skip, flag) byte pairs over the zone's cell grid.
+            uint32_t linearPos = 0;
+            for (uint32_t k = 0; k + 1 < fn; k += 2) {
+                linearPos += rd8(fb + k);
+                uint32_t flag = rd8(fb + k + 1);
+                if (!flag) continue;
+                uint32_t layerIdx = flag >> 4;           // 1-based into layerDefArray
+                if (layerIdx == 0 || layerIdx > models.size()) continue;
+                uint32_t fid = models[layerIdx - 1];
+                if (!fid) continue;
+
                 MapZoneInst mz;
-                mz.fileId = it->second;
-                mz.pos[0] = vc ? cx / vc : 0; mz.pos[1] = vc ? cy / vc : 0; mz.pos[2] = zpos;
+                mz.fileId = fid;
+                mz.pos[0] = rectX0 + (float)(vr[0] + (int32_t)(linearPos % (uint32_t)cols)) * kCell;
+                mz.pos[1] = rectY0 + (float)(vr[1] + (int32_t)(linearPos / (uint32_t)cols)) * kCell;
+                mz.pos[2] = zpos;
                 out.push_back(mz);
+                if (out.size() >= kMaxPlacements) return out;
             }
         }
         return out;
@@ -885,6 +963,13 @@ public:
         float waterZ = 0; bool hasWater = false;
         std::vector<float> verts;      // x,y,z triples (Z-up, world space)
         std::vector<uint32_t> indices; // triangle list
+        /// @brief Sizes of the havk sub-arrays, reported by `gw2dat_cli map`.
+        ///
+        /// Kept because the placement arrays are what this parser still ignores
+        /// (see the note in parseMapCollision): comparing `collisions` against
+        /// `geometries`/`propModels` is how you tell whether a map's collision
+        /// hulls are being resolved at all.
+        std::vector<std::pair<std::string, uint32_t>> counts;
     };
 
     MapCollision parseMapCollision() {
@@ -915,6 +1000,22 @@ public:
             for (uint32_t k = 0; k < in; ++k) out.indices.push_back(voff + rd16(ibase + 2u * k));
         }
         out.present = !out.verts.empty() && !out.indices.empty();
+
+        // KNOWN INCOMPLETE: `collisions[]` holds LOCAL-space hulls, and the real
+        // placements live in `obsModels[]` / `propModels[]` / `zoneModels[]`
+        // (each: translate + rotate + scale + geometryIndex). None of that is
+        // applied here, so every hull piles up around the origin -- on map 179282
+        // the whole collision set comes out as a 35-unit blob on a 6144-unit map,
+        // which is why the Collision layer toggle looks like it does nothing.
+        // Resolving it needs the client's geometryIndex semantics: the arrays are
+        // NOT parallel (179282 has 48 collisions but only 11 geometries).
+        for (const char* an : {"geometries", "obsModels", "propModels", "zoneModels"}) {
+            size_t ao; json af;
+            uint32_t n = 0;
+            if (fieldOffset(root, an, ao, af)) arrayAt(h + ao, n);
+            out.counts.push_back({an, n});
+        }
+        out.counts.push_back({"collisions", cn});
         return out;
     }
 

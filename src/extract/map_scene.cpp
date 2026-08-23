@@ -14,6 +14,72 @@
 
 namespace castlemist::extract {
 
+/// @brief The de-tiled terrain heightfield, for sampling ground height.
+///
+/// Same de-tiling as build_terrain_model (chunk-major with a 3-vertex overlap);
+/// see the long comment there for why a raw sqrt() of heights.size() is wrong.
+struct TerrainGrid {
+    std::vector<float> hz;
+    int Gx = 0, Gy = 0;
+    float x0 = 0, y0 = 0, dx = 1, dy = 1;
+    bool ok = false;
+};
+
+TerrainGrid build_terrain_grid(const castlemist::model::Extractor::MapTerrain& t) {
+    TerrainGrid g;
+    if (!t.present || t.heights.size() < 4) return g;
+    const int TILES_PER_CHUNK = 32;
+    bool chunked = false;
+    if (t.dimX >= (uint32_t)TILES_PER_CHUNK && t.dimY >= (uint32_t)TILES_PER_CHUNK &&
+        t.dimX % TILES_PER_CHUNK == 0 && t.dimY % TILES_PER_CHUNK == 0) {
+        int cX = (int)t.dimX / TILES_PER_CHUNK, cY = (int)t.dimY / TILES_PER_CHUNK;
+        size_t chunks = (size_t)cX * cY;
+        int vps = (int)std::lround(std::sqrt((double)(t.heights.size() / chunks)));
+        if (vps > TILES_PER_CHUNK && chunks * (size_t)vps * vps == t.heights.size()) {
+            g.Gx = (cX - 1) * TILES_PER_CHUNK + vps;
+            g.Gy = (cY - 1) * TILES_PER_CHUNK + vps;
+            g.hz.assign((size_t)g.Gx * g.Gy, 0.0f);
+            for (int cy = 0; cy < cY; ++cy)
+                for (int cx = 0; cx < cX; ++cx) {
+                    const float* blk = &t.heights[((size_t)cy * cX + cx) * vps * vps];
+                    for (int ly = 0; ly < vps; ++ly)
+                        for (int lx = 0; lx < vps; ++lx)
+                            g.hz[(size_t)(cy * TILES_PER_CHUNK + ly) * g.Gx + (cx * TILES_PER_CHUNK + lx)] =
+                                blk[ly * vps + lx];
+                }
+            chunked = true;
+        }
+    }
+    if (g.hz.empty()) {
+        int G = (int)std::lround(std::sqrt((double)t.heights.size()));
+        if (G < 2 || (size_t)G * G > t.heights.size()) return g;
+        g.Gx = g.Gy = G;
+        g.hz.assign(t.heights.begin(), t.heights.begin() + (size_t)G * G);
+    }
+    float x1, y1;
+    g.x0 = t.rect[0]; g.y0 = t.rect[1]; x1 = t.rect[2]; y1 = t.rect[3];
+    if (!t.hasRect || x1 <= g.x0 || y1 <= g.y0) { g.x0 = g.y0 = -3072; x1 = y1 = 3072; }
+    g.dx = chunked ? (x1 - g.x0) / (float)t.dimX : (x1 - g.x0) / (g.Gx - 1);
+    g.dy = chunked ? (y1 - g.y0) / (float)t.dimY : (y1 - g.y0) / (g.Gy - 1);
+    g.ok = g.dx > 0 && g.dy > 0;
+    return g;
+}
+
+/// @brief Bilinear ground height at a world (x, y); false when outside the grid.
+bool sample_terrain_height(const TerrainGrid& g, float wx, float wy, float& out) {
+    if (!g.ok) return false;
+    float fx = (wx - g.x0) / g.dx, fy = (wy - g.y0) / g.dy;
+    if (fx < 0 || fy < 0 || fx > g.Gx - 1 || fy > g.Gy - 1) return false;
+    int i0 = (int)fx, j0 = (int)fy;
+    int i1 = std::min(g.Gx - 1, i0 + 1), j1 = std::min(g.Gy - 1, j0 + 1);
+    float tx = fx - i0, ty = fy - j0;
+    auto H = [&](int i, int j) { return g.hz[(size_t)j * g.Gx + i]; };
+    float a = H(i0, j0) + (H(i1, j0) - H(i0, j0)) * tx;
+    float b = H(i0, j1) + (H(i1, j1) - H(i0, j1)) * tx;
+    out = a + (b - a) * ty;
+    return true;
+}
+
 // waterSurfaceZ in the `havk` chunk (see parseMapCollision) -- NOT guessed.
 std::shared_ptr<ModelPreview> build_terrain_model(const castlemist::model::Extractor::MapTerrain& t, bool hasWaterZ, float waterZ) {
     if (!t.present || t.heights.size() < 4) return nullptr;
@@ -100,7 +166,11 @@ std::shared_ptr<ModelPreview> build_terrain_model(const castlemist::model::Extra
             float nzx = (H(i - 1, j) - H(i + 1, j)) / (2 * dx);
             float nzy = (H(i, j - 1) - H(i, j + 1)) / (2 * dy);
             float nl = std::sqrt(nzx * nzx + nzy * nzy + 1.0f);
-            GVertex v{wx, wy, h, nzx / nl, nzy / nl, 1.0f / nl, 0, 0, 0, 0, 0, 0,
+            // Negated: the sky-facing normal points along -Z, because GW2's +Z is
+            // DOWN (see kWorldUp in render/detail/math.h). The gradient normal
+            // (-dh/dx, -dh/dy, +1) faces into the ground, so the ground used to be
+            // lit from underneath and came out flat and unshaded.
+            GVertex v{wx, wy, h, -nzx / nl, -nzy / nl, -1.0f / nl, 0, 0, 0, 0, 0, 0,
                       static_cast<float>(i) / (Gx - 1), static_cast<float>(j) / (Gy - 1)};
             mesh.vertices.push_back(v);
             lo[0] = std::min(lo[0], wx); lo[1] = std::min(lo[1], wy); lo[2] = std::min(lo[2], h);
@@ -130,13 +200,15 @@ std::shared_ptr<ModelPreview> build_terrain_model(const castlemist::model::Extra
         for (int j = 0; j < Gy - 1; ++j)
             for (int i = 0; i < Gx - 1; ++i) {
                 float h00 = H(i, j), h10 = H(i + 1, j), h01 = H(i, j + 1), h11 = H(i + 1, j + 1);
-                if (std::max(std::max(h00, h10), std::max(h01, h11)) >= waterZ) continue; // any dry corner -> land wins
+                // +Z is DOWN, so a cell is under water when its height is GREATER
+                // than waterZ; a corner with a smaller z is dry land and wins.
+                if (std::min(std::min(h00, h10), std::min(h01, h11)) <= waterZ) continue;
                 uint32_t base = static_cast<uint32_t>(wm.vertices.size());
                 float xa = x0 + i * dx, xb = x0 + (i + 1) * dx, ya = y0 + j * dy, yb = y0 + (j + 1) * dy;
-                wm.vertices.push_back(GVertex{xa, ya, waterZ, 0,0,1, 0,0,0, 0,0,0, 0,0});
-                wm.vertices.push_back(GVertex{xb, ya, waterZ, 0,0,1, 0,0,0, 0,0,0, 0,0});
-                wm.vertices.push_back(GVertex{xa, yb, waterZ, 0,0,1, 0,0,0, 0,0,0, 0,0});
-                wm.vertices.push_back(GVertex{xb, yb, waterZ, 0,0,1, 0,0,0, 0,0,0, 0,0});
+                wm.vertices.push_back(GVertex{xa, ya, waterZ, 0,0,-1, 0,0,0, 0,0,0, 0,0});
+                wm.vertices.push_back(GVertex{xb, ya, waterZ, 0,0,-1, 0,0,0, 0,0,0, 0,0});
+                wm.vertices.push_back(GVertex{xa, yb, waterZ, 0,0,-1, 0,0,0, 0,0,0, 0,0});
+                wm.vertices.push_back(GVertex{xb, yb, waterZ, 0,0,-1, 0,0,0, 0,0,0, 0,0});
                 wm.indices.insert(wm.indices.end(), {base+0, base+2, base+1, base+1, base+2, base+3});
             }
         if (!wm.vertices.empty()) {
@@ -316,12 +388,22 @@ std::shared_ptr<MapScene> build_map_zone_layer(const std::vector<uint8_t>& map_b
     if (!tplp || dat_path.empty()) return nullptr;
     const nlohmann::json& tpl = *tplp;
     std::vector<castlemist::model::Extractor::MapZoneInst> zones;
+    TerrainGrid grid;
     try {
-        zones = castlemist::model::Extractor(map_bytes, tpl).parseMapZones();
+        castlemist::model::Extractor ex(map_bytes, tpl);
+        zones = ex.parseMapZones();
+        // Zone scatter sits ON the ground, so each placement's z comes from the
+        // heightfield; parseMapZones only fills in the zone's flat zPos fallback.
+        try { grid = build_terrain_grid(ex.parseTerrain()); } catch (const std::exception&) {}
     } catch (const std::exception&) {
         return nullptr;
     }
     if (zones.empty()) return nullptr;
+    if (grid.ok)
+        for (auto& z : zones) {
+            float h = 0;
+            if (sample_terrain_height(grid, z.pos[0], z.pos[1], h)) z.pos[2] = h;
+        }
 
     Gw2Dat dat;
     try { load_dat_file(dat, dat_path); } catch (const std::exception&) { return nullptr; }

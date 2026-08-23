@@ -40,7 +40,7 @@ void renormalize() {
     if (rl < 1e-5f) {
         // up and forward went parallel (only reachable through accumulated error);
         // rebuild up from whichever world axis forward is least aligned with.
-        Vec3 a = (std::fabs(g_fly_fwd.z) < 0.9f) ? Vec3{0, 0, 1} : Vec3{1, 0, 0};
+        Vec3 a = (std::fabs(g_fly_fwd.z) < 0.9f) ? kWorldUp : Vec3{1, 0, 0};
         right = norm(cross(a, g_fly_fwd));
     } else {
         right = vscale(right, 1.0f / rl);
@@ -71,7 +71,12 @@ void fly_look(float dxPixels, float dyPixels) {
     // there is nothing to clamp and the view never snaps over.
     Vec3 right = fly_right();
     if (dxPixels != 0.0f) {
-        float a = -dxPixels * kSens;   // drag right -> turn right
+        // +a swings forward toward fly_right() (d/da = up x fwd = right), so
+        // "drag right -> turn right" is a POSITIVE angle. It used to be negated,
+        // which was self-consistent only with the old inverted world up; once up
+        // became -Z the mouse yawed the wrong way and the view stopped feeling
+        // like an FPS camera.
+        float a = dxPixels * kSens;    // drag right -> turn right
         g_fly_fwd = rotate_about(g_fly_fwd, g_fly_up, a);
     }
     if (dyPixels != 0.0f) {
@@ -93,10 +98,10 @@ void fly_roll(float radians) {
 /// Free rotation accumulates roll by design; this is the cheap way back without
 /// losing the position you flew to.
 void fly_level() {
-    Vec3 right = cross(g_fly_fwd, Vec3{0, 0, 1});
+    Vec3 right = cross(kWorldUp, g_fly_fwd);
     if (dot(right, right) < 1e-6f) return;  // looking straight up/down: nothing to level against
     right = norm(right);
-    g_fly_up = norm(cross(right, g_fly_fwd));
+    g_fly_up = norm(cross(g_fly_fwd, right));
     renormalize();
 }
 
@@ -124,7 +129,7 @@ bool fly_tick(float dt) {
     // the camera currently calls up" -- which is useless once you have rolled.
     Vec3 move = vadd(vscale(g_fly_fwd, ax), vscale(right, ay));
     g_fly_pos = vadd(g_fly_pos, vscale(move, d));
-    g_fly_pos.z += az * d;
+    g_fly_pos = vadd(g_fly_pos, vscale(kWorldUp, az * d)); // Q/E gain real altitude
     return true;
 }
 

@@ -55,7 +55,8 @@ VSOut VSMain(VSIn i){
     o.tan = normalize(mul(float4(tt,0.0), uModel).xyz);
     o.bit = normalize(mul(float4(bb,0.0), uModel).xyz);
     o.uv  = i.uv;
-    o.up  = i.nrm.z;   // geometric up-ness (Z-up terrain), before rotation -- for slope color
+    o.up  = -i.nrm.z;  // geometric up-ness before rotation, for slope colour. Negated:
+                       // GW2's +Z points DOWN, so a flat, sky-facing face has nrm.z = -1.
     o.height = p.z;    // world height (Z), for depth-tinting grass
     return o;
 }
@@ -403,9 +404,11 @@ float4 PSMain(VSOut i) : SV_Target {
     float3 N = normalize(i.nrm);
     float ao = lerp(1.0, i.aod.x, uAoStrength);
 
-    // GW2 is Z-UP, so the hemisphere blends on N.z. Ambient is occluded; the sun
-    // is occluded too (a cheap stand-in for the contact shadow we do not trace).
-    float3 hemi = lerp(uGroundCol, uSkyCol, saturate(N.z * 0.5 + 0.5));
+    // GW2's vertical axis is Z and it points DOWN, so a sky-facing normal has
+    // N.z = -1 -- hence the negation (see kWorldUp in detail/math.h). Ambient is
+    // occluded; the sun is occluded too (a cheap stand-in for the contact shadow
+    // we do not trace).
+    float3 hemi = lerp(uGroundCol, uSkyCol, saturate(-N.z * 0.5 + 0.5));
     float  ndl  = saturate(dot(N, uSunDir));
     float3 col  = i.alb * (hemi + uSunCol * ndl) * ao * uExposure;
 
