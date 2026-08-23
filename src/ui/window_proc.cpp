@@ -297,11 +297,71 @@ LRESULT CALLBACK ModelWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
             break;
         }
         int notches = GET_WHEEL_DELTA_WPARAM(wparam) / WHEEL_DELTA;
+        // In the fly view there is nothing to zoom -- the wheel trims how fast
+        // you move, which is the control you actually want on a map this size.
+        if (fly_view_active()) {
+            castlemist::render::fly_adjust_speed(static_cast<float>(notches));
+            update_fly_hud();
+            return 0;
+        }
         castlemist::render::zoom(std::pow(0.9f, static_cast<float>(notches))); // wheel up -> closer
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
     }
+    case WM_KEYDOWN:
+    case WM_KEYUP: {
+        if (g_app == nullptr || !fly_view_active()) break;
+        bool down = (msg == WM_KEYDOWN);
+        int k = -1;
+        switch (wparam) {
+            case 'W': k = castlemist::render::FLY_KEY_FWD; break;
+            case 'A': k = castlemist::render::FLY_KEY_LEFT; break;
+            case 'S': k = castlemist::render::FLY_KEY_BACK; break;
+            case 'D': k = castlemist::render::FLY_KEY_RIGHT; break;
+            case 'Q': k = castlemist::render::FLY_KEY_DOWN; break;
+            case 'E': k = castlemist::render::FLY_KEY_UP; break;
+            case VK_SHIFT: k = castlemist::render::FLY_KEY_FAST; break;
+            case VK_CONTROL: k = castlemist::render::FLY_KEY_SLOW; break;
+            // Roll and re-level. Rotation is unclamped, so roll accumulates
+            // whenever you combine yaw and pitch -- L puts the horizon back
+            // without giving up the position you flew to.
+            case 'Z': if (down) { castlemist::render::fly_roll(-0.06f); InvalidateRect(hwnd, nullptr, FALSE); } return 0;
+            case 'C': if (down) { castlemist::render::fly_roll(0.06f); InvalidateRect(hwnd, nullptr, FALSE); } return 0;
+            case 'L': if (down) { castlemist::render::fly_level(); InvalidateRect(hwnd, nullptr, FALSE); } return 0;
+            default: break;
+        }
+        if (k < 0) break;
+        castlemist::render::fly_set_key(k, down);
+        return 0;
+    }
+    case WM_KILLFOCUS:
+        // Keys are tracked by transition, so losing focus mid-press would strand
+        // one down and leave the camera flying by itself.
+        if (g_app != nullptr) {
+            castlemist::render::fly_clear_keys();
+            g_app->fly_looking = false;
+        }
+        break;
+    case WM_RBUTTONDOWN:
+        if (g_app != nullptr && fly_view_active()) {
+            SetCapture(hwnd);
+            SetFocus(hwnd);
+            g_app->fly_looking = true;
+            g_app->fly_look_last = POINT{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+            return 0;
+        }
+        break;
     case WM_LBUTTONDOWN:
+        // Fly view: the surface has no gizmo and no orbit, so a left drag is also
+        // mouse-look. Clicking it first also takes focus, which is what makes the
+        // WASD keys reach this window at all.
+        if (g_app != nullptr && fly_view_active()) {
+            SetCapture(hwnd);
+            SetFocus(hwnd);
+            g_app->fly_looking = true;
+            g_app->fly_look_last = POINT{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+            return 0;
+        }
         SetCapture(hwnd);
         if (g_app != nullptr) {
             int mx = GET_X_LPARAM(lparam), my = GET_Y_LPARAM(lparam);
@@ -319,6 +379,14 @@ LRESULT CALLBACK ModelWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
         }
         return 0;
     case WM_MOUSEMOVE:
+        if (g_app != nullptr && g_app->fly_looking) {
+            POINT cur{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+            castlemist::render::fly_look(static_cast<float>(cur.x - g_app->fly_look_last.x),
+                                         static_cast<float>(cur.y - g_app->fly_look_last.y));
+            g_app->fly_look_last = cur;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
         if (g_app != nullptr && g_app->gizmo_dragging) {
             castlemist::render::gizmo_update(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
             update_gizmo_readout();
@@ -342,6 +410,11 @@ LRESULT CALLBACK ModelWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
         }
         return 0;
     case WM_LBUTTONUP:
+        if (g_app != nullptr && g_app->fly_looking) {
+            g_app->fly_looking = false;
+            ReleaseCapture();
+            return 0;
+        }
         if (g_app != nullptr && g_app->gizmo_dragging) {
             castlemist::render::gizmo_end();
             g_app->gizmo_dragging = false;
@@ -366,6 +439,12 @@ LRESULT CALLBACK ModelWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
         }
         return 0;
     case WM_RBUTTONUP:
+        // Fly view: right-drag was mouse-look, so releasing just ends the look.
+        if (g_app != nullptr && g_app->fly_looking) {
+            g_app->fly_looking = false;
+            ReleaseCapture();
+            return 0;
+        }
         // Right-click clears the map inset preview.
         if (g_app != nullptr && castlemist::render::scene_active() && castlemist::render::scene_focus() >= 0) {
             castlemist::render::set_scene_focus(-1);
@@ -518,6 +597,10 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         g_app->hwnd_mode_shader =
             CreateWindowExW(0, L"BUTTON", L"Shader", WS_CHILD, 0, 0, 0, 0, hwnd,
                              reinterpret_cast<HMENU>(ID_MODE_SHADER), g_hinstance, nullptr);
+        // Mesh-only free-camera map view: no textures, no game shaders, baked AO.
+        g_app->hwnd_mode_fly =
+            CreateWindowExW(0, L"BUTTON", L"Fly", WS_CHILD, 0, 0, 0, 0, hwnd,
+                             reinterpret_cast<HMENU>(ID_MODE_FLY), g_hinstance, nullptr);
         g_app->hwnd_model_reset =
             CreateWindowExW(0, L"BUTTON", L"Reset", WS_CHILD, 0, 0, 0, 0, hwnd,
                              reinterpret_cast<HMENU>(ID_MODEL_RESET), g_hinstance, nullptr);
@@ -634,6 +717,11 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         g_app->hwnd_gizmo_readout =
             CreateWindowExW(0, L"STATIC", L"", WS_CHILD | SS_LEFT, 10, 8, 214, 92, g_app->hwnd_model, nullptr,
                             g_hinstance, nullptr);
+        // Fly-view HUD, same trick: a child of the surface so it survives Present.
+        // Sits under the transform readout's slot; only one of the two is ever up.
+        g_app->hwnd_fly_hud =
+            CreateWindowExW(0, L"STATIC", L"", WS_CHILD | SS_LEFT, 10, 8, 300, 104, g_app->hwnd_model, nullptr,
+                            g_hinstance, nullptr);
         // Audio playback controls (shown only for ASND/audio entries).
         g_app->hwnd_audio_play =
             CreateWindowExW(0, L"BUTTON", L"▶ Play", WS_CHILD, 0, 0, 0, 0, hwnd,
@@ -703,6 +791,14 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         g_app->hwnd_layer_coll =
             CreateWindowExW(0, L"BUTTON", L"Collision", WS_CHILD | BS_AUTOCHECKBOX | BS_PUSHLIKE, 0, 0, 0, 0, hwnd,
                              reinterpret_cast<HMENU>(ID_LAYER_COLL), g_hinstance, nullptr);
+        g_app->hwnd_layer_terrain =
+            CreateWindowExW(0, L"BUTTON", L"Terrain", WS_CHILD | BS_AUTOCHECKBOX | BS_PUSHLIKE, 0, 0, 0, 0, hwnd,
+                             reinterpret_cast<HMENU>(ID_LAYER_TERRAIN), g_hinstance, nullptr);
+        SendMessageW(g_app->hwnd_layer_terrain, BM_SETCHECK, BST_CHECKED, 0);
+        // "Map": with a map and a model both loaded, which one owns the surface.
+        g_app->hwnd_show_map =
+            CreateWindowExW(0, L"BUTTON", L"Map", WS_CHILD | BS_AUTOCHECKBOX | BS_PUSHLIKE, 0, 0, 0, 0, hwnd,
+                             reinterpret_cast<HMENU>(ID_SHOW_MAP), g_hinstance, nullptr);
         // Map: toggle the small inset preview of the prop clicked in the scene.
         g_app->hwnd_map_preview =
             CreateWindowExW(0, L"BUTTON", L"Preview", WS_CHILD | BS_AUTOCHECKBOX | BS_PUSHLIKE, 0, 0, 0, 0, hwnd,
@@ -1206,6 +1302,23 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                                       SendMessageW(g_app->hwnd_layer_coll, BM_GETCHECK, 0, 0) == BST_CHECKED);
             InvalidateRect(g_app->hwnd_model, nullptr, FALSE);
             return 0;
+        case ID_LAYER_TERRAIN:
+            castlemist::render::set_layer_visible(castlemist::render::LAYER_TERRAIN,
+                                      SendMessageW(g_app->hwnd_layer_terrain, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            InvalidateRect(g_app->hwnd_model, nullptr, FALSE);
+            return 0;
+        case ID_SHOW_MAP: {
+            // The map survives a model preview, so this is a pure surface swap --
+            // nothing is re-extracted or re-uploaded either way.
+            bool on = SendMessageW(g_app->hwnd_show_map, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            castlemist::render::set_scene_shown(on);
+            update_fly_timer();
+            InvalidateRect(g_app->hwnd_model, nullptr, FALSE);
+            return 0;
+        }
+        case ID_MODE_FLY:
+            set_model_mode(castlemist::render::RenderMode::MapFly);
+            return 0;
         case ID_LAYER_ZONE: {
             bool on = SendMessageW(g_app->hwnd_layer_zone, BM_GETCHECK, 0, 0) == BST_CHECKED;
             // Lazily load the zone models the first time zones are enabled (keeps
@@ -1420,6 +1533,27 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         }
         break;
     case WM_TIMER:
+        if (wparam == TIMER_FLY) {
+            if (!fly_view_active()) { update_fly_timer(); return 0; }
+            // Integrate movement against the real elapsed time rather than the
+            // nominal 16 ms, so flying speed does not depend on how punctually
+            // the message queue delivers the timer.
+            LARGE_INTEGER now, freq;
+            QueryPerformanceCounter(&now);
+            QueryPerformanceFrequency(&freq);
+            float dt = 0.0f;
+            if (g_app->fly_qpc_init && freq.QuadPart)
+                dt = static_cast<float>(double(now.QuadPart - g_app->fly_qpc_last.QuadPart) / freq.QuadPart);
+            g_app->fly_qpc_last = now;
+            g_app->fly_qpc_init = true;
+            // Repaint when the camera moved; also repaint while looking so the
+            // HUD's frame timing stays live during a drag.
+            if (castlemist::render::fly_tick(dt) || g_app->fly_looking) {
+                update_fly_hud();
+                InvalidateRect(g_app->hwnd_model, nullptr, FALSE);
+            }
+            return 0;
+        }
         if (wparam == TIMER_ANIM &&
             (castlemist::render::is_playing() || castlemist::render::cloth_enabled() ||
              (castlemist::render::has_effects() && castlemist::render::show_effects()))) {

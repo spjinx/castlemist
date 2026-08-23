@@ -83,6 +83,55 @@ void ensure_map_game_materials() {
     SetCursor(old);
 }
 
+// The fly view owns the surface only when it is the selected mode, a map is
+// loaded, and the bgfx "Game 1:1" surface is not on top of it.
+bool fly_view_active() {
+    return g_app != nullptr && !g_app->bgfx_view_active &&
+           g_app->model_mode == castlemist::render::RenderMode::MapFly &&
+           castlemist::render::scene_shown();
+}
+
+// The fly camera integrates WASD over real time, so unlike every other view here
+// it needs a clock rather than a repaint-on-demand. The timer runs only while the
+// fly view is actually up; leaving the mode stops it (and releases the keys, so a
+// key held during the switch cannot leave the camera drifting).
+void update_fly_timer() {
+    if (g_app == nullptr || g_app->hwnd_main == nullptr) return;
+    bool want = fly_view_active();
+    if (want) {
+        QueryPerformanceCounter(&g_app->fly_qpc_last);
+        g_app->fly_qpc_init = true;
+        SetTimer(g_app->hwnd_main, TIMER_FLY, 16, nullptr); // ~60 Hz
+    } else {
+        KillTimer(g_app->hwnd_main, TIMER_FLY);
+        g_app->fly_qpc_init = false;
+        g_app->fly_looking = false;
+        castlemist::render::fly_clear_keys();
+    }
+    if (g_app->hwnd_fly_hud != nullptr)
+        ShowWindow(g_app->hwnd_fly_hud, want ? SW_SHOW : SW_HIDE);
+    if (want) update_fly_hud();
+}
+
+void update_fly_hud() {
+    if (g_app == nullptr || g_app->hwnd_fly_hud == nullptr) return;
+    float pos[3];
+    castlemist::render::fly_get_pos(pos);
+    int visible = 0, draws = 0, ktris = 0;
+    float ms = 0;
+    castlemist::render::fly_stats(visible, draws, ktris, ms);
+    wchar_t buf[320];
+    _snwprintf_s(buf, _TRUNCATE,
+                 L"%.0f, %.0f, %.0f\n"
+                 L"speed %.0f/s   view %.0f\n"
+                 L"%d instances  %d draws  %dk tris\n"
+                 L"cull+submit %.2f ms\n"
+                 L"WASD move  Q/E alt  drag look (free)  Z/C roll  L level  wheel speed",
+                 pos[0], pos[1], pos[2], castlemist::render::fly_speed(),
+                 castlemist::render::fly_view_distance(), visible, draws, ktris, ms);
+    SetWindowTextW(g_app->hwnd_fly_hud, buf);
+}
+
 void set_model_mode(castlemist::render::RenderMode mode) {
     if (g_app == nullptr) {
         return;
@@ -101,7 +150,15 @@ void set_model_mode(castlemist::render::RenderMode mode) {
     // The map scene needs its game materials built before GameShader can draw.
     if (mode == castlemist::render::RenderMode::GameShader && castlemist::render::scene_active())
         ensure_map_game_materials();
+    // The fly view is a map view: selecting it brings the map back to the surface
+    // even if a model preview had taken it.
+    if (mode == castlemist::render::RenderMode::MapFly && castlemist::render::scene_active()) {
+        castlemist::render::set_scene_shown(true);
+        if (g_app->hwnd_show_map != nullptr)
+            SendMessageW(g_app->hwnd_show_map, BM_SETCHECK, BST_CHECKED, 0);
+    }
     castlemist::render::set_mode(mode);
+    update_fly_timer();
     InvalidateRect(g_app->hwnd_model, nullptr, FALSE);
 }
 

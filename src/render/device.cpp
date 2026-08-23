@@ -10,6 +10,7 @@
 #include <cstring>
 #include <d3dcompiler.h>
 
+#include "detail/map_fly.h"
 #include "detail/shaders.h"
 
 namespace castlemist::render {
@@ -155,6 +156,34 @@ bool init_pipeline() {
     cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     cbd.ByteWidth = (sizeof(CB) + 15) & ~15u;
     if (FAILED(g_dev->CreateBuffer(&cbd, nullptr, &g_cb))) return false;
+
+    // --- mesh-only fly view (best-effort: failing here just disables that mode) ---
+    {
+        ComPtr<ID3DBlob> fvs, fps, ferr;
+        if (SUCCEEDED(D3DCompile(shaders::kMapFly, std::strlen(shaders::kMapFly), nullptr, nullptr, nullptr,
+                                 "VSMain", "vs_5_0", 0, 0, &fvs, &ferr)) &&
+            SUCCEEDED(D3DCompile(shaders::kMapFly, std::strlen(shaders::kMapFly), nullptr, nullptr, nullptr,
+                                 "PSMain", "ps_5_0", 0, 0, &fps, &ferr)) &&
+            SUCCEEDED(g_dev->CreateVertexShader(fvs->GetBufferPointer(), fvs->GetBufferSize(), nullptr, &g_flyVS)) &&
+            SUCCEEDED(g_dev->CreatePixelShader(fps->GetBufferPointer(), fps->GetBufferSize(), nullptr, &g_flyPS))) {
+            // Slot 0: the 16-byte static vertex. Slot 1: the per-instance world
+            // columns, stepped once per instance -- this is what turns a map's
+            // tens of thousands of draws into one per model per LOD.
+            const D3D11_INPUT_ELEMENT_DESC fil[] = {
+                {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
+                {"NORMAL", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
+                {"TEXCOORD", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+                {"TEXCOORD", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+                {"TEXCOORD", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+                {"TEXCOORD", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+            };
+            D3D11_BUFFER_DESC fcb = cbd;
+            fcb.ByteWidth = (sizeof(FlyCB) + 15) & ~15u;
+            if (SUCCEEDED(g_dev->CreateInputLayout(fil, 6, fvs->GetBufferPointer(), fvs->GetBufferSize(), &g_flyIL)) &&
+                SUCCEEDED(g_dev->CreateBuffer(&fcb, nullptr, &g_flyCB)))
+                g_fly_pipeline_ok = true;
+        }
+    }
 
     // Bone palette (StructuredBuffer) is created per-model in build_skeleton once
     // the bone count is known -- no fixed-size allocation here.

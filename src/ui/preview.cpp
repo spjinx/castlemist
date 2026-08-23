@@ -221,6 +221,14 @@ void apply_extracted_entry(uint32_t mft_index, ExtractedEntry&& entry) {
         g_app->bgfx_model_loaded = false;
         if (g_app->current_entry.model) {
             castlemist::render::set_model(*g_app->current_entry.model);
+            // set_model hands the surface to the model but leaves any loaded map
+            // standing behind it. "Fly" is a map-only view, so fall back to a
+            // model mode; the map (and the fly camera where it left off) come
+            // straight back from the "Map" toggle, with nothing re-loaded.
+            if (g_app->model_mode == castlemist::render::RenderMode::MapFly)
+                g_app->model_mode = castlemist::render::RenderMode::Full;
+            SendMessageW(g_app->hwnd_show_map, BM_SETCHECK, BST_UNCHECKED, 0);
+            update_fly_timer();
             // A standalone skin/model has no env of its own -> light it with the
             // baked GW2-daylight rig (clears any rig left over from a map view).
             castlemist::render::clear_environment_rig();
@@ -297,6 +305,11 @@ void apply_extracted_entry(uint32_t mft_index, ExtractedEntry&& entry) {
             // Light the scene with the map's own env chunk (real per-map sun + SH
             // ambient) when present; otherwise fall back to the baked daylight rig.
             castlemist::render::set_environment_rig(ms.env);
+            // A map opens in the mesh-only fly view: it is the only mode that can
+            // actually push a whole map at frame rate, and it is the one that
+            // frames the scene sensibly. The textured/orbit modes stay one click
+            // away on the toolbar.
+            g_app->model_mode = castlemist::render::RenderMode::MapFly;
             castlemist::render::set_mode(g_app->model_mode);
             // Default layers: props + terrain on, zones + collision off.
             g_app->map_zone_loaded = false;
@@ -305,8 +318,11 @@ void apply_extracted_entry(uint32_t mft_index, ExtractedEntry&& entry) {
             castlemist::render::set_layer_visible(castlemist::render::LAYER_ZONE, false);
             castlemist::render::set_layer_visible(castlemist::render::LAYER_COLLISION, false);
             SendMessageW(g_app->hwnd_layer_prop, BM_SETCHECK, BST_CHECKED, 0);
+            SendMessageW(g_app->hwnd_layer_terrain, BM_SETCHECK, BST_CHECKED, 0);
             SendMessageW(g_app->hwnd_layer_zone, BM_SETCHECK, BST_UNCHECKED, 0);
             SendMessageW(g_app->hwnd_layer_coll, BM_SETCHECK, BST_UNCHECKED, 0);
+            SendMessageW(g_app->hwnd_show_map, BM_SETCHECK, BST_CHECKED, 0);
+            update_fly_timer();
         } else {
             castlemist::render::clear_model();
             SetWindowTextW(g_app->hwnd_text_preview,

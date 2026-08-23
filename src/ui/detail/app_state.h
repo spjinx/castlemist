@@ -171,6 +171,13 @@ constexpr UINT_PTR ID_ANIM_PLAY = 2051;
 constexpr UINT_PTR ID_LAYER_PROP = 2052;
 constexpr UINT_PTR ID_LAYER_ZONE = 2053;
 constexpr UINT_PTR ID_LAYER_COLL = 2054;
+/// Terrain had no toggle -- it was forced on -- so the ground plane could not be
+/// hidden to look at what sits under it.
+constexpr UINT_PTR ID_LAYER_TERRAIN = 2132;
+/// "Fly": the mesh-only free-camera map view (RenderMode::MapFly).
+constexpr UINT_PTR ID_MODE_FLY = 2133;
+/// "Map": with a map and a model both loaded, picks which owns the surface.
+constexpr UINT_PTR ID_SHOW_MAP = 2134;
 constexpr UINT_PTR ID_TEX_FULLRES = 2055;
 constexpr UINT_PTR ID_AUDIO_PLAY = 2056;
 constexpr UINT_PTR ID_AUDIO_STOP = 2057;
@@ -222,6 +229,9 @@ constexpr UINT_PTR ID_VIDEO_TRACK = 2100;   // audio-track selector (multi-track
 constexpr UINT_PTR ID_VIDEO_SUBS = 2101;    // subtitle toggle (searches the CINP scripts)
 constexpr UINT_PTR ID_VIDEO_CLIP = 2102;    // which movie of a CINP cinematic to play
 constexpr UINT_PTR TIMER_ANIM = 1;
+/// ~60 Hz pump for the fly view: integrates WASD movement and repaints. Runs
+/// only while the fly view owns the surface.
+constexpr UINT_PTR TIMER_FLY = 4;
 constexpr UINT_PTR TIMER_AUDIO = 2;         // ~10 Hz refresh of the audio seek bar / time
 constexpr UINT_PTR TIMER_VIDEO = 3;         // video frame pump (see on_video_tick)
 constexpr int kAudioSeekMax = 1000;         // seek trackbar range (permille of duration)
@@ -418,8 +428,18 @@ struct AppState {
     HWND hwnd_layer_prop = nullptr;
     HWND hwnd_layer_zone = nullptr;
     HWND hwnd_layer_coll = nullptr;
+    HWND hwnd_layer_terrain = nullptr;
     HWND hwnd_map_preview = nullptr; // map: toggle the picked-prop inset preview
+    HWND hwnd_show_map = nullptr;    // "Map": surface shows the map, not the model
     bool map_zone_loaded = false; // whether the zone layer has been lazily loaded
+
+    // --- mesh-only fly view (RenderMode::MapFly) ---
+    HWND hwnd_mode_fly = nullptr;
+    HWND hwnd_fly_hud = nullptr;   // overlay label: position, speed, draws, ms
+    bool fly_looking = false;      // a mouse-look drag is in progress
+    POINT fly_look_last{};
+    LARGE_INTEGER fly_qpc_last{};  // for the movement timestep
+    bool fly_qpc_init = false;
 
     // Blender-style gizmo controls + transform readout (single-model surface).
     HWND hwnd_gizmo_move = nullptr;
@@ -508,6 +528,12 @@ void ensure_map_game_materials();
 void set_model_mode(castlemist::render::RenderMode mode);
 void reset_model_view();
 void update_gizmo_readout();
+/// True when the mesh-only fly view currently owns the model surface.
+bool fly_view_active();
+/// Starts/stops TIMER_FLY to match fly_view_active(), and shows/hides the HUD.
+void update_fly_timer();
+/// Refreshes the fly HUD overlay (position, speed, draw calls, frame time).
+void update_fly_hud();
 void set_gizmo_mode_ui(castlemist::render::GizmoMode m);
 int lod_target_submesh();
 void refresh_lod_controls();

@@ -1,6 +1,7 @@
 /// @file
 /// @brief The single-model render entry point and the orbit camera.
 
+#include "detail/map_fly.h"
 #include "detail/state.h"
 
 #include <algorithm>
@@ -23,6 +24,9 @@ void orbit(float dyaw, float dpitch) {
 void zoom(float factor) { g_dist = std::clamp(g_dist * factor, 0.2f, 20.0f); }
 
 void reset_view() {
+    // In the fly view "reset" means re-frame the free camera on the scene; the
+    // orbit state is meaningless there.
+    if (g_mode == RenderMode::MapFly && g_scene_mode) { fly_frame_scene(); return; }
     g_rot = identity();
     g_dist = 1.7f;
 }
@@ -262,7 +266,17 @@ void render() {
     D3D11_VIEWPORT vp{0, 0, static_cast<float>(g_w), static_cast<float>(g_h), 0, 1};
     g_ctx->RSSetViewports(1, &vp);
 
-    if (g_scene_mode) {
+    // A map and a single model can be loaded at once; g_scene_shown is the single
+    // authority on which of the two owns the surface.
+    if (g_scene_mode && g_scene_shown) {
+        // Mesh-only fly-through: its own camera, its own compact buffers, and no
+        // materials at all -- so it bypasses both scene paths entirely (including
+        // the focus inset, which belongs to the orbit view).
+        if (g_mode == RenderMode::MapFly && g_fly_pipeline_ok && g_fly_built) {
+            render_fly();
+            g_swap->Present(1, 0);
+            return;
+        }
         // GameShader map mode: draw with the real bgfx materials (+ relight) when
         // any scene model has game shaders built; otherwise the reconstruction path.
         if (g_mode == RenderMode::GameShader && scene_game_ready())

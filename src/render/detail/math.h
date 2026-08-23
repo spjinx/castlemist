@@ -133,9 +133,30 @@ inline Mat4 scaleMat(float s) {
     r.m[0] = r.m[5] = r.m[10] = s;
     return r;
 }
-// world (row-vector: p_world = p_model * world) = Scale * Rot(XYZ) * Translate.
+// world (row-vector: p_world = p_model * world) = Scale * Rot * Translate.
+//
+// ROTATION ORDER IS **Y, X, Z** -- not the XYZ this used to assume.
+//
+// Verified against the client, not guessed. Gw2-64.exe builds a prop's world
+// transform in one leaf helper (named `sub_1409C8920` in the IDB; called from
+// `PrContext_LoadPropModel` as `(out, scale, &prop->position, &prop->rotation)`,
+// where PrProp holds position at +32 and rotation at +44). It takes cos/sin of
+// rotation[0..2] and writes a float3x4 whose 3x3 part is, with
+// cx=cos(rot[0]) sx=sin(rot[0]) cy=cos(rot[1]) sy=sin(rot[1]) cz=cos(rot[2]) sz=sin(rot[2]):
+//
+//   [ cz*cy - sy*sx*sz   cz*sx*sy + sz*cy   -cx*sy ]
+//   [ -cx*sz             cz*cx               sx    ]
+//   [ cy*sx*sz + cz*sy   sz*sy - cz*cy*sx    cy*cx ]
+//
+// which is exactly rotY * rotX * rotZ in this file's row-vector basis (checked
+// numerically against all six orderings; only Y*X*Z matches). With rot[0] and
+// rot[1] zero it collapses to a plain yaw about Z, matching the observation that
+// rot[2] is the yaw and GW2 is Z-up.
+//
+// Composing them as X*Y*Z left every prop with a non-zero pitch or roll sitting
+// at the wrong orientation -- the "geometry misplaced" the map view showed.
 inline Mat4 sceneWorld(const float pos[3], const float rot[3], float scale) {
-    Mat4 R = mul(mul(rotX(rot[0]), rotY(rot[1])), rotZ(rot[2]));
+    Mat4 R = mul(mul(rotY(rot[1]), rotX(rot[0])), rotZ(rot[2]));
     return mul(mul(scaleMat(scale), R), translate({pos[0], pos[1], pos[2]}));
 }
 

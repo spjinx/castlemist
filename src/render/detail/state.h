@@ -385,8 +385,19 @@ struct SceneInstGPU {
 inline std::vector<SceneModelGPU> g_scene_models;
 inline std::vector<SceneInstGPU> g_scene_insts;
 inline bool g_scene_mode = false;
+// A map scene and a single-model preview can now be loaded at the same time
+// (clear_model no longer drops the scene). This picks which one the surface
+// draws: set when a map loads, cleared when a model preview takes the surface,
+// and flipped by the UI's "Map" toggle so returning to the map costs nothing.
+inline bool g_scene_shown = false;
 inline Vec3 g_scene_center{0, 0, 0};
 inline float g_scene_radius = 1.0f;
+// FULL scene bounds, terrain included. g_scene_center/g_scene_radius deliberately
+// track the PROP-only box so the orbit camera does not get dragged out by a map-
+// sized terrain plane -- but that makes them useless for placing a free camera,
+// which has to start above the actual ground. Kept separately for the fly view.
+inline Vec3 g_scene_lo{0, 0, 0};
+inline Vec3 g_scene_hi{0, 0, 0};
 inline bool g_layer_visible[LAYER_COUNT] = {true, true, false, false}; // prop+terrain on; collision+zone off
 // Map "focus" model: a prop the user picked from the map, shown in a small inset
 // preview overlaid on the scene surface (-1 = none). The inset shares the scene

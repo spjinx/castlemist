@@ -343,4 +343,82 @@ float4 PSLight(VO i):SV_Target{
 }
 )";
 
+// ---------------------------------------------------------------------------
+// Mesh-only fly-through map view.
+//
+// The whole point of this shader is that it is small. No textures, no samplers,
+// no material branches, no skinning -- a map is bound by how many vertices and
+// draw calls it can push, not by per-pixel work, so every cycle here is spent on
+// the two things that make untextured geometry readable: a sky/ground hemisphere
+// term that separates up-facing from down-facing surfaces, and the ambient
+// occlusion that was baked into the vertex at load time.
+//
+// The world transform arrives per-instance as three float4s (the columns of the
+// row-vector world matrix), so a world position is three dot products and the
+// pipeline never rebinds anything between instances of the same model.
+// ---------------------------------------------------------------------------
+inline constexpr const char* kMapFly = R"(
+cbuffer FlyCB : register(b0) {
+    row_major float4x4 uViewProj;
+    float3 uSunDir;     float uExposure;
+    float3 uSunCol;     float uAoStrength;
+    float3 uSkyCol;     float uFogStart;
+    float3 uGroundCol;  float uFogEnd;
+    float3 uFogCol;     float _pad0;
+    float3 uCamPos;     float _pad1;
+};
+
+struct VSIn {
+    float3 pos : POSITION;
+    float4 nao : NORMAL;     // xyz = normal*0.5+0.5, w = baked AO (R8G8B8A8_UNORM)
+    float4 r0  : TEXCOORD0;  // per-instance world columns
+    float4 r1  : TEXCOORD1;
+    float4 r2  : TEXCOORD2;
+    float4 tint: TEXCOORD3;  // per-instance layer albedo
+};
+struct VSOut {
+    float4 pos : SV_POSITION;
+    float3 nrm : NORMAL;
+    float2 aod : TEXCOORD0;  // x = AO, y = distance to camera
+    float3 alb : TEXCOORD1;  // layer albedo
+};
+
+VSOut VSMain(VSIn i) {
+    float4 p = float4(i.pos, 1.0);
+    float3 wp = float3(dot(p, i.r0), dot(p, i.r1), dot(p, i.r2));
+    float3 n  = i.nao.xyz * 2.0 - 1.0;
+    // Uniform scale only, so the world columns rotate the normal too; the
+    // normalize absorbs the scale.
+    float3 wn = float3(dot(n, i.r0.xyz), dot(n, i.r1.xyz), dot(n, i.r2.xyz));
+
+    VSOut o;
+    o.pos = mul(float4(wp, 1.0), uViewProj);
+    o.nrm = wn;
+    o.aod = float2(i.nao.w, distance(wp, uCamPos));
+    o.alb = i.tint.rgb;
+    return o;
+}
+
+float4 PSMain(VSOut i) : SV_Target {
+    float3 N = normalize(i.nrm);
+    float ao = lerp(1.0, i.aod.x, uAoStrength);
+
+    // GW2 is Z-UP, so the hemisphere blends on N.z. Ambient is occluded; the sun
+    // is occluded too (a cheap stand-in for the contact shadow we do not trace).
+    float3 hemi = lerp(uGroundCol, uSkyCol, saturate(N.z * 0.5 + 0.5));
+    float  ndl  = saturate(dot(N, uSunDir));
+    float3 col  = i.alb * (hemi + uSunCol * ndl) * ao * uExposure;
+
+    // Distance fade to the fog colour. Nearly free, and it is what stops the
+    // hard distance cull from reading as geometry popping out of a void.
+    float f = saturate((i.aod.y - uFogStart) / max(1.0, uFogEnd - uFogStart));
+    col = lerp(col, uFogCol, f);
+    // Gamma-encode, like every other shader here. The swap chain is a plain
+    // (non-sRGB) R8G8B8A8_UNORM, so writing linear radiance straight out is what
+    // made the first pass read as a dim, muddy map -- 0.2 linear is 0.48 on
+    // screen, not 0.2.
+    return float4(pow(saturate(col), 1.0 / 2.2), 1.0);
+}
+)";
+
 } // namespace castlemist::render::shaders

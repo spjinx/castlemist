@@ -16,6 +16,7 @@ enum class RenderMode {
     Plain,     // untextured flat lambert (no textures, white)
     Wireframe, // wireframe, untextured
     GameShader, // the GAME's own bgfx DXBC shaders per material (from the AMAT package)
+    MapFly,    // mesh-only fly-through of a map: no textures, baked AO, instanced
 };
 
 bool initialize(HWND target_window);
@@ -49,6 +50,14 @@ void set_scene(const std::vector<ModelPreview>& models, const std::vector<SceneI
 void add_scene_models(const std::vector<ModelPreview>& models, const std::vector<SceneInstance>& instances);
 void clear_scene();
 bool scene_active();
+
+/// A loaded map and a single-model preview coexist: previewing a model no longer
+/// tears the map down, it just takes the surface. These pick which one is drawn,
+/// so returning to the map costs nothing (no re-extract, no re-upload).
+/// Selecting RenderMode::MapFly brings the map back to the surface, and
+/// previewing a model hands the surface to the model.
+void set_scene_shown(bool on);
+bool scene_shown();
 
 /// Builds the real GAME (bgfx DXBC) materials for the current map scene from a set
 /// of ModelPreviews whose game shaders were extracted (want_game). `models` is
@@ -218,6 +227,53 @@ bool is_playing();
 void orbit(float delta_yaw, float delta_pitch);
 void zoom(float factor);
 void reset_view();
+
+/// --- mesh-only fly-through map view (RenderMode::MapFly) --------------------
+/// A second draw path for map scenes that throws away everything the game's look
+/// depends on -- textures, materials, the game's DXBC shaders, transparency --
+/// and keeps only geometry. Shading is a sky/ground hemisphere plus one
+/// directional light, modulated by ambient occlusion BAKED INTO THE VERTEX when
+/// the map loads. That makes every instance of a model identical on the GPU, so
+/// the whole map draws as roughly one instanced call per visible model per LOD
+/// instead of one per instance per submesh, and a full map becomes navigable.
+///
+/// Vertices are 16 bytes here (position + packed normal + AO) against the 144 of
+/// the textured path, which is most of why it fits in bandwidth.
+///
+/// The camera is a fully free fly camera: it carries its own orthonormal basis
+/// rather than yaw/pitch angles, so pitch is UNCLAMPED -- it can look straight
+/// up, tip past vertical and fly inverted with no snap or gimbal flip. Roll
+/// accumulates as a result (that is what unconstrained rotation means);
+/// fly_level() re-levels the horizon in place, and fly_roll() rolls deliberately.
+/// The host feeds key transitions and mouse deltas, then calls fly_tick() once
+/// per frame; fly_tick returns true when the camera moved (a repaint is due).
+enum FlyKeyCode { FLY_KEY_FWD = 0, FLY_KEY_LEFT, FLY_KEY_BACK, FLY_KEY_RIGHT,
+                  FLY_KEY_DOWN, FLY_KEY_UP, FLY_KEY_FAST, FLY_KEY_SLOW };
+void fly_set_key(int key, bool down);
+void fly_clear_keys();
+void fly_look(float dx_pixels, float dy_pixels);
+bool fly_tick(float dt_seconds);
+void fly_roll(float radians);           // roll about the view axis
+void fly_level(void);                   // re-level the horizon, keeping position + aim
+void fly_adjust_speed(float notches);   // mouse wheel: movement speed, not zoom
+float fly_speed();
+void fly_get_pos(float out[3]);
+void fly_reset_view();                  // re-frame on the whole scene
+
+/// Live counters for the HUD: instances that survived culling, draw calls
+/// issued, thousands of triangles submitted, and the cull+submit time in ms.
+void fly_stats(int& visible, int& draws, int& ktris, float& ms);
+
+/// Hard distance cull, in world units. Fog fades to the clear colour over the
+/// last 45% of it so the cut does not read as popping.
+void set_fly_view_distance(float d);
+float fly_view_distance();
+void set_fly_ao_strength(float v);   // 0 = flat shading, 1 = full baked AO
+float fly_ao_strength();
+void set_fly_fog(bool on);
+bool fly_fog();
+void set_fly_wireframe(bool on);
+bool fly_wireframe();
 
 void render();
 
