@@ -163,15 +163,47 @@ CM_TEST(pose, m3mul_composes_two_rotations) {
     CHECK_NEAR(r[1], 0.0f, 1e-4);
 }
 
-// GW2 is Z-up, so a map prop's yaw is a rotation about Z, not Y.
+// GW2 is Z-up, so a map prop's yaw is a rotation about Z, not Y. The sign is the
+// client's: sub_1409C8920 with rot={0,0,pi/2} yields a 3x3 whose second row is
+// {-1,0,0}, so +X maps to -Y, not +Y. (The old expectation of +Y was the
+// transposed matrix -- see the derivation above sceneWorld in math.h.)
 CM_TEST(scene, world_matrix_treats_z_as_up) {
     const float pos[3] = {10, 20, 30};
     const float rot[3] = {0, 0, 3.14159265f / 2}; // 90 degrees of yaw
     Mat4 w = sceneWorld(pos, rot, 2.0f);
     Vec3 p = transformPoint(Vec3{1, 0, 0}, w);
-    CHECK_NEAR(p.x, 10.0f, 1e-3); // scaled 2x, yawed to +Y, then translated
-    CHECK_NEAR(p.y, 22.0f, 1e-3);
+    CHECK_NEAR(p.x, 10.0f, 1e-3); // scaled 2x, yawed to -Y, then translated
+    CHECK_NEAR(p.y, 18.0f, 1e-3);
     CHECK_NEAR(p.z, 30.0f, 1e-3);
+}
+
+// The full 3x3 must match Gw2-64.exe's sub_1409C8920 exactly, for a rotation with
+// all three angles non-zero (where ordering and convention both bite). The client
+// writes a column-vector float3x4; ours is the row-vector transpose, so
+// transformPoint(p) here == M*p + t there.
+CM_TEST(scene, world_matrix_matches_client_leaf_helper) {
+    const float pos[3] = {100, -250, 32};
+    const float rot[3] = {0.3f, -0.9f, 1.7f};
+    const float sc = 1.7f;
+    const float cx = std::cos(rot[0]), sx = std::sin(rot[0]);
+    const float cy = std::cos(rot[1]), sy = std::sin(rot[1]);
+    const float cz = std::cos(rot[2]), sz = std::sin(rot[2]);
+    const float R[3][3] = {
+        {cz * cy - sy * sx * sz, cz * sx * sy + sz * cy, -cx * sy},
+        {-cx * sz,               cz * cx,                 sx     },
+        {cy * sx * sz + cz * sy, sz * sy - cz * cy * sx,  cy * cx},
+    };
+    Mat4 w = sceneWorld(pos, rot, sc);
+    const Vec3 pts[4] = {{10, 0, 0}, {0, 10, 0}, {0, 0, 10}, {3, -7, 5}};
+    for (const Vec3& v : pts) {
+        Vec3 got = transformPoint(v, w);
+        float want[3];
+        for (int r = 0; r < 3; ++r)
+            want[r] = (R[r][0] * v.x + R[r][1] * v.y + R[r][2] * v.z) * sc + pos[r];
+        CHECK_NEAR(got.x, want[0], 1e-3);
+        CHECK_NEAR(got.y, want[1], 1e-3);
+        CHECK_NEAR(got.z, want[2], 1e-3);
+    }
 }
 
 CM_TEST(scene, non_uniform_scale_is_per_axis) {

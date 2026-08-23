@@ -135,28 +135,37 @@ inline Mat4 scaleMat(float s) {
 }
 // world (row-vector: p_world = p_model * world) = Scale * Rot * Translate.
 //
-// ROTATION ORDER IS **Y, X, Z** -- not the XYZ this used to assume.
+// ROTATION IS **rotZ(-r2) * rotX(-r0) * rotY(-r1)** in this file's row-vector
+// basis -- the TRANSPOSE of the 3x3 the client builds, because the client's is a
+// column-vector matrix and ours is applied as `p * M`.
 //
 // Verified against the client, not guessed. Gw2-64.exe builds a prop's world
 // transform in one leaf helper (named `sub_1409C8920` in the IDB; called from
 // `PrContext_LoadPropModel` as `(out, scale, &prop->position, &prop->rotation)`,
 // where PrProp holds position at +32 and rotation at +44). It takes cos/sin of
-// rotation[0..2] and writes a float3x4 whose 3x3 part is, with
+// rotation[0..2] and writes a float3x4 as three 16-byte rows of `[r0 r1 r2 | t]`
+// -- translation in each row's FOURTH COLUMN, i.e. the column-vector layout
+// (`p' = M*p + t`). With
 // cx=cos(rot[0]) sx=sin(rot[0]) cy=cos(rot[1]) sy=sin(rot[1]) cz=cos(rot[2]) sz=sin(rot[2]):
 //
 //   [ cz*cy - sy*sx*sz   cz*sx*sy + sz*cy   -cx*sy ]
 //   [ -cx*sz             cz*cx               sx    ]
 //   [ cy*sx*sz + cz*sy   sz*sy - cz*cy*sx    cy*cx ]
 //
-// which is exactly rotY * rotX * rotZ in this file's row-vector basis (checked
-// numerically against all six orderings; only Y*X*Z matches). With rot[0] and
-// rot[1] zero it collapses to a plain yaw about Z, matching the observation that
-// rot[2] is the yaw and GW2 is Z-up.
+// which is Ry(-r1) * Rx(-r0) * Rz(-r2) for column vectors; transposed into the
+// row-vector basis used here that is rotZ(-r2) * rotX(-r0) * rotY(-r1), built
+// below. Cross-checked numerically against Tyria3D, whose props are placed
+// correctly: its three.js matrix, mapped back out of its Y-up basis, reproduces
+// the client matrix to 1e-14.
 //
-// Composing them as X*Y*Z left every prop with a non-zero pitch or roll sitting
-// at the wrong orientation -- the "geometry misplaced" the map view showed.
+// Composing it as rotY(r1) * rotX(r0) * rotZ(r2) -- what this used to do -- picks
+// the client's *ordering* but not its vector convention, so every prop received
+// the INVERSE rotation: plain-yaw props spun the wrong way and anything carrying
+// pitch or roll landed visibly misplaced. Even the rot[0]==rot[1]==0 case is
+// wrong -- still a yaw about Z, but negated -- so only rotationally symmetric
+// props (barrels, columns) happened to look right.
 inline Mat4 sceneWorld(const float pos[3], const float rot[3], float scale) {
-    Mat4 R = mul(mul(rotY(rot[1]), rotX(rot[0])), rotZ(rot[2]));
+    Mat4 R = mul(mul(rotZ(-rot[2]), rotX(-rot[0])), rotY(-rot[1]));
     return mul(mul(scaleMat(scale), R), translate({pos[0], pos[1], pos[2]}));
 }
 

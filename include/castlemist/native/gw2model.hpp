@@ -1074,8 +1074,10 @@ public:
 
     // Parse the `prp2` chunk of an `area` packfile -> the list of placed props
     // (model + world transform). This is what turns a map into a coordinated set
-    // of 3D models. Handles both propArray (single placements) and
-    // propInstanceArray (a prop reused at many transforms).
+    // of 3D models. Handles the three flat placement lists (propArray,
+    // propAnimArray, propMetaArray) plus propInstanceArray (a prop reused at many
+    // transforms). propToolArray (editor-only) and propVolumeArray (trigger
+    // volumes, no drawable model) are deliberately skipped.
     std::vector<MapProp> parseMapProps() {
         std::vector<MapProp> out;
         std::string root; uint16_t ver = 0;
@@ -1092,8 +1094,16 @@ public:
         };
 
         size_t off; json fj;
-        // propArray -- one model instance each.
-        if (fieldOffset(root, "propArray", off, fj)) {
+        // propArray / propAnimArray / propMetaArray -- one model instance each.
+        // All three element structs (PackMapPropObj*V*) share the same leading
+        // layout (filename..position..rotation..scale..), so readProp -- which
+        // resolves every field by name through the packfile schema -- handles
+        // them identically. Only propArray used to be read, which silently
+        // dropped every animated prop (doors, windmills, banners) and every
+        // meta/glom prop (the grouped set-dressing that makes up a lot of a
+        // city map); Tyria3D renders all four lists.
+        for (const char* arrayName : {"propArray", "propAnimArray", "propMetaArray"}) {
+            if (!fieldOffset(root, arrayName, off, fj)) continue;
             std::string objType = fj["element"].value("struct", std::string());
             int objSize = typeSize(objType);
             uint32_t n = 0; size_t base = arrayAt(prp + off, n);
