@@ -49,6 +49,7 @@ void set_playing(bool) {}
 bool is_playing() { return false; }
 int skinned_draw_count() { return 0; }
 void render() {}
+bool bake_model_textures(ModelPreview&) { return false; }
 const std::string& last_status() { return kUnavailable; }
 } // namespace castlemist::gw2bgfxview
 
@@ -180,6 +181,18 @@ struct Draw {
     std::vector<BgfxBlobUniform> vsU, psU;
     std::vector<std::pair<uint8_t, bgfx::TextureHandle>> textures;
     std::map<std::string, Vec4> matConsts;
+
+    /// This geoset's MODL material index -- the same numbering
+    /// ModelMaterialCPU::index uses, so bake_model_textures() can group draws
+    /// by material and write results back into the right exporter slot.
+    uint32_t materialIndex = 0;
+    /// A CPU-side copy of this geoset's raw vertex bytes (in `layout`'s
+    /// format), kept only so bake_model_textures() can build a UV-remapped
+    /// copy later -- render() itself only ever touches `vb`. Discarded nowhere
+    /// else, so this roughly doubles a loaded model's vertex memory; models are
+    /// small enough (single-digit MB) that this is not worth avoiding.
+    std::vector<uint8_t> vertexBytes;
+    bgfx::VertexLayout layout;
     /// The state the client would compose for a single-sided surface -- the
     /// effect's cull bits included.
     uint64_t state = 0;
@@ -968,6 +981,10 @@ bool set_model(Gw2Dat& dat, uint32_t mft_index, std::string& error) {
         if (skinned) { d.boneSlots = std::move(boneSlots); ++g.skinnedDraws; }
         else if (rigidBone >= 0) ++g.rigidDraws;
 
+        d.materialIndex = gs.materialIndex;
+        d.vertexBytes = gs.vertexBytes;
+        d.layout = layout;
+
         const bgfx::Memory* vmem = bgfx::copy(gs.vertexBytes.data(), (uint32_t)gs.vertexBytes.size());
         d.vb = bgfx::createVertexBuffer(vmem, layout);
         const bgfx::Memory* imem = bgfx::copy(gs.indices.data(), (uint32_t)(gs.indices.size() * 2));
@@ -1201,6 +1218,189 @@ void render() {
     }
 
     bgfx::frame();
+}
+
+// ============================================================================
+// bake_model_textures -- see the header doc comment for the full rationale.
+//
+// Unlike castlemist::render's D3D11 "Shader" mode, this view's lighting comes
+// entirely from fixed uniforms (kEngineUniforms' shRed/shGreen/shBlue/shSun...,
+// the paper-doll studio rig) -- there is no screen-space deferred light-buffer
+// lookup to keep coherent with a remapped UV-space "camera", because this view
+// never reconstructs one in the first place. That removes an entire class of
+// risk the D3D11 bake had: whatever the real shader computes from these fixed
+// uniforms is exactly as valid in UV space as it is on screen.
+// ============================================================================
+namespace {
+
+// Reserved view ids for the bake's own offscreen passes -- render()'s live
+// on-screen view (id 0) is untouched by these.
+constexpr bgfx::ViewId kBakeView = 1;
+constexpr bgfx::ViewId kBakeBlitView = 2;
+
+// Builds a copy of `src` with every vertex's POSITION replaced by its own
+// TexCoord0 remapped to clip space, using bgfx's own pack/unpack so this works
+// regardless of which concrete storage format (float, half, packed int) this
+// geoset's layout happens to use for either attribute.
+std::vector<uint8_t> make_uv_position_verts(const std::vector<uint8_t>& src, const bgfx::VertexLayout& layout) {
+    std::vector<uint8_t> out = src;
+    const uint16_t stride = layout.getStride();
+    if (stride == 0) return out;
+    const uint32_t count = static_cast<uint32_t>(src.size() / stride);
+    for (uint32_t i = 0; i < count; ++i) {
+        float uv[4];
+        bgfx::vertexUnpack(uv, bgfx::Attrib::TexCoord0, layout, src.data(), i);
+        const float pos[4] = {uv[0] * 2.0f - 1.0f, -(uv[1] * 2.0f - 1.0f), 0.5f, 1.0f};
+        bgfx::vertexPack(pos, false, bgfx::Attrib::Position, layout, out.data(), i);
+    }
+    return out;
+}
+
+} // namespace
+
+bool bake_model_textures(ModelPreview& model) {
+    if (!g.inited || g.draws.empty()) return false;
+
+    // Group this view's own draws by MODL material index, so a material with
+    // several geosets (common -- Jormag's hide materials span multiple) bakes
+    // all of them into the same target.
+    std::map<uint32_t, std::vector<const Draw*>> byMaterial;
+    for (const Draw& d : g.draws) byMaterial[d.materialIndex].push_back(&d);
+
+    float identity[16];
+    bx::mtxIdentity(identity);
+    // A fixed, reasonable "camera" for whatever a shader reads CameraPosition
+    // for (rim/fresnel terms) -- there is no real camera in a UV-space bake,
+    // so this is inherently a best-effort choice, same limitation any static
+    // texture bake has. Reuses this view's own load-time framing.
+    const float camPos[4] = {g.centre[0], g.centre[1], g.centre[2] - g.radius * g.distMul, 1.0f};
+    const float timeVal[4] = {0, 0, 0, 0};
+
+    bool bakedAny = false;
+
+    for (ModelMaterialCPU& mat : model.materials) {
+        auto it = byMaterial.find(mat.index);
+        if (it == byMaterial.end() || it->second.empty()) continue;
+        if (mat.diffuseTex < 0 || mat.diffuseTex >= static_cast<int>(model.textures.size())) continue;
+        ModelTextureCPU& tex = model.textures[static_cast<size_t>(mat.diffuseTex)];
+        if (tex.width <= 0 || tex.height <= 0) continue;
+
+        const uint16_t w = static_cast<uint16_t>(tex.width), h = static_cast<uint16_t>(tex.height);
+
+        bgfx::TextureHandle rt = bgfx::createTexture2D(w, h, false, 1, bgfx::TextureFormat::RGBA8, 0
+            | BGFX_TEXTURE_RT
+            | BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT | BGFX_SAMPLER_MIP_POINT
+            | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+        bgfx::TextureHandle blitTex = bgfx::createTexture2D(w, h, false, 1, bgfx::TextureFormat::RGBA8, 0
+            | BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK
+            | BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT | BGFX_SAMPLER_MIP_POINT
+            | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+        if (!bgfx::isValid(rt) || !bgfx::isValid(blitTex)) {
+            if (bgfx::isValid(rt)) bgfx::destroy(rt);
+            if (bgfx::isValid(blitTex)) bgfx::destroy(blitTex);
+            continue;
+        }
+        bgfx::FrameBufferHandle fb = bgfx::createFrameBuffer(1, &rt, false); // false: we destroy rt ourselves
+
+        bgfx::setViewFrameBuffer(kBakeView, fb);
+        bgfx::setViewRect(kBakeView, 0, 0, w, h);
+        bgfx::setViewClear(kBakeView, BGFX_CLEAR_COLOR, 0x000000ff);
+
+        std::vector<bgfx::VertexBufferHandle> scratchVb; // destroyed after this material's submits
+
+        for (const Draw* dp : it->second) {
+            const Draw& d = *dp;
+            if (!bgfx::isValid(d.program) || !bgfx::isValid(d.ib) || d.vertexBytes.empty()) continue;
+
+            std::vector<uint8_t> uvVerts = make_uv_position_verts(d.vertexBytes, d.layout);
+            const bgfx::Memory* vmem = bgfx::copy(uvVerts.data(), static_cast<uint32_t>(uvVerts.size()));
+            bgfx::VertexBufferHandle uvVb = bgfx::createVertexBuffer(vmem, d.layout);
+            if (!bgfx::isValid(uvVb)) continue;
+            scratchVb.push_back(uvVb);
+
+            // Identity palette: bake at bind pose (texturing is pose-
+            // independent), same convention as this view's own unposed path.
+            auto setAll = [&](const std::vector<BgfxBlobUniform>& list) {
+                for (const auto& u : list) {
+                    if (u.isSampler()) continue;
+                    bgfx::UniformHandle uh = uniformFor(u);
+                    if (u.name == "ViewProjection" || u.name == "World" || u.name == "WorldView" ||
+                        u.name == "View") {
+                        bgfx::setUniform(uh, identity);
+                        continue;
+                    }
+                    if (u.name == "grbones") {
+                        const uint16_t cap = std::max<uint8_t>(1, u.num);
+                        static std::vector<float> palette;
+                        palette.assign(static_cast<size_t>(cap) * 16, 0.0f);
+                        for (uint16_t s = 0; s < cap; ++s) std::memcpy(palette.data() + s * 16, identity, 64);
+                        bgfx::setUniform(uh, palette.data(), cap);
+                        continue;
+                    }
+                    if (u.name == "CameraPosition") { bgfx::setUniform(uh, camPos); continue; }
+                    if (u.name == "Time") { bgfx::setUniform(uh, timeVal); continue; }
+                    auto mc = d.matConsts.find(u.name);
+                    if (mc != d.matConsts.end()) { bgfx::setUniform(uh, mc->second.v); continue; }
+                    auto eg = kEngineUniforms.find(u.name);
+                    if (eg != kEngineUniforms.end()) { bgfx::setUniform(uh, eg->second.v); continue; }
+                }
+            };
+            setAll(d.vsU);
+            setAll(d.psU);
+
+            for (size_t i = 0; i < d.textures.size(); ++i) {
+                const uint8_t slot = d.textures[i].first;
+                for (const auto& u : d.psU) {
+                    if (!u.isSampler() || u.regIndex != slot) continue;
+                    bgfx::setTexture(slot, uniformFor(u), d.textures[i].second);
+                    break;
+                }
+            }
+
+            bgfx::setVertexBuffer(0, uvVb);
+            bgfx::setIndexBuffer(d.ib, 0, d.indexCount);
+            // Keep this material's real write mask and blend function (an
+            // effect that masks off a channel, or blends, must still do so
+            // here), but strip depth test/write and culling: there is no
+            // meaningful "camera depth" or front/back facing once geometry has
+            // been remapped into UV space, and every triangle must land
+            // regardless of the winding that remap produces.
+            const uint64_t bakeState =
+                (g.forceTwoSided ? d.stateTwoSided : d.state) &
+                ~(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_MASK | BGFX_STATE_CULL_MASK);
+            bgfx::setState(bakeState);
+            bgfx::submit(kBakeView, d.program, 0, BGFX_DISCARD_ALL);
+        }
+
+        bgfx::blit(kBakeBlitView, blitTex, 0, 0, rt);
+        std::vector<uint8_t> cpuBuf(static_cast<size_t>(w) * h * 4);
+        uint32_t readyFrame = bgfx::readTexture(blitTex, cpuBuf.data());
+
+        // readTexture's result lands some frames after this call, gated on the
+        // frame counter bgfx::frame() returns (see bgfx's own picking example,
+        // tools/../examples/30-picking) -- not available immediately. This
+        // view's own reset flags keep everything on the calling thread
+        // (BGFX_CONFIG_MULTITHREADED=0), so a small bounded number of frame()
+        // calls is enough rather than an unbounded wait.
+        uint32_t frameNum = bgfx::frame();
+        for (int guard = 0; frameNum < readyFrame && guard < 8; ++guard) frameNum = bgfx::frame();
+
+        for (bgfx::VertexBufferHandle vb : scratchVb) bgfx::destroy(vb);
+        bgfx::destroy(fb);
+        bgfx::destroy(rt);
+        bgfx::destroy(blitTex);
+
+        // Keep the source diffuse's own alpha (coverage/cutout mask): the bake
+        // captures RGB shading, but the real alpha-test channel is exactly
+        // what it always was.
+        for (size_t p = 3; p + 1 <= cpuBuf.size() && p < tex.rgba.size(); p += 4) cpuBuf[p] = tex.rgba[p];
+
+        tex.rgba = std::move(cpuBuf);
+        mat.normalTex = -1; // already baked in; exporting it again would double-apply normal mapping
+        bakedAny = true;
+    }
+
+    return bakedAny;
 }
 
 } // namespace castlemist::gw2bgfxview

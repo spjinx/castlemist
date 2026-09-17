@@ -41,6 +41,14 @@ int row_count(HWND panel);
 using ActivateCallback = std::function<void(uint32_t fileId, uint32_t baseId)>;
 void set_activate_callback(HWND panel, ActivateCallback cb);
 
+/// Invoked when the user picks "Save Texture As..." from a texture row's
+/// right-click context menu, with that texture's dat ids. Wire it to decode
+/// and save that texture (e.g. as a PNG) -- the panel only keeps the ids, not
+/// the pixels, so the host must re-resolve fileId against the current model's
+/// own ModelPreview::textures.
+using SaveCallback = std::function<void(uint32_t fileId, uint32_t baseId)>;
+void set_save_callback(HWND panel, SaveCallback cb);
+
 } // namespace castlemist::texpanel
 
 #endif // GW2_TEXTURE_PANEL_H

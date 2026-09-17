@@ -73,6 +73,8 @@ constexpr UINT_PTR ID_VIEW_THEME_LIGHT  = 1011;
 constexpr UINT_PTR ID_VIEW_THEME_CUSTOM = 1012;
 constexpr UINT_PTR ID_VIEW_THEME_ACCENT = 1013;
 constexpr UINT_PTR ID_TOOLS_DECODE_TOKEN = 1015;   // token/filename-bytes decoder popup
+constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL = 1016; // Export glTF... (single model)
+constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MAP = 1017;   // Export glTF... (whole map scene)
 // Chat-link decoder popup controls.
 constexpr int ID_CL_INPUT = 2070;
 constexpr UINT_PTR ID_CL_DECODE = 2071;
@@ -247,6 +249,8 @@ constexpr UINT WM_APP_CMAP_DONE = WM_APP + 2;
 constexpr UINT WM_APP_INDEX_PROGRESS = WM_APP + 3;
 /// Posted when the build finishes; wparam = 1 on success, 0 on failure/cancel.
 constexpr UINT WM_APP_INDEX_DONE = WM_APP + 4;
+/// Posted when a background glTF export finishes; result is in g_gltf_export_result.
+constexpr UINT WM_APP_GLTF_EXPORT_DONE = WM_APP + 5;
 
 enum class MiddleTab { Compressed = 0, Decompressed = 1, Structure = 2, Preview = 3 };
 
@@ -592,6 +596,10 @@ void load_keys_from(const std::wstring& csv_path);
 void do_load_keys(HWND hwnd);
 void try_autoload_keys();
 void do_export(HWND hwnd, bool export_compressed);
+void do_export_gltf_model(HWND hwnd);
+void do_export_gltf_map(HWND hwnd);
+void on_gltf_export_done(HWND hwnd);
+void do_save_model_texture(HWND hwnd, uint32_t fileId);
 std::string combo_sel(HWND combo);
 void apply_filters();
 void do_open_loose_file(HWND hwnd);

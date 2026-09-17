@@ -28,10 +28,14 @@ HMENU build_menu() {
     AppendMenuW(g_file_menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_COMPRESSED, L"Export &Compressed (Before)...");
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_DECOMPRESSED, L"Export &Decompressed (After)...");
+    AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_GLTF_MODEL, L"Export &glTF (Model)...");
+    AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_GLTF_MAP, L"Export glTF (&Map)...");
     AppendMenuW(g_file_menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXIT, L"E&xit");
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_COMPRESSED, MF_GRAYED | MF_DISABLED);
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_DECOMPRESSED, MF_GRAYED | MF_DISABLED);
+    EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MODEL, MF_GRAYED | MF_DISABLED);
+    EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MAP, MF_GRAYED | MF_DISABLED);
 
     HMENU tools_menu = CreatePopupMenu();
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DECODE_LINK, L"&Decode Chat Link... ([&...])");
@@ -914,6 +918,8 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         // panel is a way *into* a texture, not just a readout about it.
         castlemist::texpanel::set_activate_callback(g_app->hwnd_tex_info,
                                            [](uint32_t fileId, uint32_t) { cl_open_fid(fileId); });
+        castlemist::texpanel::set_save_callback(g_app->hwnd_tex_info,
+                                       [hwnd](uint32_t fileId, uint32_t) { do_save_model_texture(hwnd, fileId); });
 
         g_app->hwnd_status_label =
             CreateWindowExW(0, L"STATIC", L"Ready", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP, 0, 0, 0, 0, hwnd,
@@ -1129,6 +1135,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     case WM_APP_INDEX_DONE:
         on_index_build_done(hwnd, wparam != 0);
         return 0;
+    case WM_APP_GLTF_EXPORT_DONE:
+        on_gltf_export_done(hwnd);
+        return 0;
     case WM_APP_EXTRACT_DONE: {
         std::unique_ptr<ExtractResult> result(reinterpret_cast<ExtractResult*>(lparam));
         if (g_app == nullptr || result->generation != g_app->request_generation) {
@@ -1189,6 +1198,12 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             return 0;
         case ID_FILE_EXPORT_DECOMPRESSED:
             do_export(hwnd, false);
+            return 0;
+        case ID_FILE_EXPORT_GLTF_MODEL:
+            do_export_gltf_model(hwnd);
+            return 0;
+        case ID_FILE_EXPORT_GLTF_MAP:
+            do_export_gltf_map(hwnd);
             return 0;
         case ID_FILE_EXIT:
             DestroyWindow(hwnd);

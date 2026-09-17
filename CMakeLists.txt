@@ -14,6 +14,7 @@ project(castlemist
 #    +-- ui       Win32 shell: window procs, widgets, layout, content browser
 #         +-- render   Direct3D 11 image/model/scene renderers
 #         |    +-- sim      the reverse-engineered GW2 cloth solver
+#         +-- exportgltf  binary glTF (.glb) writer (models, maps, animation)
 #         +-- extract  MFT entry -> previewable payload (the format dispatcher)
 #         |    +-- media    audio (dr_mp3/stb_vorbis) and Bink video playback
 #         |    +-- format   single-format decoders (dds, strs, chat links, ...)
@@ -126,6 +127,14 @@ castlemist_add_layer(extract DEPS castlemist::format castlemist::media
 # types: the solver is fed a ModelMeshCPU straight out of model extraction.
 castlemist_add_layer(sim    DEPS castlemist::extract ext::glm)
 
+# exportgltf also sits beside render: it turns the same CPU ModelPreview/MapScene
+# payloads into a binary glTF (.glb) -- a precisely specified, Khronos-ratified
+# format, unlike FBX's undocumented binary container. Needs extract's types,
+# stb_image_write.h (from the same ext::stb checkout format/media already use)
+# to encode embedded textures as PNGs, and ext::json (already used by
+# native/db) to build the glTF JSON chunk without hand-rolled escaping.
+castlemist_add_layer(exportgltf DEPS castlemist::extract ext::stb ext::json)
+
 castlemist_add_layer(render DEPS castlemist::extract castlemist::sim
                                  d3d11 dxgi d3dcompiler dxguid)
 
@@ -155,6 +164,7 @@ endif()
 # dwmapi is *not* linked -- DwmSetWindowAttribute is resolved with GetProcAddress
 # so the exe still starts on a Windows without it.
 castlemist_add_layer(ui     DEPS castlemist::render castlemist::db castlemist::extract
+                                 castlemist::exportgltf
                                  comctl32 comdlg32 shell32 user32 gdi32 advapi32 uxtheme)
 
 

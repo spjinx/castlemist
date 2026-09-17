@@ -75,6 +75,7 @@ struct State {
     bool tracking = false;   // WM_MOUSELEAVE requested
     HFONT font = nullptr, fontBold = nullptr, fontSmall = nullptr;
     ActivateCallback on_activate;
+    SaveCallback on_save;
 };
 
 State* get_state(HWND h) { return reinterpret_cast<State*>(GetWindowLongPtrW(h, GWLP_USERDATA)); }
@@ -612,6 +613,24 @@ LRESULT CALLBACK WndProc(HWND panel, UINT msg, WPARAM wp, LPARAM lp) {
             }
         }
         return 0;
+    case WM_CONTEXTMENU: {
+        if (st == nullptr || !st->on_save) break;
+        // lp carries SCREEN coordinates for WM_CONTEXTMENU (unlike the mouse
+        // messages above), so the row hit-test needs a client-coordinate copy.
+        POINT screenPt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+        POINT clientPt = screenPt;
+        ScreenToClient(panel, &clientPt);
+        int i = row_at(*st, clientPt.y);
+        if (i < 0) break;
+        const Row& r = st->rows[static_cast<size_t>(i)];
+        if (r.header || r.fileId == 0) break;
+        HMENU menu = CreatePopupMenu();
+        AppendMenuW(menu, MF_STRING, 1, L"Save Texture As...");
+        int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screenPt.x, screenPt.y, 0, panel, nullptr);
+        DestroyMenu(menu);
+        if (cmd == 1) st->on_save(r.fileId, r.baseId);
+        return 0;
+    }
     default:
         break;
     }
@@ -658,6 +677,11 @@ int row_count(HWND panel) {
 void set_activate_callback(HWND panel, ActivateCallback cb) {
     State* st = get_state(panel);
     if (st != nullptr) st->on_activate = std::move(cb);
+}
+
+void set_save_callback(HWND panel, SaveCallback cb) {
+    State* st = get_state(panel);
+    if (st != nullptr) st->on_save = std::move(cb);
 }
 
 } // namespace castlemist::texpanel

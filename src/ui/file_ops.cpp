@@ -13,8 +13,10 @@
 #include <thread>
 
 #include "castlemist/db/index_builder.h"
+#include "castlemist/exportgltf/gltf_export.h"
 #include "castlemist/format/struct_template.h"
 #include "castlemist/format/strs_keys.h"
+#include "castlemist/render/gw2bgfx_view.h"
 
 namespace castlemist::ui {
 
@@ -372,6 +374,131 @@ void do_export(HWND hwnd, bool export_compressed) {
         return;
     }
     out.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+}
+
+// Set by the background export thread just before it posts WM_APP_GLTF_EXPORT_DONE;
+// read back on the UI thread by on_gltf_export_done(). Never touched concurrently.
+castlemist::exportgltf::GltfExportResult g_gltf_export_result;
+
+bool prompt_gltf_save_path(HWND hwnd, std::wstring& outPath) {
+    wchar_t path[MAX_PATH] = L"";
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwnd;
+    ofn.lpstrFilter = L"glTF Binary (*.glb)\0*.glb\0All Files\0*.*\0";
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrDefExt = L"glb";
+    ofn.Flags = OFN_OVERWRITEPROMPT;
+    if (!GetSaveFileNameW(&ofn)) return false;
+    outPath = path;
+    return true;
+}
+
+void do_export_gltf_model(HWND hwnd) {
+    if (!g_app->has_loaded_entry || g_app->current_entry.kind != PreviewKind::Model ||
+        !g_app->current_entry.model) {
+        MessageBoxW(hwnd, L"Select a model entry first.", L"castlemist", MB_ICONINFORMATION);
+        return;
+    }
+    std::wstring path;
+    if (!prompt_gltf_save_path(hwnd, path)) return;
+
+    // Bake the model's real GW2-shaded appearance into flat textures before
+    // handing a copy off to the background writer thread, using the "Game
+    // 1:1" bgfx view rather than castlemist::render's own D3D11 "Shader" mode:
+    // that view runs the actual vendored bgfx engine and is independently
+    // verified correct, where the D3D11 path is a hand-translated
+    // reimplementation that has twice produced wrong bake output. This issues
+    // bgfx calls, so it must happen here on the UI thread, and it targets a
+    // *copy* of the model so the live preview's own data is never touched.
+    auto model = std::make_shared<ModelPreview>(*g_app->current_entry.model);
+    if (castlemist::gw2bgfxview::available() && g_app->hwnd_model_bgfx) {
+        HCURSOR old_cursor = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+        SetWindowTextW(g_app->hwnd_status_label, L"Baking materials...");
+        std::string bakeError;
+        if (castlemist::gw2bgfxview::initialize(g_app->hwnd_model_bgfx) &&
+            castlemist::gw2bgfxview::set_model(g_app->data_gw2, g_app->current_mft_index, bakeError)) {
+            castlemist::gw2bgfxview::bake_model_textures(*model);
+        }
+        SetCursor(old_cursor);
+    }
+
+    std::string glbPath = castlemist::core::to_ansi(path);
+    SetWindowTextW(g_app->hwnd_status_label, L"Exporting glTF...");
+
+    std::thread([hwnd, model, glbPath]() {
+        g_gltf_export_result = castlemist::exportgltf::export_model_gltf(*model, glbPath);
+        PostMessageW(hwnd, WM_APP_GLTF_EXPORT_DONE, 0, 0);
+    }).detach();
+}
+
+void do_export_gltf_map(HWND hwnd) {
+    if (!g_app->has_loaded_entry || g_app->current_entry.kind != PreviewKind::Map ||
+        !g_app->current_entry.map) {
+        MessageBoxW(hwnd, L"Select a map entry first.", L"castlemist", MB_ICONINFORMATION);
+        return;
+    }
+    std::wstring path;
+    if (!prompt_gltf_save_path(hwnd, path)) return;
+
+    std::shared_ptr<MapScene> scene = g_app->current_entry.map;
+    std::string glbPath = castlemist::core::to_ansi(path);
+    SetWindowTextW(g_app->hwnd_status_label, L"Exporting glTF (map)... this can take a while for a large area.");
+
+    std::thread([hwnd, scene, glbPath]() {
+        g_gltf_export_result = castlemist::exportgltf::export_map_gltf(*scene, glbPath);
+        PostMessageW(hwnd, WM_APP_GLTF_EXPORT_DONE, 0, 0);
+    }).detach();
+}
+
+void on_gltf_export_done(HWND hwnd) {
+    if (!g_gltf_export_result.ok) {
+        SetWindowTextW(g_app->hwnd_status_label, L"glTF export failed.");
+        MessageBoxA(hwnd, g_gltf_export_result.error.c_str(), "glTF export failed", MB_ICONERROR);
+        return;
+    }
+    SetWindowTextW(g_app->hwnd_status_label, L"glTF export finished.");
+    std::string msg = "Wrote:\n" + g_gltf_export_result.glbPath +
+                      "\n\nGeometry, materials, embedded textures, the skeleton/skin and animation are all in "
+                      "this one file. Import it into Blender directly; for Unity/VRChat, use Blender's own "
+                      "FBX exporter from there.";
+    MessageBoxA(hwnd, msg.c_str(), "glTF export finished", MB_ICONINFORMATION);
+}
+
+// "Save Texture As..." from the texture panel's right-click menu. The panel
+// only tracks a row's dat ids, not its pixels, so this re-resolves fileId
+// against the currently loaded model's own decoded textures -- the same ones
+// the panel built its thumbnail from and a glTF export would embed.
+void do_save_model_texture(HWND hwnd, uint32_t fileId) {
+    if (!g_app->current_entry.model) return;
+    const ModelTextureCPU* tex = nullptr;
+    for (const ModelTextureCPU& t : g_app->current_entry.model->textures) {
+        if (t.fileId == fileId) { tex = &t; break; }
+    }
+    if (!tex) {
+        MessageBoxW(hwnd, L"That texture has no decoded pixels to save.", L"castlemist", MB_ICONWARNING);
+        return;
+    }
+
+    wchar_t path[MAX_PATH] = L"";
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwnd;
+    ofn.lpstrFilter = L"PNG Image (*.png)\0*.png\0All Files\0*.*\0";
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrDefExt = L"png";
+    ofn.Flags = OFN_OVERWRITEPROMPT;
+    if (!GetSaveFileNameW(&ofn)) return;
+
+    castlemist::exportgltf::TextureSaveResult result =
+        castlemist::exportgltf::save_texture_png(*tex, castlemist::core::to_ansi(path));
+    if (!result.ok) {
+        MessageBoxA(hwnd, result.error.c_str(), "Save texture failed", MB_ICONERROR);
+        return;
+    }
+    SetWindowTextW(g_app->hwnd_status_label, L"Texture saved.");
 }
 
 // The selected combo item's text ("" for item 0 = "(all)").

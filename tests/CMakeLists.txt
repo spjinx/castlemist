@@ -82,6 +82,11 @@ castlemist_add_test(sim
     SOURCES test_sim_cloth.cpp
     DEPS    castlemist::sim)
 
+castlemist_add_test(exportgltf
+    SOURCES test_exportgltf_writer.cpp
+    DEPS    castlemist::exportgltf ext::json
+    PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/exportgltf")
+
 castlemist_add_test(render
     SOURCES test_render_math.cpp test_render_preview_rig.cpp
     DEPS    castlemist::render

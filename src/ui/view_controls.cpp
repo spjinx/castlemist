@@ -18,6 +18,13 @@ void set_export_enabled(bool enabled) {
     UINT flags = enabled ? MF_ENABLED : (MF_GRAYED | MF_DISABLED);
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_COMPRESSED, flags);
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_DECOMPRESSED, flags);
+
+    bool modelReady = enabled && g_app != nullptr &&
+                      g_app->current_entry.kind == PreviewKind::Model && g_app->current_entry.model;
+    bool mapReady = enabled && g_app != nullptr &&
+                    g_app->current_entry.kind == PreviewKind::Map && g_app->current_entry.map;
+    EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MODEL, modelReady ? MF_ENABLED : (MF_GRAYED | MF_DISABLED));
+    EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MAP, mapReady ? MF_ENABLED : (MF_GRAYED | MF_DISABLED));
 }
 
 void show_loading(bool loading, uint32_t mft_index) {

@@ -5,6 +5,7 @@
 #include <string>
 #include <windows.h>
 
+#include "castlemist/extract/model_types.h"
 #include "castlemist/native/gw2dat.h"
 
 /// @file
@@ -149,6 +150,37 @@ int skinned_draw_count();
 
 /// @brief Draws and presents one frame. Cheap no-op when no model is loaded.
 void render();
+
+/// @brief Bakes every material of the currently loaded model (see set_model())
+///        into a flat UV-space texture, using this view's own real GW2
+///        shaders/programs/textures, and writes the result into `model`'s
+///        matching material (correlated by `ModelMaterialCPU::index`, which
+///        this view's geosets carry as the same MODL material index).
+///
+/// This is the one place this view touches a ModelPreview at all -- see the
+/// file comment on why that is normally deliberately avoided. It exists
+/// because the exporter needs GW2's real combined shader output as a portable
+/// texture, and this view already draws that output correctly (verified
+/// against real captures), where castlemist::render's own DXBC "Shader" mode
+/// is a hand-translated reimplementation that does not always match it.
+///
+/// Renders each material's geometry with every position-related uniform
+/// (World/View/WorldView/ViewProjection) forced to identity and each vertex's
+/// own UV0 substituted for its position, so whatever the real pixel shader
+/// computes lands at that UV's texel -- see material_bake.h (castlemist::render)
+/// for the fuller rationale; this is the same technique, run through bgfx
+/// instead of hand-built Direct3D 11 state.
+///
+/// Must be called on the UI thread (same constraint as every other entry
+/// point here): it issues bgfx calls, including a few extra bgfx::frame()
+/// calls per material to drive the (necessarily frame-delayed) texture
+/// readback bgfx requires.
+///
+/// @param model Modified in place. Must be the SAME model currently loaded
+///        here via set_model() -- the caller typically loads it into this
+///        view specifically to bake it, then discards that load.
+/// @return true if at least one material was baked.
+bool bake_model_textures(ModelPreview& model);
 
 /// @brief Human-readable summary of the last load ("9 draws from 9 geosets"),
 ///        or the reason it failed. Shown in the UI's status text.

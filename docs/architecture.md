@@ -9,6 +9,7 @@ app       WinMain, 13 lines                                    (executable)
  +-- ui         window procs, layout, widgets, content browser, dialogs
       +-- render     Direct3D 11: image, model, map scene, gizmo, particles
       |    +-- sim        the GW2 cloth solver and its mesh bridge
+      +-- exportgltf  binary glTF (.glb) writer (models, maps, animation)
       +-- extract    MFT entry -> previewable payload (the format dispatcher)
       |    +-- media      audio (dr_mp3 / stb_vorbis) and Bink video
       |    +-- format     single-format decoders
@@ -23,7 +24,14 @@ because symbols are exported wholesale rather than annotated.
 
 `sim` is the one edge that does not read like the picture: it sits beside
 `render` but depends on `extract`, because the solver is fed a `ModelMeshCPU`
-straight out of model extraction.
+straight out of model extraction. `exportgltf` sits beside it for the same
+reason: it turns a `ModelPreview`/`MapScene` into a binary glTF (`.glb`) file
+-- geometry, embedded PNG textures, skeleton/skin and animation all in one
+self-contained file -- with no Direct3D involved. glTF was chosen over FBX
+after a hand-written FBX binary writer proved to be fighting an undocumented
+format (see `include/castlemist/exportgltf/gltf_export.h`'s comment for the
+full rationale); for the final Unity/VRChat hop, open the `.glb` in Blender
+and use Blender's own FBX exporter.
 
 ## The rule that shapes everything
 
