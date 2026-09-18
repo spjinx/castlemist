@@ -46,6 +46,7 @@ void clear_model() {
     g_anim_time = 0.0f;
     g_anim_playing = false;
     g_skin_ok = false;
+    g_highlight_submesh = -1;
     // NOTE: the map scene is deliberately NOT torn down here. Previewing a model
     // used to destroy a loaded map, so going back to the map meant re-extracting
     // and re-uploading the whole thing. Model and scene are independent now:
@@ -159,6 +160,14 @@ void set_model(const ModelPreview& model) {
     // we don't reproduce). Only direct pieces are simulated + drawn.
     g_render_verts_per_mat.clear();
     for (const auto& mm : model.meshes) {
+        // A mesh's materialIndex is only meaningful as an index into g_mats (built
+        // just above from model.materials); some real files carry a mesh with a
+        // huge/sentinel materialIndex (e.g. 0xFFFFFFFF, "no material"), and
+        // `mm.materialIndex + 1` on that wraps to 0, resizing this vector to
+        // EMPTY right before it gets indexed at 0xFFFFFFFF -- an out-of-bounds
+        // access that a debug/assertions libstdc++ build aborts on. Bound it to
+        // g_mats' already-sanitized size instead of trusting the file's value.
+        if (mm.materialIndex >= g_mats.size()) continue;
         if (mm.materialIndex >= g_render_verts_per_mat.size())
             g_render_verts_per_mat.resize(mm.materialIndex + 1, 0);
         g_render_verts_per_mat[mm.materialIndex] += (uint32_t)mm.vertices.size();
@@ -310,7 +319,7 @@ void set_scene(const std::vector<ModelPreview>& models, const std::vector<SceneI
             float fr = fmp.radius * in.scale;
             if (std::isfinite(fr) && fr > 0) fly_add_instance(in.model, g.world, fr, in.layer);
         }
-        if (in.layer == LAYER_COLLISION || in.layer == LAYER_ZONE) continue;
+        if (in.layer == LAYER_COLLISION || in.layer == LAYER_ZONE || in.layer == LAYER_NAVMESH) continue;
         const ModelPreview& mp = models[in.model];
         float r = mp.radius * in.scale;
         // Extra guard: ignore non-finite / absurd extents outright instead of
@@ -422,6 +431,14 @@ const char* submesh_label(int i) {
 int submesh_lod_count(int i) {
     return (i >= 0 && i < static_cast<int>(g_subs.size())) ? static_cast<int>(g_subs[i].lodRanges.size()) : 0;
 }
+
+// -1 = no highlight. Out-of-range indices clamp to "none" rather than
+// crashing, since a stale index from a previously loaded model is otherwise
+// easy to leave behind across a model swap.
+void set_highlight_submesh(int i) {
+    g_highlight_submesh = (i >= 0 && i < static_cast<int>(g_subs.size())) ? i : -1;
+}
+int highlight_submesh() { return g_highlight_submesh; }
 int max_lod_count() {
     int m = 0;
     for (const auto& s : g_subs) m = std::max(m, static_cast<int>(s.lodRanges.size()));

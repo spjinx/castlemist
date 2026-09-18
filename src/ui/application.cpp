@@ -545,12 +545,17 @@ int run(HINSTANCE hInstance, int cmd_show) {
     }
 
 
-    // Debug: GW2_AUTOLOAD=<mftIndex> loads the Steam dat and applies that entry
+    // Debug: GW2_AUTOLOAD=<mftIndex> loads a Gw2.dat and applies that entry
     // synchronously (drives the real model pipeline for headless skinning checks).
+    // GW2_DAT overrides which .dat -- same reasoning as GW2_DUMP_DIR above: the
+    // Steam path below is only one of several places GW2 gets installed.
     if (const char* al = std::getenv("GW2_AUTOLOAD")) {
         try {
+            const char* dat_env = std::getenv("GW2_DAT");
             load_dat_file(g_app->data_gw2,
-                          "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Guild Wars 2\\Gw2.dat");
+                          dat_env && *dat_env
+                              ? dat_env
+                              : "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Guild Wars 2\\Gw2.dat");
             g_app->dat_loaded = true;
             uint32_t idx = static_cast<uint32_t>(atoi(al));
             ExtractedEntry e = extract_entry(g_app->data_gw2, idx);

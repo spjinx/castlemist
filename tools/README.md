@@ -86,6 +86,7 @@ shader dump fits together.
 | ------ | ------------ |
 | `ida_restore_symbols.py` | replays the whole symbol set into an IDB: enums, struct headers, function names and comments, data symbols, inline comments, **local variable names, pseudocode labels, and both folder trees** |
 | `ida_apply_cmp_img_names.py` | the address-free path — re-derives the Compress/image function map from the binary's embedded Perforce source paths after a patch |
+| `ida_apply_rtti_names.py` | bulk class-name recovery from x64 RTTI — names every vtable, independent of the address-keyed backup above |
 | `gw2_ida_symbols.json` | the data: 324 functions, 219 comments, 863 locals, 85 labels, 29 data symbols |
 | `structs/gw2_ida_types.h` | bgfx, GrFvf, DDI texture, ATEX and AMAT-shader-chunk types |
 | `structs/gw2_ida_types_granny.h` | the granny 2.9.12 structs, all `#pragma pack(1)` |
@@ -118,6 +119,26 @@ The JSON is keyed by absolute address and therefore belongs to **one build**. Af
 client patch use `ida_apply_cmp_img_names.py`'s `rebuild_from_source_paths()` to
 re-anchor, then re-export. The two `.h` files are the exception: they are keyed by
 field offset, not address, so they survive a patch as long as the structs do.
+
+## RTTI class recovery
+
+`ida_apply_rtti_names.py` walks Gw2-64.exe's compiler-generated x64 RTTI (every
+`RTTICompleteObjectLocator` in `.rdata`, validated by its self-relative `pSelf`
+field) and names every vtable it finds after the C++ class it belongs to --
+hundreds of classes in one pass, with no manual identification needed first.
+This is a bulk *class name* recovery pass, complementary to, not a replacement
+for, the function-level naming the symbol backup above tracks.
+
+```
+File > Script file... > ida_apply_rtti_names.py
+idat64 -A -S"ida_apply_rtti_names.py" Gw2-64.exe.i64      # headless
+```
+
+Writes `gw2_rtti_classes.json` (vtable address -> recovered class name), a
+side-car in the same spirit as `gw2_ida_symbols.json`. Safe to re-run after a
+client patch -- it re-derives everything from the binary's own RTTI rather
+than from a stored address map, so unlike the symbol backup it needs no
+re-anchoring step.
 
 ## Probes: code that runs inside the game
 

@@ -311,16 +311,20 @@ void apply_extracted_entry(uint32_t mft_index, ExtractedEntry&& entry) {
             // away on the toolbar.
             g_app->model_mode = castlemist::render::RenderMode::MapFly;
             castlemist::render::set_mode(g_app->model_mode);
-            // Default layers: props + terrain on, zones + collision off.
+            // Default layers: props + terrain + water on, zones + collision + navmesh off.
             g_app->map_zone_loaded = false;
             castlemist::render::set_layer_visible(castlemist::render::LAYER_PROP, true);
             castlemist::render::set_layer_visible(castlemist::render::LAYER_TERRAIN, true);
+            castlemist::render::set_layer_visible(castlemist::render::LAYER_WATER, true);
             castlemist::render::set_layer_visible(castlemist::render::LAYER_ZONE, false);
             castlemist::render::set_layer_visible(castlemist::render::LAYER_COLLISION, false);
+            castlemist::render::set_layer_visible(castlemist::render::LAYER_NAVMESH, false);
             SendMessageW(g_app->hwnd_layer_prop, BM_SETCHECK, BST_CHECKED, 0);
             SendMessageW(g_app->hwnd_layer_terrain, BM_SETCHECK, BST_CHECKED, 0);
+            SendMessageW(g_app->hwnd_layer_water, BM_SETCHECK, BST_CHECKED, 0);
             SendMessageW(g_app->hwnd_layer_zone, BM_SETCHECK, BST_UNCHECKED, 0);
             SendMessageW(g_app->hwnd_layer_coll, BM_SETCHECK, BST_UNCHECKED, 0);
+            SendMessageW(g_app->hwnd_layer_navmesh, BM_SETCHECK, BST_UNCHECKED, 0);
             SendMessageW(g_app->hwnd_show_map, BM_SETCHECK, BST_CHECKED, 0);
             update_fly_timer();
         } else {

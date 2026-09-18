@@ -52,6 +52,16 @@ const std::vector<uint32_t>& resolve_all(uint32_t content_type, uint32_t id);
 uint32_t resolve(uint32_t content_type, uint32_t id);
 inline uint32_t resolve_item(uint32_t item_id) { return resolve(CONTENT_TYPE_ITEM, item_id); }
 
+/// The baseId of the cntc pack the (content_type,id) object was found in, so a
+/// caller can re-fetch and decompress just that one entry for a deeper, typed
+/// decode (see castlemist::cschema in content_schema.h) than the flat fileId
+/// list above carries. 0 if not found.
+///
+/// Only populated by an in-session build() -- unlike resolve_all()/resolve(),
+/// it is NOT part of the on-disk cache (save()/load()), so it comes back 0
+/// after a load() until build() actually runs again this session.
+uint32_t content_base_id(uint32_t content_type, uint32_t id);
+
 /// Simple binary cache (magic + records). Lets the map survive across sessions.
 bool save(const std::wstring& path);
 bool load(const std::wstring& path);

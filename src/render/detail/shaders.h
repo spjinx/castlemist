@@ -20,7 +20,7 @@ cbuffer CB : register(b0) {
     row_major float4x4 uModel;
     float3 uLightDir;  float uHasTex;
     float4 uTint;
-    float  uHasNormal; float uIsEffect; float uHasSkin; float uMatKind; // matKind: 0 normal, 1 terrain, 2 water
+    float  uHasNormal; float uIsEffect; float uHasSkin; float uMatKind; // matKind: 0 normal, 1 terrain, 2 water, 3 collision, 4 navmesh
     float  uExposure; float uLightMode; float uCutout; float _cbpad; // exposure(0=>1); lightMode 1=camera headlight
 };
 // Bone matrix palette as an unbounded StructuredBuffer (4 float4 rows per bone),
@@ -135,8 +135,13 @@ float4 PSMain(VSOut i):SV_TARGET{
         return float4(pow(saturate(col), 1.0/2.2), 0.78);
     }
     // Collision: translucent orange overlay (physics geometry), lit for shape.
-    if (uMatKind > 2.5){
+    if (uMatKind > 2.5 && uMatKind < 3.5){
         float3 c = float3(1.00, 0.55, 0.08) * (0.45 + ndl*0.55);
+        return float4(pow(saturate(c), 1.0/2.2), 0.55);
+    }
+    // Nav mesh: translucent magenta overlay (coarse pathfinding regions + portal edges).
+    if (uMatKind > 3.5){
+        float3 c = float3(0.85, 0.20, 0.85) * (0.45 + ndl*0.55);
         return float4(pow(saturate(c), 1.0/2.2), 0.55);
     }
 
@@ -189,6 +194,40 @@ inline constexpr const char* kLine = R"(
 cbuffer CB : register(b0) { row_major float4x4 uMVP; };
 float4 VSLine(float3 pos : POSITION) : SV_POSITION { return mul(float4(pos, 1.0), uMVP); }
 float4 PSLine() : SV_TARGET { return float4(0.20, 1.0, 0.35, 1.0); }
+)";
+
+// Flat-colored wireframe overlay for "which submesh is this" -- drawn as a
+// second pass over one already-shaded submesh. The full GVertex input struct
+// (identical to kModel's VSIn) is declared purely so this shader's reflected
+// input signature is compatible with g_il, letting the highlight pass reuse
+// it without a second input layout; only POSITION and the skin inputs are
+// actually read. Skinning mirrors VSMain exactly (same rest-pose g_vb + bone
+// palette) so a posed model's highlight tracks its current pose. Reuses the
+// SAME CB layout as kModel so the highlight pass can set uMVP/uHasSkin/uTint
+// on the shared g_cb without a separate constant buffer.
+inline constexpr const char* kHighlight = R"(
+cbuffer CB : register(b0) {
+    row_major float4x4 uMVP;
+    row_major float4x4 uModel;
+    float3 uLightDir;  float uHasTex;
+    float4 uTint;
+    float  uHasNormal; float uIsEffect; float uHasSkin; float uMatKind;
+    float  uExposure; float uLightMode; float uCutout; float _cbpad;
+};
+StructuredBuffer<float4> gBoneRowsHi : register(t2);
+float4x4 boneMatHi(uint i){ uint b=i*4u; return float4x4(gBoneRowsHi[b], gBoneRowsHi[b+1u], gBoneRowsHi[b+2u], gBoneRowsHi[b+3u]); }
+struct VSInHi { float3 pos:POSITION; float3 nrm:NORMAL; float3 tan:TANGENT; float3 bit:BITANGENT; float2 uv:TEXCOORD0;
+                uint4 bidx:BLENDINDICES; float4 bwt:BLENDWEIGHT; };
+float4 VSHighlight(VSInHi i) : SV_POSITION {
+    float3 p = i.pos;
+    if (uHasSkin > 0.5) {
+        float4x4 sm = i.bwt.x*boneMatHi(i.bidx.x) + i.bwt.y*boneMatHi(i.bidx.y)
+                    + i.bwt.z*boneMatHi(i.bidx.z) + i.bwt.w*boneMatHi(i.bidx.w);
+        p = mul(float4(i.pos,1.0), sm).xyz;
+    }
+    return mul(float4(p,1.0), uMVP);
+}
+float4 PSHighlight() : SV_TARGET { return uTint; }
 )";
 
 // Per-vertex-colored line shader for the Blender-style gizmo, ground grid and

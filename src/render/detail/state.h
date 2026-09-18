@@ -56,7 +56,7 @@ struct MaterialGPU {
     float tint[4] = {1, 1, 1, 1};
     bool isEffect = false;
     bool cutout = false; // diffuse alpha is a coverage mask -> run the game's alpha test
-    int kind = 0; // 0 normal, 1 terrain, 2 water
+    int kind = 0; // 0 normal, 1 terrain, 2 water, 3 collision, 4 navmesh
     // Real per-material blend state decoded from the AMAT's bgfx render state
     // (via make_blend_state_from_bgfx), when the game-shader extraction
     // resolved one for this material. Null => caller falls back to the single
@@ -242,6 +242,12 @@ inline bool g_lightprepass_on = true;
 inline ComPtr<ID3D11VertexShader> g_vs;
 inline ComPtr<ID3D11PixelShader> g_ps;
 inline ComPtr<ID3D11InputLayout> g_il;
+// "Which submesh is selected" wireframe overlay. Shares g_il: kHighlight's
+// input signature is deliberately identical to kModel's, so no second input
+// layout is needed. -1 = no submesh highlighted.
+inline ComPtr<ID3D11VertexShader> g_hiVs;
+inline ComPtr<ID3D11PixelShader> g_hiPs;
+inline int g_highlight_submesh = -1;
 inline ComPtr<ID3D11Buffer> g_cb;
 inline ComPtr<ID3D11SamplerState> g_samp;
 inline ComPtr<ID3D11RasterizerState> g_rsSolid;
@@ -398,7 +404,8 @@ inline float g_scene_radius = 1.0f;
 // which has to start above the actual ground. Kept separately for the fly view.
 inline Vec3 g_scene_lo{0, 0, 0};
 inline Vec3 g_scene_hi{0, 0, 0};
-inline bool g_layer_visible[LAYER_COUNT] = {true, true, false, false}; // prop+terrain on; collision+zone off
+// prop+terrain+water on; collision+zone+navmesh off
+inline bool g_layer_visible[LAYER_COUNT] = {true, true, false, false, true, false};
 // Map "focus" model: a prop the user picked from the map, shown in a small inset
 // preview overlaid on the scene surface (-1 = none). The inset shares the scene
 // orbit (g_rot), so dragging the map turns the picked model too.

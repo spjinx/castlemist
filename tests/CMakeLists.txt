@@ -55,6 +55,7 @@ castlemist_add_test(format
     SOURCES test_format_dds.cpp
             test_format_chat_link.cpp
             test_format_strs.cpp
+            test_format_content_schema.cpp
     DEPS    castlemist::format)
 
 castlemist_add_test(db

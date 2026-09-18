@@ -11,7 +11,11 @@
 #include <cstdio>
 #include <thread>
 
+#include "castlemist/extract/entry_extractor.h"
 #include "castlemist/format/content_map.h"
+#include "castlemist/format/content_schema.h"
+
+#include <optional>
 
 namespace castlemist::ui {
 
@@ -67,6 +71,71 @@ uint32_t cl_content_id() {
     return 0;
 }
 
+// Decompresses one cntc pack by baseId (idx == base_id - 1, this codebase's
+// standing baseId/MFT-index convention). Reuses the extract layer's own
+// method0 decompress rather than a fifth copy of it -- see content_schema.h's
+// resolve_item_skin() for why this exact signature is needed.
+std::optional<std::vector<uint8_t>> cl_load_pack_bytes(uint32_t base_id) {
+    if (!base_id) return std::nullopt;
+    uint32_t idx = base_id - 1;
+    if (idx >= g_app->data_gw2.mft_data_list.size()) return std::nullopt;
+    ExtractedEntry e = extract_entry(g_app->data_gw2.file_info.file_path, g_app->data_gw2.mft_data_list[idx]);
+    if (e.decompressed.empty()) return std::nullopt;
+    return e.decompressed;
+}
+
+// Typed item detail (type/rarity/level/armor, and -- when found -- the item's
+// skin), decoded from the one cntc pack content_map's build() recorded this
+// item id in. Empty when that pack isn't known this session (a fresh
+// content_map load from disk cache, before any rebuild -- see
+// content_map.h's content_base_id() docstring) or the id isn't an item.
+std::wstring cl_item_detail_report(uint32_t item_id) {
+    using namespace castlemist::cschema;
+    uint32_t base_id = castlemist::cmap::content_base_id(castlemist::cmap::CONTENT_TYPE_ITEM, item_id);
+    auto bytes = cl_load_pack_bytes(base_id);
+    if (!bytes) return L"";
+    auto pack = parse_content_pack(*bytes);
+    if (!pack) return L"";
+
+    for (const auto& obj : get_objects_of_type(*pack, CONTENT_TYPE_ITEMS)) {
+        if (obj.unique_id() != item_id) continue;
+
+        ItemFields f = decode_item_fields(obj);
+        const char* type_name = to_string(static_cast<ItemType>(f.item_type_raw));
+        const char* rarity_name = to_string(static_cast<ItemRarity>(f.rarity_raw));
+        wchar_t line[256];
+        std::wstring rep;
+        swprintf(line, 256, L"\r\nItem: type=%hs (%u), rarity=%hs (%u), level=%u\r\n",
+                 type_name ? type_name : "Unknown", f.item_type_raw, rarity_name ? rarity_name : "Unknown",
+                 f.rarity_raw, f.level);
+        rep += line;
+
+        if (f.armor_slot_raw) {
+            const char* slot_name = to_string(static_cast<ArmorSlot>(*f.armor_slot_raw));
+            const char* weight_name =
+                f.armor_weight_class_raw ? to_string(static_cast<ArmorWeightClass>(*f.armor_weight_class_raw)) : nullptr;
+            swprintf(line, 256, L"  Armor: slot=%hs (%u), weight class=%hs (%u)\r\n",
+                     slot_name ? slot_name : "Unknown", *f.armor_slot_raw, weight_name ? weight_name : "Unknown",
+                     f.armor_weight_class_raw ? *f.armor_weight_class_raw : 0);
+            rep += line;
+        }
+
+        auto skin = resolve_item_skin(base_id, *pack, obj, cl_load_pack_bytes);
+        if (skin) {
+            swprintf(line, 256, L"  Skin id: %u (from cntc pack %u)\r\n", skin->skin_id, skin->skin_base_id);
+            rep += line;
+            const std::vector<uint32_t>& skin_fids =
+                castlemist::cmap::resolve_all(castlemist::cmap::CONTENT_TYPE_SKIN, skin->skin_id);
+            if (!skin_fids.empty()) {
+                swprintf(line, 256, L"    skin asset fileId: %u\r\n", skin_fids.front());
+                rep += line;
+            }
+        }
+        return rep;
+    }
+    return L"";
+}
+
 // After the content map is available, resolve the decoded link's id to its dat
 // assets (icon/model/...), classify each via the index, list them in the readout
 // and arm the Open icon / Open model buttons.
@@ -80,11 +149,14 @@ void cl_show_resolved() {
     }
     const std::vector<uint32_t>& fids = castlemist::cmap::resolve_all(ctype, id);
     std::wstring rep = castlemist::core::from_ascii(castlemist::chat::to_report(g_cl_last));
+    std::wstring item_detail =
+        ctype == castlemist::cmap::CONTENT_TYPE_ITEM ? cl_item_detail_report(id) : L"";
     if (fids.empty()) {
         wchar_t st[200];
         swprintf(st, 200, L"id %u: no asset in content map (%zu entries)", id, castlemist::cmap::size());
         SetWindowTextW(g_cl_status, st);
         rep += L"\r\nAssets (cntc): none found\r\n";
+        rep += item_detail;
         SetWindowTextW(g_cl_output, rep.c_str());
         return;
     }
@@ -109,6 +181,7 @@ void cl_show_resolved() {
     // textures + sounds -- NOT the 2D inventory icon (that fileId comes from the
     // server render service and is not stored in cntc).
     rep += L"\r\n(2D inventory icon is not in cntc; texture above = a model material)\r\n";
+    rep += item_detail;
     SetWindowTextW(g_cl_output, rep.c_str());
     wchar_t st[200];
     swprintf(st, 200, L"id %u -> %zu asset(s). model=%u  texture=%u", id, fids.size(), g_cl_model_fid,

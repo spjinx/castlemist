@@ -29,7 +29,10 @@ void clear_model();
 
 /// --- map / multi-model scene -----------------------------------------------
 /// Map content layers (each independently toggleable).
-enum SceneLayer { LAYER_PROP = 0, LAYER_TERRAIN = 1, LAYER_COLLISION = 2, LAYER_ZONE = 3, LAYER_COUNT = 4 };
+enum SceneLayer {
+    LAYER_PROP = 0, LAYER_TERRAIN = 1, LAYER_COLLISION = 2, LAYER_ZONE = 3,
+    LAYER_WATER = 4, LAYER_NAVMESH = 5, LAYER_COUNT = 6
+};
 
 /// One placed model instance: which model (index into the models vector) at a
 /// world position/rotation(Euler radians)/uniform scale, tagged with its layer.
@@ -98,6 +101,14 @@ void set_submesh_lod(int sub, int lod);
 int submesh_lod(int i);
 void set_submesh_tex_reduced(int sub, bool reduced);
 bool submesh_tex_reduced(int i);
+
+/// Highlights one submesh in the 3D preview with a bright wireframe overlay,
+/// so a submesh picked in the UI (e.g. the submesh combo) is visually
+/// identifiable in the render, not just by name. -1 = no highlight. An
+/// out-of-range index (e.g. left over from a previously loaded model) is
+/// treated as -1 rather than left dangling.
+void set_highlight_submesh(int sub);
+int highlight_submesh();
 
 /// Toggles the reconstructed deferred light pre-pass used by GameShader mode (real
 /// directional shading through the game's DXBC materials). Off = flat light-buffer

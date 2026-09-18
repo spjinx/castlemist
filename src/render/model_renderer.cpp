@@ -485,6 +485,47 @@ void render() {
     render_cloth_proxy(model, mvp, L);
     } // end reconstruction path (!useGame)
 
+    // "Which submesh is selected" overlay: the picked submesh's own triangles,
+    // redrawn as a bright wireframe over whatever was already drawn (either
+    // render path). Depth test off, like the skeleton overlay just below, so
+    // the highlight stays visible regardless of orientation -- you want to see
+    // WHICH submesh is selected even from an angle where it is partly behind
+    // something else, not have it disappear exactly when it would be most
+    // useful to check. Reuses g_il: kHighlight's input signature matches
+    // kModel's exactly (see shaders.h), and rest-pose g_vb + the bone palette
+    // (not g_vb_skinned) mirror the reconstruction path's own GPU skinning, so
+    // this works the same whether the game-shader or reconstruction path just
+    // drew the frame.
+    if (g_highlight_submesh >= 0 && g_highlight_submesh < static_cast<int>(g_subs.size()) && g_hiVs && g_hiPs) {
+        const SubMesh& hs = g_subs[static_cast<size_t>(g_highlight_submesh)];
+        UINT hstride = sizeof(GVertex), hoff = 0;
+        ID3D11Buffer* hvbs[] = {g_vb.Get()};
+        g_ctx->IASetInputLayout(g_il.Get());
+        g_ctx->IASetVertexBuffers(0, 1, hvbs, &hstride, &hoff);
+        g_ctx->IASetIndexBuffer(g_ib.Get(), DXGI_FORMAT_R32_UINT, 0);
+        g_ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        g_ctx->VSSetShader(g_hiVs.Get(), nullptr, 0);
+        g_ctx->PSSetShader(g_hiPs.Get(), nullptr, 0);
+        CB cb{};
+        cb.mvp = mvp;
+        cb.hasSkin = (hs.hasSkin && g_skin_ok) ? 1.0f : 0.0f;
+        cb.tintR = 1.0f; cb.tintG = 0.65f; cb.tintB = 0.0f; cb.tintA = 1.0f; // bright orange
+        D3D11_MAPPED_SUBRESOURCE ms;
+        if (SUCCEEDED(g_ctx->Map(g_cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) {
+            std::memcpy(ms.pData, &cb, sizeof cb);
+            g_ctx->Unmap(g_cb.Get(), 0);
+        }
+        ID3D11Buffer* hcbs[] = {g_cb.Get()};
+        g_ctx->VSSetConstantBuffers(0, 1, hcbs);
+        ID3D11ShaderResourceView* hbsrv[] = {g_bonePaletteSRV.Get()};
+        g_ctx->VSSetShaderResources(2, 1, hbsrv);
+        g_ctx->OMSetDepthStencilState(g_dssNoDepth.Get(), 0);
+        g_ctx->OMSetBlendState(g_blendOpaque.Get(), bf, 0xffffffff);
+        g_ctx->RSSetState(g_rsWire.Get());
+        g_ctx->DrawIndexed(hs.indexCount, hs.indexStart, 0);
+        g_ctx->RSSetState(g_rsSolid.Get());
+    }
+
     // Skeleton overlay: bind-pose bones as green lines, drawn over the mesh with
     // depth test off so the rig stays visible regardless of orientation. Reuses
     // g_cb (uMVP is its leading field, already holding the current mvp).

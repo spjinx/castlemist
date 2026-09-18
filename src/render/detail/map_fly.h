@@ -74,6 +74,8 @@ inline const float kFlyLayerTint[LAYER_COUNT][3] = {
     {0.52f, 0.56f, 0.46f}, // LAYER_TERRAIN   -- muted green-grey ground
     {0.90f, 0.42f, 0.36f}, // LAYER_COLLISION -- red, deliberately loud
     {0.42f, 0.62f, 0.40f}, // LAYER_ZONE      -- foliage green
+    {0.30f, 0.55f, 0.85f}, // LAYER_WATER     -- blue
+    {0.80f, 0.40f, 0.85f}, // LAYER_NAVMESH   -- magenta, deliberately loud like collision
 };
 
 /// @brief One unique model, flattened for the fly view.

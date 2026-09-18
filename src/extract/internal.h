@@ -172,12 +172,39 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
 /// @param t         Parsed terrain block.
 /// @param hasWaterZ A real water plane height was found in the `havk` chunk.
 /// @param waterZ    That height (GW2 is Z-up, so this is an altitude).
+/// @param skipFloodFillWater Suppress the guessed flood-fill water quad --
+///        pass true when build_water_model() below already has real `watr`
+///        surface geometry for this map, so the two don't draw on top of
+///        each other.
 /// @return null when the map has no terrain.
 std::shared_ptr<ModelPreview> build_terrain_model(const castlemist::model::Extractor::MapTerrain& t,
-                                                  bool hasWaterZ, float waterZ);
+                                                  bool hasWaterZ, float waterZ,
+                                                  bool skipFloodFillWater = false);
 
 /// @brief Turn a map's collision hull into a renderable wireframe-ish mesh.
 std::shared_ptr<ModelPreview> build_collision_model(const castlemist::model::Extractor::MapCollision& c);
+
+/// @brief Turn a map's `watr` surface geometry into a renderable mesh.
+///
+/// Distinct from build_terrain_model()'s flood-fill water quad: this is the
+/// game's own per-surface outline (see castlemist::model::Extractor::parseWater()),
+/// not a guess from where the ground dips below a flat plane.
+/// @return null when the map has no `watr` chunk (or it decoded to nothing).
+std::shared_ptr<ModelPreview> build_water_model(const castlemist::model::Extractor::MapWater& w);
+
+/// @brief Visualize a map's navigation data: coarse-graph node regions (boxes),
+/// portal connection edges (thin beams) and, when the fine navmesh's own
+/// bounding boxes are known, one box per `nm15`/`pnvm` chunk.
+///
+/// Coarse-graph geometry (nodes + portal edges) is exact -- see
+/// castlemist::model::Extractor::parseNavGraph(). The `nm15`/`pnvm` chunk
+/// boxes are bounding volumes only: the walkable-triangle payload inside each
+/// chunk is an undecoded opaque blob (see parseNavMesh()'s docstring), so
+/// this shows where that data lives spatially, not the walkable surface
+/// itself.
+/// @return null when neither source has anything to show.
+std::shared_ptr<ModelPreview> build_navmesh_model(const castlemist::model::Extractor::MapNavMesh& nm,
+                                                  const castlemist::model::Extractor::MapNavGraph& ng);
 
 /// @brief Load a map packfile's props, terrain and collision into one scene.
 std::shared_ptr<MapScene> build_map_scene(const std::vector<uint8_t>& map_bytes,

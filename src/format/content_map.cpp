@@ -15,6 +15,10 @@ namespace {
 std::unordered_map<uint64_t, std::vector<uint32_t>> g_map;
 const std::vector<uint32_t> g_empty;
 
+// Same key -> the baseId of the cntc pack the object was found in. Session-only
+// (see content_map.h's content_base_id() docstring): not part of the disk cache.
+std::unordered_map<uint64_t, uint32_t> g_base_id;
+
 constexpr size_t kMaxRefsPerObject = 16;
 
 inline uint64_t key(uint32_t type, uint32_t id) { return (static_cast<uint64_t>(type) << 32) | id; }
@@ -36,7 +40,7 @@ std::vector<uint8_t> decompress(const std::string& dat_path, const MftData& e) {
 // (16 B each: object offset at +4), array 6 = fileIndices (u32 reloc into content),
 // array 10 = content bytes. Each object: contentType@+16, id@+20, primary asset
 // fileId at the fileIndices reloc == object+64 (else the first reloc in the object).
-void parse_cntc(const std::vector<uint8_t>& d) {
+void parse_cntc(const std::vector<uint8_t>& d, uint32_t base_id) {
     const size_t n = d.size();
     if (n < 16 || d[0] != 'P' || d[1] != 'F' || std::memcmp(d.data() + 8, "cntc", 4) != 0) return;
     auto u16 = [&](size_t p) -> uint32_t { return (p + 2 <= n) ? (d[p] | (d[p + 1] << 8)) : 0; };
@@ -93,7 +97,11 @@ void parse_cntc(const std::vector<uint8_t>& d) {
             uint32_t v = u32(cOff + *f);
             if (v > 0 && v < 0xFFFFFF) refs.push_back(v);
         }
-        if (!refs.empty()) g_map[key(type, id)] = std::move(refs);
+        if (!refs.empty()) {
+            uint64_t k = key(type, id);
+            g_map[k] = std::move(refs);
+            g_base_id[k] = base_id;
+        }
     }
 }
 
@@ -101,14 +109,17 @@ void parse_cntc(const std::vector<uint8_t>& d) {
 
 bool built() { return !g_map.empty(); }
 size_t size() { return g_map.size(); }
-void clear() { g_map.clear(); }
+void clear() { g_map.clear(); g_base_id.clear(); }
 
 size_t build(const std::string& dat_path, const std::vector<MftData>& cntc_entries,
              const std::function<void(size_t, size_t)>& progress) {
     size_t total = cntc_entries.size();
     for (size_t i = 0; i < total; ++i) {
         std::vector<uint8_t> bytes = decompress(dat_path, cntc_entries[i]);
-        if (!bytes.empty()) parse_cntc(bytes);
+        // baseId == mft_index + 1 (the convention this whole codebase uses --
+        // see e.g. entry_extractor.h's extract_entry_indexed()).
+        uint32_t base_id = static_cast<uint32_t>(cntc_entries[i].original_index) + 1;
+        if (!bytes.empty()) parse_cntc(bytes, base_id);
         if (progress) progress(i + 1, total);
     }
     return g_map.size();
@@ -131,6 +142,11 @@ const std::vector<uint32_t>& resolve_all(uint32_t content_type, uint32_t id) {
 uint32_t resolve(uint32_t content_type, uint32_t id) {
     const std::vector<uint32_t>& v = resolve_all(content_type, id);
     return v.empty() ? 0 : v.front();
+}
+
+uint32_t content_base_id(uint32_t content_type, uint32_t id) {
+    auto it = g_base_id.find(key(content_type, id));
+    return it == g_base_id.end() ? 0 : it->second;
 }
 
 // ---- binary cache: "GC2N" magic, u32 count, then count * {u64 key, u8 n, n*u32 fileId}.

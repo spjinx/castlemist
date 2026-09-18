@@ -799,6 +799,13 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             CreateWindowExW(0, L"BUTTON", L"Terrain", WS_CHILD | BS_AUTOCHECKBOX | BS_PUSHLIKE, 0, 0, 0, 0, hwnd,
                              reinterpret_cast<HMENU>(ID_LAYER_TERRAIN), g_hinstance, nullptr);
         SendMessageW(g_app->hwnd_layer_terrain, BM_SETCHECK, BST_CHECKED, 0);
+        g_app->hwnd_layer_water =
+            CreateWindowExW(0, L"BUTTON", L"Water", WS_CHILD | BS_AUTOCHECKBOX | BS_PUSHLIKE, 0, 0, 0, 0, hwnd,
+                             reinterpret_cast<HMENU>(ID_LAYER_WATER), g_hinstance, nullptr);
+        SendMessageW(g_app->hwnd_layer_water, BM_SETCHECK, BST_CHECKED, 0);
+        g_app->hwnd_layer_navmesh =
+            CreateWindowExW(0, L"BUTTON", L"NavMesh", WS_CHILD | BS_AUTOCHECKBOX | BS_PUSHLIKE, 0, 0, 0, 0, hwnd,
+                             reinterpret_cast<HMENU>(ID_LAYER_NAVMESH), g_hinstance, nullptr);
         // "Map": with a map and a model both loaded, which one owns the surface.
         g_app->hwnd_show_map =
             CreateWindowExW(0, L"BUTTON", L"Map", WS_CHILD | BS_AUTOCHECKBOX | BS_PUSHLIKE, 0, 0, 0, 0, hwnd,
@@ -1231,7 +1238,11 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             castlemist::gfx::render();
             return 0;
         case ID_SUBMESH_COMBO:
-            if (HIWORD(wparam) == CBN_SELCHANGE) refresh_lod_controls();
+            if (HIWORD(wparam) == CBN_SELCHANGE) {
+                refresh_lod_controls();
+                castlemist::render::set_highlight_submesh(lod_target_submesh());
+                InvalidateRect(g_app->hwnd_preview, nullptr, FALSE);
+            }
             return 0;
         case ID_LOD_COMBO:
             if (HIWORD(wparam) == CBN_SELCHANGE) {
@@ -1320,6 +1331,16 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         case ID_LAYER_TERRAIN:
             castlemist::render::set_layer_visible(castlemist::render::LAYER_TERRAIN,
                                       SendMessageW(g_app->hwnd_layer_terrain, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            InvalidateRect(g_app->hwnd_model, nullptr, FALSE);
+            return 0;
+        case ID_LAYER_WATER:
+            castlemist::render::set_layer_visible(castlemist::render::LAYER_WATER,
+                                      SendMessageW(g_app->hwnd_layer_water, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            InvalidateRect(g_app->hwnd_model, nullptr, FALSE);
+            return 0;
+        case ID_LAYER_NAVMESH:
+            castlemist::render::set_layer_visible(castlemist::render::LAYER_NAVMESH,
+                                      SendMessageW(g_app->hwnd_layer_navmesh, BM_GETCHECK, 0, 0) == BST_CHECKED);
             InvalidateRect(g_app->hwnd_model, nullptr, FALSE);
             return 0;
         case ID_SHOW_MAP: {

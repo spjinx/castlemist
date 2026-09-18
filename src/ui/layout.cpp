@@ -185,6 +185,8 @@ void layout_children(int client_w, int client_h) {
     ShowWindow(g_app->hwnd_layer_zone, show_map ? SW_SHOW : SW_HIDE);
     ShowWindow(g_app->hwnd_layer_coll, show_map ? SW_SHOW : SW_HIDE);
     ShowWindow(g_app->hwnd_layer_terrain, show_map ? SW_SHOW : SW_HIDE);
+    ShowWindow(g_app->hwnd_layer_water, show_map ? SW_SHOW : SW_HIDE);
+    ShowWindow(g_app->hwnd_layer_navmesh, show_map ? SW_SHOW : SW_HIDE);
     ShowWindow(g_app->hwnd_show_map, show_map ? SW_SHOW : SW_HIDE);
     // The inset preview belongs to the orbit map view; the fly view has no pick.
     ShowWindow(g_app->hwnd_map_preview, (show_map && !fly_view_active()) ? SW_SHOW : SW_HIDE);
@@ -308,8 +310,10 @@ void layout_children(int client_w, int client_h) {
                 tb.push_back({g_app->hwnd_show_map, kButtonW, kButtonH, 0});
                 tb.push_back({g_app->hwnd_layer_prop, kButtonW, kButtonH, 0});
                 tb.push_back({g_app->hwnd_layer_terrain, kButtonW, kButtonH, 0});
+                tb.push_back({g_app->hwnd_layer_water, kButtonW, kButtonH, 0});
                 tb.push_back({g_app->hwnd_layer_zone, kButtonW, kButtonH, 0});
                 tb.push_back({g_app->hwnd_layer_coll, kButtonW, kButtonH, 0});
+                tb.push_back({g_app->hwnd_layer_navmesh, kButtonW, kButtonH, 0});
                 if (!fly_view_active())
                     tb.push_back({g_app->hwnd_map_preview, kButtonW, kButtonH, 0});
             } else {

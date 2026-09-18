@@ -68,7 +68,7 @@ void render_scene() {
             Mat4 mvp = mul(in.world, VP);
             for (const auto& s : sm.subs) {
                 const MaterialGPU* mat = (s.matIndex < sm.mats.size()) ? &sm.mats[s.matIndex] : nullptr;
-                bool isBlend = mat && (mat->kind == 2 || mat->kind == 3); // water + collision blend
+                bool isBlend = mat && (mat->kind == 2 || mat->kind == 3 || mat->kind == 4); // water + collision + navmesh blend
                 bool isEffect = mat && (mat->isEffect || isBlend);        // rendered in the effect pass
                 if (textured && isEffect != effectPass) continue;
                 if (effectPass) {

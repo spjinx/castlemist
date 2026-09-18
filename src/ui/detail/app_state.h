@@ -180,6 +180,8 @@ constexpr UINT_PTR ID_LAYER_TERRAIN = 2132;
 constexpr UINT_PTR ID_MODE_FLY = 2133;
 /// "Map": with a map and a model both loaded, picks which owns the surface.
 constexpr UINT_PTR ID_SHOW_MAP = 2134;
+constexpr UINT_PTR ID_LAYER_WATER = 2135;
+constexpr UINT_PTR ID_LAYER_NAVMESH = 2136;
 constexpr UINT_PTR ID_TEX_FULLRES = 2055;
 constexpr UINT_PTR ID_AUDIO_PLAY = 2056;
 constexpr UINT_PTR ID_AUDIO_STOP = 2057;
@@ -433,6 +435,8 @@ struct AppState {
     HWND hwnd_layer_zone = nullptr;
     HWND hwnd_layer_coll = nullptr;
     HWND hwnd_layer_terrain = nullptr;
+    HWND hwnd_layer_water = nullptr;
+    HWND hwnd_layer_navmesh = nullptr;
     HWND hwnd_map_preview = nullptr; // map: toggle the picked-prop inset preview
     HWND hwnd_show_map = nullptr;    // "Map": surface shows the map, not the model
     bool map_zone_loaded = false; // whether the zone layer has been lazily loaded

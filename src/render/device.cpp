@@ -235,6 +235,20 @@ bool init_pipeline() {
         g_dev->CreateInputLayout(lil, 1, lvsb->GetBufferPointer(), lvsb->GetBufferSize(), &g_lineIl);
     }
 
+    // "Which submesh is selected" wireframe overlay. kHighlight's VSIn is
+    // deliberately identical to kModel's, so g_il (built below from VSMain's
+    // reflection) is reused as-is -- no separate input layout.
+    {
+        ComPtr<ID3DBlob> hvsb, hpsb, herr;
+        if (SUCCEEDED(D3DCompile(shaders::kHighlight, std::strlen(shaders::kHighlight), nullptr, nullptr, nullptr,
+                                 "VSHighlight", "vs_5_0", 0, 0, &hvsb, &herr)) &&
+            SUCCEEDED(D3DCompile(shaders::kHighlight, std::strlen(shaders::kHighlight), nullptr, nullptr, nullptr,
+                                 "PSHighlight", "ps_5_0", 0, 0, &hpsb, &herr))) {
+            g_dev->CreateVertexShader(hvsb->GetBufferPointer(), hvsb->GetBufferSize(), nullptr, &g_hiVs);
+            g_dev->CreatePixelShader(hpsb->GetBufferPointer(), hpsb->GetBufferSize(), nullptr, &g_hiPs);
+        }
+    }
+
     // Gizmo / grid / world-axis pipeline (position + per-vertex color line list).
     ComPtr<ID3DBlob> gvsb, gpsb, gerr;
     if (SUCCEEDED(D3DCompile(shaders::kGizmo, std::strlen(shaders::kGizmo), nullptr, nullptr, nullptr, "VSGiz", "vs_5_0", 0, 0,
@@ -428,6 +442,7 @@ void shutdown() {
     g_bonePalette.Reset();
     g_bone_cap = 0;
     g_lineIl.Reset(); g_linePs.Reset(); g_lineVs.Reset(); g_dssNoDepth.Reset();
+    g_hiVs.Reset(); g_hiPs.Reset();
     g_blendAlpha.Reset(); g_blendOpaque.Reset();
     g_dssNoWrite.Reset(); g_dss.Reset();
     g_rsWire.Reset(); g_rsSolid.Reset(); g_rsCullFront.Reset(); g_rsCullBack.Reset();

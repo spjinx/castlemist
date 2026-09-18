@@ -21,7 +21,7 @@ namespace castlemist::extract {
 struct TerrainGrid {
     std::vector<float> hz;
     int Gx = 0, Gy = 0;
-    float x0 = 0, y0 = 0, dx = 1, dy = 1;
+    float x0 = 0, y0 = 0, x1 = 0, y1 = 0, dx = 1, dy = 1;
     bool ok = false;
 };
 
@@ -56,16 +56,22 @@ TerrainGrid build_terrain_grid(const castlemist::model::Extractor::MapTerrain& t
         g.Gx = g.Gy = G;
         g.hz.assign(t.heights.begin(), t.heights.begin() + (size_t)G * G);
     }
-    float x1, y1;
-    g.x0 = t.rect[0]; g.y0 = t.rect[1]; x1 = t.rect[2]; y1 = t.rect[3];
-    if (!t.hasRect || x1 <= g.x0 || y1 <= g.y0) { g.x0 = g.y0 = -3072; x1 = y1 = 3072; }
-    g.dx = chunked ? (x1 - g.x0) / (float)t.dimX : (x1 - g.x0) / (g.Gx - 1);
-    g.dy = chunked ? (y1 - g.y0) / (float)t.dimY : (y1 - g.y0) / (g.Gy - 1);
+    g.x0 = t.rect[0]; g.y0 = t.rect[1]; g.x1 = t.rect[2]; g.y1 = t.rect[3];
+    if (!t.hasRect || g.x1 <= g.x0 || g.y1 <= g.y0) { g.x0 = g.y0 = -3072; g.x1 = g.y1 = 3072; }
+    g.dx = chunked ? (g.x1 - g.x0) / (float)t.dimX : (g.x1 - g.x0) / (g.Gx - 1);
+    g.dy = chunked ? (g.y1 - g.y0) / (float)t.dimY : (g.y1 - g.y0) / (g.Gy - 1);
     g.ok = g.dx > 0 && g.dy > 0;
     return g;
 }
 
 /// @brief Bilinear ground height at a world (x, y); false when outside the grid.
+///
+/// Grid index 0 sits at the rect's near corner (x0,y0) -- confirmed against
+/// spjinx/t3d's own terrain renderer, which places chunk index 0 at
+/// `rect[0] + cdx/2` (the min corner) and walks toward rect[2]/rect[3] as the
+/// chunk index increases, with no axis flip. An earlier version of this
+/// function flipped this based on a visual read of one map; that flip
+/// disagreed with T3D's own placement code and has been reverted.
 bool sample_terrain_height(const TerrainGrid& g, float wx, float wy, float& out) {
     if (!g.ok) return false;
     float fx = (wx - g.x0) / g.dx, fy = (wy - g.y0) / g.dy;
@@ -81,7 +87,8 @@ bool sample_terrain_height(const TerrainGrid& g, float wx, float wy, float& out)
 }
 
 // waterSurfaceZ in the `havk` chunk (see parseMapCollision) -- NOT guessed.
-std::shared_ptr<ModelPreview> build_terrain_model(const castlemist::model::Extractor::MapTerrain& t, bool hasWaterZ, float waterZ) {
+std::shared_ptr<ModelPreview> build_terrain_model(const castlemist::model::Extractor::MapTerrain& t, bool hasWaterZ,
+                                                  float waterZ, bool skipFloodFillWater) {
     if (!t.present || t.heights.size() < 4) return nullptr;
 
     // GW2 terrain heightmaps are stored CHUNKED, not as one flat row-major grid.
@@ -194,7 +201,7 @@ std::shared_ptr<ModelPreview> build_terrain_model(const castlemist::model::Extra
     // maps that guess sat far too high and flooded huge stretches of normal,
     // dry land, making the whole map look "squeezed" into the water's footprint.
     // With no real water data, we skip water entirely rather than guess wrong.
-    if (hasWaterZ) {
+    if (hasWaterZ && !skipFloodFillWater) {
         ModelMeshCPU wm;
         wm.materialIndex = 1;
         for (int j = 0; j < Gy - 1; ++j)
@@ -268,6 +275,153 @@ std::shared_ptr<ModelPreview> build_collision_model(const castlemist::model::Ext
     return model;
 }
 
+// Builds a renderable model from the `watr` chunk's real water-surface
+// geometry: each surface is a 2D outline at its own Z, triangulated as a
+// simple centroid fan. That's exact for a convex outline and a reasonable
+// approximation for GW2's gently-curved water surfaces; a genuinely concave
+// outline would need real polygon triangulation, which this doesn't attempt.
+// Rendered with the same translucent-blue material kind as the terrain's
+// flood-fill water quad, since build_map_scene only ever uses one or the
+// other per map (see build_terrain_model's skipFloodFillWater).
+std::shared_ptr<ModelPreview> build_water_model(const castlemist::model::Extractor::MapWater& w) {
+    if (!w.present) return nullptr;
+
+    auto model = std::make_shared<ModelPreview>();
+    model->meshes.emplace_back();
+    ModelMeshCPU& mesh = model->meshes[0];
+    mesh.materialIndex = 0;
+    float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+
+    for (const auto& s : w.surfaces) {
+        size_t n = s.points.size() / 2;
+        if (n < 3) continue;
+        float cx = 0, cy = 0;
+        for (size_t i = 0; i < n; ++i) { cx += s.points[i * 2]; cy += s.points[i * 2 + 1]; }
+        cx /= static_cast<float>(n); cy /= static_cast<float>(n);
+
+        uint32_t base = static_cast<uint32_t>(mesh.vertices.size());
+        mesh.vertices.push_back(GVertex{cx, cy, s.z, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0});
+        lo[0] = std::min(lo[0], cx); lo[1] = std::min(lo[1], cy); lo[2] = std::min(lo[2], s.z);
+        hi[0] = std::max(hi[0], cx); hi[1] = std::max(hi[1], cy); hi[2] = std::max(hi[2], s.z);
+        for (size_t i = 0; i < n; ++i) {
+            float x = s.points[i * 2], y = s.points[i * 2 + 1];
+            mesh.vertices.push_back(GVertex{x, y, s.z, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0});
+            lo[0] = std::min(lo[0], x); lo[1] = std::min(lo[1], y);
+            hi[0] = std::max(hi[0], x); hi[1] = std::max(hi[1], y);
+        }
+        for (size_t i = 0; i < n; ++i) {
+            uint32_t a = base, b = base + 1 + static_cast<uint32_t>(i),
+                     c = base + 1 + static_cast<uint32_t>((i + 1) % n);
+            mesh.indices.insert(mesh.indices.end(), {a, b, c});
+        }
+    }
+    if (mesh.vertices.empty()) return nullptr;
+
+    ModelMaterialCPU mat; mat.index = 0; mat.kind = 2; // water (translucent blue), same as the flood-fill quad
+    model->materials.push_back(mat);
+    model->totalVerts = static_cast<uint32_t>(mesh.vertices.size());
+    model->totalTris = static_cast<uint32_t>(mesh.indices.size() / 3);
+    for (int k = 0; k < 3; ++k) model->center[k] = (lo[k] + hi[k]) * 0.5f;
+    float ext[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
+    model->radius = 0.5f * std::sqrt(ext[0] * ext[0] + ext[1] * ext[1] + ext[2] * ext[2]);
+    return model;
+}
+
+// Appends an axis-aligned box (12 tris) spanning [mn,mx] to `mesh`.
+void add_nav_box(ModelMeshCPU& mesh, const float mn[3], const float mx[3]) {
+    uint32_t b = static_cast<uint32_t>(mesh.vertices.size());
+    const float c[8][3] = {
+        {mn[0], mn[1], mn[2]}, {mx[0], mn[1], mn[2]}, {mx[0], mx[1], mn[2]}, {mn[0], mx[1], mn[2]},
+        {mn[0], mn[1], mx[2]}, {mx[0], mn[1], mx[2]}, {mx[0], mx[1], mx[2]}, {mn[0], mx[1], mx[2]},
+    };
+    for (const auto& v : c) mesh.vertices.push_back(GVertex{v[0], v[1], v[2], 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0});
+    static const uint32_t idx[36] = {
+        0, 1, 2, 0, 2, 3,  // bottom
+        4, 6, 5, 4, 7, 6,  // top
+        0, 4, 5, 0, 5, 1,  // sides
+        1, 5, 6, 1, 6, 2,
+        2, 6, 7, 2, 7, 3,
+        3, 7, 4, 3, 4, 0,
+    };
+    for (uint32_t i : idx) mesh.indices.push_back(b + i);
+}
+
+// Appends a thin quad ("beam") from `s` to `e`, `halfWidth` wide, as a stand-in
+// for a wireframe line segment (this pipeline is triangle-only). The beam lies
+// in the plane containing the segment and world-up, so it's visible from
+// directly above -- matching how the map is normally viewed.
+void add_nav_beam(ModelMeshCPU& mesh, const float s[3], const float e[3], float halfWidth) {
+    float d[3] = {e[0] - s[0], e[1] - s[1], e[2] - s[2]};
+    float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    if (len < 1e-4f) return;
+    // Perp = d x worldUp (GW2's +Z is down, so worldUp is (0,0,-1) -- see kWorldUp).
+    float p[3] = {d[1] * -1 - d[2] * 0, d[2] * 0 - d[0] * -1, d[0] * 0 - d[1] * 0};
+    float pl = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+    if (pl < 1e-4f) { p[0] = 1; p[1] = 0; p[2] = 0; pl = 1; }
+    for (int k = 0; k < 3; ++k) p[k] = p[k] / pl * halfWidth;
+    uint32_t b = static_cast<uint32_t>(mesh.vertices.size());
+    mesh.vertices.push_back(GVertex{s[0] - p[0], s[1] - p[1], s[2] - p[2], 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0});
+    mesh.vertices.push_back(GVertex{s[0] + p[0], s[1] + p[1], s[2] + p[2], 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0});
+    mesh.vertices.push_back(GVertex{e[0] + p[0], e[1] + p[1], e[2] + p[2], 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0});
+    mesh.vertices.push_back(GVertex{e[0] - p[0], e[1] - p[1], e[2] - p[2], 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0});
+    mesh.indices.insert(mesh.indices.end(), {b + 0, b + 2, b + 1, b + 0, b + 3, b + 2});
+}
+
+// Builds a renderable model visualizing a map's navigation data -- see this
+// function's declaration in internal.h for what is and isn't real geometry
+// here (coarse-graph nodes/edges are exact; nm15/pnvm chunk boxes are
+// bounding volumes over an undecoded payload).
+std::shared_ptr<ModelPreview> build_navmesh_model(const castlemist::model::Extractor::MapNavMesh& nm,
+                                                  const castlemist::model::Extractor::MapNavGraph& ng) {
+    if (!nm.present && !ng.present) return nullptr;
+
+    auto model = std::make_shared<ModelPreview>();
+    float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+    auto track = [&](const float p[3]) {
+        for (int k = 0; k < 3; ++k) { lo[k] = std::min(lo[k], p[k]); hi[k] = std::max(hi[k], p[k]); }
+    };
+
+    if (nm.present) {
+        ModelMeshCPU mesh;
+        for (const auto& c : nm.chunks) { add_nav_box(mesh, c.boundsMin, c.boundsMax); track(c.boundsMin); track(c.boundsMax); }
+        if (!mesh.vertices.empty()) model->meshes.push_back(std::move(mesh));
+    }
+    if (ng.present) {
+        ModelMeshCPU nodeMesh;
+        for (const auto& sec : ng.sections)
+            for (const auto& node : sec.nodes) {
+                add_nav_box(nodeMesh, node.boundsMin, node.boundsMax);
+                track(node.boundsMin); track(node.boundsMax);
+            }
+        if (!nodeMesh.vertices.empty()) model->meshes.push_back(std::move(nodeMesh));
+
+        ModelMeshCPU beamMesh;
+        for (const auto& sec : ng.sections)
+            for (const auto& conn : sec.connections)
+                for (const auto& e : conn.edges) {
+                    add_nav_beam(beamMesh, e.start, e.end, 8.0f);
+                    track(e.start); track(e.end);
+                }
+        if (!beamMesh.vertices.empty()) model->meshes.push_back(std::move(beamMesh));
+    }
+    if (model->meshes.empty()) return nullptr;
+
+    for (size_t i = 0; i < model->meshes.size(); ++i) {
+        model->meshes[i].materialIndex = static_cast<int>(i);
+        ModelMaterialCPU mat; mat.index = static_cast<int>(i); mat.kind = 4; // navmesh (translucent magenta)
+        model->materials.push_back(mat);
+    }
+    model->totalVerts = model->totalTris = 0;
+    for (const auto& m : model->meshes) {
+        model->totalVerts += static_cast<uint32_t>(m.vertices.size());
+        model->totalTris += static_cast<uint32_t>(m.indices.size() / 3);
+    }
+    for (int k = 0; k < 3; ++k) model->center[k] = (lo[k] + hi[k]) * 0.5f;
+    float ext[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
+    model->radius = 0.5f * std::sqrt(ext[0] * ext[0] + ext[1] * ext[1] + ext[2] * ext[2]);
+    return model;
+}
+
 // Builds a coordinated map scene from a mapc/area packfile: parse the prop
 // placement (prp2), load each unique prop model (deduped by fileId, capped), and
 // record one instance per placement with its world transform.
@@ -276,12 +430,18 @@ std::shared_ptr<MapScene> build_map_scene(const std::vector<uint8_t>& map_bytes,
     std::vector<castlemist::model::Extractor::MapProp> props;
     castlemist::model::Extractor::MapTerrain terr;
     castlemist::model::Extractor::MapCollision coll;
+    castlemist::model::Extractor::MapWater water;
+    castlemist::model::Extractor::MapNavMesh navMesh;
+    castlemist::model::Extractor::MapNavGraph navGraph;
     castlemist::model::Extractor::MapEnvLight envLight;
     try {
         castlemist::model::Extractor ex(map_bytes, tpl);
         props = ex.parseMapProps();
         terr = ex.parseTerrain();
         coll = ex.parseMapCollision();
+        try { water = ex.parseWater(); } catch (const std::exception&) { /* water is optional */ }
+        try { navMesh = ex.parseNavMesh(); } catch (const std::exception&) { /* navmesh is optional */ }
+        try { navGraph = ex.parseNavGraph(); } catch (const std::exception&) { /* nav graph is optional */ }
         try { envLight = ex.parseMapEnv(); } catch (const std::exception&) { /* env is optional */ }
     } catch (const std::exception&) {
         return nullptr;
@@ -354,13 +514,22 @@ std::shared_ptr<MapScene> build_map_scene(const std::vector<uint8_t>& map_bytes,
         scene->instances.push_back(in);
     }
 
-    // 5) Terrain ground surface (layer 1) + Havok collision mesh (layer 2), both
+    // 5) Terrain ground surface (layer 1), real water surface geometry when the
+    //    map has a `watr` chunk (layer 4, falling back to the terrain's guessed
+    //    flood-fill quad otherwise) + Havok collision mesh (layer 2), all
     //    world-space with identity instances. Collision is hidden by default.
-    if (auto tm = build_terrain_model(terr, coll.hasWater, coll.waterZ)) {
+    if (auto tm = build_terrain_model(terr, coll.hasWater, coll.waterZ, /*skipFloodFillWater=*/water.present)) {
         MapInstance in;
         in.model = static_cast<int>(scene->models.size());
         in.scale = 1.0f; in.layer = 1;
         scene->models.push_back(std::move(*tm));
+        scene->instances.push_back(in);
+    }
+    if (auto wm = build_water_model(water)) {
+        MapInstance in;
+        in.model = static_cast<int>(scene->models.size());
+        in.scale = 1.0f; in.layer = 4;
+        scene->models.push_back(std::move(*wm));
         scene->instances.push_back(in);
     }
     if (auto cm = build_collision_model(coll)) {
@@ -368,6 +537,13 @@ std::shared_ptr<MapScene> build_map_scene(const std::vector<uint8_t>& map_bytes,
         in.model = static_cast<int>(scene->models.size());
         in.scale = 1.0f; in.layer = 2;
         scene->models.push_back(std::move(*cm));
+        scene->instances.push_back(in);
+    }
+    if (auto nm = build_navmesh_model(navMesh, navGraph)) {
+        MapInstance in;
+        in.model = static_cast<int>(scene->models.size());
+        in.scale = 1.0f; in.layer = 5;
+        scene->models.push_back(std::move(*nm));
         scene->instances.push_back(in);
     }
     scene->loadedModels = static_cast<uint32_t>(scene->models.size());

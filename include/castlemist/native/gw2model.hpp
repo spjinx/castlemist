@@ -1173,6 +1173,307 @@ public:
         return out;
     }
 
+    // Map water: the rendered water-surface mesh(es) from the `watr` chunk --
+    // distinct from the flat gameplay water-plane height parseMapCollision()
+    // already reads out of `havk` (that one is a single number for physics;
+    // this is the actual per-surface geometry a renderer draws). Field names
+    // (waterSurfaceZ, waterSurfaceFlags, vertices, on a PackMapWaterV1-shaped
+    // root) cross-checked against spjinx/t3d's parser/definitions/WATR.ts.
+    // Only the V1 shape (versioned, per-surface) is read; V0's flat
+    // waterFoamData/waterChunks arrays aren't decoded here -- fieldOffset()
+    // simply won't find "waterSurfaces" on a V0 file, so this comes back
+    // `present = false` on one rather than misreading it.
+    struct MapWaterSurface {
+        float z = 0;
+        uint32_t flags = 0;
+        std::vector<float> points;  // x,y pairs, at height `z` in map space
+    };
+    struct MapWater {
+        bool present = false;
+        std::vector<MapWaterSurface> surfaces;
+    };
+
+    MapWater parseWater() {
+        MapWater out;
+        std::string root; uint16_t ver = 0;
+        size_t w = findChunk("watr", &root, &ver);
+        if (!w || root.empty()) return out;
+        size_t off; json f;
+        if (!fieldOffset(root, "waterSurfaces", off, f)) return out;
+        std::string st = f["element"].value("struct", std::string());
+        int ss = typeSize(st);
+        uint32_t sn = 0; size_t sbase = arrayAt(w + off, sn);
+        if (sn > 100000) sn = 100000;
+        size_t zo, flo, vo; json zf, flf, vf;
+        if (ss <= 0 || !fieldOffset(st, "waterSurfaceZ", zo, zf) ||
+            !fieldOffset(st, "waterSurfaceFlags", flo, flf) || !fieldOffset(st, "vertices", vo, vf)) {
+            return out;
+        }
+        for (uint32_t i = 0; sbase && i < sn; ++i) {
+            size_t se = sbase + (size_t)i * ss;
+            MapWaterSurface s;
+            s.z = rdf(se + zo);
+            s.flags = rd32(se + flo);
+            uint32_t vn = 0; size_t vbase = arrayAt(se + vo, vn);
+            if (vn > 1000000) vn = 1000000;
+            for (uint32_t k = 0; vbase && k < vn; ++k) {
+                s.points.push_back(rdf(vbase + 8u * k));
+                s.points.push_back(rdf(vbase + 8u * k + 4));
+            }
+            out.surfaces.push_back(std::move(s));
+        }
+        out.present = !out.surfaces.empty();
+        return out;
+    }
+
+    // Shoreline geometry from the `shor` chunk: per-chain 2D point strips
+    // (edgeSize-wide foam/wave bands along a coastline) plus the material and
+    // texture(s) they're rendered with. Field names cross-checked against
+    // spjinx/t3d's parser/definitions/SHOR.ts (V2/V3 -- V3 only adds three
+    // simplify* floats this doesn't need, so both versions read identically
+    // here).
+    struct MapShoreChain {
+        float offsetDist = 0, opacity = 0, animationSpeed = 0;
+        float edgeSize[2] = {0, 0};
+        uint32_t flags = 0;
+        std::vector<float> points;  // x,y pairs
+        uint32_t materialFileId = 0;
+        std::vector<uint32_t> textureFileIds;
+    };
+    struct MapShore {
+        bool present = false;
+        std::vector<MapShoreChain> chains;
+    };
+
+    MapShore parseShore() {
+        MapShore out;
+        std::string root; uint16_t ver = 0;
+        size_t s = findChunk("shor", &root, &ver);
+        if (!s || root.empty()) return out;
+        size_t off; json f;
+        if (!fieldOffset(root, "chains", off, f)) return out;
+        std::string ct = f["element"].value("struct", std::string());
+        int cs = typeSize(ct);
+        uint32_t cn = 0; size_t cbase = arrayAt(s + off, cn);
+        if (cn > 100000) cn = 100000;
+
+        size_t offO, opO, asO, esO, flO, ptO, mfO, tfO;
+        json offF, opF, asF, esF, flF, ptF, mfF, tfF;
+        bool haveCore = cs > 0 && fieldOffset(ct, "offset", offO, offF) && fieldOffset(ct, "opacity", opO, opF) &&
+                        fieldOffset(ct, "animationSpeed", asO, asF) && fieldOffset(ct, "edgeSize", esO, esF) &&
+                        fieldOffset(ct, "flags", flO, flF) && fieldOffset(ct, "points", ptO, ptF);
+        if (!haveCore) return out;
+        bool haveMaterial = fieldOffset(ct, "materialFilename", mfO, mfF);
+        bool haveTextures = fieldOffset(ct, "textureFilenames", tfO, tfF);
+
+        for (uint32_t i = 0; cbase && i < cn; ++i) {
+            size_t ce = cbase + (size_t)i * cs;
+            MapShoreChain c;
+            c.offsetDist = rdf(ce + offO);
+            c.opacity = rdf(ce + opO);
+            c.animationSpeed = rdf(ce + asO);
+            c.edgeSize[0] = rdf(ce + esO);
+            c.edgeSize[1] = rdf(ce + esO + 4);
+            c.flags = rd32(ce + flO);
+
+            uint32_t pn = 0; size_t pbase = arrayAt(ce + ptO, pn);
+            if (pn > 1000000) pn = 1000000;
+            for (uint32_t k = 0; pbase && k < pn; ++k) {
+                c.points.push_back(rdf(pbase + 8u * k));
+                c.points.push_back(rdf(pbase + 8u * k + 4));
+            }
+
+            if (haveMaterial) c.materialFileId = decodeFilenameAt(ce + mfO);
+            if (haveTextures) {
+                uint32_t tn = 0; size_t tbase = arrayAt(ce + tfO, tn);
+                if (tn > 4096) tn = 4096;
+                for (uint32_t k = 0; tbase && k < tn; ++k) {
+                    uint32_t fid = decodeFilenameAt(tbase + (size_t)k * (size_t)ptr_);
+                    if (fid) c.textureFileIds.push_back(fid);
+                }
+            }
+            out.chains.push_back(std::move(c));
+        }
+        out.present = !out.chains.empty();
+        return out;
+    }
+
+    // Map navigation mesh, bounding-box level only: from `nm15` (falling back
+    // to `pnvm`, the physics variant, if `nm15` isn't present). Each chunk's
+    // `navMeshData`/`coarseGraphData`/`queryMediatorMoppData` payload is an
+    // OPAQUE byte blob in a binary sub-format that is not decoded here -- it
+    // isn't decoded by spjinx/t3d's parser either (their definitions type it
+    // as raw `DynArray(Uint8)` with no further structure), so unlike every
+    // other chunk this file reads, there is no independent source to check
+    // an offset guess against. Reading the actual walkable-triangle mesh
+    // would need new reverse engineering this project hasn't done. What IS
+    // decoded -- each chunk's boundsMin/boundsMax -- at least shows WHERE
+    // navmesh data exists on the map.
+    struct MapNavMeshChunkBounds { float boundsMin[3] = {0, 0, 0}, boundsMax[3] = {0, 0, 0}; };
+    struct MapNavMesh {
+        bool present = false;
+        float boundsMin[3] = {0, 0, 0}, boundsMax[3] = {0, 0, 0};
+        std::vector<MapNavMeshChunkBounds> chunks;
+    };
+
+    MapNavMesh parseNavMesh() {
+        MapNavMesh out;
+        for (const char* fourcc : {"nm15", "pnvm"}) {
+            std::string root; uint16_t ver = 0;
+            size_t n = findChunk(fourcc, &root, &ver);
+            if (!n || root.empty()) continue;
+            size_t off; json f;
+            if (fieldOffset(root, "boundsMin", off, f)) for (int k = 0; k < 3; ++k) out.boundsMin[k] = rdf(n + off + 4 * k);
+            if (fieldOffset(root, "boundsMax", off, f)) for (int k = 0; k < 3; ++k) out.boundsMax[k] = rdf(n + off + 4 * k);
+            if (!fieldOffset(root, "chunkArray", off, f)) continue;
+            std::string ct = f["element"].value("struct", std::string());
+            int cs = typeSize(ct);
+            uint32_t cn = 0; size_t cbase = arrayAt(n + off, cn);
+            if (cn > 100000) cn = 100000;
+            size_t bmo, bxo; json bmf, bxf;
+            if (cs <= 0 || !fieldOffset(ct, "boundsMin", bmo, bmf) || !fieldOffset(ct, "boundsMax", bxo, bxf)) continue;
+            for (uint32_t i = 0; cbase && i < cn; ++i) {
+                size_t ce = cbase + (size_t)i * cs;
+                MapNavMeshChunkBounds cb;
+                for (int k = 0; k < 3; ++k) { cb.boundsMin[k] = rdf(ce + bmo + 4 * k); cb.boundsMax[k] = rdf(ce + bxo + 4 * k); }
+                out.chunks.push_back(cb);
+            }
+            out.present = !out.chunks.empty();
+            break;
+        }
+        return out;
+    }
+
+    // Map navigation COARSE GRAPH from the `cg15` chunk: regions (nodes, each
+    // a bounding box + centroid) and the portal EDGES connecting them, even
+    // across different map sections (targetSectionUid). Unlike parseNavMesh()
+    // above, this is real, fully typed pathfinding connectivity data -- every
+    // field here is a plain scalar or FixedArray<Float32>, not an opaque
+    // blob, so it's read the same offset-by-name way as everything else in
+    // this file. A node's `faces` array (face indices into the fine navmesh)
+    // is deliberately not read: those indices are meaningless without the
+    // undecoded navMeshData triangle list they point into.
+    struct MapNavGraphEdge { float start[3] = {0, 0, 0}, end[3] = {0, 0, 0}; };
+    struct MapNavGraphNode {
+        uint32_t materialId = 0;
+        float boundsMin[3] = {0, 0, 0}, boundsMax[3] = {0, 0, 0}, centroid[3] = {0, 0, 0};
+    };
+    struct MapNavGraphConnection {
+        uint32_t fromNodeIndex = 0;
+        uint32_t targetSectionUid = 0, targetNodeIndex = 0;
+        std::vector<MapNavGraphEdge> edges;
+    };
+    struct MapNavGraphSection {
+        uint32_t sectionUid = 0;
+        std::vector<MapNavGraphNode> nodes;
+        std::vector<MapNavGraphConnection> connections;
+    };
+    struct MapNavGraph {
+        bool present = false;
+        std::vector<MapNavGraphSection> sections;
+    };
+
+    MapNavGraph parseNavGraph() {
+        MapNavGraph out;
+        std::string root; uint16_t ver = 0;
+        size_t g = findChunk("cg15", &root, &ver);
+        if (!g || root.empty()) return out;
+        size_t secOff; json secF;
+        if (!fieldOffset(root, "sections", secOff, secF)) return out;
+        std::string sectType = secF["element"].value("struct", std::string());
+        int sectSize = typeSize(sectType);
+        uint32_t secCount = 0; size_t secBase = arrayAt(g + secOff, secCount);
+        if (secCount > 100000) secCount = 100000;
+        size_t uidO, nodesO, connO; json uidF, nodesF, connF;
+        if (sectSize <= 0 || !fieldOffset(sectType, "sectionUid", uidO, uidF) ||
+            !fieldOffset(sectType, "nodes", nodesO, nodesF) || !fieldOffset(sectType, "nodeConnections", connO, connF)) {
+            return out;
+        }
+
+        std::string nodeType = nodesF["element"].value("struct", std::string());
+        int nodeSize = typeSize(nodeType);
+        size_t matO, bmO, bxO, cenO; json matF, bmF, bxF, cenF;
+        bool haveNodeFields = nodeSize > 0 && fieldOffset(nodeType, "materialId", matO, matF) &&
+                              fieldOffset(nodeType, "bottomLeftBound", bmO, bmF) &&
+                              fieldOffset(nodeType, "topRightBound", bxO, bxF) &&
+                              fieldOffset(nodeType, "centroid", cenO, cenF);
+
+        std::string ncType = connF["element"].value("struct", std::string());
+        int ncSize = typeSize(ncType);
+        size_t niO, connsO; json niF, connsF;
+        bool haveNc = ncSize > 0 && fieldOffset(ncType, "nodeIndex", niO, niF) &&
+                      fieldOffset(ncType, "connections", connsO, connsF);
+
+        std::string connType = haveNc ? connsF["element"].value("struct", std::string()) : std::string();
+        int connSize = haveNc ? typeSize(connType) : 0;
+        size_t tsO, tnO, edgesO; json tsF, tnF, edgesF;
+        bool haveConn = connSize > 0 && fieldOffset(connType, "targetSectionUid", tsO, tsF) &&
+                        fieldOffset(connType, "targetNodeIndex", tnO, tnF) && fieldOffset(connType, "edges", edgesO, edgesF);
+
+        std::string edgeType = haveConn ? edgesF["element"].value("struct", std::string()) : std::string();
+        int edgeSize = haveConn ? typeSize(edgeType) : 0;
+        size_t esO, eeO; json esF, eeF;
+        bool haveEdge = edgeSize > 0 && fieldOffset(edgeType, "edgeStart", esO, esF) && fieldOffset(edgeType, "edgeEnd", eeO, eeF);
+
+        for (uint32_t si = 0; secBase && si < secCount; ++si) {
+            size_t se = secBase + (size_t)si * sectSize;
+            MapNavGraphSection sect;
+            sect.sectionUid = rd32(se + uidO);
+
+            if (haveNodeFields) {
+                uint32_t nn = 0; size_t nbase = arrayAt(se + nodesO, nn);
+                if (nn > 1000000) nn = 1000000;
+                for (uint32_t ni = 0; nbase && ni < nn; ++ni) {
+                    size_t ne = nbase + (size_t)ni * nodeSize;
+                    MapNavGraphNode node;
+                    node.materialId = rd32(ne + matO);
+                    for (int k = 0; k < 3; ++k) {
+                        node.boundsMin[k] = rdf(ne + bmO + 4 * k);
+                        node.boundsMax[k] = rdf(ne + bxO + 4 * k);
+                        node.centroid[k] = rdf(ne + cenO + 4 * k);
+                    }
+                    sect.nodes.push_back(node);
+                }
+            }
+
+            if (haveNc) {
+                uint32_t ncn = 0; size_t ncbase = arrayAt(se + connO, ncn);
+                if (ncn > 1000000) ncn = 1000000;
+                for (uint32_t nci = 0; ncbase && nci < ncn; ++nci) {
+                    size_t nce = ncbase + (size_t)nci * ncSize;
+                    uint32_t fromNode = rd32(nce + niO);
+                    if (!haveConn) continue;
+                    uint32_t cn = 0; size_t cbase = arrayAt(nce + connsO, cn);
+                    if (cn > 1000000) cn = 1000000;
+                    for (uint32_t ci = 0; cbase && ci < cn; ++ci) {
+                        size_t ce = cbase + (size_t)ci * connSize;
+                        MapNavGraphConnection conn;
+                        conn.fromNodeIndex = fromNode;
+                        conn.targetSectionUid = rd32(ce + tsO);
+                        conn.targetNodeIndex = rd32(ce + tnO);
+                        if (haveEdge) {
+                            uint32_t en = 0; size_t ebase = arrayAt(ce + edgesO, en);
+                            if (en > 100000) en = 100000;
+                            for (uint32_t ei = 0; ebase && ei < en; ++ei) {
+                                size_t ee = ebase + (size_t)ei * edgeSize;
+                                MapNavGraphEdge edge;
+                                for (int k = 0; k < 3; ++k) {
+                                    edge.start[k] = rdf(ee + esO + 4 * k);
+                                    edge.end[k] = rdf(ee + eeO + 4 * k);
+                                }
+                                conn.edges.push_back(edge);
+                            }
+                        }
+                        sect.connections.push_back(std::move(conn));
+                    }
+                }
+            }
+            out.sections.push_back(std::move(sect));
+        }
+        out.present = !out.sections.empty();
+        return out;
+    }
+
     // Parse the `prp2` chunk of an `area` packfile -> the list of placed props
     // (model + world transform). This is what turns a map into a coordinated set
     // of 3D models. Handles the three flat placement lists (propArray,

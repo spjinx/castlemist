@@ -120,10 +120,16 @@ void set_cloth_enabled(bool on) {
             if (ok) {
                 // Hide the static render submeshes a direct proxy replaces (only
                 // where such a mesh exists -- rv>0; rv==0 materials have nothing).
-                uint32_t maxMat = 0; for (uint32_t m : g_cloth.clothMaterials()) maxMat = std::max(maxMat, m);
+                // Bound to g_mats' sanitized size: a cloth piece can carry a huge/
+                // sentinel materialIndex straight from the file (same issue as the
+                // mesh materialIndex guard in set_model -- see geometry.cpp), and
+                // `maxMat + 1` on a 0xFFFFFFFF value wraps to 0, emptying this vector
+                // right before it gets indexed at that same huge value.
+                uint32_t maxMat = 0;
+                for (uint32_t m : g_cloth.clothMaterials()) if (m < g_mats.size()) maxMat = std::max(maxMat, m);
                 g_cloth_hide_mat.assign(maxMat + 1, 0);
                 for (uint32_t m : g_cloth.clothMaterials())
-                    if (renderVerts(m) > 0) g_cloth_hide_mat[m] = 1;
+                    if (m < g_cloth_hide_mat.size() && renderVerts(m) > 0) g_cloth_hide_mat[m] = 1;
                 g_cloth_file_active = true;
                 g_cloth_enabled = true;
                 return;
