@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -73,8 +74,9 @@ constexpr UINT_PTR ID_VIEW_THEME_LIGHT  = 1011;
 constexpr UINT_PTR ID_VIEW_THEME_CUSTOM = 1012;
 constexpr UINT_PTR ID_VIEW_THEME_ACCENT = 1013;
 constexpr UINT_PTR ID_TOOLS_DECODE_TOKEN = 1015;   // token/filename-bytes decoder popup
-constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL = 1016; // Export glTF... (single model)
+constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL = 1016; // Export glTF... (single model, plain decoded textures)
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MAP = 1017;   // Export glTF... (whole map scene)
+constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL_ATLAS = 1018; // Export glTF... (single model, baked to a fresh UV atlas)
 // Chat-link decoder popup controls.
 constexpr int ID_CL_INPUT = 2070;
 constexpr UINT_PTR ID_CL_DECODE = 2071;
@@ -182,6 +184,13 @@ constexpr UINT_PTR ID_MODE_FLY = 2133;
 constexpr UINT_PTR ID_SHOW_MAP = 2134;
 constexpr UINT_PTR ID_LAYER_WATER = 2135;
 constexpr UINT_PTR ID_LAYER_NAVMESH = 2136;
+constexpr UINT_PTR ID_UV_MAP_BTN = 2137;  // single-model: opens the UV map viewer popup
+constexpr UINT_PTR ID_UV_CLOSE = 2138;    // UV map viewer popup's own "Close" button
+constexpr UINT_PTR ID_BAKESEL_LIST = 2139;    // atlas-bake material selection popup: the checked list
+constexpr UINT_PTR ID_BAKESEL_ALL = 2140;     // "Select All" button
+constexpr UINT_PTR ID_BAKESEL_NONE = 2141;    // "Select None" button
+constexpr UINT_PTR ID_BAKESEL_OK = 2142;      // "Bake Selected" button
+constexpr UINT_PTR ID_BAKESEL_CANCEL = 2143;  // cancels the export entirely
 constexpr UINT_PTR ID_TEX_FULLRES = 2055;
 constexpr UINT_PTR ID_AUDIO_PLAY = 2056;
 constexpr UINT_PTR ID_AUDIO_STOP = 2057;
@@ -394,6 +403,7 @@ struct AppState {
     HWND hwnd_submesh_combo = nullptr; // LOD/texture target: "All submeshes" + each submesh
     HWND hwnd_lod_combo = nullptr;     // LOD level selector
     HWND hwnd_tex_reduced = nullptr;   // reduced (half-res) texture toggle
+    HWND hwnd_uv_map_btn = nullptr;    // opens the UV map viewer popup
     HWND hwnd_audio_play = nullptr;
     HWND hwnd_audio_stop = nullptr;
     HWND hwnd_audio_combo = nullptr; // sound selector for multi-sound banks
@@ -601,6 +611,7 @@ void do_load_keys(HWND hwnd);
 void try_autoload_keys();
 void do_export(HWND hwnd, bool export_compressed);
 void do_export_gltf_model(HWND hwnd);
+void do_export_gltf_model_atlas(HWND hwnd);
 void do_export_gltf_map(HWND hwnd);
 void on_gltf_export_done(HWND hwnd);
 void do_save_model_texture(HWND hwnd, uint32_t fileId);
@@ -629,6 +640,18 @@ void open_chat_link_decoder(HWND owner);
 // ---- token_decoder_dialog.cpp -- token / filename-bytes decoder popup
 LRESULT CALLBACK TokenDecoderWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 void open_token_decoder(HWND owner);
+
+// ---- uv_map_dialog.cpp -- the UV map viewer popup
+LRESULT CALLBACK UvMapWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
+void open_uv_map_viewer(HWND owner);
+void uv_map_notify_changed(); // no-op unless the popup is open
+
+// ---- bake_select_dialog.cpp -- the atlas-bake material selection popup
+struct BakeSelectResult {
+    bool proceed = false;           ///< false = Cancel / closed -- abort the export entirely.
+    std::set<uint32_t> selected;    ///< ModelMaterialCPU::index values to bake; the rest export plain.
+};
+BakeSelectResult show_bake_select_dialog(HWND owner, const ModelPreview& model);
 
 // ---- index_ui.cpp -- opening a gw2index SQLite and wiring its filters
 void finish_open_index(HWND hwnd, bool silent);

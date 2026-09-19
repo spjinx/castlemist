@@ -141,7 +141,7 @@ castlemist_add_layer(render DEPS castlemist::extract castlemist::sim
 # The "Game 1:1" surface. PRIVATE: nothing above render needs bgfx headers --
 # gw2bgfx_view.h is plain C++ and the UI only ever calls available().
 if (CASTLEMIST_HAVE_BGFX)
-    target_link_libraries(castlemist_render PRIVATE gw2bgfx_core)
+    target_link_libraries(castlemist_render PRIVATE gw2bgfx_core ext::xatlas)
     target_compile_definitions(castlemist_render PRIVATE CASTLEMIST_HAVE_BGFX=1)
 
     # bgfx.cpp defines two __declspec(dllexport) globals -- NvOptimusEnablement

@@ -50,22 +50,27 @@ bool is_playing() { return false; }
 int skinned_draw_count() { return 0; }
 void render() {}
 bool bake_model_textures(ModelPreview&) { return false; }
+bool bake_model_atlas(ModelPreview&, uint32_t, const std::set<uint32_t>*) { return false; }
 const std::string& last_status() { return kUnavailable; }
 } // namespace castlemist::gw2bgfxview
 
 #else
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <map>
+#include <set>
 #include <span>
 #include <vector>
 
 #include <bgfx/bgfx.h>
 #include <bgfx/platform.h>
 #include <bx/math.h>
+
+#include <xatlas.h>
 
 #include "castlemist/format/struct_template.h"
 #include "castlemist/native/cmp_decompress_method0.hpp"
@@ -254,6 +259,7 @@ struct State {
     std::map<uint32_t, bgfx::TextureHandle> texByFileId;
     bgfx::TextureHandle texWhite = BGFX_INVALID_HANDLE;
     bgfx::TextureHandle texCube = BGFX_INVALID_HANDLE;
+    bgfx::TextureHandle texLightBuf = BGFX_INVALID_HANDLE;
     /// bgfx dedupes uniforms by name internally, but the host still needs a
     /// handle per name to call setUniform. Kept for the device's lifetime.
     std::map<std::string, bgfx::UniformHandle> uniforms;
@@ -494,6 +500,24 @@ bool initialize(HWND target_window) {
             cube->data[f * 4 + 3] = 255;
         }
         g.texCube = bgfx::createTextureCube(1, false, 1, bgfx::TextureFormat::RGBA8, 0, cube);
+
+        // gSs14: the deferred light-accumulation buffer (screen-space sampled,
+        // not a material texture -- see set_model()'s sampler-binding loop).
+        // kEngineUniforms' own LightBuffer default is {0.25, 4.0, ...} with the
+        // comment "broadcasting one value wrecks the specular exponent" -- .y=4
+        // is a multiplier applied to whatever this slot samples, and 0.25*4=1
+        // is a suspiciously exact "neutral" round-trip. White (1.0) here reads
+        // as 4x overbright instead, and for a material whose colour pass
+        // actually leans on this term (any that read gSs14 at all -- reflective/
+        // "metal" materials in particular), that overexposure is enough to blow
+        // out everything else in the blend and leave whatever multiplies
+        // against it (here, a detail/mask texture) visually dominating the
+        // final colour. Not a proven-correct reconstruction of the real light
+        // buffer -- just a far less wrong placeholder than solid white.
+        const bgfx::Memory* lightBuf = bgfx::alloc(4);
+        lightBuf->data[0] = lightBuf->data[1] = lightBuf->data[2] = 64; // ~0.25 * 255
+        lightBuf->data[3] = 255;
+        g.texLightBuf = bgfx::createTexture2D(1, 1, false, 1, bgfx::TextureFormat::RGBA8, 0, lightBuf);
     }
 
     bx::mtxIdentity(g.rot);
@@ -512,8 +536,10 @@ void shutdown() {
     g.uniforms.clear();
     if (bgfx::isValid(g.texWhite)) bgfx::destroy(g.texWhite);
     if (bgfx::isValid(g.texCube)) bgfx::destroy(g.texCube);
+    if (bgfx::isValid(g.texLightBuf)) bgfx::destroy(g.texLightBuf);
     g.texWhite = BGFX_INVALID_HANDLE;
     g.texCube = BGFX_INVALID_HANDLE;
+    g.texLightBuf = BGFX_INVALID_HANDLE;
     bgfx::shutdown();
     g.inited = false;
     g.hwnd = nullptr;
@@ -937,6 +963,7 @@ bool set_model(Gw2Dat& dat, uint32_t mft_index, std::string& error) {
             bgfx::TextureHandle h;
             if (s.textureIndex < mat->textures.size()) h = loadTexture(mat->textures[s.textureIndex].fileId);
             else if (s.textureSlot == 13)              h = g.texCube;
+            else if (s.textureSlot == 14)              h = g.texLightBuf; // gSs14: see texLightBuf's own doc comment
             else                                       h = g.texWhite;
             d.textures.emplace_back((uint8_t)s.textureSlot, h);
         }
@@ -1267,6 +1294,28 @@ bool bake_model_textures(ModelPreview& model) {
     std::map<uint32_t, std::vector<const Draw*>> byMaterial;
     for (const Draw& d : g.draws) byMaterial[d.materialIndex].push_back(&d);
 
+    // Snapshot every diffuseTex an in-use material references BEFORE any
+    // baking starts. GW2 materials that share one diffuseTex are not
+    // necessarily disjoint regions of a shared atlas -- several are unrelated
+    // full-UV users of the same reusable base texture with DIFFERENT real
+    // shading (this ship: materials 9/10/12/18 all point at one wood texture,
+    // but at least one of them is a distinct "damaged plank" variant with its
+    // own AMAT constants). An earlier version of this function merged every
+    // material sharing a texture into one bake pass, which is only correct
+    // for the atlas case; here it just changed WHICH wrong material's result
+    // ended up covering the whole thing. Each material below instead gets its
+    // own independent output texture (cloned from this pristine snapshot, not
+    // from whatever an earlier material already baked into that slot), so two
+    // materials that happen to reference the same source diffuse can never
+    // contaminate each other's result.
+    std::map<int, std::vector<uint8_t>> pristineRgba;
+    for (const ModelMaterialCPU& mat : model.materials) {
+        if (mat.diffuseTex < 0 || mat.diffuseTex >= static_cast<int>(model.textures.size())) continue;
+        if (byMaterial.find(mat.index) == byMaterial.end()) continue;
+        pristineRgba.try_emplace(mat.diffuseTex, model.textures[static_cast<size_t>(mat.diffuseTex)].rgba);
+    }
+    std::set<int> claimedTex;
+
     float identity[16];
     bx::mtxIdentity(identity);
     // A fixed, reasonable "camera" for whatever a shader reads CameraPosition
@@ -1282,8 +1331,34 @@ bool bake_model_textures(ModelPreview& model) {
         auto it = byMaterial.find(mat.index);
         if (it == byMaterial.end() || it->second.empty()) continue;
         if (mat.diffuseTex < 0 || mat.diffuseTex >= static_cast<int>(model.textures.size())) continue;
-        ModelTextureCPU& tex = model.textures[static_cast<size_t>(mat.diffuseTex)];
+
+        int srcTex = mat.diffuseTex;
+        int outTex = srcTex;
+        if (!claimedTex.insert(srcTex).second) {
+            // A previous material already claimed this texture slot: give this
+            // one its own copy, starting from the pristine pre-bake pixels
+            // (not from whichever material's bake happened to run first).
+            ModelTextureCPU clone = model.textures[static_cast<size_t>(srcTex)];
+            auto pr = pristineRgba.find(srcTex);
+            if (pr != pristineRgba.end()) clone.rgba = pr->second;
+            // Distinct from the original AND from any other clone of it: the
+            // glTF writer's texture cache (GltfWriter::add_or_reuse_texture)
+            // dedups purely by fileId, so a clone that kept the source's own
+            // fileId got silently collapsed back into the SAME image at
+            // export time -- every material this function worked so hard to
+            // give its own bake ended up sharing whichever one wrote first.
+            // The high bit marks this as synthetic; real archive fileIds
+            // never set it, so this can't collide with one.
+            clone.fileId = 0x80000000u | mat.index;
+            outTex = static_cast<int>(model.textures.size());
+            model.textures.push_back(std::move(clone));
+            mat.diffuseTex = outTex;
+        }
+
+        ModelTextureCPU& tex = model.textures[static_cast<size_t>(outTex)];
         if (tex.width <= 0 || tex.height <= 0) continue;
+
+        const std::vector<const Draw*>& draws = it->second;
 
         const uint16_t w = static_cast<uint16_t>(tex.width), h = static_cast<uint16_t>(tex.height);
 
@@ -1306,9 +1381,9 @@ bool bake_model_textures(ModelPreview& model) {
         bgfx::setViewRect(kBakeView, 0, 0, w, h);
         bgfx::setViewClear(kBakeView, BGFX_CLEAR_COLOR, 0x000000ff);
 
-        std::vector<bgfx::VertexBufferHandle> scratchVb; // destroyed after this material's submits
+        std::vector<bgfx::VertexBufferHandle> scratchVb; // destroyed after this texture's submits
 
-        for (const Draw* dp : it->second) {
+        for (const Draw* dp : draws) {
             const Draw& d = *dp;
             if (!bgfx::isValid(d.program) || !bgfx::isValid(d.ib) || d.vertexBytes.empty()) continue;
 
@@ -1397,6 +1472,520 @@ bool bake_model_textures(ModelPreview& model) {
 
         tex.rgba = std::move(cpuBuf);
         mat.normalTex = -1; // already baked in; exporting it again would double-apply normal mapping
+        bakedAny = true;
+    }
+
+    return bakedAny;
+}
+
+namespace {
+
+// Packs one attribute of a GPU vertex from a plain float[4], reading the
+// target format (and whether it needs [-1,1]/[0,1]-normalized scaling) off
+// the layout itself -- so this works unmodified whether the geoset's real FVF
+// stores an attribute as float, half or a normalized byte. A no-op when
+// `layout` doesn't carry the attribute at all (e.g. a mesh with fewer UV
+// channels than another geoset sharing the same material).
+void packAttr(void* data, uint32_t index, bgfx::Attrib::Enum attr, const bgfx::VertexLayout& layout,
+              const float v[4]) {
+    if (!layout.has(attr)) return;
+    uint8_t num;
+    bgfx::AttribType::Enum type;
+    bool normalized, asInt;
+    layout.decode(attr, num, type, normalized, asInt);
+    bgfx::vertexPack(v, normalized, attr, layout, data, index);
+}
+
+// Bilinear-samples `tex` at normalized (u,v), WRAPPING both axes -- GW2 trim
+// sheets tile far outside [0,1] by design (see bake_model_atlas's own doc
+// comment), and a normal map shares whatever addressing its diffuse uses.
+void sampleWrap(const ModelTextureCPU& tex, float u, float v, uint8_t out[4]) {
+    float fu = u - std::floor(u), fv = v - std::floor(v);
+    float fx = fu * static_cast<float>(tex.width) - 0.5f, fy = fv * static_cast<float>(tex.height) - 0.5f;
+    int x0 = static_cast<int>(std::floor(fx)), y0 = static_cast<int>(std::floor(fy));
+    float tx = fx - static_cast<float>(x0), ty = fy - static_cast<float>(y0);
+    auto wrapIdx = [](int v2, int n) { int m = v2 % n; return m < 0 ? m + n : m; };
+    auto texel = [&](int xi, int yi) -> const uint8_t* {
+        xi = wrapIdx(xi, tex.width);
+        yi = wrapIdx(yi, tex.height);
+        return &tex.rgba[(static_cast<size_t>(yi) * static_cast<size_t>(tex.width) + xi) * 4];
+    };
+    const uint8_t* p00 = texel(x0, y0);
+    const uint8_t* p10 = texel(x0 + 1, y0);
+    const uint8_t* p01 = texel(x0, y0 + 1);
+    const uint8_t* p11 = texel(x0 + 1, y0 + 1);
+    for (int c = 0; c < 4; ++c) {
+        float top = p00[c] * (1 - tx) + p10[c] * tx;
+        float bot = p01[c] * (1 - tx) + p11[c] * tx;
+        out[c] = static_cast<uint8_t>(std::clamp(top * (1 - ty) + bot * ty, 0.0f, 255.0f));
+    }
+}
+
+// Resamples `src` (indexed by each vertex's ORIGINAL uv0, `srcUv`) into `dst`
+// (dstW x dstH RGBA8, caller-zeroed) by rasterizing every triangle in the NEW
+// atlas UV space (`dstUv`, 0..1 mapped to the dst texel grid) and, for each
+// covered texel, barycentric-interpolating srcUv there and bilinear-sampling
+// `src`. This is how the original normal map survives the atlas rebake: there
+// is no bgfx shader in this app that just passes a texture through unlit
+// (every DXBC blob here is a real, fully-lit GW2 material), so remapping it
+// into the new UV layout has to happen on the CPU instead of through a GPU
+// pass like the diffuse bake. `covered` (same size as dst, one byte/texel) is
+// set for every texel this touches, so the caller can dilate the chart
+// padding afterward.
+void rasterUvTransfer(const ModelTextureCPU& src, const std::vector<std::array<float, 2>>& dstUv,
+                      const std::vector<std::array<float, 2>>& srcUv, const uint32_t* indices,
+                      uint32_t indexCount, std::vector<uint8_t>& dst, std::vector<uint8_t>& covered, int dstW,
+                      int dstH) {
+    for (uint32_t t = 0; t + 2 < indexCount; t += 3) {
+        uint32_t ia = indices[t], ib = indices[t + 1], ic = indices[t + 2];
+        if (ia >= dstUv.size() || ib >= dstUv.size() || ic >= dstUv.size()) continue;
+        float ax = dstUv[ia][0] * dstW, ay = dstUv[ia][1] * dstH;
+        float bx = dstUv[ib][0] * dstW, by = dstUv[ib][1] * dstH;
+        float cx = dstUv[ic][0] * dstW, cy = dstUv[ic][1] * dstH;
+        int x0 = std::max(0, static_cast<int>(std::floor(std::min({ax, bx, cx}))));
+        int x1 = std::min(dstW - 1, static_cast<int>(std::ceil(std::max({ax, bx, cx}))));
+        int y0 = std::max(0, static_cast<int>(std::floor(std::min({ay, by, cy}))));
+        int y1 = std::min(dstH - 1, static_cast<int>(std::ceil(std::max({ay, by, cy}))));
+        float denom = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+        if (std::fabs(denom) < 1e-8f) continue; // degenerate triangle in UV space
+        for (int y = y0; y <= y1; ++y) {
+            for (int x = x0; x <= x1; ++x) {
+                float px = x + 0.5f, py = y + 0.5f;
+                float w0 = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / denom;
+                float w1 = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / denom;
+                float w2 = 1.0f - w0 - w1;
+                constexpr float kEps = -0.01f; // small tolerance so edge texels aren't missed
+                if (w0 < kEps || w1 < kEps || w2 < kEps) continue;
+                float su = w0 * srcUv[ia][0] + w1 * srcUv[ib][0] + w2 * srcUv[ic][0];
+                float sv = w0 * srcUv[ia][1] + w1 * srcUv[ib][1] + w2 * srcUv[ic][1];
+                uint8_t rgba[4];
+                sampleWrap(src, su, sv, rgba);
+                size_t o = (static_cast<size_t>(y) * dstW + x) * 4;
+                for (int c = 0; c < 4; ++c) dst[o + c] = rgba[c];
+                covered[static_cast<size_t>(y) * dstW + x] = 1;
+            }
+        }
+    }
+}
+
+// Dilates `dst`'s covered texels into their uncovered neighbours, a few
+// passes -- fills the chart-padding border xatlas reserved
+// (PackOptions::padding) so bilinear filtering at a chart edge doesn't blend
+// in the atlas's black clear colour. A cheap nearest-neighbour push, not a
+// real distance transform; good enough for a couple of padding pixels.
+void dilate(std::vector<uint8_t>& dst, std::vector<uint8_t>& covered, int w, int h, int iterations) {
+    for (int it = 0; it < iterations; ++it) {
+        std::vector<uint8_t> next = covered;
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                size_t idx = static_cast<size_t>(y) * w + x;
+                if (covered[idx]) continue;
+                static const int dxs[4] = {1, -1, 0, 0}, dys[4] = {0, 0, 1, -1};
+                for (int d = 0; d < 4; ++d) {
+                    int nx = x + dxs[d], ny = y + dys[d];
+                    if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+                    size_t nIdx = static_cast<size_t>(ny) * w + nx;
+                    if (!covered[nIdx]) continue;
+                    for (int c = 0; c < 4; ++c) dst[idx * 4 + c] = dst[nIdx * 4 + c];
+                    next[idx] = 1;
+                    break;
+                }
+            }
+        }
+        covered = std::move(next);
+    }
+}
+
+} // namespace
+
+bool bake_model_atlas(ModelPreview& model, uint32_t resolution, const std::set<uint32_t>* onlyMaterials) {
+    if (!g.inited || g.draws.empty()) return false;
+
+    // One representative draw per material -- its program, uniforms, textures
+    // and render state are the same for every geoset sharing that material
+    // (see bake_model_textures's own grouping), so it stands in for all of
+    // them here too. Materials gw2bgfxview never got a working shader for
+    // (missing AMAT, DXBC failed to compile, ...) have no entry and are left
+    // completely untouched below -- same fallback as bake_model_textures.
+    std::map<uint32_t, const Draw*> repDraw;
+    for (const Draw& d : g.draws) repDraw.try_emplace(d.materialIndex, &d);
+
+    // model.meshes indices grouped by material, source of truth for both the
+    // new UV unwrap and the exported geometry (g.draws can be missing entries
+    // this model.meshes/model.materials pairing never drops -- see
+    // bake_model_textures's own note on the two being independent extractions).
+    std::map<uint32_t, std::vector<int>> meshesByMat;
+    for (size_t i = 0; i < model.meshes.size(); ++i) {
+        const ModelMeshCPU& m = model.meshes[i];
+        if (m.vertices.empty() || m.indices.empty()) continue;
+        meshesByMat[m.materialIndex].push_back(static_cast<int>(i));
+    }
+
+    float identity[16];
+    bx::mtxIdentity(identity);
+    const float camPos[4] = {g.centre[0], g.centre[1], g.centre[2] - g.radius * g.distMul, 1.0f};
+    const float timeVal[4] = {0, 0, 0, 0};
+    static const bgfx::Attrib::Enum kTexCoordAttribs[8] = {
+        bgfx::Attrib::TexCoord0, bgfx::Attrib::TexCoord1, bgfx::Attrib::TexCoord2, bgfx::Attrib::TexCoord3,
+        bgfx::Attrib::TexCoord4, bgfx::Attrib::TexCoord5, bgfx::Attrib::TexCoord6, bgfx::Attrib::TexCoord7,
+    };
+
+    bool bakedAny = false;
+
+    for (auto& [matIdx, meshIdxs] : meshesByMat) {
+        if (onlyMaterials && onlyMaterials->find(matIdx) == onlyMaterials->end()) continue;
+        auto dit = repDraw.find(matIdx);
+        if (dit == repDraw.end() || !bgfx::isValid(dit->second->program)) continue;
+        const Draw& rd = *dit->second;
+
+        ModelMaterialCPU* mat = nullptr;
+        for (auto& m : model.materials)
+            if (m.index == matIdx) { mat = &m; break; }
+        if (!mat) continue;
+
+        // --- Chart generation: one xatlas mesh per ModelMeshCPU, all packed
+        //     into one shared atlas for this material. ---
+        xatlas::Atlas* atlas = xatlas::Create();
+        bool addOk = true;
+        for (int mi : meshIdxs) {
+            const ModelMeshCPU& mesh = model.meshes[static_cast<size_t>(mi)];
+            std::vector<float> pos(mesh.vertices.size() * 3);
+            for (size_t v = 0; v < mesh.vertices.size(); ++v) {
+                pos[v * 3 + 0] = mesh.vertices[v].px;
+                pos[v * 3 + 1] = mesh.vertices[v].py;
+                pos[v * 3 + 2] = mesh.vertices[v].pz;
+            }
+            xatlas::MeshDecl decl;
+            decl.vertexPositionData = pos.data();
+            decl.vertexPositionStride = sizeof(float) * 3;
+            decl.vertexCount = static_cast<uint32_t>(mesh.vertices.size());
+            decl.indexData = mesh.indices.data();
+            decl.indexCount = static_cast<uint32_t>(mesh.indices.size());
+            decl.indexFormat = xatlas::IndexFormat::UInt32;
+            // MeshDecl data is copied by AddMesh, so `pos` going out of scope
+            // at the end of this iteration is fine.
+            if (xatlas::AddMesh(atlas, decl) != xatlas::AddMeshError::Success) { addOk = false; break; }
+        }
+        if (!addOk) { xatlas::Destroy(atlas); continue; }
+
+        xatlas::PackOptions packOpts;
+        packOpts.resolution = resolution;
+        packOpts.padding = 2;
+        packOpts.bilinear = true;
+        xatlas::Generate(atlas, xatlas::ChartOptions(), packOpts);
+
+        // atlasCount > 1 means this material's unwrap didn't fit `resolution`
+        // and xatlas split it into more than one image; only the first is
+        // used here (see bake_model_atlas's header doc). meshCount must match
+        // meshIdxs 1:1 -- AddMesh was called exactly once per entry, in order.
+        if (atlas->meshCount != meshIdxs.size() || atlas->width == 0 || atlas->height == 0) {
+            xatlas::Destroy(atlas);
+            continue;
+        }
+        const uint16_t w = static_cast<uint16_t>(atlas->width), h = static_cast<uint16_t>(atlas->height);
+
+        bgfx::TextureHandle rt = bgfx::createTexture2D(w, h, false, 1, bgfx::TextureFormat::RGBA8, 0
+            | BGFX_TEXTURE_RT
+            | BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT | BGFX_SAMPLER_MIP_POINT
+            | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+        bgfx::TextureHandle blitTex = bgfx::createTexture2D(w, h, false, 1, bgfx::TextureFormat::RGBA8, 0
+            | BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK
+            | BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT | BGFX_SAMPLER_MIP_POINT
+            | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
+        if (!bgfx::isValid(rt) || !bgfx::isValid(blitTex)) {
+            if (bgfx::isValid(rt)) bgfx::destroy(rt);
+            if (bgfx::isValid(blitTex)) bgfx::destroy(blitTex);
+            xatlas::Destroy(atlas);
+            continue;
+        }
+        bgfx::FrameBufferHandle fb = bgfx::createFrameBuffer(1, &rt, false);
+        bgfx::setViewFrameBuffer(kBakeView, fb);
+        bgfx::setViewRect(kBakeView, 0, 0, w, h);
+        bgfx::setViewClear(kBakeView, BGFX_CLEAR_COLOR, 0x000000ff);
+
+        std::vector<bgfx::VertexBufferHandle> scratchVb;
+        std::vector<bgfx::IndexBufferHandle> scratchIb;
+        std::vector<ModelMeshCPU> newMeshes(meshIdxs.size());
+        // Per new-mesh-vertex ORIGINAL uv0, parallel to newMeshes[k].vertices --
+        // needed below to remap the normal map into the same new UV layout
+        // (see the CPU resample after this loop); newMeshes[k].vertices[i].u/v
+        // holds the NEW atlas UV by the time this loop is done, so this is the
+        // only copy of the original left anywhere.
+        std::vector<std::vector<std::array<float, 2>>> origUvByMesh(meshIdxs.size());
+
+        for (size_t k = 0; k < meshIdxs.size(); ++k) {
+            const xatlas::Mesh& am = atlas->meshes[k];
+            const ModelMeshCPU& srcMesh = model.meshes[static_cast<size_t>(meshIdxs[k])];
+            if (am.vertexCount == 0 || am.indexCount == 0) continue;
+
+            ModelMeshCPU out;
+            out.materialIndex = matIdx;
+            out.hasTangents = srcMesh.hasTangents;
+            out.hasSkin = srcMesh.hasSkin;
+            out.vertexCount = am.vertexCount;
+            out.vertices.resize(am.vertexCount);
+            out.indices.assign(am.indexArray, am.indexArray + am.indexCount);
+            origUvByMesh[k].resize(am.vertexCount);
+
+            std::vector<uint8_t> gpuVerts(static_cast<size_t>(am.vertexCount) * rd.layout.getStride());
+            for (uint32_t vi = 0; vi < am.vertexCount; ++vi) {
+                const xatlas::Vertex& av = am.vertexArray[vi];
+                uint32_t xref = (av.xref < srcMesh.vertices.size()) ? av.xref : 0;
+                GVertex gv = srcMesh.vertices[xref]; // original position/normal/tangent/uv0/skin, unchanged
+                float au = (av.atlasIndex == 0) ? (av.uv[0] / static_cast<float>(atlas->width)) : 0.0f;
+                float av2 = (av.atlasIndex == 0) ? (av.uv[1] / static_cast<float>(atlas->height)) : 0.0f;
+                float origU = gv.u, origV = gv.v; // keep for shading before overwriting for export
+                origUvByMesh[k][vi] = {origU, origV};
+
+                // Export vertex: everything from the source, except the brand
+                // new atlas UV (this bake's whole point) in place of the old
+                // trim-sheet uv0.
+                gv.u = au; gv.v = av2;
+                out.vertices[vi] = gv;
+
+                // GPU raster vertex, same layout as the representative draw:
+                // POSITION <- new atlas UV in clip space (so this texel is
+                // exactly where the rasterizer lands it); every other
+                // attribute <- the ORIGINAL vertex, so the real shader still
+                // samples the source trim sheet/normal map correctly.
+                const float posClip[4] = {au * 2.0f - 1.0f, -(av2 * 2.0f - 1.0f), 0.5f, 1.0f};
+                packAttr(gpuVerts.data(), vi, bgfx::Attrib::Position, rd.layout, posClip);
+                const float nrm[4] = {gv.nx, gv.ny, gv.nz, 0};
+                packAttr(gpuVerts.data(), vi, bgfx::Attrib::Normal, rd.layout, nrm);
+                const float tan[4] = {gv.tx, gv.ty, gv.tz, 0};
+                packAttr(gpuVerts.data(), vi, bgfx::Attrib::Tangent, rd.layout, tan);
+                const float bit[4] = {gv.bx, gv.by, gv.bz, 0};
+                packAttr(gpuVerts.data(), vi, bgfx::Attrib::Bitangent, rd.layout, bit);
+                const float uv0[4] = {origU, origV, 0, 0};
+                packAttr(gpuVerts.data(), vi, kTexCoordAttribs[0], rd.layout, uv0);
+                for (int c = 1; c < 8; ++c) {
+                    const float uvc[4] = {gv.uv1[c - 1][0], gv.uv1[c - 1][1], 0, 0};
+                    packAttr(gpuVerts.data(), vi, kTexCoordAttribs[c], rd.layout, uvc);
+                }
+                const float wgt[4] = {gv.bwt[0], gv.bwt[1], gv.bwt[2], gv.bwt[3]};
+                packAttr(gpuVerts.data(), vi, bgfx::Attrib::Weight, rd.layout, wgt);
+                // NOT gv.bidx: those are skeleton-wide bone indices (model_types.h),
+                // already remapped away from the small per-geoset boneBindings slot
+                // index the live shader's grbones palette is actually sized for --
+                // that slot mapping doesn't survive into ModelPreview. Since grbones
+                // is forced to an all-identity palette above regardless (bake at bind
+                // pose), which slot each component reads doesn't affect the result as
+                // long as it's in bounds -- slot 0 always is (cap = max(1, u.num)),
+                // where gv.bidx could exceed a large skeleton's real palette size and
+                // read out of bounds.
+                const float idx4[4] = {0, 0, 0, 0};
+                packAttr(gpuVerts.data(), vi, bgfx::Attrib::Indices, rd.layout, idx4);
+            }
+            newMeshes[k] = std::move(out);
+
+            const bgfx::Memory* vmem = bgfx::copy(gpuVerts.data(), static_cast<uint32_t>(gpuVerts.size()));
+            bgfx::VertexBufferHandle vb = bgfx::createVertexBuffer(vmem, rd.layout);
+            if (!bgfx::isValid(vb)) continue;
+            scratchVb.push_back(vb);
+            const bgfx::Memory* imem =
+                bgfx::copy(am.indexArray, static_cast<uint32_t>(am.indexCount * sizeof(uint32_t)));
+            bgfx::IndexBufferHandle ib = bgfx::createIndexBuffer(imem, BGFX_BUFFER_INDEX32);
+            if (!bgfx::isValid(ib)) continue;
+            scratchIb.push_back(ib);
+
+            // Identity palette + material uniforms/textures: same convention
+            // as bake_model_textures (bake at bind pose; texturing is
+            // pose-independent).
+            auto setAll = [&](const std::vector<BgfxBlobUniform>& list) {
+                for (const auto& u : list) {
+                    if (u.isSampler()) continue;
+                    bgfx::UniformHandle uh = uniformFor(u);
+                    if (u.name == "ViewProjection" || u.name == "World" || u.name == "WorldView" ||
+                        u.name == "View") {
+                        bgfx::setUniform(uh, identity);
+                        continue;
+                    }
+                    if (u.name == "grbones") {
+                        const uint16_t cap = std::max<uint8_t>(1, u.num);
+                        static std::vector<float> palette;
+                        palette.assign(static_cast<size_t>(cap) * 16, 0.0f);
+                        for (uint16_t s = 0; s < cap; ++s) std::memcpy(palette.data() + s * 16, identity, 64);
+                        bgfx::setUniform(uh, palette.data(), cap);
+                        continue;
+                    }
+                    if (u.name == "CameraPosition") { bgfx::setUniform(uh, camPos); continue; }
+                    if (u.name == "Time") { bgfx::setUniform(uh, timeVal); continue; }
+                    auto mc = rd.matConsts.find(u.name);
+                    if (mc != rd.matConsts.end()) { bgfx::setUniform(uh, mc->second.v); continue; }
+                    auto eg = kEngineUniforms.find(u.name);
+                    if (eg != kEngineUniforms.end()) { bgfx::setUniform(uh, eg->second.v); continue; }
+                }
+            };
+            setAll(rd.vsU);
+            setAll(rd.psU);
+            for (size_t i = 0; i < rd.textures.size(); ++i) {
+                const uint8_t slot = rd.textures[i].first;
+                for (const auto& u : rd.psU) {
+                    if (!u.isSampler() || u.regIndex != slot) continue;
+                    bgfx::setTexture(slot, uniformFor(u), rd.textures[i].second);
+                    break;
+                }
+            }
+
+            bgfx::setVertexBuffer(0, vb);
+            bgfx::setIndexBuffer(ib, 0, am.indexCount);
+            const uint64_t bakeState =
+                (g.forceTwoSided ? rd.stateTwoSided : rd.state) &
+                ~(BGFX_STATE_WRITE_Z | BGFX_STATE_DEPTH_TEST_MASK | BGFX_STATE_CULL_MASK);
+            bgfx::setState(bakeState);
+            bgfx::submit(kBakeView, rd.program, 0, BGFX_DISCARD_ALL);
+        }
+
+        bgfx::blit(kBakeBlitView, blitTex, 0, 0, rt);
+        std::vector<uint8_t> cpuBuf(static_cast<size_t>(w) * h * 4);
+        uint32_t readyFrame = bgfx::readTexture(blitTex, cpuBuf.data());
+        uint32_t frameNum = bgfx::frame();
+        for (int guard = 0; frameNum < readyFrame && guard < 8; ++guard) frameNum = bgfx::frame();
+
+        for (bgfx::VertexBufferHandle vb : scratchVb) bgfx::destroy(vb);
+        for (bgfx::IndexBufferHandle ib : scratchIb) bgfx::destroy(ib);
+        bgfx::destroy(fb);
+        bgfx::destroy(rt);
+        bgfx::destroy(blitTex);
+        xatlas::Destroy(atlas);
+
+        // Alpha channel. Three different cases, because a flat 255 here silently
+        // killed every particle/glass/foliage effect material's transparency
+        // (reported on 1768614 mesh 16, a particle trim sheet):
+        //  - isEffect (real blend/translucent materials): the pixel shader
+        //    computes a genuine opacity and the GPU render above already wrote
+        //    it, so keep it as rendered.
+        //  - everything else with an original diffuse: GW2's ordinary opaque
+        //    materials write a submodel-id CONSTANT to alpha, not real
+        //    coverage (see dxbcAlphaIsConstant's doc comment) -- using the
+        //    rendered value here would carry that meaningless id into the
+        //    export. The real cutout mask lives in the original diffuse's own
+        //    alpha channel, so remap that into the new UV layout the same way
+        //    the normal map is remapped below (mat->diffuseTex still holds the
+        //    ORIGINAL texture at this point).
+        //  - no original diffuse to fall back to: leave it opaque.
+        bool bakedHasCutout = false;
+        if (mat->isEffect) {
+            // keep the GPU-rendered alpha as-is
+        } else if (mat->diffuseTex >= 0 && mat->diffuseTex < static_cast<int>(model.textures.size())) {
+            const ModelTextureCPU& srcDiffuse = model.textures[static_cast<size_t>(mat->diffuseTex)];
+            std::vector<uint8_t> alphaDst(static_cast<size_t>(w) * h * 4, 0);
+            std::vector<uint8_t> alphaCovered(static_cast<size_t>(w) * h, 0);
+            for (size_t k = 0; k < meshIdxs.size(); ++k) {
+                if (newMeshes[k].vertices.empty()) continue;
+                std::vector<std::array<float, 2>> dstUv(newMeshes[k].vertices.size());
+                for (size_t i = 0; i < dstUv.size(); ++i)
+                    dstUv[i] = {newMeshes[k].vertices[i].u, newMeshes[k].vertices[i].v};
+                rasterUvTransfer(srcDiffuse, dstUv, origUvByMesh[k], newMeshes[k].indices.data(),
+                                 static_cast<uint32_t>(newMeshes[k].indices.size()), alphaDst, alphaCovered, w, h);
+            }
+            // Fills the chart-padding border xatlas reserved -- left uncovered,
+            // those texels default to alpha 0 (fully transparent) regardless of
+            // the source, which would draw a transparent crack around every
+            // chart edge with alphaMode MASK/BLEND below.
+            dilate(alphaDst, alphaCovered, w, h, 4);
+            for (size_t p = 3; p < cpuBuf.size() && p < alphaDst.size(); p += 4) cpuBuf[p] = alphaDst[p];
+
+            // Re-derive "does this have a real cutout" from the RESAMPLED
+            // alpha actually written above, rather than trusting
+            // srcDiffuse.hasCutout as-is: it's classified over the ORIGINAL
+            // texture's full pixel grid, but the bake only transfers whatever
+            // portion of it this mesh's UVs actually cover, at a different
+            // resolution -- the ratio of transparent-to-opaque texels (what
+            // the classification keys on) isn't guaranteed to survive that
+            // unchanged. Same threshold/majority test as
+            // texture_source.cpp's compute_alpha_cutout, just run over the
+            // atlas's own pixels instead of the source's.
+            size_t below = 0, total = 0;
+            for (size_t p = 3; p < alphaDst.size(); p += 4) {
+                if (alphaCovered[p / 4]) { total++; if (alphaDst[p] < 64) below++; }
+            }
+            if (total > 0) {
+                double frac = static_cast<double>(below) / static_cast<double>(total);
+                bakedHasCutout = frac > 0.005 && frac < 0.95;
+            }
+        } else {
+            for (size_t p = 3; p < cpuBuf.size(); p += 4) cpuBuf[p] = 255;
+        }
+
+        ModelTextureCPU newTex;
+        // Distinct per material (see the matching note in bake_model_textures):
+        // the glTF writer's texture cache dedups by fileId alone, and every
+        // default-constructed ModelTextureCPU here starts at fileId 0 -- left
+        // that way, every material after the first baked one silently reused
+        // the FIRST material's atlas image instead of getting its own. The
+        // high bit marks this as synthetic (no real archive fileId sets it).
+        newTex.fileId = 0x80000000u | matIdx;
+        newTex.width = atlas->width;
+        newTex.height = atlas->height;
+        newTex.channels = "RGBA";
+        newTex.hasCutout = bakedHasCutout; // else material_export.cpp defaults to alphaMode OPAQUE and ignores this alpha entirely
+        newTex.rgba = std::move(cpuBuf);
+        int newTexIdx = static_cast<int>(model.textures.size());
+        model.textures.push_back(std::move(newTex));
+        mat->diffuseTex = newTexIdx;
+        // Both new textures below are indexed by the new atlas UV, which
+        // exports as the mesh's ordinary u/v -> TEXCOORD_0 (mesh_export.cpp) --
+        // never whatever non-zero channel the ORIGINAL diffuse/normal used
+        // (see ModelMaterialCPU::diffuseUv's doc comment). Left non-zero here,
+        // the exporter would tell Blender to sample these brand new,
+        // TEXCOORD_0-only textures through a UV set that no longer means
+        // anything for them.
+        mat->diffuseUv = 0;
+        mat->normalUv = 0;
+        // Whatever these contributed (decal/detail/mask layers -- see
+        // ModelMaterialCPU::extraTextures's own doc comment) is already
+        // folded into the baked diffuse above by the real shader; exporting
+        // them again via occlusionTexture (material_export.cpp) would be
+        // stale, redundant data pointing at UV0-relative channels that no
+        // longer apply once this material's geometry has a brand new UV.
+        mat->extraTextures.clear();
+
+        // Carry the original normal map along too, remapped into this SAME
+        // new UV layout -- the real shader already consumed it to light the
+        // baked diffuse above, but a destination engine (Unity/VRChat,
+        // Poiyomi/Filamented) wants the raw tangent-space map itself, to
+        // relight in real time, not lighting baked in under GW2's own fixed
+        // daylight rig. See rasterUvTransfer's doc comment for why this is a
+        // CPU resample rather than a second GPU bake pass.
+        if (mat->normalTex >= 0 && mat->normalTex < static_cast<int>(model.textures.size())) {
+            const ModelTextureCPU srcNormal = model.textures[static_cast<size_t>(mat->normalTex)];
+            std::vector<uint8_t> normDst(static_cast<size_t>(w) * h * 4, 0);
+            std::vector<uint8_t> normCovered(static_cast<size_t>(w) * h, 0);
+            for (size_t k = 0; k < meshIdxs.size(); ++k) {
+                if (newMeshes[k].vertices.empty()) continue;
+                std::vector<std::array<float, 2>> dstUv(newMeshes[k].vertices.size());
+                for (size_t i = 0; i < dstUv.size(); ++i)
+                    dstUv[i] = {newMeshes[k].vertices[i].u, newMeshes[k].vertices[i].v};
+                rasterUvTransfer(srcNormal, dstUv, origUvByMesh[k], newMeshes[k].indices.data(),
+                                 static_cast<uint32_t>(newMeshes[k].indices.size()), normDst, normCovered, w, h);
+            }
+            dilate(normDst, normCovered, w, h, 4);
+            // GW2's tangent-space Y (green channel) runs the opposite way from
+            // glTF's (which follows the OpenGL convention): a straight copy of
+            // the source bytes -- exactly what this resample otherwise does --
+            // renders inside-out bump detail in Blender/Unity. 255-G flips the
+            // encoded [-1,1] Y component's sign (encoded = Y*127.5+127.5, so
+            // 255-encoded = -Y*127.5+127.5) without touching R (X) or B (Z).
+            for (size_t p = 1; p < normDst.size(); p += 4) normDst[p] = 255 - normDst[p];
+            ModelTextureCPU newNormal;
+            newNormal.fileId = 0x40000000u | matIdx; // distinct bit from the diffuse's own synthetic id (0x80000000)
+            newNormal.width = w;
+            newNormal.height = h;
+            newNormal.channels = "RGBA";
+            newNormal.isNormal = true;
+            newNormal.rgba = std::move(normDst);
+            int newNormalIdx = static_cast<int>(model.textures.size());
+            model.textures.push_back(std::move(newNormal));
+            mat->normalTex = newNormalIdx;
+        } else {
+            mat->normalTex = -1;
+        }
+
+        for (size_t k = 0; k < meshIdxs.size(); ++k)
+            if (!newMeshes[k].vertices.empty())
+                model.meshes[static_cast<size_t>(meshIdxs[k])] = std::move(newMeshes[k]);
+
         bakedAny = true;
     }
 

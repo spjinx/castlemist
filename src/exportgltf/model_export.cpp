@@ -44,7 +44,16 @@ GltfExportResult export_model_gltf(const ModelPreview& model, const std::string&
 
     json rootChildren = json::array();
     for (const MeshExportInfo& mesh : meshes) {
-        json node{{"name", stem + "_mesh" + std::to_string(mesh.sourceIndex)}, {"mesh", mesh.meshIndex}};
+        // ModelMeshDataV66.meshName when the file actually named this submesh
+        // (see ModelMeshCPU::meshName's doc comment) -- still suffixed with
+        // the source index, since several submeshes commonly share one name
+        // (this exact model: most of them are just "airship") and glTF node
+        // names aren't required to be unique but Blender's Outliner is much
+        // more useful when they are.
+        const std::string& meshName = model.meshes[mesh.sourceIndex].meshName;
+        std::string nodeName = !meshName.empty() ? meshName + "_" + std::to_string(mesh.sourceIndex)
+                                                 : stem + "_mesh" + std::to_string(mesh.sourceIndex);
+        json node{{"name", nodeName}, {"mesh", mesh.meshIndex}};
         if (skinIndex >= 0 && model.meshes[mesh.sourceIndex].hasSkin) node["skin"] = skinIndex;
         rootChildren.push_back(w.add_node(std::move(node)));
     }

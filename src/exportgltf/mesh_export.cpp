@@ -38,6 +38,33 @@ std::vector<MeshExportInfo> write_meshes(GltfWriter& w, const ModelPreview& mode
         normals.reserve(n * 3);
         uvs.reserve(n * 2);
 
+        // Extra UV channel(s) this mesh's material actually samples for its
+        // diffuse/normal texture, beyond UV0 -- see ModelMaterialCPU::diffuseUv's
+        // doc comment. Binding every texture to TEXCOORD_0 regardless of which
+        // channel it really uses is what made trim-sheet/detail materials (more
+        // than one texture layered over the same geometry via different UV
+        // sets) export misaligned. `channel` is 1..7 (GVertex.uv1[channel-1]);
+        // 0 (already covered by TEXCOORD_0/`uvs` above) is never added here.
+        // Also covers extraTextures (decal/detail/mask layers beyond
+        // diffuse/normal -- see that struct's doc comment): the occlusionTexture
+        // slot material_export.cpp wires the first one to needs its own real UV
+        // set too, and any material can carry more than one distinct extra
+        // channel (this exact model: diffuse+normal share UV0, one decal
+        // overlay uses UV1).
+        std::vector<uint8_t> extraChannels;
+        if (mesh.materialIndex < materialIndices.size()) {
+            const ModelMaterialCPU& mat = model.materials[mesh.materialIndex];
+            auto addChannel = [&](uint8_t c) {
+                if (c != 0 && std::find(extraChannels.begin(), extraChannels.end(), c) == extraChannels.end())
+                    extraChannels.push_back(c);
+            };
+            addChannel(mat.diffuseUv);
+            addChannel(mat.normalUv);
+            for (const auto& ex : mat.extraTextures) addChannel(ex.uvIndex);
+        }
+        std::vector<std::vector<float>> extraUvs(extraChannels.size());
+        for (auto& e : extraUvs) e.reserve(n * 2);
+
         float minP[3] = {std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
                          std::numeric_limits<float>::max()};
         float maxP[3] = {std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
@@ -50,6 +77,11 @@ std::vector<MeshExportInfo> write_meshes(GltfWriter& w, const ModelPreview& mode
 
             normals.push_back(v.nx); normals.push_back(v.ny); normals.push_back(v.nz);
             uvs.push_back(v.u); uvs.push_back(v.v);
+            for (size_t e = 0; e < extraChannels.size(); ++e) {
+                const float* c = v.uv1[extraChannels[e] - 1];
+                extraUvs[e].push_back(c[0]);
+                extraUvs[e].push_back(c[1]);
+            }
 
             if (mesh.hasTangents) {
                 // glTF TANGENT is a vec4: xyz plus a handedness sign for the
@@ -76,6 +108,11 @@ std::vector<MeshExportInfo> write_meshes(GltfWriter& w, const ModelPreview& mode
         int uvAcc = w.add_accessor(uvs.data(), uvs.size() * sizeof(float), kFloat, "VEC2", n, kArrayBuffer);
 
         json attributes{{"POSITION", posAcc}, {"NORMAL", normAcc}, {"TEXCOORD_0", uvAcc}};
+        for (size_t e = 0; e < extraChannels.size(); ++e) {
+            int extraAcc = w.add_accessor(extraUvs[e].data(), extraUvs[e].size() * sizeof(float), kFloat, "VEC2", n,
+                                          kArrayBuffer);
+            attributes["TEXCOORD_" + std::to_string(extraChannels[e])] = extraAcc;
+        }
 
         if (mesh.hasTangents) {
             int tanAcc = w.add_accessor(tangents.data(), tangents.size() * sizeof(float), kFloat, "VEC4", n, kArrayBuffer);

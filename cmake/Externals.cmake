@@ -17,6 +17,7 @@
 #   ext::jpegturbo  static       libjpeg-turbo 3.2.0           (JPEG)
 #   ext::webp       static       libwebp 1.6.0 decoder         (WebP)
 #   ext::sqlite     static       SQLite amalgamation           (the dat index)
+#   ext::xatlas     static       xatlas UV atlas generator     (glTF atlas bake)
 # =============================================================================
 
 set(CASTLEMIST_EXTERNAL_DIR "${PROJECT_SOURCE_DIR}/external"
@@ -119,3 +120,18 @@ add_library(ext_webp STATIC ${_webp_srcs})
 target_include_directories(ext_webp PUBLIC "${_webp_root}" "${_webp_root}/src")
 set_target_properties(ext_webp PROPERTIES C_STANDARD 11 POSITION_INDEPENDENT_CODE ON)
 add_library(ext::webp ALIAS ext_webp)
+
+# ------------------------------------------------------------------- xatlas --
+#
+# Generates a fresh, non-overlapping UV atlas from raw mesh geometry -- used to
+# bake a GW2 material's real shaded appearance into one self-contained texture
+# for materials whose own UVs (a trim sheet, tiled far outside [0,1]) have no
+# meaningful "flatten this into one texture" reading of their own.
+
+set(_xatlas_root "${_ext}/xatlas")
+_castlemist_require("${_xatlas_root}/xatlas.h" "xatlas")
+
+add_library(ext_xatlas STATIC "${_xatlas_root}/xatlas.cpp")
+target_include_directories(ext_xatlas PUBLIC "${_xatlas_root}")
+set_target_properties(ext_xatlas PROPERTIES CXX_STANDARD 14 POSITION_INDEPENDENT_CODE ON)
+add_library(ext::xatlas ALIAS ext_xatlas)

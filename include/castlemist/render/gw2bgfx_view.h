@@ -2,6 +2,7 @@
 #define CASTLEMIST_GW2BGFX_VIEW_H
 
 #include <cstdint>
+#include <set>
 #include <string>
 #include <windows.h>
 
@@ -181,6 +182,45 @@ void render();
 ///        view specifically to bake it, then discards that load.
 /// @return true if at least one material was baked.
 bool bake_model_textures(ModelPreview& model);
+
+/// @brief Like bake_model_textures(), but for materials whose own UVs have no
+///        meaningful "flatten to one texture" reading -- a trim sheet tiled
+///        far outside [0,1], reused (unwrapped once each) across many
+///        unrelated parts of the mesh. bake_model_textures() rasterizes by
+///        the mesh's OWN uv0, so on a trim-sheet material almost none of the
+///        geometry lands inside the render target at all.
+///
+/// Generates a brand-new, non-overlapping UV layout per material with
+/// xatlas (external/xatlas), one shared atlas texture per material combining
+/// every geoset that uses it, and rasterizes the real GW2 shader output into
+/// that new UV space instead -- the mesh's original uv0 is kept as a real
+/// vertex attribute so the shader still samples the source trim sheet
+/// correctly; only the OUTPUT position (and therefore where a texel lands in
+/// the new atlas) changes. Replaces each affected ModelMeshCPU's vertices
+/// (position/normal/tangent preserved, seams duplicated as xatlas requires)
+/// and indices with the new atlas-mapped geometry, and each affected
+/// material's diffuseTex with the newly baked texture -- unlike
+/// bake_model_textures(), this changes exported topology, not just pixels.
+/// Materials with no real shader available (see bake_model_textures's own
+/// per-material fallback) are left completely untouched: original mesh,
+/// original UVs, original texture.
+///
+/// @param model Modified in place, same calling convention as
+///        bake_model_textures().
+/// @param resolution Output atlas size in texels (one side; atlases are
+///        square). A material whose unwrap does not fit -- xatlas splits into
+///        more than one sub-atlas -- keeps only the first; see the .cpp.
+/// @param onlyMaterials When non-null, bake only materials whose
+///        ModelMaterialCPU::index is in this set -- everything else is left
+///        completely untouched (original mesh, UVs, texture), exactly like a
+///        material with no real shader available. Baking is a one-way trip
+///        (see this function's own doc comment above), so the caller
+///        (do_export_gltf_model_atlas, via show_bake_select_dialog) lets the
+///        user opt specific materials out rather than forcing all-or-nothing.
+///        Null (the default) bakes every material that can be.
+/// @return true if at least one material was baked.
+bool bake_model_atlas(ModelPreview& model, uint32_t resolution = 2048,
+                      const std::set<uint32_t>* onlyMaterials = nullptr);
 
 /// @brief Human-readable summary of the last load ("9 draws from 9 geosets"),
 ///        or the reason it failed. Shown in the UI's status text.

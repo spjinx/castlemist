@@ -4,6 +4,8 @@
 
 #include "castlemist/ui/texture_panel.h"
 
+#include "castlemist/core/text.h"
+
 // The palette is shared, not copied: a duplicated constant does not follow a
 // theme switch, and this strip stayed light inside a dark window.
 #include "castlemist/ui/theme.h"
@@ -245,9 +247,21 @@ void build_rows(State& st, const ModelPreview& model) {
         Row h;
         h.header = true;
         h.chip = material_colour(mesh.materialIndex);
-        wchar_t buf[160];
-        swprintf(buf, 160, L"Submesh %zu    mat %u    %zu tris", mi, mesh.materialIndex,
-                 mesh.indices.size() / 3);
+        // ModelMeshCPU::meshName / ModelMaterialCPU::materialName -- the real,
+        // artist-authored GW2 names (e.g. "airship" / "MetalBladeMat"), when
+        // the file actually set them (see those fields' own doc comments;
+        // many meshes/materials don't have one). Shown alongside the numeric
+        // submesh/material index, not instead of it -- the index is what the
+        // Submesh combo, the UV Map viewer and the bake-selection dialog all
+        // key on, so it has to stay visible here too for cross-referencing.
+        std::wstring meshTag =
+            mesh.meshName.empty() ? std::wstring() : L" (" + castlemist::core::from_ascii(mesh.meshName) + L")";
+        std::wstring matTag = (mat && !mat->materialName.empty())
+                                  ? L" (" + castlemist::core::from_ascii(mat->materialName) + L")"
+                                  : std::wstring();
+        wchar_t buf[256];
+        swprintf(buf, 256, L"Submesh %zu%ls    mat %u%ls    %zu tris", mi, meshTag.c_str(), mesh.materialIndex,
+                 matTag.c_str(), mesh.indices.size() / 3);
         h.title = buf;
         st.rows.push_back(std::move(h));
 

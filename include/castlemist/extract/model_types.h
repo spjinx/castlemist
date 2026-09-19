@@ -100,7 +100,75 @@ struct ModelMaterialCPU {
     int kind = 0;                         ///< 0 normal, 1 terrain, 2 water (procedural shading).
     int diffuseTex = -1;                  ///< Index into ModelPreview::textures (-1 = none).
     int normalTex = -1;                   ///< Index into ModelPreview::textures (-1 = none).
+    /// @brief Which UV channel (GVertex.u/v = 0, .uv1[c-1] = c) diffuseTex/normalTex
+    ///        actually sample -- MatTexture::uvIndex (gw2model.hpp), carried through
+    ///        from whichever raw texture entry was picked as each of those. Almost
+    ///        always 0; a nonzero value is common on trim-sheet/detail materials
+    ///        that layer more than one texture over the same geometry via different
+    ///        UV sets. The glTF exporter needs this to emit each texture's
+    ///        `texCoord` correctly -- binding everything to TEXCOORD_0 regardless
+    ///        (the old behaviour) is what made those materials export misaligned.
+    uint8_t diffuseUv = 0;
+    uint8_t normalUv = 0;
     std::vector<uint32_t> textureFileIds; ///< Every texture the material references (for the info panel).
+    /// @brief fileId of the material's own .amat/GRMT file (0 if none) --
+    ///        Material::materialFile (gw2model.hpp). A stable, unique-per-
+    ///        real-material identifier, unlike `index` (just this MODL's local
+    ///        material slot number, meaningless outside the file it came
+    ///        from). Used to name exported glTF materials when materialName
+    ///        below is empty.
+    uint32_t materialFile = 0;
+    /// @brief ModelMeshDataV66.materialName -- an artist-authored label (e.g.
+    ///        "MetalBladeMat"), read straight off whichever mesh uses this
+    ///        material (model_preview.cpp; the field lives per-mesh in the
+    ///        file, not per-material, but is the same string for every mesh
+    ///        sharing one). spjinx/t3d's own glTF exporter names materials
+    ///        from exactly this field (RenderUtils.ts); castlemist now does
+    ///        too (material_export.cpp) rather than the numeric materialFile
+    ///        fallback. Empty when no mesh using this material named it.
+    std::string materialName;
+
+    /// @brief PBR metallic factor, read straight from the MODL's own `mtlness`
+    ///        material constant when present (see model_preview.cpp) -- GW2
+    ///        names it exactly that, and it's already a plain [0,1] scalar, so
+    ///        no conversion is needed. 0 (fully dielectric) when absent, which
+    ///        is right for the large majority of GW2 materials (cloth, wood,
+    ///        most armor) that have no metalness constant at all.
+    float metallic = 0.0f;
+    /// @brief PBR roughness factor. GW2 does not use a roughness value at all --
+    ///        it's a classic specular-power/strength model (`specpwr`/`specstr`),
+    ///        not metallic-roughness -- so this is a documented APPROXIMATION
+    ///        from `specstr` when present (see model_preview.cpp), not a real
+    ///        decoded value. -1 means neither this nor any approximation applies;
+    ///        the exporter falls back to its own default in that case.
+    float roughness = -1.0f;
+    /// @brief Every other named MODL material constant (glow, sss, scroll
+    ///        speed, ...), decoded token -> its first float component, kept
+    ///        losslessly rather than silently dropped -- see
+    ///        model_preview.cpp. Exported as glTF material `extras` so the
+    ///        real numbers are still there to hand-tune in Blender even where
+    ///        castlemist doesn't know what to do with them itself.
+    std::vector<std::pair<std::string, float>> namedConstants;
+
+    /// @brief A material texture that isn't diffuseTex or normalTex -- a
+    ///        decal/detail/mask layer the real shader samples through its own
+    ///        (often nonzero) UV channel and blends in some way castlemist
+    ///        doesn't reconstruct (see gw2bgfx_view.cpp's bake_model_atlas doc
+    ///        comment for a real example: a multi-motif ornamental overlay
+    ///        tiled across a hull panel via UV1). Exposed so the raw texture +
+    ///        its real UV set survive into the export instead of being
+    ///        silently unreachable, even though castlemist can't recreate the
+    ///        blend itself.
+    struct ExtraTexture {
+        int texIndex = -1;    ///< Index into ModelPreview::textures.
+        uint8_t uvIndex = 0;  ///< Which UV channel it samples (see diffuseUv's doc comment).
+        uint32_t fileId = 0;  ///< Source fileId, for the extras JSON / info panel.
+    };
+    /// @brief Every other texture this material references. Cleared by a
+    ///        successful atlas bake (gw2bgfx_view.cpp) -- baking already folds
+    ///        whatever these contribute into the one output texture, so
+    ///        exporting them again afterward would be redundant, stale data.
+    std::vector<ExtraTexture> extraTextures;
 
     /// @brief Real bgfx blend-state word, carried over from game-shader extraction.
     ///
@@ -189,6 +257,13 @@ struct ModelMeshCPU {
     int stride = 0;                                ///< Decoded per-vertex byte stride (from the FVF).
     bool hasTangents = false;                      ///< Tangent/bitangent channels were present.
     bool hasSkin = false;                          ///< Vertices carry resolved bone indices and weights.
+    /// @brief ModelMeshDataV66.meshName, decoded from its token64 (see
+    ///        castlemist::model::detokenizeName64) -- an artist-authored
+    ///        per-submesh label (e.g. "airship"), lowercase only and missing
+    ///        any numeric suffix (both lossy properties of the encoding
+    ///        itself, not of the decoder). Empty when the file didn't name
+    ///        this mesh, which is common.
+    std::string meshName;
 };
 
 /// @brief One rig joint in bind pose.

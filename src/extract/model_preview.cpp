@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <unordered_map>
 
 #include <span>
@@ -76,10 +77,25 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
         return idx;
     };
 
+    // materialName lives per-MESH in the file (ModelMeshDataV66.materialName),
+    // not per-material -- collect the first non-empty one for each
+    // materialIndex before building materials, since a real GW2 material
+    // usually names every mesh that uses it the same way.
+    std::unordered_map<uint32_t, std::string> materialNameByIndex;
+    for (const auto& src : model.meshes) {
+        if (src.materialName.empty()) continue;
+        materialNameByIndex.try_emplace(src.materialIndex, src.materialName);
+    }
+
     // Materials: decode textures, classify diffuse vs normal, detect effects.
     for (const auto& m : model.materials) {
         ModelMaterialCPU mat;
         mat.index = m.index;
+        mat.materialFile = m.materialFile;
+        {
+            auto it = materialNameByIndex.find(m.index);
+            if (it != materialNameByIndex.end()) mat.materialName = it->second;
+        }
         mat.textureFileIds = m.textureFileIds();
         long bestDiffuseArea = -1, bestNormalArea = -1;
         for (uint32_t fid : mat.textureFileIds) {
@@ -118,6 +134,28 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
                 for (int k = 0; k < 4; ++k) mat.tint[k] = v[k];
             }
         }
+
+        // MODL material constants decode straight to their real, short GW2
+        // engine names (base-23 packed, not a hash -- see
+        // castlemist::model::decodeToken23's own doc comment). `mtlness` is
+        // already a plain [0,1] PBR metalness scalar, used as-is. GW2 has no
+        // roughness constant (it's a classic specular-power/strength model,
+        // not metallic-roughness); `specstr` (specular strength, itself
+        // presumed [0,1]) is the closest available signal, so a HIGH specular
+        // strength becomes a LOW glTF roughness as an approximation -- not a
+        // verified conversion, just closer than the flat default for a
+        // material that clearly has some. Every other named constant is kept
+        // in namedConstants regardless (glow/scroll/sss/...), so real
+        // per-material data always survives into the export as glTF `extras`
+        // even where castlemist doesn't know what to do with it.
+        for (const auto& c : m.constants) {
+            std::string name = castlemist::model::decodeToken23(c.name);
+            if (name.empty()) continue;
+            if (name == "mtlness") mat.metallic = std::clamp(c.value[0], 0.0f, 1.0f);
+            else if (name == "specstr") mat.roughness = 1.0f - std::clamp(c.value[0], 0.0f, 1.0f);
+            mat.namedConstants.emplace_back(std::move(name), c.value[0]);
+        }
+
         bool matIsEffect = mat.isEffect; // captured before the move below
 
         // Real game shaders (bgfx DXBC from the material's AMAT), for the
@@ -135,14 +173,24 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
             // above -- a material can reference textures (masks, lightmaps,
             // detail maps) that the largest-area heuristic can pick by
             // mistake even though the shader never binds them as albedo.
+            //
+            // Picked by LOWEST bound register (t0/s0 first), not by biggest
+            // area: GW2 consistently samples the real albedo/diffuse at slot 0
+            // (see gw2model.hpp's AmatShader::samplesSlot0 and its callers),
+            // with masks/detail/AO maps at higher slots. Area is not a
+            // reliable tiebreaker -- a mask authored at the same resolution as
+            // the real diffuse (common; 1768614 material 28 ships a 256x256
+            // diffuse AND a 256x256 non-albedo texture) ties or even wins on
+            // size alone, and which one "wins" then depends on unrelated
+            // sampler enumeration order rather than which one the shader
+            // actually treats as the base colour.
             int bestSlotTex = -1;
-            long bestSlotArea = -1;
+            int bestSlot = std::numeric_limits<int>::max();
             for (const auto& s : gm.samplers) {
                 if (s.global != 0 || s.gameTex < 0) continue;
                 const ModelTextureCPU& t = out->textures[s.gameTex];
                 if (t.isNormal) continue;
-                long area = static_cast<long>(t.width) * t.height;
-                if (area > bestSlotArea) { bestSlotArea = area; bestSlotTex = s.gameTex; }
+                if (s.slot < bestSlot) { bestSlot = s.slot; bestSlotTex = s.gameTex; }
             }
             if (bestSlotTex >= 0) mat.diffuseTex = bestSlotTex;
             mat.renderState = gm.renderState;
@@ -157,6 +205,24 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
             mat.isEffect = (blendBits != 0) || flaggedTranslucent;
         }
 
+        // Which UV channel each of this material's real textures samples (see
+        // ModelMaterialCPU::diffuseUv's doc comment) -- read straight off the
+        // raw material's own texture list (tex_cache maps its fileId back to
+        // the resolved ModelPreview::textures index), since that's the only
+        // place uvIndex survives; ModelTextureCPU (deduped by fileId, shared
+        // across materials) has nowhere per-material to keep it. Anything that
+        // isn't the winning diffuse/normal is a decal/detail/mask layer
+        // castlemist doesn't reconstruct -- kept as an ExtraTexture instead of
+        // silently dropped (see that struct's own doc comment).
+        for (const auto& t : m.textures) {
+            auto it = tex_cache.find(t.fileId);
+            if (it == tex_cache.end() || it->second < 0) continue;
+            int ti = it->second;
+            if (ti == mat.diffuseTex) { mat.diffuseUv = t.uvIndex; continue; }
+            if (ti == mat.normalTex) { mat.normalUv = t.uvIndex; continue; }
+            mat.extraTextures.push_back({ti, t.uvIndex, t.fileId});
+        }
+
         out->materials.push_back(std::move(mat));
         if (want_game) out->gameMaterials.push_back(std::move(gm));
     }
@@ -166,6 +232,7 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
     for (const auto& src : model.meshes) {
         ModelMeshCPU mesh;
         mesh.materialIndex = src.materialIndex;
+        mesh.meshName = src.meshName;
         mesh.fvf = src.fvf;
         mesh.vertexCount = src.vertexCount;
         mesh.hasTangents = src.hasTangents;

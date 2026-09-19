@@ -404,22 +404,66 @@ void do_export_gltf_model(HWND hwnd) {
     std::wstring path;
     if (!prompt_gltf_save_path(hwnd, path)) return;
 
-    // Bake the model's real GW2-shaded appearance into flat textures before
-    // handing a copy off to the background writer thread, using the "Game
-    // 1:1" bgfx view rather than castlemist::render's own D3D11 "Shader" mode:
-    // that view runs the actual vendored bgfx engine and is independently
-    // verified correct, where the D3D11 path is a hand-translated
-    // reimplementation that has twice produced wrong bake output. This issues
-    // bgfx calls, so it must happen here on the UI thread, and it targets a
-    // *copy* of the model so the live preview's own data is never touched.
+    // Export the model's textures exactly as decoded (diffuse/normal, with
+    // their own real UVs and materials), with no real-shader bake pass over
+    // them. bake_model_textures() (gw2bgfx_view.cpp) rasterizes each
+    // material's geometry into a render target sized off the SOURCE texture's
+    // own dimensions -- fine in principle, but several real materials decode
+    // at (or get clamped to) a 512-square texture whose UV space does not
+    // actually cover the whole unit square, so the bake cuts off content that
+    // the plain, unbaked texture -- sampled with the mesh's real UVs, same as
+    // castlemist's own preview -- has in full. Kept as a *copy* of the model
+    // regardless, so the live preview's own data is never touched by the
+    // background writer thread below.
+    auto model = std::make_shared<ModelPreview>(*g_app->current_entry.model);
+
+    std::string glbPath = castlemist::core::to_ansi(path);
+    SetWindowTextW(g_app->hwnd_status_label, L"Exporting glTF...");
+
+    std::thread([hwnd, model, glbPath]() {
+        g_gltf_export_result = castlemist::exportgltf::export_model_gltf(*model, glbPath);
+        PostMessageW(hwnd, WM_APP_GLTF_EXPORT_DONE, 0, 0);
+    }).detach();
+}
+
+// For materials whose own UVs are a trim sheet (tiled far outside [0,1],
+// reused across many unrelated parts of the mesh): do_export_gltf_model()'s
+// plain textures are correct in castlemist's own preview (which samples them
+// with the mesh's real, tiling UVs) but don't hand a downstream tool expecting
+// one self-contained, non-tiling texture per material (Blender's principled
+// shader, then a Unity/VRChat material like Poiyomi or a Filamented setup)
+// anything it can use directly. This generates a brand-new, non-overlapping UV
+// layout per material with xatlas and bakes the real GW2-shaded appearance
+// into it instead -- see bake_model_atlas()'s own doc comment for exactly how.
+void do_export_gltf_model_atlas(HWND hwnd) {
+    if (!g_app->has_loaded_entry || g_app->current_entry.kind != PreviewKind::Model ||
+        !g_app->current_entry.model) {
+        MessageBoxW(hwnd, L"Select a model entry first.", L"castlemist", MB_ICONINFORMATION);
+        return;
+    }
+
+    // Baking is a one-way trip -- see bake_model_atlas's own doc comment --
+    // so ask which materials should get it before doing anything else. A
+    // material the user leaves unchecked exports exactly like "Export glTF
+    // (Model)" (plain, original textures/UVs, still editable).
+    BakeSelectResult sel = show_bake_select_dialog(hwnd, *g_app->current_entry.model);
+    if (!sel.proceed) return; // cancelled -- abort the export entirely
+
+    std::wstring path;
+    if (!prompt_gltf_save_path(hwnd, path)) return;
+
+    // Issues bgfx calls, so it must happen here on the UI thread, and it
+    // targets a *copy* of the model so the live preview's own data (and its
+    // original UVs, still needed for castlemist's own display) are never
+    // touched.
     auto model = std::make_shared<ModelPreview>(*g_app->current_entry.model);
     if (castlemist::gw2bgfxview::available() && g_app->hwnd_model_bgfx) {
         HCURSOR old_cursor = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
-        SetWindowTextW(g_app->hwnd_status_label, L"Baking materials...");
+        SetWindowTextW(g_app->hwnd_status_label, L"Generating UV atlas and baking materials...");
         std::string bakeError;
         if (castlemist::gw2bgfxview::initialize(g_app->hwnd_model_bgfx) &&
             castlemist::gw2bgfxview::set_model(g_app->data_gw2, g_app->current_mft_index, bakeError)) {
-            castlemist::gw2bgfxview::bake_model_textures(*model);
+            castlemist::gw2bgfxview::bake_model_atlas(*model, 2048, &sel.selected);
         }
         SetCursor(old_cursor);
     }

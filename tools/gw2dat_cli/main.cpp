@@ -788,12 +788,23 @@ void cmd_model(const Args& a) {
         for (size_t k = 0; k < m.vertices.size() && k < 6; ++k)
             sampleIdx.push_back({m.vertices[k].boneIdx[0], m.vertices[k].boneIdx[1],
                                  m.vertices[k].boneIdx[2], m.vertices[k].boneIdx[3]});
+        float u0mn=1e9f,u0mx=-1e9f,v0mn=1e9f,v0mx=-1e9f,u1mn=1e9f,u1mx=-1e9f,v1mn=1e9f,v1mx=-1e9f;
+        for (const auto& v : m.vertices) {
+            u0mn=std::min(u0mn,v.u); u0mx=std::max(u0mx,v.u);
+            v0mn=std::min(v0mn,v.v); v0mx=std::max(v0mx,v.v);
+            u1mn=std::min(u1mn,v.uv[0][0]); u1mx=std::max(u1mx,v.uv[0][0]);
+            v1mn=std::min(v1mn,v.uv[0][1]); v1mx=std::max(v1mx,v.uv[0][1]);
+        }
         meshes.push_back({{"fvf", m.fvf},
+                          {"uv0Range", {u0mn,u0mx,v0mn,v0mx}},
+                          {"uv1Range", {u1mn,u1mx,v1mn,v1mx}},
                           {"vertexCount", m.vertices.size()},
                           {"declaredVertexCount", m.vertexCount},
                           {"indexCount", m.indices.size()},
                           {"triangles", m.indices.size() / 3},
                           {"materialIndex", m.materialIndex},
+                          {"meshName", m.meshName},
+                          {"materialName", m.materialName},
                           {"hasSkin", m.hasSkin},
                           {"boneBindingCount", m.boneBindings.size()},
                           {"resolvedBindings", [&]{ int n=0; for(int x:m.boneBindingSkelIndex) if(x>=0)++n; return n; }()},

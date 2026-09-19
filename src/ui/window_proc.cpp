@@ -29,12 +29,15 @@ HMENU build_menu() {
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_COMPRESSED, L"Export &Compressed (Before)...");
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_DECOMPRESSED, L"Export &Decompressed (After)...");
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_GLTF_MODEL, L"Export &glTF (Model)...");
+    AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_GLTF_MODEL_ATLAS,
+                L"Export glTF (Model, &Baked UV Atlas)...");
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_GLTF_MAP, L"Export glTF (&Map)...");
     AppendMenuW(g_file_menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXIT, L"E&xit");
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_COMPRESSED, MF_GRAYED | MF_DISABLED);
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_DECOMPRESSED, MF_GRAYED | MF_DISABLED);
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MODEL, MF_GRAYED | MF_DISABLED);
+    EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MODEL_ATLAS, MF_GRAYED | MF_DISABLED);
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MAP, MF_GRAYED | MF_DISABLED);
 
     HMENU tools_menu = CreatePopupMenu();
@@ -686,6 +689,12 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         g_app->hwnd_tex_reduced =
             CreateWindowExW(0, L"BUTTON", L"Reduced tex", WS_CHILD | BS_AUTOCHECKBOX | BS_PUSHLIKE, 0, 0, 0, 0, hwnd,
                              reinterpret_cast<HMENU>(ID_TEX_REDUCED), g_hinstance, nullptr);
+        // Opens a popup showing the UV0 wireframe of whichever submesh the combo
+        // above has selected -- for cross-referencing against Blender's UV editor
+        // when an export's textures don't look like castlemist's own preview.
+        g_app->hwnd_uv_map_btn =
+            CreateWindowExW(0, L"BUTTON", L"UV Map", WS_CHILD | BS_PUSHBUTTON, 0, 0, 0, 0, hwnd,
+                             reinterpret_cast<HMENU>(ID_UV_MAP_BTN), g_hinstance, nullptr);
         // Blender-style transform gizmo: Move / Rotate / Scale mode buttons (push-
         // like radio group), a Grid toggle, and a Reset. Move is the default mode.
         g_app->hwnd_gizmo_move =
@@ -1209,6 +1218,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         case ID_FILE_EXPORT_GLTF_MODEL:
             do_export_gltf_model(hwnd);
             return 0;
+        case ID_FILE_EXPORT_GLTF_MODEL_ATLAS:
+            do_export_gltf_model_atlas(hwnd);
+            return 0;
         case ID_FILE_EXPORT_GLTF_MAP:
             do_export_gltf_map(hwnd);
             return 0;
@@ -1242,7 +1254,11 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                 refresh_lod_controls();
                 castlemist::render::set_highlight_submesh(lod_target_submesh());
                 InvalidateRect(g_app->hwnd_preview, nullptr, FALSE);
+                uv_map_notify_changed();
             }
+            return 0;
+        case ID_UV_MAP_BTN:
+            open_uv_map_viewer(hwnd);
             return 0;
         case ID_LOD_COMBO:
             if (HIWORD(wparam) == CBN_SELCHANGE) {

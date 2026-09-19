@@ -58,6 +58,16 @@ struct Mesh {
     std::vector<uint64_t> boneBindings;
     std::vector<int> boneBindingSkelIndex; // boneBindings[k] -> skeleton bone index (-1 = unresolved)
     bool hasSkin = false;                 // FVF carries blend weights + indices
+
+    // ModelMeshDataV66.meshName (token64, decoded via detokenizeName64 below)
+    // and .materialName (a real char_ptr C string) -- an artist-authored label
+    // per submesh/material, e.g. "hull_plank_04". spjinx/t3d's exporter prefers
+    // materialName over any numeric fallback for its glTF material names
+    // (RenderUtils.ts: `finalMaterial.name = rawMesh.materialName || ...`).
+    // Both are frequently empty/zero on real models (not every mesh is named),
+    // in which case the caller falls back to a numeric identifier.
+    std::string meshName;      // decoded from the token64, letters only (see detokenizeName64)
+    std::string materialName;  // read directly, whatever the file stores
 };
 
 // GW2 bone-name -> token64 (reverse of engine sub_140E3B5E0, ModelBones.cpp).
@@ -97,6 +107,31 @@ inline uint64_t tokenizeBoneName(const std::string& name) {
         tok |= val << i;
     }
     return tok;
+}
+
+/// @brief Inverse of ::tokenizeBoneName, for any token64 built the same way --
+///        used on `ModelMeshDataV66.meshName` (see the Mesh::meshName doc
+///        comment), which is the same field family (token64, alongside
+///        `visBone` and `boneBindings[]`) and almost certainly the same
+///        engine-wide name-packing scheme, not the unrelated base-23
+///        ::decodeToken23 used for short shader-constant names.
+///
+/// Lossy in one respect the forward direction is too: a-z and A-Z pack to the
+/// same 1..26 codes, so the original capitalization never round-trips and
+/// this always returns lowercase. The two-digit numeric suffix (top nibble)
+/// is lossier still -- `tokenizeBoneName` folds it through `(last + 10*sec) &
+/// 0xF`, a many-to-one hash of the two ASCII digit bytes into 4 bits, which
+/// has no unique inverse -- so it is not reconstructed here at all; a name
+/// like "Wing01" decodes back as "wing" with the suffix silently dropped.
+/// Empty for a zero token (GW2's own "unnamed" convention).
+inline std::string detokenizeName64(uint64_t tok) {
+    std::string out;
+    for (int i = 0; i < 60; i += 5) {
+        uint64_t val = (tok >> i) & 0x1Full;
+        if (val == 0) break; // encoder never writes 0 for a real character; 0 = end of name
+        if (val <= 26) out.push_back(static_cast<char>('a' + val - 1));
+    }
+    return out;
 }
 
 struct MatTexture {
@@ -2082,6 +2117,18 @@ private:
 
     // self-relative pointer at field position p -> absolute target (0 if null)
     size_t follow(size_t p) const { uint64_t s = rdPtr(p); return s ? p + (size_t)s : 0; }
+
+    /// @brief Reads a null-terminated C string starting at absolute offset `p`
+    ///        (already resolved via follow() -- a raw char_ptr field). Bounds
+    ///        the scan to the packfile's own size and caps the length so a
+    ///        corrupt/non-null-terminated field can't run away.
+    std::string readCString(size_t p) const {
+        if (!p || p >= n_) return {};
+        size_t end = p;
+        size_t cap = std::min(n_, p + 4096);
+        while (end < cap && d_[end] != 0) ++end;
+        return std::string(reinterpret_cast<const char*>(d_ + p), end - p);
+    }
     // array_ptr header at p: out count + base offset of elements (0 if empty)
     size_t arrayAt(size_t p, uint32_t& count) const {
         count = rd32(p);
@@ -2251,6 +2298,11 @@ private:
         Mesh mesh;
         size_t off; json fj;
         if (fieldOffset(meshType, "materialIndex", off, fj)) mesh.materialIndex = rd32(s + off);
+        if (fieldOffset(meshType, "meshName", off, fj)) mesh.meshName = detokenizeName64(rd64(s + off));
+        if (fieldOffset(meshType, "materialName", off, fj)) {
+            size_t strAt = follow(s + off);
+            if (strAt) mesh.materialName = readCString(strAt);
+        }
         if (fieldOffset(meshType, "minBound", off, fj)) for (int i=0;i<3;++i) mesh.minB[i]=rdf(s+off+4*i);
         if (fieldOffset(meshType, "maxBound", off, fj)) for (int i=0;i<3;++i) mesh.maxB[i]=rdf(s+off+4*i);
         // boneBindings: token64[] -- vertex BlendIndices index into this table.

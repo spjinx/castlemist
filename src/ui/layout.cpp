@@ -166,6 +166,7 @@ void layout_children(int client_w, int client_h) {
     ShowWindow(g_app->hwnd_submesh_combo, (show_model && !show_map) ? SW_SHOW : SW_HIDE);
     ShowWindow(g_app->hwnd_lod_combo, (show_model && !show_map) ? SW_SHOW : SW_HIDE);
     ShowWindow(g_app->hwnd_tex_reduced, (show_model && !show_map) ? SW_SHOW : SW_HIDE);
+    ShowWindow(g_app->hwnd_uv_map_btn, (show_model && !show_map) ? SW_SHOW : SW_HIDE);
     bool gizmo_ui = show_model && !show_map;
     ShowWindow(g_app->hwnd_gizmo_move, gizmo_ui ? SW_SHOW : SW_HIDE);
     ShowWindow(g_app->hwnd_gizmo_rotate, gizmo_ui ? SW_SHOW : SW_HIDE);
@@ -327,6 +328,7 @@ void layout_children(int client_w, int client_h) {
                 tb.push_back({g_app->hwnd_submesh_combo, 190, comboH, 0});
                 tb.push_back({g_app->hwnd_lod_combo, 90, comboH, 0});
                 tb.push_back({g_app->hwnd_tex_reduced, 100, kButtonH, 0});
+                tb.push_back({g_app->hwnd_uv_map_btn, 70, kButtonH, 0});
                 if (castlemist::texpanel::row_count(g_app->hwnd_tex_info) > 0)
                     tb.push_back({g_app->hwnd_tex_panel, 74, kButtonH, 0});
                 tb.push_back({g_app->hwnd_effects_toggle, 76, kButtonH, 0});

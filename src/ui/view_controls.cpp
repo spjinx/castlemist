@@ -24,6 +24,8 @@ void set_export_enabled(bool enabled) {
     bool mapReady = enabled && g_app != nullptr &&
                     g_app->current_entry.kind == PreviewKind::Map && g_app->current_entry.map;
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MODEL, modelReady ? MF_ENABLED : (MF_GRAYED | MF_DISABLED));
+    EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MODEL_ATLAS,
+                   modelReady ? MF_ENABLED : (MF_GRAYED | MF_DISABLED));
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MAP, mapReady ? MF_ENABLED : (MF_GRAYED | MF_DISABLED));
 }
 
@@ -251,6 +253,7 @@ void populate_lod_controls() {
     }
     SendMessageW(g_app->hwnd_submesh_combo, CB_SETCURSEL, 0, 0);
     refresh_lod_controls();
+    uv_map_notify_changed();
 }
 
 // Index of the audio sound currently selected (0 for single-clip entries).
