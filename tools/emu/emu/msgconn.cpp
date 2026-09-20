@@ -63,9 +63,17 @@ void Protocol::decode_field(Reader& r, const Field& f, Value& v) const {
                 for (const auto& nf : f.nested->fields) { Value nv; decode_field(r, nf, nv); }
             break;
         }
-        case MP_NESTED: {                 // embedded struct
-            if (f.nested)
-                for (const auto& nf : f.nested->fields) { Value nv; decode_field(r, nf, nv); }
+        case MP_VARINT: {                 // compressed u32: 7 bits/byte, high bit = more
+            uint32_t val = 0;
+            std::vector<uint8_t> raw;
+            for (int shift = 0; shift <= 28; shift += 7) {
+                uint8_t b = r.u8();
+                raw.push_back(b);
+                val |= (uint32_t)(b & 0x7f) << shift;
+                if (!(b & 0x80)) break;
+            }
+            v.raw = std::move(raw);
+            v.text = std::to_string(val);
             break;
         }
         default:

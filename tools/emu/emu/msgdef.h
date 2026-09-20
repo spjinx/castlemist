@@ -20,13 +20,20 @@ enum MpType : uint8_t {
     MP_WORD       = 0x01, // 2B
     MP_BYTE       = 0x02, // 1B
     MP_WORD2      = 0x03, // 2B
-    MP_NESTED     = 0x04, // embedded struct (nested def)
+    // NOT a nested struct -- confirmed against kx-packet-inspector's decompiled
+    // MsgUnpack::ParseWithSchema (case 4 calls a dedicated varint decoder, not
+    // the generic struct-copy path). Compressed (LEB128-style) u32: 7 bits per
+    // byte, high bit = more bytes follow, max 5 bytes on the wire.
+    MP_VARINT     = 0x04,
     MP_QWORD      = 0x05, // 8B
     MP_DWORD      = 0x06, // 4B
     MP_QWORD2     = 0x07, // 8B
     MP_VEC3       = 0x08, // 12B (3xf32)
     MP_VEC4       = 0x09, // 16B (4xf32)
-    MP_VEC3X      = 0x0A, // 12B + ext
+    // Wire size is 16B, not 12 -- ParseWithSchema's case 0xA does the same
+    // 0x10-byte generic copy as VEC4/OWORD (cross-checked against
+    // kx-packet-inspector; likely vec3 + a packed extra field within the 16B).
+    MP_VEC3X      = 0x0A,
     MP_OWORD      = 0x0B, // 16B
     MP_STRUCT28   = 0x0C, // 28B fixed struct
     MP_STRING     = 0x0D, // UTF-16LE, null-terminated, max = count code units
@@ -38,6 +45,7 @@ enum MpType : uint8_t {
     MP_BLOB_FIXED = 0x13, // fixed byte blob of `count`
     MP_BLOB_U8    = 0x14, // u8 length (max count), then bytes
     MP_BLOB_U16   = 0x15, // u16 length (max count), then bytes
+    MP_SRV_ALIGN  = 0x16, // server-only pad; client aborts parsing if it sees this
     MP_DWORD2     = 0x17, // 4B
     MP_SRV_END    = 0x18, // pad to 4B (server); no client bytes
     MP_DWORD3     = 0x19, // 4B
@@ -47,7 +55,7 @@ enum MpType : uint8_t {
 struct Field {
     MpType   type;
     uint32_t count = 0;   // max chars / max bytes / fixed array or blob length
-    const struct MsgDef* nested = nullptr; // for NESTED/ARR_*/OPTIONAL
+    const struct MsgDef* nested = nullptr; // for ARR_*/OPTIONAL
     const char* label = "";
 };
 
@@ -66,8 +74,8 @@ inline size_t fixed_size(MpType t) {
         case MP_WORD: case MP_WORD2: return 2;
         case MP_DWORD: case MP_DWORD2: case MP_DWORD3: return 4;
         case MP_QWORD: case MP_QWORD2: case MP_QWORD3: return 8;
-        case MP_VEC3: case MP_VEC3X: return 12;
-        case MP_VEC4: case MP_OWORD: return 16;
+        case MP_VEC3: return 12;
+        case MP_VEC4: case MP_OWORD: case MP_VEC3X: return 16;
         case MP_STRUCT28: return 28;
         case MP_SRV_END: return 0; // client sends nothing
         default: return 0;         // variable / nested
