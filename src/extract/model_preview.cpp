@@ -12,6 +12,7 @@
 #include <span>
 #include "castlemist/native/cmp_decompress_method0.hpp"
 #include "castlemist/core/packfile.h"
+#include "castlemist/core/text.h"
 
 namespace castlemist::extract {
 
@@ -24,9 +25,11 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
     } catch (const std::exception&) {
         return nullptr;
     }
-    if (model.meshes.empty()) {
-        return nullptr;
-    }
+    // An anim-only MODL (a container "MODL" packfile with ANIM/SKEL chunks but
+    // no GEOM) has no meshes at all -- it is still worth previewing as a bare
+    // skeleton + its clips, so meshes.empty() alone is not disqualifying; the
+    // real "nothing here" bail-out is further down, once the skeleton (inline
+    // or external) is known too.
 
     auto out = std::make_shared<ModelPreview>();
 
@@ -281,8 +284,23 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
         out->totalTris += static_cast<uint32_t>(mesh.indices.size() / 3);
         out->meshes.push_back(std::move(mesh));
     }
-    if (out->totalVerts == 0) {
+    // Bail only when there is truly nothing to show: no mesh AND no skeleton.
+    // An anim-only MODL has the latter but not the former (see the comment at
+    // the top of this function) and is still worth a skeleton-only preview.
+    if (out->totalVerts == 0 && skel->bones.empty()) {
         return nullptr;
+    }
+    if (out->totalVerts == 0) {
+        // No mesh to bound -- fall back to the skeleton's own bind-pose extents
+        // so the camera frames the rig instead of inheriting the +-1e30
+        // sentinel bounds above (which would put the "model" astronomically
+        // far from the orbit camera; see geometry.cpp's set_model()).
+        for (const auto& b : skel->bones) {
+            lo[0] = std::min(lo[0], b.worldPos[0]); lo[1] = std::min(lo[1], b.worldPos[1]);
+            lo[2] = std::min(lo[2], b.worldPos[2]);
+            hi[0] = std::max(hi[0], b.worldPos[0]); hi[1] = std::max(hi[1], b.worldPos[1]);
+            hi[2] = std::max(hi[2], b.worldPos[2]);
+        }
     }
 
     // Authored cloth pieces (ModelFileData.clothData) -> CPU proxy meshes for the
@@ -414,6 +432,45 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
     out->radius = 0.5f * std::sqrt(ext[0] * ext[0] + ext[1] * ext[1] + ext[2] * ext[2]);
     if (out->radius < 1e-3f) out->radius = 1.0f;
     return out;
+}
+
+// Text fallback for a MODL that build_model_preview() turned down (no mesh AND
+// no skeleton -- inline or external). Verified against real anim-only MODLs
+// (e.g. base_id 66 in a live gw2index): a "locomotion bank" file carries clips
+// but literally no Skeleton chunk of its own, inline or by reference -- the
+// character/mount model that IMPORTS it as an animation bank (see
+// resolveAnimImports's caller comment) owns the actual rig, so there is no
+// skeleton here to pose. Still worth describing: each clip's name/duration and
+// the bone names its tracks drive (Granny keys tracks by name, not index).
+std::wstring describe_animation_only_modl(const std::vector<uint8_t>& modl_bytes, const nlohmann::json& tpl) {
+    castlemist::model::Model model;
+    try {
+        model = castlemist::model::Extractor(modl_bytes, tpl).extract();
+    } catch (const std::exception&) {
+        return {};
+    }
+    if (!model.anim.present || model.anim.clips.empty()) return {};
+
+    std::wstring s = L"GW2 animation-only model (no mesh, no skeleton in this file)\r\n"
+                      L"Its clip(s) drive bones by name in whichever character/mount model\r\n"
+                      L"imports this file as an animation bank -- there is no rig here to pose.\r\n\r\n";
+    wchar_t line[256];
+    for (const auto& c : model.anim.clips) {
+        if (c.rawGranny.empty()) continue;
+        castlemist::granny::Anim clip = castlemist::granny::parse(c.rawGranny.data(), c.rawGranny.size(), c.ptrSize);
+        if (!clip.valid) continue;
+        swprintf(line, 256, L"Clip \"%hs\" -- %.2fs, %zu bone track(s)\r\n",
+                 clip.name.empty() ? "(unnamed)" : clip.name.c_str(), clip.duration, clip.tracks.size());
+        s += line;
+        s += L"  bones: ";
+        for (size_t i = 0; i < clip.tracks.size() && i < 24; ++i) {
+            if (i) s += L", ";
+            s += castlemist::core::from_ascii(clip.tracks[i].name);
+        }
+        if (clip.tracks.size() > 24) s += L", ...";
+        s += L"\r\n\r\n";
+    }
+    return s;
 }
 
 // Convenience overload for the single-model preview path, which (by design,

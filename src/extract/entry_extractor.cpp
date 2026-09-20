@@ -29,6 +29,71 @@
 
 namespace castlemist::extract {
 
+// Anim blend tree ("anic" container, "mach" chunk = PackAnimMachine* -- GW2's
+// animation state-machine graph, see include/castlemist/native/gw2model.hpp's
+// ::AnimMachineSet). It carries no mesh or skeleton of its own, only named
+// states/transitions and which model(s) it drives (AnimMachineModelRef.
+// modelFileId, a plain inline fileId dword). Preview it by loading whichever
+// referenced model actually builds -- skeleton-only is fine, and several of
+// these reference an anim-only MODL themselves -- falling back to a text
+// summary of the state graph if no referenced model is usable.
+bool build_anim_machine_preview(ExtractedEntry& result, const std::vector<uint8_t>& bytes,
+                                const std::string& dat_path, const nlohmann::json& tpl) {
+    castlemist::model::AnimMachineSet set;
+    try {
+        set = castlemist::model::Extractor(bytes, tpl).parseAnimMachines();
+    } catch (const std::exception&) {
+        return false;
+    }
+    if (set.machineType.empty()) return false;
+
+    std::wstring summary = L"GW2 animation blend tree (" + castlemist::core::from_ascii(set.machineType) + L")\r\n";
+    wchar_t line[200];
+    swprintf(line, 200, L"%zu machine(s), %zu referenced model(s)\r\n\r\n", set.machines.size(), set.models.size());
+    summary += line;
+    for (size_t mi = 0; mi < set.machines.size(); ++mi) {
+        const auto& mach = set.machines[mi];
+        swprintf(line, 200, L"Machine %zu: %zu state(s)\r\n", mi, mach.states.size());
+        summary += line;
+        for (const auto& st : mach.states) {
+            summary += L"  ";
+            summary += castlemist::core::from_ascii(st.name.empty() ? "(unnamed)" : st.name);
+            if (!st.transitions.empty()) {
+                summary += L" -> ";
+                for (size_t ti = 0; ti < st.transitions.size(); ++ti) {
+                    if (ti) summary += L", ";
+                    summary += castlemist::core::from_ascii(st.transitions[ti].targetStateName);
+                }
+            }
+            summary += L"\r\n";
+        }
+    }
+
+    if (!dat_path.empty()) {
+        Gw2Dat dat;
+        bool dat_ok = true;
+        try { load_dat_file(dat, dat_path); } catch (const std::exception&) { dat_ok = false; }
+        if (dat_ok) {
+            for (const auto& mref : set.models) {
+                if (!mref.modelFileId) continue;
+                std::vector<uint8_t> modelBytes = load_modl_bytes_by_fileid(dat, mref.modelFileId);
+                if (modelBytes.empty()) continue;
+                auto preview = build_model_preview(modelBytes, dat, tpl, /*want_game=*/true);
+                if (preview) {
+                    result.kind = PreviewKind::Model;
+                    result.model = std::move(preview);
+                    result.text_preview = std::move(summary);
+                    return true;
+                }
+            }
+        }
+    }
+    // No referenced model built -- still worth showing the state graph as text.
+    result.kind = PreviewKind::Text;
+    result.text_preview = std::move(summary);
+    return true;
+}
+
 // All the CPU-bound decompression/format-detection work, independent of how
 // `raw_bytes` was read off disk -- this is what makes it safe to run on a
 // background thread. `dat_path` is used to resolve model textures.
@@ -107,6 +172,42 @@ ExtractedEntry decompress_raw_entry(std::vector<uint8_t> raw_bytes, uint16_t com
                         result.model = build_model_preview(result.decompressed, dat_path, *tpl, /*want_game=*/true);
                     }
                     return result;
+                }
+                // Anim-only MODL: no GEOM mesh, but SKEL/ANIM means a skeleton (+
+                // clips) is still worth showing (model_preview.cpp's relaxed mesh/
+                // skeleton bail-out + geometry.cpp's mesh-less set_model() path).
+                // Scoped to the real MODL container so an unrelated packfile that
+                // happens to carry a same-named chunk can't misfire into this path.
+                if (ie.container == "MODL" && (db_has_chunk("SKEL") || db_has_chunk("ANIM"))) {
+                    auto tpl = castlemist::tpl::get_or_auto_load();
+                    if (tpl && !dat_path.empty()) {
+                        result.model = build_model_preview(result.decompressed, dat_path, *tpl, /*want_game=*/true);
+                    }
+                    if (result.model) {
+                        result.kind = PreviewKind::Model;
+                    } else if (tpl) {
+                        // Most real ANIM-only MODLs carry no skeleton at all, inline or
+                        // by reference (see describe_animation_only_modl's comment) --
+                        // nothing to render, but the clip names/durations/bone list are
+                        // still worth showing instead of "(no preview)".
+                        std::wstring desc = describe_animation_only_modl(result.decompressed, *tpl);
+                        if (!desc.empty()) {
+                            result.kind = PreviewKind::Text;
+                            result.text_preview = std::move(desc);
+                        } else {
+                            result.kind = PreviewKind::Model; // template loaded, genuinely nothing to show
+                        }
+                    } else {
+                        result.kind = PreviewKind::Model; // no template -> preview.cpp's own message
+                    }
+                    return result;
+                }
+                // Anim blend tree: no mesh/skeleton of its own, but names the
+                // model(s) it drives -- see build_anim_machine_preview() above.
+                if (ie.container == "anic" && db_has_chunk("mach")) {
+                    auto tpl = castlemist::tpl::get_or_auto_load();
+                    if (tpl && build_anim_machine_preview(result, result.decompressed, dat_path, *tpl))
+                        return result;
                 }
                 if (db_has_chunk("CSCN") && castlemist::core::is_packfile(result.decompressed, "CINP")) {
                     // Fall through to the sniffers below: the CINP path also reads
@@ -352,6 +453,42 @@ ExtractedEntry decompress_raw_entry(std::vector<uint8_t> raw_bytes, uint16_t com
             result.model = build_model_preview(result.decompressed, dat_path, *tpl, /*want_game=*/true);
         }
         return result;
+    }
+
+    // Anim-only MODL (no index loaded, so re-sniffed here instead of via
+    // ie.container/db_has_chunk above): no GEOM mesh, but SKEL/ANIM means a
+    // skeleton (+ clips) is still worth showing.
+    if (castlemist::core::is_packfile(result.decompressed, "MODL") &&
+        (castlemist::core::has_chunk(result.decompressed, "SKEL") ||
+         castlemist::core::has_chunk(result.decompressed, "ANIM"))) {
+        auto tpl = castlemist::tpl::get_or_auto_load();
+        if (tpl && !dat_path.empty()) {
+            result.model = build_model_preview(result.decompressed, dat_path, *tpl, /*want_game=*/true);
+        }
+        if (result.model) {
+            result.kind = PreviewKind::Model;
+        } else if (tpl) {
+            // See the DB-first path above: most real ANIM-only MODLs carry no
+            // skeleton at all, so describe the clip(s) instead of showing nothing.
+            std::wstring desc = describe_animation_only_modl(result.decompressed, *tpl);
+            if (!desc.empty()) {
+                result.kind = PreviewKind::Text;
+                result.text_preview = std::move(desc);
+            } else {
+                result.kind = PreviewKind::Model;
+            }
+        } else {
+            result.kind = PreviewKind::Model;
+        }
+        return result;
+    }
+
+    // Anim blend tree (no index loaded): same "anic" + "mach" chunk check as
+    // the DB-first path above, re-sniffed here instead of via ie.container.
+    if (castlemist::core::is_packfile(result.decompressed, "anic") &&
+        castlemist::core::has_chunk(result.decompressed, "mach")) {
+        auto tpl = castlemist::tpl::get_or_auto_load();
+        if (tpl && build_anim_machine_preview(result, result.decompressed, dat_path, *tpl)) return result;
     }
 
     // Fallback: printable text (html/css/js/xml/...).

@@ -288,15 +288,19 @@ void render() {
         return;
     }
 
-    if (!g_has_model || !g_vb || !g_ib) {
+    // An anim-only MODL (no GEOM chunk, see set_model()) has a skeleton but no
+    // mesh -- g_vb/g_ib stay null, so there's nothing for the mesh-draw block
+    // below to touch, but the skeleton overlay further down doesn't need them.
+    if (!g_has_model) {
         g_swap->Present(1, 0);
         return;
     }
+    bool hasMesh = g_vb && g_ib;
 
     // GameShader mode draws each submesh with its own game bgfx VS+PS; the
     // reconstruction (Full/Plain/Wireframe) path is skipped. Falls back to the
     // reconstruction draw if no material had usable game shaders.
-    bool useGame = (g_mode == RenderMode::GameShader) && g_game_any_ok;
+    bool useGame = hasMesh && (g_mode == RenderMode::GameShader) && g_game_any_ok;
     bool wire = (g_mode == RenderMode::Wireframe);
     bool textured = (g_mode == RenderMode::Full);
     if (!useGame) g_ctx->RSSetState(wire ? g_rsWire.Get() : g_rsSolid.Get());
@@ -317,6 +321,7 @@ void render() {
     float lightMode = g_light_follow ? 1.0f : 0.0f;   // 1 => envLight uses the camera headlight
     const float bf[4] = {0, 0, 0, 0};
 
+    if (hasMesh) {
     if (useGame) {
         // CPU-skin once (the game VS take pre-skinned verts); the same buffer feeds
         // both the light pre-pass and the material draw so their geometry matches.
@@ -484,6 +489,7 @@ void render() {
     // reconstruction VS/PS/input-layout still bound above.
     render_cloth_proxy(model, mvp, L);
     } // end reconstruction path (!useGame)
+    } // end hasMesh
 
     // "Which submesh is selected" overlay: the picked submesh's own triangles,
     // redrawn as a bright wireframe over whatever was already drawn (either

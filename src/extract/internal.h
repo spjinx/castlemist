@@ -164,6 +164,11 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
                                                   const std::string& dat_path,
                                                   const nlohmann::json& tpl, bool want_game = false);
 
+/// @brief Text fallback for a MODL build_model_preview() turned down (no mesh
+/// AND no skeleton anywhere in the file). Empty when there is nothing to
+/// describe either (not even an animation clip).
+std::wstring describe_animation_only_modl(const std::vector<uint8_t>& modl_bytes, const nlohmann::json& tpl);
+
 // ---------------------------------------------------------------- map scene --
 // map_scene.cpp
 

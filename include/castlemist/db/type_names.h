@@ -22,15 +22,25 @@ const char* coarse_type_name(const std::string& type);
 /// confirmed identity for the container, so the caller falls back to the raw
 /// fourcc instead of guessing.
 ///
-/// Sourced from identifications already confirmed elsewhere in this repo:
-/// dumps/packfile/gw2_packfile.json (the IDA strucTabs struct registry
-/// index_builder.cpp's chunk resolver consults -- e.g. container "mach" nests
-/// PackAnimMachine/PackAnimMachineState/PackAnimMachineTransition/
-/// PackAnimMachineAction structs, GW2's animation state-machine graph) and
-/// docs/research/filetypes.md plus the container-identifying comments already
-/// in entry_extractor.cpp, content_store.cpp and gw2-shaders-dxbc.md (ASND/
-/// ABNK/AMSP audio, PIMG/PGTB atlases, cntc content database, AMAT/GRMT
-/// materials, mapc/area maps).
+/// Every mapping is confirmed against a real gw2index build (see
+/// type_names.cpp's top-of-function comment): join `entries.container` to
+/// `chunks.struct_variant` and read the struct names index_builder.cpp's own
+/// resolve_variant() already resolved for that exact container from
+/// dumps/packfile/gw2_packfile.json, e.g. container "anic" carries chunks
+/// mach/fall/seqn/cnfg resolving to PackAnimMachine/PackAnimFallback/
+/// PackAnimSequence/PackAnimConfig -- GW2's animation-graph container (what
+/// T3D calls an anim blend tree). This is deliberately NOT "look up a fourcc
+/// in the JSON and assume its top-level key is a container" -- an earlier
+/// version of this function did that and got several containers wrong (it
+/// named nested chunk fourccs -- "mach", "havk", "CSCN", "GRMT", ... -- as if
+/// they were containers in their own right, when the real container is
+/// "anic"/"hvkC"/"CINP"/"AMAT" etc.). Two exceptions to "struct-variant
+/// confirmed": txtp/Text Pack Passwords is IDA-confirmed instead
+/// (docs/research/filetypes.md section 2a), since it did not happen to
+/// appear in the sampled archive; "cmaC"/Collision Model Manifest and
+/// "mMet"/Map Metadata are circumstantial (see type_names.cpp's comment next
+/// to them) -- plausible from context, but not read out of the file the way
+/// e.g. "bone" was.
 const char* container_type_name(const std::string& container);
 
 } // namespace castlemist::db

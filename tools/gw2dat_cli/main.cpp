@@ -1111,8 +1111,14 @@ void cmd_animmach(const Args& a) {
 
     if (data.size() < 16 || data[0] != 'P' || data[1] != 'F') fail("not a PF packfile");
     std::string containerType = tag_at(data, 8);
-    if (containerType != "mach")
-        fail("container is '" + containerType + "', not 'mach' -- wrong --index/--file-id?");
+    // The real on-disk container is "anic" -- "mach" is the CHUNK fourcc
+    // findChunk() looks for inside it (confirmed against a real gw2index
+    // build: entries.container="anic" nests chunks mach/fall/seqn/cnfg). This
+    // check used to require the container itself to be "mach", which no real
+    // file's PF header ever is, so it always failed on a genuine anim-machine
+    // file passed via --dat --index/--file-id/--base-id.
+    if (containerType != "anic")
+        fail("container is '" + containerType + "', not 'anic' -- wrong --index/--file-id?");
 
     castlemist::model::AnimMachineSet set;
     try {

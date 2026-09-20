@@ -61,7 +61,10 @@ void set_model(const ModelPreview& model) {
     // A model preview takes the surface, but leaves any loaded map intact behind
     // it -- the "Map" toggle brings it straight back with no reload.
     g_scene_shown = false;
-    if (!g_dev || model.meshes.empty()) return;
+    // An anim-only MODL (no GEOM chunk) has no meshes but still carries a rig +
+    // clips -- model_preview.cpp keeps those (see build_model_preview's mesh/
+    // skeleton bail-out), so only bail here when there is truly nothing to show.
+    if (!g_dev || (model.meshes.empty() && model.joints.empty())) return;
 
     std::vector<GVertex> verts;
     std::vector<uint32_t> indices;
@@ -103,96 +106,99 @@ void set_model(const ModelPreview& model) {
         g_subs.push_back(std::move(s));
         ++meshOrdinal;
     }
-    if (verts.empty() || indices.empty()) {
-        g_subs.clear();
-        return;
-    }
+    bool hasMesh = !verts.empty() && !indices.empty();
+    if (!hasMesh) g_subs.clear();
 
-    D3D11_BUFFER_DESC bd{};
-    D3D11_SUBRESOURCE_DATA sd{};
-    bd.Usage = D3D11_USAGE_IMMUTABLE;
-    bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-    bd.ByteWidth = static_cast<UINT>(verts.size() * sizeof(GVertex));
-    sd.pSysMem = verts.data();
-    if (FAILED(g_dev->CreateBuffer(&bd, &sd, &g_vb))) { clear_model(); return; }
-    bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
-    bd.ByteWidth = static_cast<UINT>(indices.size() * sizeof(uint32_t));
-    sd.pSysMem = indices.data();
-    if (FAILED(g_dev->CreateBuffer(&bd, &sd, &g_ib))) { clear_model(); return; }
+    if (hasMesh) {
+        D3D11_BUFFER_DESC bd{};
+        D3D11_SUBRESOURCE_DATA sd{};
+        bd.Usage = D3D11_USAGE_IMMUTABLE;
+        bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+        bd.ByteWidth = static_cast<UINT>(verts.size() * sizeof(GVertex));
+        sd.pSysMem = verts.data();
+        if (FAILED(g_dev->CreateBuffer(&bd, &sd, &g_vb))) { clear_model(); return; }
+        bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
+        bd.ByteWidth = static_cast<UINT>(indices.size() * sizeof(uint32_t));
+        sd.pSysMem = indices.data();
+        if (FAILED(g_dev->CreateBuffer(&bd, &sd, &g_ib))) { clear_model(); return; }
 
-    // Materials (indexed by material.index).
-    uint32_t maxIdx = 0;
-    for (const auto& m : model.materials) maxIdx = std::max(maxIdx, m.index);
-    g_mats.resize(model.materials.empty() ? 0 : maxIdx + 1);
-    for (const auto& m : model.materials) {
-        MaterialGPU g;
-        for (int k = 0; k < 4; ++k) g.tint[k] = m.tint[k];
-        g.isEffect = m.isEffect;
-        g.kind = m.kind;
-        if (m.diffuseTex >= 0 && m.diffuseTex < static_cast<int>(model.textures.size())) {
-            const auto& t = model.textures[m.diffuseTex];
-            g.srv = make_srv(t.rgba, t.width, t.height);
-            g.srvReduced = make_srv_half(t.rgba, t.width, t.height);
-            g.cutout = t.hasCutout;
+        // Materials (indexed by material.index).
+        uint32_t maxIdx = 0;
+        for (const auto& m : model.materials) maxIdx = std::max(maxIdx, m.index);
+        g_mats.resize(model.materials.empty() ? 0 : maxIdx + 1);
+        for (const auto& m : model.materials) {
+            MaterialGPU g;
+            for (int k = 0; k < 4; ++k) g.tint[k] = m.tint[k];
+            g.isEffect = m.isEffect;
+            g.kind = m.kind;
+            if (m.diffuseTex >= 0 && m.diffuseTex < static_cast<int>(model.textures.size())) {
+                const auto& t = model.textures[m.diffuseTex];
+                g.srv = make_srv(t.rgba, t.width, t.height);
+                g.srvReduced = make_srv_half(t.rgba, t.width, t.height);
+                g.cutout = t.hasCutout;
+            }
+            if (!m.isEffect && m.normalTex >= 0 && m.normalTex < static_cast<int>(model.textures.size())) {
+                const auto& t = model.textures[m.normalTex];
+                g.srvNormal = make_srv(t.rgba, t.width, t.height);
+                g.srvNormalReduced = make_srv_half(t.rgba, t.width, t.height);
+            }
+            if (m.hasRenderState) g.blend = make_blend_state_from_bgfx(m.renderState);
+            if (m.index < g_mats.size()) g_mats[m.index] = std::move(g);
         }
-        if (!m.isEffect && m.normalTex >= 0 && m.normalTex < static_cast<int>(model.textures.size())) {
-            const auto& t = model.textures[m.normalTex];
-            g.srvNormal = make_srv(t.rgba, t.width, t.height);
-            g.srvNormalReduced = make_srv_half(t.rgba, t.width, t.height);
+
+        // Keep the rest mesh + LOD0 topology for the live cloth sim (built lazily
+        // when the Cloth toggle is switched on). A DYNAMIC buffer receives each
+        // simulated frame; reused for any model regardless of skinning.
+        g_cloth.clear();
+        g_cloth_enabled = false;
+        g_cloth_file_active = false;
+        g_cloth_rest = verts;
+        g_cloth_lod0 = std::move(lod0idx);
+        g_cloth_work.clear();
+        g_cloth_pieces = model.clothPieces;   // authored cloth (file-driven path)
+        // Render-mesh vertex count per material -> tells a "direct" cloth piece (its
+        // proxy IS the visible geometry, no/low static mesh) from a coarse cage piece
+        // (a small proxy driving a big shared-material render mesh via a runtime bind
+        // we don't reproduce). Only direct pieces are simulated + drawn.
+        g_render_verts_per_mat.clear();
+        for (const auto& mm : model.meshes) {
+            // A mesh's materialIndex is only meaningful as an index into g_mats (built
+            // just above from model.materials); some real files carry a mesh with a
+            // huge/sentinel materialIndex (e.g. 0xFFFFFFFF, "no material"), and
+            // `mm.materialIndex + 1` on that wraps to 0, resizing this vector to
+            // EMPTY right before it gets indexed at 0xFFFFFFFF -- an out-of-bounds
+            // access that a debug/assertions libstdc++ build aborts on. Bound it to
+            // g_mats' already-sanitized size instead of trusting the file's value.
+            if (mm.materialIndex >= g_mats.size()) continue;
+            if (mm.materialIndex >= g_render_verts_per_mat.size())
+                g_render_verts_per_mat.resize(mm.materialIndex + 1, 0);
+            g_render_verts_per_mat[mm.materialIndex] += (uint32_t)mm.vertices.size();
         }
-        if (m.hasRenderState) g.blend = make_blend_state_from_bgfx(m.renderState);
-        if (m.index < g_mats.size()) g_mats[m.index] = std::move(g);
+        g_vb_cloth.Reset();
+        g_vb_clothproxy.Reset();
+        g_ib_clothproxy.Reset();
+        g_cloth_hide_mat.clear();
+        {
+            D3D11_BUFFER_DESC cbd{};
+            cbd.Usage = D3D11_USAGE_DYNAMIC;
+            cbd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+            cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            cbd.ByteWidth = static_cast<UINT>(verts.size() * sizeof(GVertex));
+            if (FAILED(g_dev->CreateBuffer(&cbd, nullptr, &g_vb_cloth))) g_vb_cloth.Reset();
+        }
     }
 
-    // Keep the rest mesh + LOD0 topology for the live cloth sim (built lazily
-    // when the Cloth toggle is switched on). A DYNAMIC buffer receives each
-    // simulated frame; reused for any model regardless of skinning.
-    g_cloth.clear();
-    g_cloth_enabled = false;
-    g_cloth_file_active = false;
-    g_cloth_rest = verts;
-    g_cloth_lod0 = std::move(lod0idx);
-    g_cloth_work.clear();
-    g_cloth_pieces = model.clothPieces;   // authored cloth (file-driven path)
-    // Render-mesh vertex count per material -> tells a "direct" cloth piece (its
-    // proxy IS the visible geometry, no/low static mesh) from a coarse cage piece
-    // (a small proxy driving a big shared-material render mesh via a runtime bind
-    // we don't reproduce). Only direct pieces are simulated + drawn.
-    g_render_verts_per_mat.clear();
-    for (const auto& mm : model.meshes) {
-        // A mesh's materialIndex is only meaningful as an index into g_mats (built
-        // just above from model.materials); some real files carry a mesh with a
-        // huge/sentinel materialIndex (e.g. 0xFFFFFFFF, "no material"), and
-        // `mm.materialIndex + 1` on that wraps to 0, resizing this vector to
-        // EMPTY right before it gets indexed at 0xFFFFFFFF -- an out-of-bounds
-        // access that a debug/assertions libstdc++ build aborts on. Bound it to
-        // g_mats' already-sanitized size instead of trusting the file's value.
-        if (mm.materialIndex >= g_mats.size()) continue;
-        if (mm.materialIndex >= g_render_verts_per_mat.size())
-            g_render_verts_per_mat.resize(mm.materialIndex + 1, 0);
-        g_render_verts_per_mat[mm.materialIndex] += (uint32_t)mm.vertices.size();
-    }
-    g_vb_cloth.Reset();
-    g_vb_clothproxy.Reset();
-    g_ib_clothproxy.Reset();
-    g_cloth_hide_mat.clear();
-    {
-        D3D11_BUFFER_DESC cbd{};
-        cbd.Usage = D3D11_USAGE_DYNAMIC;
-        cbd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-        cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        cbd.ByteWidth = static_cast<UINT>(verts.size() * sizeof(GVertex));
-        if (FAILED(g_dev->CreateBuffer(&cbd, nullptr, &g_vb_cloth))) g_vb_cloth.Reset();
-    }
-
+    // model.center/radius come from mesh bounds when there's a mesh, or the
+    // skeleton's bind-pose bounds when there isn't (see model_preview.cpp) --
+    // either way there's something sane here to frame the orbit camera on.
     g_center = {model.center[0], model.center[1], model.center[2]};
     g_radius = model.radius > 1e-3f ? model.radius : 1.0f;
     g_has_model = true;
-    build_game_materials(model); // real bgfx DXBC shaders for the "Shader" mode
-    build_skeleton(model);
-    capture_effects(model);      // baked particle clouds + effect lights
+    build_game_materials(model); // real bgfx DXBC shaders for the "Shader" mode; no-op with no materials
+    build_skeleton(model);       // mesh-independent: bind pose + clips from model.joints/animClips
+    capture_effects(model);      // baked particle clouds + effect lights; no-op with none
     // Skinning is possible whenever there's an inline rig (palette is dynamic).
-    g_skin_ok = !g_joints.empty() && g_bonePaletteSRV;
+    g_skin_ok = hasMesh && !g_joints.empty() && g_bonePaletteSRV;
     // For the game-shader path we CPU-skin, so keep a rest-pose vertex copy + a
     // DYNAMIC buffer to skin into (only for skinned models).
     if (g_skin_ok) {

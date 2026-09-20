@@ -12,6 +12,7 @@
 
 #include "castlemist/format/strs_keys.h"
 #include "castlemist/format/strs_view.h"
+#include "castlemist/format/struct_template.h"
 #include "castlemist/render/gw2bgfx_view.h"
 
 namespace castlemist::ui {
@@ -282,9 +283,17 @@ void apply_extracted_entry(uint32_t mft_index, ExtractedEntry&& entry) {
                 SetTimer(g_app->hwnd_main, TIMER_ANIM, 16, nullptr);
         } else {
             castlemist::render::clear_model();
-            SetWindowTextW(g_app->hwnd_text_preview,
-                           L"This is a .modl model, but no struct template is loaded.\r\n"
-                           L"Use File -> Load Struct JSON... (gw2_packfile.json) to enable model preview.");
+            if (castlemist::tpl::get_or_auto_load()) {
+                // A template IS loaded, so build_model_preview() ran and still
+                // came back null -- genuinely nothing to show (no mesh AND no
+                // skeleton), not the "no template" case below.
+                SetWindowTextW(g_app->hwnd_text_preview,
+                               L"This is a .modl model, but it has no mesh and no skeleton to preview.");
+            } else {
+                SetWindowTextW(g_app->hwnd_text_preview,
+                               L"This is a .modl model, but no struct template is loaded.\r\n"
+                               L"Use File -> Load Struct JSON... (gw2_packfile.json) to enable model preview.");
+            }
         }
         break;
     case PreviewKind::Map:

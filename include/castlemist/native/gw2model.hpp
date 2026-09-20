@@ -2111,15 +2111,88 @@ public:
         if (fieldOffset(root, "models", off, fj)) {
             std::string modType = fj.contains("element") ? fj["element"].value("struct", std::string()) : std::string();
             int modSize = modType.empty() ? 0 : typeSize(modType);
+            // PackAnimModelV1's template entry (modelFileId fileref[4] +
+            // modelFileRaw wchar_ptr[8] + machineIndex dword[4] + listeners
+            // byte16[16] = 32) undercounts the real element size by 4 bytes.
+            // Hex-verified against a real anic file (base_id 805509 in a live
+            // gw2index archive): modelFileId repeats every 36 bytes with a
+            // clean, monotonically-adjacent run of plausible real fileIds
+            // (5473446, 5473416, 5473386, ...), and machineIndex (which
+            // increments 1,1,2,3,... across consecutive models -- several
+            // models sharing one machine is expected) sits at +16, not the
+            // template-computed +12. The stray 4 bytes live somewhere between
+            // modelFileRaw and machineIndex (always zero in every sample seen,
+            // so its own meaning is still unknown). This is NOT a general
+            // struct-alignment rule -- applying x64 pointer alignment
+            // (4-byte fields padded to 8 before an 8-byte field) to every
+            // struct in this template was tried and regressed most real
+            // models, so every OTHER struct here still uses the plain
+            // sequential field sum. Scoped to this one struct name+size so it
+            // can't silently misfire if a template update changes the layout.
+            bool knownShortV1 = (modType == "PackAnimModelV1" && modSize == 32);
+            size_t machineIndexOffV1 = 16;
+            if (knownShortV1) modSize = 36;
             uint32_t n = 0; size_t base = arrayAt(start + off, n);
             size_t o; json f;
             for (uint32_t i = 0; base && modSize > 0 && i < n; ++i) {
                 size_t e = base + (size_t)i * (size_t)modSize;
                 AnimMachineModelRef r;
                 if (fieldOffset(modType, "modelFileId", o, f))  r.modelFileId = rd32(e + o);
-                if (fieldOffset(modType, "machineIndex", o, f)) r.machineIndex = rd32(e + o);
+                if (knownShortV1) r.machineIndex = rd32(e + machineIndexOffV1);
+                else if (fieldOffset(modType, "machineIndex", o, f)) r.machineIndex = rd32(e + o);
                 out.models.push_back(r);
             }
+        }
+        return out;
+    }
+
+    // TEMPORARY debug aid for the character-model/race-gender browsing
+    // investigation, to be removed once the layout is confirmed.
+    struct DebugCompFileData { std::string name_hex; int type=0; uint32_t meshBase=0; };
+    struct DebugCompRace { std::string name; uint32_t skeletonFile=0; std::vector<DebugCompFileData> files; };
+    std::vector<DebugCompRace> debugDumpComposite() {
+        std::vector<DebugCompRace> out;
+        std::string root; uint16_t ver = 0;
+        size_t start = findChunk("comp", &root, &ver);
+        std::printf("[debugDumpComposite] root=%s ver=%u\n", root.c_str(), (unsigned)ver);
+        if (!start || root.empty()) return out;
+        size_t off; json fj;
+        if (!fieldOffset(root, "raceSexData", off, fj)) return out;
+        std::printf("[debugDumpComposite] raceSexData off=%zu\n", off);
+        std::string raceType = fj.contains("element") ? fj["element"].value("struct", std::string()) : std::string();
+        int raceSize = raceType.empty() ? 0 : typeSize(raceType);
+        uint32_t n = 0; size_t base = arrayAt(start + off, n);
+        std::printf("[debugDumpComposite] raceType=%s raceSize=%d base=%zu n=%u n_=%zu\n", raceType.c_str(),
+                    raceSize, base, n, n_);
+        for (uint32_t i = 0; base && raceSize > 0 && i < n; ++i) {
+            size_t e = base + (size_t)i * (size_t)raceSize;
+            std::printf("  [race %u] e=%zu\n", i, e);
+            DebugCompRace r;
+            size_t o; json f;
+            if (fieldOffset(raceType, "name", o, f)) {
+                std::printf("    name off=%zu ptr=%zu\n", o, follow(e + o));
+                r.name = readWString(follow(e + o));
+            }
+            if (fieldOffset(raceType, "skeletonFile", o, f)) r.skeletonFile = rd32(e + o);
+            if (fieldOffset(raceType, "fileData", o, f)) {
+                std::string fdType = f.contains("element") ? f["element"].value("struct", std::string()) : std::string();
+                int fdSize = fdType.empty() ? 0 : typeSize(fdType);
+                uint32_t fn = 0; size_t fbase = arrayAt(e + o, fn);
+                for (uint32_t k = 0; fbase && fdSize > 0 && k < fn; ++k) {
+                    size_t fe = fbase + (size_t)k * (size_t)fdSize;
+                    DebugCompFileData d;
+                    size_t fo; json ff;
+                    if (fieldOffset(fdType, "name", fo, ff)) {
+                        uint64_t nm = rd64(fe + fo);
+                        char buf[32]; std::snprintf(buf, sizeof buf, "0x%016llX", (unsigned long long)nm);
+                        d.name_hex = buf;
+                    }
+                    if (fieldOffset(fdType, "type", fo, ff)) d.type = (int)d_[fe + fo];
+                    if (fieldOffset(fdType, "meshBase", fo, ff)) d.meshBase = rd32(fe + fo);
+                    r.files.push_back(d);
+                }
+            }
+            out.push_back(std::move(r));
         }
         return out;
     }
@@ -2240,9 +2313,22 @@ private:
     }
 
     // ---- template-driven type geometry ----
+    //
+    // "byte16" was missing here until this comment: fieldSize()'s fallback
+    // (`scalarSize(k) < 0 ? 4 : ...`) silently treated an unrecognized scalar
+    // kind as 4 bytes, so a struct with a trailing byte16 field (e.g.
+    // PackAnimModelV1::listeners) came out 12 bytes short. typeSize() feeds
+    // that wrong total straight into every array-of-this-struct stride, so
+    // element 0 of such an array reads correctly (zero accumulated error) but
+    // every later element is read from a progressively wrong offset --
+    // exactly the "plausible first element, garbage after" pattern that
+    // exposed this (AnimMachineSet::models: model[0] a real-looking fileId,
+    // model[1] a ~3.4 billion garbage value, see gw2dat_cli's `animmach`).
+    // dumps/packfile/gw2_packfile.json was audited for every other field
+    // `kind` string it uses; byte16 was the only one this table didn't cover.
     int scalarSize(const std::string& k) const {
         static const std::pair<const char*, int> tbl[] = {
-            {"byte",1},{"byte3",3},{"byte4",4},{"word",2},{"word3",6},{"dword",4},
+            {"byte",1},{"byte3",3},{"byte4",4},{"byte16",16},{"word",2},{"word3",6},{"dword",4},
             {"dword2",8},{"dword4",16},{"qword",8},{"float",4},{"float2",8},{"float3",12},
             {"float4",16},{"double",8},{"fileref",4},{"token32",4},{"token64",8}};
         for (auto& e : tbl) if (k == e.first) return e.second;
