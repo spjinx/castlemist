@@ -106,6 +106,13 @@ constexpr int ID_FILTER_TYPE = 2024;
 constexpr int ID_FILTER_CONTAINER = 2025;
 constexpr int ID_FILTER_CONTENT = 2026;
 
+/// Separates a filter combo's raw db value (a bare `entries.type`/`entries.container`
+/// value, e.g. "MODL") from the friendly name index_ui.cpp appends after it (e.g.
+/// "MODL — Model"), so file_ops.cpp's combo_sel() can strip it back off before
+/// the value goes into a SQL WHERE clause. Never appears in a raw type/container
+/// value itself (those are plain ASCII fourccs/words with no dash).
+inline constexpr const wchar_t* kFilterLabelSep = L" — ";
+
 /// @brief One entry in the index-mode "Content" filter combo.
 ///
 /// Maps a human label to a ::castlemist::db::ContentFilter. Kept here so the

@@ -518,6 +518,71 @@ struct GeosetRaw {
         return vertexCount ? (uint32_t)(vertexBytes.size() / vertexCount) : 0;
     }
 };
+
+// --- Animation machine ("mach"), undecoded ----------------------------------
+//
+// PackAnimMachinesV0/V1: binds a model to a named-state graph -- states,
+// transitions between them, and "action blocks" attached to both (see
+// docs/research/gw2-animation-banks.md). This is the shape a skill->VFX
+// trigger would live in, but every PackAnimMachineAction is a single opaque
+// `actionData` dword with NO bit layout confirmed anywhere in this codebase.
+// It is carried through completely raw rather than guessed. The only
+// consumer is gw2dat_cli's `animmach` command.
+struct AnimMachineAction {
+    uint32_t actionData = 0;
+};
+
+/// @brief Shared shape of `PackAnimMachineActionVariantV*` (per action-block
+///        variant) and `PackAnimMachineTransitionVariantV*` (per transition
+///        variant): a token64 selector plus the action block it swaps in.
+struct AnimMachineActionVariant {
+    uint64_t token = 0;
+    std::vector<AnimMachineAction> actions;
+};
+
+struct AnimMachineTransition {
+    std::string name;
+    std::string targetStateName;
+    std::vector<AnimMachineAction> actions;
+    std::vector<AnimMachineActionVariant> variants; ///< PackAnimMachineTransitionVariantV*
+};
+
+struct AnimMachineStateVariant {
+    uint64_t token = 0;
+    std::vector<AnimMachineAction> actions;
+    std::vector<AnimMachineActionVariant> actionVariants;
+    std::vector<AnimMachineTransition> transitions;
+};
+
+struct AnimMachineState {
+    std::string name;
+    std::vector<AnimMachineAction> actions;
+    std::vector<AnimMachineActionVariant> actionVariants;
+    std::vector<AnimMachineTransition> transitions;
+    std::vector<AnimMachineStateVariant> variants;
+};
+
+struct AnimMachine {
+    std::vector<AnimMachineState> states;
+};
+
+/// @brief `PackAnimModelV0/V1` -- binds one model file to `machines[machineIndex]`.
+struct AnimMachineModelRef {
+    /// @brief Raw `fileref` dword -- a plain inline scalar (see BinaryParser's
+    ///        `fileref` == `dword` handling), NOT the pointer-indirected
+    ///        `filename` encoding that decodeFilename() decodes elsewhere.
+    uint32_t modelFileId = 0;
+    uint32_t machineIndex = 0;
+};
+
+/// @brief `mach` chunk (PackAnimMachinesV0/V1) -- the whole moveset graph.
+struct AnimMachineSet {
+    std::vector<AnimMachine> machines;
+    std::vector<AnimMachineModelRef> models;
+    std::string machineType;  ///< resolved struct name, e.g. "PackAnimMachinesV1"; empty if no mach chunk
+    uint16_t chunkVersion = 0;
+};
+
 // shaderPassFlags decoded from the engine's own draw path (Gw2-64
 // sub_140AAFDB0, BgfxDraw.cpp). It is a bag of RENDER-TARGET/DEPTH bits, which
 // is why it never worked as an opaque/transparent or colour/prepass label:
@@ -2022,6 +2087,43 @@ public:
         return out;
     }
 
+    // -----------------------------------------------------------------------
+    /// @brief `mach` -- the model's animation-machine graph (states,
+    /// transitions, action blocks), with every `actionData` dword left raw.
+    /// See ::AnimMachineSet and gw2dat_cli's `animmach` command.
+    // -----------------------------------------------------------------------
+    AnimMachineSet parseAnimMachines() {
+        AnimMachineSet out;
+        std::string root; uint16_t ver = 0;
+        size_t start = findChunk("mach", &root, &ver);
+        if (!start || root.empty()) return out;
+        out.machineType = root;
+        out.chunkVersion = ver;
+
+        size_t off; json fj;
+        if (fieldOffset(root, "machines", off, fj)) {
+            std::string machType = fj.contains("element") ? fj["element"].value("struct", std::string()) : std::string();
+            int machSize = machType.empty() ? 0 : typeSize(machType);
+            uint32_t n = 0; size_t base = arrayAt(start + off, n);
+            for (uint32_t i = 0; base && machSize > 0 && i < n; ++i)
+                out.machines.push_back(parseAnimMachine(machType, base + (size_t)i * (size_t)machSize));
+        }
+        if (fieldOffset(root, "models", off, fj)) {
+            std::string modType = fj.contains("element") ? fj["element"].value("struct", std::string()) : std::string();
+            int modSize = modType.empty() ? 0 : typeSize(modType);
+            uint32_t n = 0; size_t base = arrayAt(start + off, n);
+            size_t o; json f;
+            for (uint32_t i = 0; base && modSize > 0 && i < n; ++i) {
+                size_t e = base + (size_t)i * (size_t)modSize;
+                AnimMachineModelRef r;
+                if (fieldOffset(modType, "modelFileId", o, f))  r.modelFileId = rd32(e + o);
+                if (fieldOffset(modType, "machineIndex", o, f)) r.machineIndex = rd32(e + o);
+                out.models.push_back(r);
+            }
+        }
+        return out;
+    }
+
 private:
     // Reads one ModelMeshIndexDataV* into a 16-bit index vector.
     std::vector<uint16_t> readIndexData(const std::string& idxType, size_t s) {
@@ -3100,6 +3202,151 @@ private:
                 if (it != tokMap.end()) mesh.boneBindingSkelIndex[k] = it->second;
             }
         }
+    }
+
+    // ---- animation machine ("mach") walk, see ::parseAnimMachines ----
+
+    // UTF-16LE wchar_ptr string read at an already-resolved absolute offset
+    // (see follow()). Non-ASCII code units become '?', matching
+    // BinaryParser::gwString's generic wchar_ptr handling.
+    std::string readWString(size_t p) const {
+        if (!p || p >= n_) return {};
+        std::string s;
+        size_t q = p;
+        size_t cap = std::min(n_, p + 8192); // state/transition names are short
+        while (q + 1 < cap) {
+            uint16_t c = rd16(q);
+            q += 2;
+            if (!c) break;
+            s += (c < 128) ? (char)c : '?';
+        }
+        return s;
+    }
+
+    // PackAnimMachineActionBlockV*.actions -> raw actionData dwords.
+    std::vector<AnimMachineAction> readActionBlock(const std::string& blockType, size_t blockStart) {
+        std::vector<AnimMachineAction> out;
+        if (blockType.empty()) return out;
+        size_t off; json fj;
+        if (!fieldOffset(blockType, "actions", off, fj)) return out;
+        std::string elemType = fj.contains("element") ? fj["element"].value("struct", std::string()) : std::string();
+        int elemSize = elemType.empty() ? 0 : typeSize(elemType);
+        if (elemSize <= 0) return out;
+        uint32_t n = 0; size_t base = arrayAt(blockStart + off, n);
+        size_t o; json f;
+        for (uint32_t i = 0; base && i < n; ++i) {
+            size_t e = base + (size_t)i * (size_t)elemSize;
+            AnimMachineAction a;
+            if (fieldOffset(elemType, "actionData", o, f)) a.actionData = rd32(e + o);
+            out.push_back(a);
+        }
+        return out;
+    }
+
+    // Shared shape { qword token; ptr<ActionBlock> actionBlock; }, used by both
+    // PackAnimMachineActionVariantV* (fieldName "actionVariants") and
+    // PackAnimMachineTransitionVariantV* (fieldName "variants") -- the element
+    // struct name differs but the field layout is identical, so one walk
+    // handles both, resolved entirely from the template (no hardcoding).
+    std::vector<AnimMachineActionVariant> readVariantArray(const std::string& parentType, const char* fieldName, size_t parentStart) {
+        std::vector<AnimMachineActionVariant> out;
+        size_t off; json fj;
+        if (!fieldOffset(parentType, fieldName, off, fj)) return out;
+        std::string elemType = fj.contains("element") ? fj["element"].value("struct", std::string()) : std::string();
+        int elemSize = elemType.empty() ? 0 : typeSize(elemType);
+        if (elemSize <= 0) return out;
+        uint32_t n = 0; size_t base = arrayAt(parentStart + off, n);
+        size_t o; json f;
+        for (uint32_t i = 0; base && i < n; ++i) {
+            size_t e = base + (size_t)i * (size_t)elemSize;
+            AnimMachineActionVariant v;
+            if (fieldOffset(elemType, "token", o, f)) v.token = rd64(e + o);
+            if (fieldOffset(elemType, "actionBlock", o, f)) {
+                size_t blk = follow(e + o);
+                if (blk) v.actions = readActionBlock(ptrTargetStruct(f), blk);
+            }
+            out.push_back(std::move(v));
+        }
+        return out;
+    }
+
+    std::vector<AnimMachineTransition> readTransitionArray(const std::string& parentType, size_t parentStart) {
+        std::vector<AnimMachineTransition> out;
+        size_t off; json fj;
+        if (!fieldOffset(parentType, "transitions", off, fj)) return out;
+        std::string elemType = fj.contains("element") ? fj["element"].value("struct", std::string()) : std::string();
+        int elemSize = elemType.empty() ? 0 : typeSize(elemType);
+        if (elemSize <= 0) return out;
+        uint32_t n = 0; size_t base = arrayAt(parentStart + off, n);
+        for (uint32_t i = 0; base && i < n; ++i)
+            out.push_back(parseAnimMachineTransition(elemType, base + (size_t)i * (size_t)elemSize));
+        return out;
+    }
+
+    AnimMachineTransition parseAnimMachineTransition(const std::string& transType, size_t s) {
+        AnimMachineTransition t;
+        size_t off; json fj;
+        if (fieldOffset(transType, "name", off, fj)) t.name = readWString(follow(s + off));
+        if (fieldOffset(transType, "targetStateName", off, fj)) t.targetStateName = readWString(follow(s + off));
+        if (fieldOffset(transType, "actionBlock", off, fj)) {
+            size_t blk = follow(s + off);
+            if (blk) t.actions = readActionBlock(ptrTargetStruct(fj), blk);
+        }
+        t.variants = readVariantArray(transType, "variants", s); // PackAnimMachineTransitionVariantV*
+        return t;
+    }
+
+    AnimMachineStateVariant parseAnimMachineStateVariant(const std::string& varType, size_t s) {
+        AnimMachineStateVariant v;
+        size_t off; json fj;
+        if (fieldOffset(varType, "token", off, fj)) v.token = rd64(s + off);
+        if (fieldOffset(varType, "actionBlock", off, fj)) {
+            size_t blk = follow(s + off);
+            if (blk) v.actions = readActionBlock(ptrTargetStruct(fj), blk);
+        }
+        if (fieldOffset(varType, "actionVariantBlock", off, fj)) {
+            size_t vb = follow(s + off);
+            std::string vbType = ptrTargetStruct(fj);
+            if (vb && !vbType.empty()) v.actionVariants = readVariantArray(vbType, "actionVariants", vb);
+        }
+        v.transitions = readTransitionArray(varType, s);
+        return v;
+    }
+
+    AnimMachineState parseAnimMachineState(const std::string& stateType, size_t s) {
+        AnimMachineState st;
+        size_t off; json fj;
+        if (fieldOffset(stateType, "name", off, fj)) st.name = readWString(follow(s + off));
+        if (fieldOffset(stateType, "actionBlock", off, fj)) {
+            size_t blk = follow(s + off);
+            if (blk) st.actions = readActionBlock(ptrTargetStruct(fj), blk);
+        }
+        if (fieldOffset(stateType, "actionVariantBlock", off, fj)) {
+            size_t vb = follow(s + off);
+            std::string vbType = ptrTargetStruct(fj);
+            if (vb && !vbType.empty()) st.actionVariants = readVariantArray(vbType, "actionVariants", vb);
+        }
+        st.transitions = readTransitionArray(stateType, s);
+        if (fieldOffset(stateType, "variants", off, fj)) {
+            std::string elemType = fj.contains("element") ? fj["element"].value("struct", std::string()) : std::string();
+            int elemSize = elemType.empty() ? 0 : typeSize(elemType);
+            uint32_t n = 0; size_t base = arrayAt(s + off, n);
+            for (uint32_t i = 0; base && elemSize > 0 && i < n; ++i)
+                st.variants.push_back(parseAnimMachineStateVariant(elemType, base + (size_t)i * (size_t)elemSize));
+        }
+        return st;
+    }
+
+    AnimMachine parseAnimMachine(const std::string& machType, size_t s) {
+        AnimMachine m;
+        size_t off; json fj;
+        if (!fieldOffset(machType, "states", off, fj)) return m;
+        std::string elemType = fj.contains("element") ? fj["element"].value("struct", std::string()) : std::string();
+        int elemSize = elemType.empty() ? 0 : typeSize(elemType);
+        uint32_t n = 0; size_t base = arrayAt(s + off, n);
+        for (uint32_t i = 0; base && elemSize > 0 && i < n; ++i)
+            m.states.push_back(parseAnimMachineState(elemType, base + (size_t)i * (size_t)elemSize));
+        return m;
     }
 };
 

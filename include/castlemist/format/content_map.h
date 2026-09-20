@@ -62,6 +62,14 @@ inline uint32_t resolve_item(uint32_t item_id) { return resolve(CONTENT_TYPE_ITE
 /// after a load() until build() actually runs again this session.
 uint32_t content_base_id(uint32_t content_type, uint32_t id);
 
+/// The codename slug of a content object that references `file_id` as an asset
+/// (its icon, model, sound, ...), e.g. "vl8Av.4gynM" -- ArenaNet's internal
+/// identifier, not a localized display name (see content_store.cpp's
+/// ContentObject::name for the same field on a directly-previewed cntc entry).
+/// Empty when unknown, including whenever build() hasn't run this session --
+/// like content_base_id(), this is session-only and not part of the disk cache.
+const std::string& name_for_fileid(uint32_t file_id);
+
 /// Simple binary cache (magic + records). Lets the map survive across sessions.
 bool save(const std::wstring& path);
 bool load(const std::wstring& path);

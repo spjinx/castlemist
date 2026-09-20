@@ -59,12 +59,36 @@ uint64_t sort_key(const MftListState& state, size_t base_index, int column) {
     }
 }
 
+// Type (7) and Container (8) are strings from an index DB, not numbers, so they
+// cannot go through sort_key()'s uint64_t comparison -- sort them by the same
+// text the column displays instead. A row the metadata provider has nothing for
+// (no index loaded, or this base_id isn't in it) sorts after every known value,
+// in either direction, so "unsorted" rows do not scatter through the middle.
+void apply_string_sort(MftListState& state, int column, bool ascending) {
+    std::sort(state.display_order.begin(), state.display_order.end(), [&](size_t a, size_t b) {
+        const MftBaseIdData& ea = state.data_gw2->mft_base_id_data_list[a];
+        const MftBaseIdData& eb = state.data_gw2->mft_base_id_data_list[b];
+        std::wstring ta, ca, tb, cb;
+        bool ha = state.meta_provider(ea.base_id, ta, ca);
+        bool hb = state.meta_provider(eb.base_id, tb, cb);
+        const std::wstring& va = (column == 7) ? ta : ca;
+        const std::wstring& vb = (column == 7) ? tb : cb;
+        if (!ha || !hb) return hb && !ha ? false : (ha && !hb);
+        int c = _wcsicmp(va.c_str(), vb.c_str());
+        return ascending ? (c < 0) : (c > 0);
+    });
+}
+
 void apply_sort(MftListState& state) {
     if (state.sort_column < 0 || state.data_gw2 == nullptr) {
         return;
     }
     int column = state.sort_column;
     bool ascending = state.sort_ascending;
+    if ((column == 7 || column == 8) && state.meta_provider) {
+        apply_string_sort(state, column, ascending);
+        return;
+    }
     std::sort(state.display_order.begin(), state.display_order.end(), [&](size_t a, size_t b) {
         uint64_t ka = sort_key(state, a, column);
         uint64_t kb = sort_key(state, b, column);

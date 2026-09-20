@@ -4,6 +4,7 @@
 #include "detail/app_state.h"
 
 #include "castlemist/core/text.h"
+#include "castlemist/db/type_names.h"
 
 #include <algorithm>
 #include <cwchar>
@@ -73,23 +74,44 @@ void finish_open_index(HWND hwnd, bool silent) {
             if (it == g_app->index_meta.end()) return false;
             int ti = (it->second >> 16) & 0xFFFF, ci = it->second & 0xFFFF;
             auto tow = [](const std::string& s) { return std::wstring(s.begin(), s.end()); };
-            if (ti != 0xFFFF && ti < static_cast<int>(g_app->idx_type_names.size())) type = tow(g_app->idx_type_names[ti]);
-            if (ci != 0xFFFF && ci < static_cast<int>(g_app->idx_cont_names.size())) cont = tow(g_app->idx_cont_names[ci]);
+            // Append the friendly name (see type_names.h) after the raw db value, e.g.
+            // "MODL (Model)", so the list itself reads the same way the filter combos
+            // do -- the raw value stays first and unambiguous for anyone cross-
+            // referencing the fourcc against the format docs.
+            if (ti != 0xFFFF && ti < static_cast<int>(g_app->idx_type_names.size())) {
+                const std::string& raw = g_app->idx_type_names[ti];
+                type = tow(raw);
+                if (const char* n = castlemist::db::coarse_type_name(raw)) { type += L" ("; type += tow(n); type += L")"; }
+            }
+            if (ci != 0xFFFF && ci < static_cast<int>(g_app->idx_cont_names.size())) {
+                const std::string& raw = g_app->idx_cont_names[ci];
+                cont = tow(raw);
+                if (const char* n = castlemist::db::container_type_name(raw)) { cont += L" ("; cont += tow(n); cont += L")"; }
+            }
             return true;
         });
 
-    // Populate the filter combos (sorted distinct values; item 0 = "(all)").
-    auto fill = [](HWND combo, const std::vector<std::string>& vals) {
+    // Populate the filter combos (sorted distinct values; item 0 = "(all)"). Each
+    // entry is shown as "raw — Friendly Name" when type_names.h knows one (T3D-
+    // style categories: "MODL — Model", "mach — Anim Blend Tree", ...), so the
+    // dropdown itself can be sorted/scanned by meaning; combo_sel() (file_ops.cpp)
+    // strips the suffix back off before the raw value goes into the SQL filter.
+    auto fill = [](HWND combo, const std::vector<std::string>& vals, const char* (*name_of)(const std::string&)) {
         SendMessageW(combo, CB_RESETCONTENT, 0, 0);
         SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"(all)"));
         for (const std::string& v : vals) {
             std::wstring w(v.begin(), v.end());
+            if (const char* n = name_of ? name_of(v) : nullptr) {
+                w += kFilterLabelSep;
+                std::string ns(n);
+                w += std::wstring(ns.begin(), ns.end());
+            }
             SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(w.c_str()));
         }
         SendMessageW(combo, CB_SETCURSEL, 0, 0);
     };
-    fill(g_app->hwnd_filter_type, castlemist::db::types());
-    fill(g_app->hwnd_filter_container, castlemist::db::containers());
+    fill(g_app->hwnd_filter_type, castlemist::db::types(), castlemist::db::coarse_type_name);
+    fill(g_app->hwnd_filter_container, castlemist::db::containers(), castlemist::db::container_type_name);
     // Content choices are a fixed table, not distinct values off the DB -- they
     // are predicates over the chunk list, which has no single column to enumerate.
     SendMessageW(g_app->hwnd_filter_content, CB_RESETCONTENT, 0, 0);

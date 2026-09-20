@@ -507,6 +507,10 @@ void on_gltf_export_done(HWND hwnd) {
                       "\n\nGeometry, materials, embedded textures, the skeleton/skin and animation are all in "
                       "this one file. Import it into Blender directly; for Unity/VRChat, use Blender's own "
                       "FBX exporter from there.";
+    if (!g_gltf_export_result.particlesJsonPath.empty()) {
+        msg += "\n\nThis model also carries baked particle effects, described in:\n" +
+               g_gltf_export_result.particlesJsonPath;
+    }
     MessageBoxA(hwnd, msg.c_str(), "glTF export finished", MB_ICONINFORMATION);
 }
 
@@ -545,14 +549,20 @@ void do_save_model_texture(HWND hwnd, uint32_t fileId) {
     SetWindowTextW(g_app->hwnd_status_label, L"Texture saved.");
 }
 
-// The selected combo item's text ("" for item 0 = "(all)").
+// The selected combo item's text ("" for item 0 = "(all)"). index_ui.cpp's fill()
+// appends " — Friendly Name" (kFilterLabelSep) to items it has a type_names.h
+// label for -- strip that back off so the raw fourcc/type value goes into the SQL
+// filter, not the display label.
 std::string combo_sel(HWND combo) {
     int i = static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0));
     if (i <= 0) return {};
     wchar_t w[64] = L"";
     SendMessageW(combo, CB_GETLBTEXT, i, reinterpret_cast<LPARAM>(w));
+    std::wstring ws(w);
+    size_t sep = ws.find(kFilterLabelSep);
+    if (sep != std::wstring::npos) ws.resize(sep);
     std::string s;
-    for (wchar_t c : std::wstring(w)) s.push_back(static_cast<char>(c));  // fourccs/types are ASCII
+    for (wchar_t c : ws) s.push_back(static_cast<char>(c));  // fourccs/types are ASCII
     return s;
 }
 

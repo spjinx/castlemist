@@ -48,16 +48,23 @@ void render_content_sub() {
 }
 
 // Short human kind for a cntc asset fileId (MODL / texture / ASND / ...), via the
-// loaded index when available (cheap; only called for the few assets of one object).
+// loaded index when available (cheap; only called for the few assets of one object),
+// plus its content-map name when known (e.g. "MODL — vl8Av.4gynM") -- the codename
+// slug of whichever content object referenced this fileId, once castlemist::cmap has
+// been built at least once this session (Tools > Decode Chat Link builds it).
 std::wstring content_asset_kind(uint32_t fid) {
     uint32_t base = get_by_base_id(g_app->data_gw2, fid);
     if (!base) return L"(missing)";
+    std::wstring kind;
     if (g_app->index_loaded) {
         castlemist::db::EntryInfo e = castlemist::db::lookup(base);
         std::string k = !e.container.empty() ? e.container : e.type;
-        if (!k.empty()) return std::wstring(k.begin(), k.end());
+        if (!k.empty()) kind = std::wstring(k.begin(), k.end());
     }
-    return L"asset";
+    if (kind.empty()) kind = L"asset";
+    const std::string& nm = castlemist::cmap::name_for_fileid(fid);
+    if (!nm.empty()) { kind += kFilterLabelSep; kind += std::wstring(nm.begin(), nm.end()); }
+    return kind;
 }
 
 // DETAIL: load one asset fileId and show it in the right-hand preview surface.

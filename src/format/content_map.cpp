@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <span>
+#include <string>
 #include <unordered_map>
 
 #include "castlemist/native/cmp_decompress_method0.hpp"
@@ -14,12 +15,40 @@ namespace {
 // key = (contentType << 32) | numericId -> all in-object asset fileIds (capped).
 std::unordered_map<uint64_t, std::vector<uint32_t>> g_map;
 const std::vector<uint32_t> g_empty;
+const std::string g_empty_name;
 
 // Same key -> the baseId of the cntc pack the object was found in. Session-only
 // (see content_map.h's content_base_id() docstring): not part of the disk cache.
 std::unordered_map<uint64_t, uint32_t> g_base_id;
 
+// fileId -> the codename slug of a content object that references it as an asset
+// (see is_content_slug() below). Lets a browser show a real name next to an
+// otherwise-bare fileId. Session-only, like g_base_id: rebuilt by build(), not
+// part of the on-disk cache, and last-object-wins when more than one content
+// object shares an asset (icons in particular are widely reused).
+std::unordered_map<uint32_t, std::string> g_fileid_name;
+
 constexpr size_t kMaxRefsPerObject = 16;
+
+// True for an ArenaNet content identifier slug, e.g. "vl8Av.4gynM": two short
+// base64-ish groups joined by a dot. Mirrors content_types.h's is_content_slug()
+// (extract layer) -- duplicated rather than shared because `format` sits below
+// `extract` in the dependency graph (see docs/architecture.md) and this predicate
+// is cheap enough that copying it beats introducing a layering exception.
+bool looks_like_content_slug(const std::string& s) {
+    size_t dot = s.find('.');
+    if (dot == std::string::npos || dot < 3 || dot > 8) return false;
+    if (s.size() - dot - 1 < 3 || s.size() - dot - 1 > 8) return false;
+    if (s.find(' ') != std::string::npos) return false;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (i == dot) continue;
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                  c == '+' || c == '/' || c == '-' || c == '_';
+        if (!ok) return false;
+    }
+    return true;
+}
 
 inline uint64_t key(uint32_t type, uint32_t id) { return (static_cast<uint64_t>(type) << 32) | id; }
 
@@ -38,8 +67,14 @@ std::vector<uint8_t> decompress(const std::string& dat_path, const MftData& e) {
 // finds. Layout (validated): PF "cntc" -> chunk "Main"; base = mainPos+16; then
 // 11 arrays {u32 count, i64 self-rel ptr} at base+4+i*12. Array 3 = indexEntries
 // (16 B each: object offset at +4), array 6 = fileIndices (u32 reloc into content),
-// array 10 = content bytes. Each object: contentType@+16, id@+20, primary asset
-// fileId at the fileIndices reloc == object+64 (else the first reloc in the object).
+// array 7 = stringIndices (u32 reloc into content, marking a dword that is an
+// index into array 9), array 9 = strings (codename UTF-16 string table, each
+// entry an 8-byte self-relative pointer), array 10 = content bytes. Each object:
+// contentType@+16, id@+20, primary asset fileId at the fileIndices reloc ==
+// object+64 (else the first reloc in the object). Also records the object's own
+// codename slug (content_store.cpp's fuller parser calls the same field "name")
+// against every asset fileId it references, so a browser can show a real name
+// next to a bare fileId -- see g_fileid_name / name_for_fileid().
 void parse_cntc(const std::vector<uint8_t>& d, uint32_t base_id) {
     const size_t n = d.size();
     if (n < 16 || d[0] != 'P' || d[1] != 'F' || std::memcmp(d.data() + 8, "cntc", 4) != 0) return;
@@ -62,9 +97,11 @@ void parse_cntc(const std::vector<uint8_t>& d, uint32_t base_id) {
         off = (size_t)((p + 4) + i64(p + 4));
         return u32(p);
     };
-    size_t ieOff, fiOff, cOff;
+    size_t ieOff, fiOff, siOff, stOff, cOff;
     uint32_t ieCnt = arr(3, ieOff);
     uint32_t fiCnt = arr(6, fiOff);
+    uint32_t siCnt = arr(7, siOff);
+    uint32_t stCnt = arr(9, stOff);
     uint32_t cCnt = arr(10, cOff);
     if (ieCnt == 0 || cCnt == 0 || cOff >= n) return;
 
@@ -80,6 +117,29 @@ void parse_cntc(const std::vector<uint8_t>& d, uint32_t base_id) {
     fi.reserve(fiCnt);
     for (uint32_t i = 0; i < fiCnt; ++i) fi.push_back(u32(fiOff + (size_t)i * 4));
     std::sort(fi.begin(), fi.end());
+
+    // stringIndices relocs, same idea as fileIndices but each marks a dword that
+    // is an index into the strings table rather than a raw fileId.
+    std::vector<uint32_t> si;
+    si.reserve(siCnt);
+    for (uint32_t i = 0; i < siCnt; ++i) si.push_back(u32(siOff + (size_t)i * 4));
+    std::sort(si.begin(), si.end());
+
+    // strings[idx] = an 8-byte self-relative pointer to a UTF-16 codename.
+    auto codename = [&](uint32_t idx) -> std::string {
+        if (idx >= stCnt) return {};
+        size_t ep = stOff + (size_t)idx * 8;
+        int64_t rel = i64(ep);
+        if (rel == 0) return {};
+        size_t sp = (size_t)(ep + rel);
+        std::string s;
+        for (size_t q = sp; q + 2 <= n && s.size() < 96; q += 2) {
+            uint32_t ch = d[q] | (d[q + 1] << 8);
+            if (!ch) break;
+            s += (ch < 0x80) ? static_cast<char>(ch) : '?';
+        }
+        return s;
+    };
 
     for (size_t k = 0; k < offs.size(); ++k) {
         uint32_t o = offs[k];
@@ -97,6 +157,17 @@ void parse_cntc(const std::vector<uint8_t>& d, uint32_t base_id) {
             uint32_t v = u32(cOff + *f);
             if (v > 0 && v < 0xFFFFFF) refs.push_back(v);
         }
+
+        // The object's own codename slug, if it has one -- same shape check as
+        // content_store.cpp's is_content_slug(), first match wins (a record's
+        // slug is one specific string among possibly several readable labels).
+        std::string name;
+        for (auto s = std::lower_bound(si.begin(), si.end(), o); s != si.end() && *s < nextOff; ++s) {
+            std::string str = codename(u32(cOff + *s));
+            if (!str.empty() && looks_like_content_slug(str)) { name = std::move(str); break; }
+        }
+        if (!name.empty())
+            for (uint32_t v : refs) g_fileid_name[v] = name;
         if (!refs.empty()) {
             uint64_t k = key(type, id);
             g_map[k] = std::move(refs);
@@ -109,7 +180,7 @@ void parse_cntc(const std::vector<uint8_t>& d, uint32_t base_id) {
 
 bool built() { return !g_map.empty(); }
 size_t size() { return g_map.size(); }
-void clear() { g_map.clear(); g_base_id.clear(); }
+void clear() { g_map.clear(); g_base_id.clear(); g_fileid_name.clear(); }
 
 size_t build(const std::string& dat_path, const std::vector<MftData>& cntc_entries,
              const std::function<void(size_t, size_t)>& progress) {
@@ -147,6 +218,11 @@ uint32_t resolve(uint32_t content_type, uint32_t id) {
 uint32_t content_base_id(uint32_t content_type, uint32_t id) {
     auto it = g_base_id.find(key(content_type, id));
     return it == g_base_id.end() ? 0 : it->second;
+}
+
+const std::string& name_for_fileid(uint32_t file_id) {
+    auto it = g_fileid_name.find(file_id);
+    return it == g_fileid_name.end() ? g_empty_name : it->second;
 }
 
 // ---- binary cache: "GC2N" magic, u32 count, then count * {u64 key, u8 n, n*u32 fileId}.

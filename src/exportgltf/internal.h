@@ -200,4 +200,17 @@ int write_skin(GltfWriter& w, const ModelPreview& model, const std::vector<Joint
 void write_animations(GltfWriter& w, const ModelPreview& model,
                       const std::vector<JointExportInfo>& joints, int fps);
 
+// =================================================================== particles ==
+
+/// @brief Writes `<stem>_particles.json` next to `glbPath` describing every
+///        baked particle cloud/emitter/effect-light (see particle_export.cpp's
+///        file doc for the full field list and what's deliberately not
+///        included). `glMaterialIndices` is `write_materials`'s return value,
+///        so each cloud can record which already-embedded glTF material it
+///        renders with.
+/// @return The sidecar path written; empty when the model has no baked
+///         effects (nothing is written) or the file couldn't be opened.
+std::string write_particle_sidecar(const ModelPreview& model, const std::vector<int>& glMaterialIndices,
+                                   const std::string& glbPath);
+
 } // namespace castlemist::exportgltf

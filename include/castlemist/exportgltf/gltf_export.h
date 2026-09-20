@@ -53,6 +53,11 @@ struct GltfExportResult {
     bool ok = false;             ///< False on any hard failure; see @ref error.
     std::string error;           ///< Human-readable failure reason when !ok.
     std::string glbPath;         ///< The .glb actually written.
+    /// @brief `<stem>_particles.json` written alongside the .glb when the
+    ///        model carries baked particle clouds/effect lights (see
+    ///        exportgltf's particle_export.cpp). Empty when the model has
+    ///        none -- not an error, just nothing to export.
+    std::string particlesJsonPath;
 };
 
 /// @brief Export one model (as shown in the Model preview tab) to a .glb.

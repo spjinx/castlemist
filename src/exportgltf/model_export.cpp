@@ -33,6 +33,7 @@ GltfExportResult export_model_gltf(const ModelPreview& model, const std::string&
     write_model_textures(w, model.textures, texIndices);
     std::vector<int> materialIndices = write_materials(w, model, texIndices);
     std::vector<MeshExportInfo> meshes = write_meshes(w, model, materialIndices);
+    result.particlesJsonPath = write_particle_sidecar(model, materialIndices, glbPath);
 
     std::vector<JointExportInfo> joints;
     int skinIndex = -1;

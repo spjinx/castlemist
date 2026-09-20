@@ -213,7 +213,91 @@ ModelPreview make_skinned_quad() {
     return mp;
 }
 
+/// @brief The static quad plus one baked particle cloud with two emitters --
+///        one a normal additive-colour emitter, one shaped like GW2's
+///        refraction/heat-haze "flat normal as colour" encoding -- and one
+///        effect light, so the sidecar writer has something of everything to
+///        serialize.
+ModelPreview make_quad_with_effects() {
+    ModelPreview mp = make_static_quad();
+
+    ParticleEmitterCPU visible;
+    visible.spawnShape = 4;
+    visible.spawnPeriod = 0.1f;
+    visible.lifetime[0] = 1.5f;
+    visible.colorBegin[0][0] = 1.0f; visible.colorBegin[0][1] = 0.6f; visible.colorBegin[0][2] = 0.1f;
+    visible.colorBegin[0][3] = 1.0f;
+    visible.texCoordRect[0] = 0.5f; visible.texCoordRect[1] = 0.0f;
+    visible.texCoordRect[2] = 1.0f; visible.texCoordRect[3] = 0.5f;
+    visible.flipbook.present = true;
+    visible.flipbook.columns = 2; visible.flipbook.rows = 2; visible.flipbook.count = 4; visible.flipbook.fps = 12;
+    visible.opacityCurve = {{0.0f, 0.0f}, {0.2f, 1.0f}, {1.0f, 0.0f}};
+
+    ParticleEmitterCPU distortion;
+    distortion.colorBegin[0][0] = 0.0f; distortion.colorBegin[0][1] = 0.0f; distortion.colorBegin[0][2] = 1.0f;
+    distortion.colorEnd[0][0] = 1.0f; distortion.colorEnd[0][1] = 0.0f;
+
+    mp.emitters = {visible, distortion};
+
+    ParticleCloudCPU cloud;
+    cloud.materialIndex = 0;
+    cloud.velocity[1] = 2.0f;
+    cloud.emitterIndices = {0, 1};
+    mp.clouds = {cloud};
+
+    EffectLightCPU light;
+    light.color[0] = 1.0f; light.color[1] = 0.8f; light.color[2] = 0.4f;
+    light.intensity = 2.0f;
+    mp.effectLights = {light};
+
+    return mp;
+}
+
 } // namespace
+
+CM_TEST(exportgltf, particle_sidecar_written_for_model_with_effects) {
+    ModelPreview model = make_quad_with_effects();
+    fs::path dir = make_temp_dir("particles");
+    fs::path glbPath = dir / "fx.glb";
+
+    GltfExportResult result = export_model_gltf(model, glbPath.string());
+    CHECK(result.ok);
+    CHECK(!result.particlesJsonPath.empty());
+    CHECK(fs::exists(result.particlesJsonPath));
+
+    std::ifstream in(result.particlesJsonPath);
+    json doc = json::parse(in);
+
+    CHECK_EQ(doc["clouds"].size(), size_t(1));
+    const json& cloud = doc["clouds"][0];
+    CHECK(cloud.contains("gltfMaterial"));
+    CHECK_EQ(cloud["gltfMaterial"].get<int>(), 0); // the quad's one material
+    CHECK_NEAR(cloud["velocity"][1].get<double>(), 2.0, 1e-9);
+    CHECK_EQ(cloud["emitters"].size(), size_t(2));
+
+    const json& visible = cloud["emitters"][0];
+    CHECK_EQ(visible["isDistortion"].get<bool>(), false);
+    CHECK_NEAR(visible["texCoordRect"][0].get<double>(), 0.5, 1e-9);
+    CHECK_EQ(visible["flipbook"]["count"].get<int>(), 4);
+    CHECK_EQ(visible["opacityCurve"].size(), size_t(3));
+
+    const json& distortion = cloud["emitters"][1];
+    CHECK_EQ(distortion["isDistortion"].get<bool>(), true);
+
+    CHECK_EQ(doc["effectLights"].size(), size_t(1));
+    CHECK_NEAR(doc["effectLights"][0]["intensity"].get<double>(), 2.0, 1e-9);
+}
+
+CM_TEST(exportgltf, no_particle_sidecar_without_baked_effects) {
+    ModelPreview model = make_static_quad();
+    fs::path dir = make_temp_dir("no_particles");
+    fs::path glbPath = dir / "plain.glb";
+
+    GltfExportResult result = export_model_gltf(model, glbPath.string());
+    CHECK(result.ok);
+    CHECK(result.particlesJsonPath.empty());
+    CHECK(!fs::exists(dir / "plain_particles.json"));
+}
 
 CM_TEST(exportgltf, glb_header_and_json_are_well_formed) {
     ModelPreview model = make_static_quad();

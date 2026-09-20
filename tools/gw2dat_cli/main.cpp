@@ -1043,6 +1043,128 @@ void cmd_effscan(const Args& a) {
     emit(j);
 }
 
+// ---------------------------------------------------------------------------
+//  animmach: dump a `mach` packfile's animation-machine graph, undecoded
+// ---------------------------------------------------------------------------
+
+json animActionsJson(const std::vector<castlemist::model::AnimMachineAction>& actions) {
+    json arr = json::array();
+    for (const auto& a : actions) {
+        char hex[16];
+        std::snprintf(hex, sizeof hex, "0x%08X", a.actionData);
+        arr.push_back({{"raw", a.actionData}, {"hex", hex}});
+    }
+    return arr;
+}
+
+json animVariantsJson(const std::vector<castlemist::model::AnimMachineActionVariant>& variants) {
+    json arr = json::array();
+    for (const auto& v : variants)
+        arr.push_back({{"token", v.token}, {"actionCount", v.actions.size()}, {"actions", animActionsJson(v.actions)}});
+    return arr;
+}
+
+json animTransitionsJson(const std::vector<castlemist::model::AnimMachineTransition>& transitions) {
+    json arr = json::array();
+    for (const auto& t : transitions)
+        arr.push_back({{"name", t.name}, {"targetStateName", t.targetStateName},
+                       {"actionCount", t.actions.size()}, {"actions", animActionsJson(t.actions)},
+                       {"variants", animVariantsJson(t.variants)}});
+    return arr;
+}
+
+json animStateVariantsJson(const std::vector<castlemist::model::AnimMachineStateVariant>& variants) {
+    json arr = json::array();
+    for (const auto& v : variants)
+        arr.push_back({{"token", v.token}, {"actionCount", v.actions.size()}, {"actions", animActionsJson(v.actions)},
+                       {"actionVariants", animVariantsJson(v.actionVariants)},
+                       {"transitions", animTransitionsJson(v.transitions)}});
+    return arr;
+}
+
+// Dump a `mach` (PackAnimMachinesV0/V1) packfile's animation-machine graph:
+// every named state, its transitions, and the per-action `actionData` dword
+// left completely RAW (decimal + hex). No bit layout for actionData is
+// decoded anywhere in this codebase -- this tool does not guess one, it only
+// surfaces it so it can be eyeballed against known skill VFX (see
+// docs/research/gw2-animation-banks.md).
+//
+//   gw2dat_cli animmach --dat <Gw2.dat> --template <json> (--index N | --file-id N | --base-id N) [--out <path>]
+void cmd_animmach(const Args& a) {
+    std::string tpl_path = need(a, "template");
+    std::ifstream tin(tpl_path, std::ios::binary);
+    if (!tin) fail("cannot open template: " + tpl_path);
+    json tpl; try { tin >> tpl; } catch (const std::exception& ex) { fail(std::string("template JSON error: ") + ex.what()); }
+
+    std::vector<uint8_t> data;
+    uint32_t idx = 0;
+    bool from_dat = has(a, "dat");
+    if (has(a, "data")) {
+        data = read_file(a.at("data"));
+    } else if (from_dat) {
+        Gw2Dat dat;
+        load_dat_file(dat, a.at("dat"));
+        data = extract_bytes(dat, a, idx);
+    } else {
+        fail("animmach needs --data <bin> or --dat <path> with --index/--file-id/--base-id");
+    }
+
+    if (data.size() < 16 || data[0] != 'P' || data[1] != 'F') fail("not a PF packfile");
+    std::string containerType = tag_at(data, 8);
+    if (containerType != "mach")
+        fail("container is '" + containerType + "', not 'mach' -- wrong --index/--file-id?");
+
+    castlemist::model::AnimMachineSet set;
+    try {
+        set = castlemist::model::Extractor(data, tpl).parseAnimMachines();
+    } catch (const std::exception& ex) {
+        fail(std::string("parse failed: ") + ex.what());
+    }
+    if (set.machineType.empty()) fail("template has no known PackAnimMachinesV* for this chunk version");
+
+    json models = json::array();
+    for (const auto& m : set.models)
+        models.push_back({{"modelFileId", m.modelFileId}, {"machineIndex", m.machineIndex}});
+
+    json machines = json::array();
+    for (const auto& mach : set.machines) {
+        json states = json::array();
+        for (const auto& st : mach.states)
+            states.push_back({{"name", st.name},
+                              {"actionCount", st.actions.size()},
+                              {"actions", animActionsJson(st.actions)},
+                              {"actionVariants", animVariantsJson(st.actionVariants)},
+                              {"transitions", animTransitionsJson(st.transitions)},
+                              {"variants", animStateVariantsJson(st.variants)}});
+        machines.push_back({{"stateCount", mach.states.size()}, {"states", std::move(states)}});
+    }
+
+    json j;
+    j["ok"] = true;
+    if (from_dat) j["index"] = idx;
+    j["machineType"] = set.machineType;  // e.g. "PackAnimMachinesV1"
+    j["chunkVersion"] = set.chunkVersion;
+    j["machineCount"] = set.machines.size();
+    j["modelCount"] = set.models.size();
+    j["models"] = std::move(models);
+    j["machines"] = std::move(machines);
+
+    if (has(a, "out")) {
+        std::ofstream of(a.at("out"), std::ios::binary);
+        if (!of) fail("cannot write --out: " + a.at("out"));
+        of << j.dump();
+        json meta;
+        meta["ok"] = true;
+        if (from_dat) meta["index"] = idx;
+        meta["out"] = a.at("out");
+        meta["machineCount"] = set.machines.size();
+        meta["modelCount"] = set.models.size();
+        emit(meta); // keep stdout small when writing to a file
+    } else {
+        emit(j);
+    }
+}
+
 // ---- tiny pose math for validating the Granny decode against the bind pose ----
 // Bones carry local TRS (Position, Orientation quat xyzw, ScaleShear 3x3 row-major).
 // Granny transform: v' = pos + R(quat) * (ScaleShear * v). World = compose down
@@ -1580,6 +1702,7 @@ int main(int argc, char** argv) {
         else if (cmd == "scananim") cmd_scananim(a);
         else if (cmd == "amat") cmd_amat(a);
         else if (cmd == "effscan") cmd_effscan(a);
+        else if (cmd == "animmach") cmd_animmach(a);
         else if (cmd == "matcensus") cmd_matcensus(a);
         else if (cmd == "compress") cmd_compress(a);
         else if (cmd == "decompress") cmd_decompress(a);

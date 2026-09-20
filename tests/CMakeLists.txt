@@ -59,7 +59,7 @@ castlemist_add_test(format
     DEPS    castlemist::format)
 
 castlemist_add_test(db
-    SOURCES test_db_index.cpp
+    SOURCES test_db_index.cpp test_db_type_names.cpp
     DEPS    castlemist::db ext::sqlite)
 
 castlemist_add_test(media

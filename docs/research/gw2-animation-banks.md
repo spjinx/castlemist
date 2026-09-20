@@ -143,11 +143,22 @@ which pieces follow the rig.
 - `gw2bgfx_probe --fileid <id>` takes the number the archive browser and the
   MODL references use, not just a raw MFT row, and its geometry table gained
   `binds` (resolved/total bindings) and `skin` (`vtx` / `rigid` / `-`).
+- `gw2dat_cli animmach --dat <Gw2.dat> --template <json> (--index N | --file-id N | --base-id N) [--out <path>]`
+  dumps a `mach` packfile's `PackAnimMachinesV0/V1` graph: every machine's named
+  states, their transitions, and the `models[]` list binding a modelFileId to
+  `machines[machineIndex]`. **`actionData` (one dword per action) is dumped
+  completely raw (decimal + hex) — its bit layout is not decoded anywhere in
+  this codebase; nothing about it is guessed.** This is meant to be eyeballed
+  against known skill VFX to start reverse-engineering it. The `mach` container
+  also carries `fall`/`seqn`/`cnfg` chunks (fallbacks, sequences, IK config)
+  that this tool does not parse yet.
 
 ## Open
 
 - Clip *blending* and the state machine that picks a clip. Only the loading and
-  the bank chain were traced.
+  the bank chain were traced. `animmach` (above) is a first look at the state
+  graph's shape, but `actionData`'s bit layout — the piece that would actually
+  say "this transition fires this VFX" — is still unsolved.
 - `ModelAnimBankDir_*` beyond the import-sequence setter.
 - Whether anything reads `modelReference` at runtime, or whether it is authoring
   metadata that V22+ dropped for that reason.
