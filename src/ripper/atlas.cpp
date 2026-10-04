@@ -1,6 +1,7 @@
 #include "castlemist/ripper/atlas.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace castlemist::ripper {
@@ -35,6 +36,11 @@ std::optional<composite::BlitRect> choose_armor_rect(const composite::BlitRectSe
         }
     }
     return best;
+}
+
+float wrap_uv(float u) {
+    if (u >= 0.0f && u <= 1.0f) return u;
+    return u - std::floor(u);
 }
 
 ImageRgba crop_piece(const ImageRgba& tex, const composite::BlitRect& rect) {

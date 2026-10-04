@@ -118,3 +118,15 @@ CM_TEST(atlas, resize_nearest_matches_the_target_size) {
     ImageRgba small = resize_nearest(big, 4, 2);
     CHECK(small.px == src.px);
 }
+
+CM_TEST(atlas, wrap_uv_folds_mirrored_halves_back) {
+    // GW2 mirrors a garment's halves by shifting one half's UVs by -1; the
+    // sampler's repeat brings them back. -0.993 -> 0.007, and in-range values
+    // (including the 1.0 edge of a rect that ends at 1024) stay put.
+    CHECK_NEAR(wrap_uv(-0.993f), 0.007, 1e-5);
+    CHECK_NEAR(wrap_uv(-0.496f), 0.504, 1e-5);
+    CHECK_NEAR(wrap_uv(0.371f), 0.371, 1e-6);
+    CHECK_NEAR(wrap_uv(1.0f), 1.0, 1e-6);
+    CHECK_NEAR(wrap_uv(0.0f), 0.0, 1e-6);
+    CHECK_NEAR(wrap_uv(1.25f), 0.25, 1e-6);
+}

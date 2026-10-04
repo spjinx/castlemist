@@ -111,13 +111,14 @@ PieceExportResult export_armor(const PieceContext& ctx, const character::Manifes
         info.umin = info.vmin = 1e9f;
         info.umax = info.vmax = -1e9f;
         for (const auto& v : mesh.vertices) {
-            info.umin = std::min(info.umin, v.u); info.umax = std::max(info.umax, v.u);
-            info.vmin = std::min(info.vmin, v.v); info.vmax = std::max(info.vmax, v.v);
+            const float u = wrap_uv(v.u), vv = wrap_uv(v.v);  // mirrored halves sit at u-1
+            info.umin = std::min(info.umin, u); info.umax = std::max(info.umax, u);
+            info.vmin = std::min(info.vmin, vv); info.vmax = std::max(info.vmax, vv);
         }
         if (mesh.materialIndex < model->materials.size()) {
             std::string name = model->materials[mesh.materialIndex].materialName;
             std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return std::tolower(c); });
-            info.skin = name == "skin";
+            info.skin = name.find("skin") != std::string::npos;  // "Skin", "SylvariSkin1", ...
         }
         infos.push_back(info);
     }
@@ -137,7 +138,11 @@ PieceExportResult export_armor(const PieceContext& ctx, const character::Manifes
     int normal_idx = normal ? add_texture(*model, crop_piece(to_image(*normal), *rect), fd.texture_normal, true) : -1;
     for (size_t mi : armor_meshes) {
         ModelMeshCPU& mesh = model->meshes[mi];
-        for (auto& v : mesh.vertices) remap_uv(v.u, v.v, *rect);
+        for (auto& v : mesh.vertices) {
+            v.u = wrap_uv(v.u);
+            v.v = wrap_uv(v.v);
+            remap_uv(v.u, v.v, *rect);
+        }
         if (mesh.materialIndex < model->materials.size()) {
             ModelMaterialCPU& mat = model->materials[mesh.materialIndex];
             mat.diffuseTex = diffuse_idx;

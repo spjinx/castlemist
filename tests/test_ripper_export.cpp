@@ -236,3 +236,34 @@ CM_TEST(export, export_character_into_a_non_ascii_folder) {
     CHECK(fs::exists(dir / "01_Coat_Warden_Coat.glb"));
     fs::remove_all(dir);
 }
+
+CM_TEST(export, mirrored_uv_angler_vest_textures_its_big_meshes) {
+    if (!dat_env()) SKIP("set GW2_TEST_DAT to run against a real Gw2.dat");
+    PieceContext ctx{&live().dat, &*live().comp, "SylvariFemale"};
+    ch::ManifestPiece p;
+    p.slot = "Coat";
+    p.skin_id = 10484;
+    p.skin_name = "Angler Vest";
+    p.skin_type = "Armor";
+    p.weight_class = "Heavy";
+    p.skin_token = 0x0000694226933823ull;  // its meshes' UVs run from -0.99 (mirrored half) to 0.37
+    p.file_ids = {2585035};
+    p.status = ch::PieceStatus::Ok;
+    fs::path out = scratch("angler") / "vest.glb";
+    PieceExportResult r = export_piece(ctx, p, out.string());
+    CHECK(r.ok);
+    CHECK_EQ(r.status, std::string("armor"));
+
+    auto [j, bin] = read_glb(out);
+    size_t textured_verts = 0, untextured_verts = 0;
+    for (const auto& mesh : j["meshes"]) {
+        for (const auto& prim : mesh["primitives"]) {
+            size_t n = j["accessors"][prim["attributes"]["POSITION"].get<size_t>()]["count"].get<size_t>();
+            bool tex = prim.contains("material") &&
+                       j["materials"][prim["material"].get<size_t>()].value("pbrMetallicRoughness", json::object()).contains("baseColorTexture");
+            (tex ? textured_verts : untextured_verts) += n;
+        }
+    }
+    CHECK(textured_verts > 15000);   // both big vest meshes (5999 + 10130 vertices)
+    CHECK(untextured_verts < 1000);  // only the small skin patch stays bare
+}

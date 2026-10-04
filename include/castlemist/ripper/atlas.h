@@ -27,6 +27,12 @@ struct ImageRgba {
 std::optional<composite::BlitRect> piece_rect(const composite::BlitRectSet& set, float umin, float vmin, float umax,
                                               float vmax);
 
+/// A UV coordinate folded into [0,1] the way the game's repeat sampler sees it.
+/// GW2 mirrors a garment's halves by shifting one half's UVs by -1 (Angler Vest:
+/// u from -0.99 to 0.37), so raw UVs fall outside every atlas rect. Values
+/// already in [0,1] -- including a rect's 1.0 edge -- are returned unchanged.
+float wrap_uv(float u);
+
 /// One mesh, as rect selection sees it: its UV box, vertex count, and whether
 /// its material is the body `Skin` (which samples the body texture, not the armor).
 struct MeshUvInfo {
