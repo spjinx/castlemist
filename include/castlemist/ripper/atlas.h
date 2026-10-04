@@ -44,6 +44,10 @@ std::optional<composite::BlitRect> choose_armor_rect(const composite::BlitRectSe
 /// texels, transparent where `tex` is smaller.
 ImageRgba crop_piece(const ImageRgba& tex, const composite::BlitRect& rect);
 
+/// Nearest-neighbour resize (dye masks that come at another resolution than
+/// the base texture are brought to its size rather than dropped).
+ImageRgba resize_nearest(const ImageRgba& src, int w, int h);
+
 /// Atlas UV -> UV within the cropped block: u' = (u*1024 - x0) / (x1 - x0), same for v.
 void remap_uv(float& u, float& v, const composite::BlitRect& rect);
 

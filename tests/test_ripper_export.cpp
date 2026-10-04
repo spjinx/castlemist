@@ -95,6 +95,7 @@ CM_TEST(export, exports_sylvari_female_warden_coat) {
     CHECK_EQ(r.status, std::string("armor"));
     CHECK_EQ(r.mesh, 40405u);
     CHECK_EQ(r.texture_base, 151455u);
+    CHECK_EQ(r.dyed_channels, 2);  // both of the piece's dyes reached a mask
     CHECK(fs::exists(out));
 
     auto [j, bin] = read_glb(out);

@@ -66,8 +66,13 @@
 #include <windows.h>
 #include <shellapi.h>
 
+// Private (static) copies: castlemist_exportgltf and castlemist_format carry
+// their own stb implementations, and this tool links both through
+// castlemist::ripper, so non-static copies collide in static (release) links.
+#define STB_IMAGE_WRITE_STATIC
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
+#define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 

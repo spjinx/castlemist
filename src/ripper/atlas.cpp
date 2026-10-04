@@ -49,6 +49,20 @@ ImageRgba crop_piece(const ImageRgba& tex, const composite::BlitRect& rect) {
     return out;
 }
 
+ImageRgba resize_nearest(const ImageRgba& src, int w, int h) {
+    ImageRgba out{w, h, std::vector<uint8_t>(static_cast<size_t>(w) * h * 4, 0)};
+    if (src.w <= 0 || src.h <= 0) return out;
+    for (int y = 0; y < h; ++y) {
+        const int sy = static_cast<int>(static_cast<int64_t>(y) * src.h / h);
+        for (int x = 0; x < w; ++x) {
+            const int sx = static_cast<int>(static_cast<int64_t>(x) * src.w / w);
+            std::memcpy(out.px.data() + (static_cast<size_t>(y) * w + x) * 4,
+                        src.px.data() + (static_cast<size_t>(sy) * src.w + sx) * 4, 4);
+        }
+    }
+    return out;
+}
+
 void remap_uv(float& u, float& v, const composite::BlitRect& rect) {
     u = (u * kAtlasSize - static_cast<float>(rect.x0)) / static_cast<float>(rect.x1 - rect.x0);
     v = (v * kAtlasSize - static_cast<float>(rect.y0)) / static_cast<float>(rect.y1 - rect.y0);

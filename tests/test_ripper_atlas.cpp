@@ -106,3 +106,15 @@ CM_TEST(atlas, armor_rect_none_when_only_skin) {
     std::vector<MeshUvInfo> meshes = {{0.0018f, 0.5018f, 0.374f, 0.9973f, 763, true}};
     CHECK(!choose_armor_rect(armor_heavy(), meshes).has_value());
 }
+
+CM_TEST(atlas, resize_nearest_matches_the_target_size) {
+    ImageRgba src = solid(4, 2, 0);
+    src.px[(0 * 4 + 3) * 4] = 200;  // pixel (3,0)
+    ImageRgba big = resize_nearest(src, 8, 4);
+    CHECK_EQ(big.w, 8);
+    CHECK_EQ(big.h, 4);
+    CHECK_EQ(int(big.px[(0 * 8 + 6) * 4]), 200);  // (6,0) samples (3,0)
+    CHECK_EQ(int(big.px[(3 * 8 + 7) * 4]), 0);
+    ImageRgba small = resize_nearest(big, 4, 2);
+    CHECK(small.px == src.px);
+}

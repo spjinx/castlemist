@@ -73,16 +73,23 @@ PieceExportResult export_armor(const PieceContext& ctx, const character::Manifes
     if (!decode_texture_rgba(dat, fd.texture_base, base)) return skipped("texture failed to decode");
 
     // Dyes: manifest dye slot i -> mask i, each with its own color matrix.
-    std::array<ModelTextureCPU, 4> masks;
+    std::array<std::vector<uint8_t>, 4> masks;
     std::array<const std::vector<uint8_t>*, 4> mask_px{};
     std::array<std::optional<ColorMatrix>, 4> dyes{};
     for (size_t i = 0; i < 4; ++i) {
-        if (fd.mask_dye[i] && decode_texture_rgba(dat, fd.mask_dye[i], masks[i]) && masks[i].width == base.width &&
-            masks[i].height == base.height)
-            mask_px[i] = &masks[i].rgba;
+        ModelTextureCPU m;
+        if (!fd.mask_dye[i] || !decode_texture_rgba(dat, fd.mask_dye[i], m)) continue;
+        if (m.width != base.width || m.height != base.height)  // resize rather than drop the channel
+            m.rgba = resize_nearest(to_image(m), base.width, base.height).px;
+        masks[i] = std::move(m.rgba);
+        mask_px[i] = &masks[i];
     }
-    for (const character::ManifestDye& d : piece.dyes)
-        if (d.shift && d.slot >= 0 && d.slot < 4) dyes[static_cast<size_t>(d.slot)] = dye_matrix(*d.shift);
+    int dyed = 0, undyed = 0;
+    for (const character::ManifestDye& d : piece.dyes) {
+        if (!d.shift || d.slot < 0 || d.slot >= 4) continue;
+        dyes[static_cast<size_t>(d.slot)] = dye_matrix(*d.shift);
+        (mask_px[static_cast<size_t>(d.slot)] ? dyed : undyed)++;
+    }
     bake_dyes(base.rgba, base.width, base.height, mask_px, dyes);
 
     std::optional<ModelTextureCPU> normal;
@@ -142,6 +149,8 @@ PieceExportResult export_armor(const PieceContext& ctx, const character::Manifes
 
     PieceExportResult r;
     r.status = "armor";
+    r.dyed_channels = dyed;
+    r.undyed_channels = undyed;
     r.mesh = fd.mesh_base;
     r.texture_base = fd.texture_base;
     return write(*model, glb_path, r);

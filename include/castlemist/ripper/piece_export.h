@@ -28,6 +28,8 @@ struct PieceExportResult {
     std::string status;  // "armor", "model" or "skipped"
     std::string reason;  // why it was skipped / failed, empty on success
     uint32_t mesh = 0, texture_base = 0;
+    int dyed_channels = 0;   // dyes that reached a mask and were baked
+    int undyed_channels = 0; // dyes the piece has but whose mask was missing/undecodable
 };
 
 /// Skip reasons: "no skin", "no appearance token (rebuild the content map)",

@@ -441,3 +441,19 @@ CM_TEST(dat, texture_rgba_ignores_the_reduced_resolution_toggle) {
         CHECK_EQ(reduced.height, full.height);
     }
 }
+
+
+CM_TEST(dat, texture_rgba_decodes_the_exact_entry) {
+    Gw2Dat& dat = shared_dat();
+    // The Warden Coat's dye masks: the Composite names 512x256 entries. Two of
+    // them have a 1024x512 high-res copy in the next entry and the base texture
+    // has none, so following the full/reduced pairing returned a mismatched set
+    // (and the ripper dropped those masks). The exact entries all match.
+    for (uint32_t id : {151449u, 151451u, 151453u}) {
+        ModelTextureCPU t;
+        CHECK(decode_texture_rgba(dat, id, t));
+        CHECK_EQ(t.width, 512);
+        CHECK_EQ(t.height, 256);
+        CHECK_EQ(t.baseId, get_by_base_id(dat, id));
+    }
+}

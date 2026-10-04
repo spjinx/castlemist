@@ -194,9 +194,11 @@ void set_texture_full_res(bool full); ///< true (default) = prefer the full-res 
 
 /// @brief Decode the texture a fileId resolves to into CPU RGBA8888.
 ///
-/// The same path model materials use, but always the full-resolution member of
-/// a full/reduced pair, whatever ::texture_full_res says (the character ripper's
-/// atlas math depends on full-size textures). Only safe
+/// Exactly the entry the fileId names -- never the full/reduced sibling that
+/// model materials switch to, whatever ::texture_full_res says. The character
+/// ripper needs this: a piece's base texture and dye masks only line up (and
+/// match its atlas math) as the Composite file names them; some have a
+/// high-res sibling and some don't. Only safe
 /// on the thread that owns @p dat. @return false for an unknown fileId or one
 /// that isn't a decodable texture.
 bool decode_texture_rgba(Gw2Dat& dat, uint32_t file_id, ModelTextureCPU& out);

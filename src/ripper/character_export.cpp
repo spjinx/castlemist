@@ -89,7 +89,8 @@ CharacterExportReport export_character(const character::CharacterManifest& manif
         fs::path file = from_utf8(out_dir) / from_utf8(prefix + sanitize(p.slot) + "_" + sanitize(p.skin_name) + ".glb");
         PieceExportResult r = export_piece(ctx, p, to_utf8(file));
         report.push_back({{"slot", p.slot}, {"status", r.status}, {"file", r.ok ? to_utf8(file.filename()) : std::string()},
-                          {"mesh", r.mesh}, {"texture_base", r.texture_base}, {"reason", r.reason}});
+                          {"mesh", r.mesh}, {"texture_base", r.texture_base}, {"dyed_channels", r.dyed_channels},
+                          {"undyed_channels", r.undyed_channels}, {"reason", r.reason}});
         rep.pieces.emplace_back(p.slot, std::move(r));
     }
 
