@@ -48,17 +48,6 @@ void cl_do_decode() {
     }
 }
 
-std::atomic<bool> g_cmap_building{false};
-
-std::wstring cmap_cache_path() {
-    wchar_t exe[MAX_PATH] = L"";
-    GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    std::wstring p = exe;
-    size_t slash = p.find_last_of(L"\\/");
-    if (slash != std::wstring::npos) p.resize(slash + 1);
-    return p + L"content_map.bin";
-}
-
 uint32_t g_cl_icon_fid = 0;   // resolved icon (texture) fileId for the current link
 uint32_t g_cl_model_fid = 0;  // resolved model (MODL) fileId for the current link
 
@@ -210,57 +199,29 @@ void cl_resolve_asset() {
         SetWindowTextW(g_cl_status, L"Asset resolve supports Item / Skin / Outfit links.");
         return;
     }
-    if (castlemist::cmap::built()) { cl_show_resolved(); return; }
-    if (g_cmap_building) { SetWindowTextW(g_cl_status, L"Still building content map..."); return; }
-    if (!g_app->dat_loaded) {
+    switch (ensure_content_map(g_cl_wnd)) {
+    case CmapEnsure::Ready: cl_show_resolved(); return;
+    case CmapEnsure::Building: SetWindowTextW(g_cl_status, L"Still building content map..."); return;
+    case CmapEnsure::NeedDat:
         MessageBoxW(g_cl_wnd, L"Open the .dat first (previews + asset resolve read from it).",
                     L"castlemist", MB_ICONINFORMATION);
         return;
-    }
-    if (castlemist::cmap::load(cmap_cache_path())) { cl_show_resolved(); return; }
-
-    std::vector<uint32_t> base_ids;
-    if (g_app->index_loaded)
-        base_ids = castlemist::db::query_base_ids("", "cntc", 0, false, false, 100000);
-    if (base_ids.empty()) {
+    case CmapEnsure::NeedIndex:
         MessageBoxW(g_cl_wnd,
                     L"No cntc entries available.\nLoad the main Gw2.dat index DB "
                     L"(File > Open Index DB) so the content packs can be enumerated.",
                     L"castlemist", MB_ICONINFORMATION);
         return;
+    case CmapEnsure::Started:
+        SetWindowTextW(g_cl_status, L"Building content map from the cntc packs... (one-time)");
+        return;
     }
-    // Copy the MftData for each cntc (baseId -> physical index baseId-1) so the
-    // worker touches no shared mutable state.
-    // Also each pack's fileId: cross-pack (item->skin) links count packs in fileId order.
-    std::vector<MftData> entries;
-    std::vector<uint32_t> file_ids;
-    entries.reserve(base_ids.size());
-    file_ids.reserve(base_ids.size());
-    for (uint32_t b : base_ids) {
-        uint32_t idx = b - 1;
-        if (idx >= g_app->data_gw2.mft_data_list.size()) continue;
-        entries.push_back(g_app->data_gw2.mft_data_list[idx]);
-        std::vector<uint32_t> fids = get_by_file_id(g_app->data_gw2, b);
-        file_ids.push_back(fids.empty() ? 0 : *std::min_element(fids.begin(), fids.end()));
-    }
-    std::string dat_path = g_app->data_gw2.file_info.file_path;
-    std::wstring cache = cmap_cache_path();
-    g_cmap_building = true;
-    wchar_t st[128];
-    swprintf(st, 128, L"Building content map from %zu cntc packs... (one-time)", entries.size());
-    SetWindowTextW(g_cl_status, st);
-    std::thread([dat_path, entries, file_ids, cache]() {
-        castlemist::cmap::build(dat_path, entries, file_ids, nullptr);
-        castlemist::cmap::save(cache);
-        g_cmap_building = false;
-        if (g_cl_wnd) PostMessageW(g_cl_wnd, WM_APP_CMAP_DONE, 0, 0);
-    }).detach();
 }
 
 // Throw away the in-memory map and its disk cache, then build it again from the
 // dat (e.g. after a game patch -- the cache carries no game-version check).
 void cl_rebuild_map() {
-    if (g_cmap_building) { SetWindowTextW(g_cl_status, L"Still building content map..."); return; }
+    if (content_map_building()) { SetWindowTextW(g_cl_status, L"Still building content map..."); return; }
     castlemist::cmap::clear();
     DeleteFileW(cmap_cache_path().c_str());
     cl_resolve_asset();

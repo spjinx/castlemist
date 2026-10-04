@@ -645,6 +645,17 @@ void cl_search(bool by_file_id);
 LRESULT CALLBACK ChatLinkWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 void open_chat_link_decoder(HWND owner);
 
+// ---- content_map_service.cpp -- the shared cntc content-map build
+enum class CmapEnsure { Ready, Building, Started, NeedDat, NeedIndex };
+std::wstring cmap_cache_path();
+/// Ready if built or the disk cache loads; Building/Started post WM_APP_CMAP_DONE
+/// to `notify` when the background build finishes; NeedDat/NeedIndex: the caller
+/// tells the user what to open first.
+CmapEnsure ensure_content_map(HWND notify);
+/// Drops the map and its disk cache, then ensure_content_map(notify).
+CmapEnsure rebuild_content_map(HWND notify);
+bool content_map_building();
+
 // ---- token_decoder_dialog.cpp -- token / filename-bytes decoder popup
 LRESULT CALLBACK TokenDecoderWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 void open_token_decoder(HWND owner);
