@@ -3,7 +3,7 @@
 
 // The character Composite file (packfile container "cmpc", chunk "comp" v19 =
 // PackCompositeV20) -- how GW2 dresses a character. Per race/gender it maps an
-// armor appearance token (a skin's u64 at +200, see content_map.h's
+// armor appearance token (a skin's u64 at +208, see content_map.h's
 // skin_token()) to that race's model, its dyeable diffuse, normal map, the four
 // per-channel dye masks and a cut mask; and it lists the 1024x1024 character
 // atlas rects ("blit rects") the armor textures are composited into.

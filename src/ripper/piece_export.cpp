@@ -139,13 +139,19 @@ PieceExportResult export_piece(const PieceContext& ctx, const character::Manifes
                                const std::string& glb_path) {
     if (piece.status == character::PieceStatus::NoSkin || piece.skin_id == 0) return skipped("no skin");
 
-    if (piece.skin_token != 0) {
+    // Armor goes through the Composite. The skin type decides, not the token:
+    // weapons carry unrelated data in the same field (skin 11871 has 1 there).
+    // With no API skin type, a token the Composite knows still counts as armor.
+    const bool armor = piece.skin_type == "Armor";
+    if (piece.skin_token != 0 && (armor || piece.skin_type.empty())) {
         const composite::CompositeRace* race = ctx.comp ? ctx.comp->race(ctx.race_key) : nullptr;
-        auto it = race ? race->file_data.find(piece.skin_token) : decltype(race->file_data)::const_iterator{};
-        if (!race || it == race->file_data.end()) return skipped("no appearance for " + ctx.race_key);
-        return export_armor(ctx, piece, it->second, glb_path);
+        if (race) {
+            auto it = race->file_data.find(piece.skin_token);
+            if (it != race->file_data.end()) return export_armor(ctx, piece, it->second, glb_path);
+        }
+        if (armor) return skipped("no appearance for " + ctx.race_key);
     }
-    if (piece.skin_type == "Armor") return skipped("no appearance token (rebuild the content map)");
+    if (armor) return skipped("no appearance token (rebuild the content map)");
 
     if (piece.file_ids.empty()) return skipped("no skin");
     std::optional<ModelPreview> model = load_model(*ctx.dat, piece.file_ids[0]);

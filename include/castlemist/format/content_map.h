@@ -79,7 +79,7 @@ struct ContentLink {
 /// of the items inside it. Empty if none/unknown. Part of the disk cache.
 const std::vector<ContentLink>& item_links(uint32_t item_id);
 
-/// A skin's composite appearance token: the u64 at +200 of its content object,
+/// A skin's composite appearance token: the u64 at +208 of its content object,
 /// the key into the Composite file's per-race armor entries (composite.h).
 /// 0 when the skin is unknown or carries none. Part of the disk cache.
 uint64_t skin_token(uint32_t skin_id);

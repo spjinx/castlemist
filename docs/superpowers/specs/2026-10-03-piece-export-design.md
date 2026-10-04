@@ -45,7 +45,7 @@ std::optional<Composite> parse_composite(std::span<const uint8_t> decompressed);
 Fails (nullopt) on wrong container/chunk or any out-of-range pointer.
 
 ### format: skin appearance token — `content_map`
-`build()` additionally records, for every type-66 object, the u64 at +200.
+`build()` additionally records, for every type-66 object, the u64 at +208.
 `uint64_t skin_token(uint32_t skin_id)` returns it (0 = unknown). It is part
 of the disk cache (cache magic bumped so stale caches rebuild).
 

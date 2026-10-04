@@ -187,3 +187,19 @@ CM_TEST(export, export_character_writes_report) {
     CHECK(fs::exists(dir / "manifest.json"));
     CHECK(fs::exists(dir / "01_Coat_Warden_Coat.glb"));
 }
+
+CM_TEST(export, weapon_with_stray_token_exports_model) {
+    if (!dat_env()) SKIP("set GW2_TEST_DAT to run against a real Gw2.dat");
+    PieceContext ctx{&live().dat, &*live().comp, "SylvariFemale"};
+    ch::ManifestPiece p;
+    p.slot = "WeaponB2";
+    p.skin_id = 11871;
+    p.skin_name = "Soulfire Lantern Torch";
+    p.skin_type = "Weapon";
+    p.skin_token = 1;  // weapons carry unrelated data at +208 (seen live on skin 11871)
+    p.file_ids = {3171942};
+    p.status = ch::PieceStatus::Ok;
+    PieceExportResult r = export_piece(ctx, p, (scratch("torch") / "t.glb").string());
+    CHECK(r.ok);
+    CHECK_EQ(r.status, std::string("model"));
+}

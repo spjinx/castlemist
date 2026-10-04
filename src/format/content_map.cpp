@@ -50,7 +50,7 @@ std::vector<PendingObject> g_pending;
 // item dataId -> the appearance content it grants, in field order (see
 // item_links()). Part of the disk cache.
 std::unordered_map<uint32_t, std::vector<ContentLink>> g_item_links;
-std::unordered_map<uint32_t, uint64_t> g_skin_tokens;  // skin dataId -> appearance token (+200)
+std::unordered_map<uint32_t, uint64_t> g_skin_tokens;  // skin dataId -> appearance token (+208)
 constexpr size_t kMaxLinksPerItem = 64;
 
 // Object graph behind item_links(). Items and containers point at other objects
@@ -252,8 +252,8 @@ void parse_cntc(const std::vector<uint8_t>& d, uint32_t base_id, uint32_t file_i
             for (const auto& [reloc, edge] : out) g_edges.push_back(edge);
         }
 
-        if (type == CONTENT_TYPE_SKIN && o + 208 <= nextOff && cOff + o + 208 <= n) {
-            uint64_t token = u32(cOff + o + 200) | (static_cast<uint64_t>(u32(cOff + o + 204)) << 32);
+        if (type == CONTENT_TYPE_SKIN && o + 216 <= nextOff && cOff + o + 216 <= n) {
+            uint64_t token = u32(cOff + o + 208) | (static_cast<uint64_t>(u32(cOff + o + 212)) << 32);
             if (token) g_skin_tokens[id] = token;
         }
 
@@ -439,7 +439,7 @@ const std::string& name_for_fileid(uint32_t file_id) {
 // (GC2N caches were keyed by uid@+20 and stored raw fileRefs indices as fileIds;
 // GC3N/GC4N caches held only partial item->skin links. load() rejects them all,
 // so the map is rebuilt.)
-constexpr uint32_t kCacheMagic = 0x4E364347;  // 'GC6N' (adds skin tokens)
+constexpr uint32_t kCacheMagic = 0x4E374347;  // 'GC7N' (adds skin tokens)
 bool save(const std::wstring& path) {
     FILE* f = _wfopen(path.c_str(), L"wb");
     if (!f) return false;

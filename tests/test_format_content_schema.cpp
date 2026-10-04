@@ -270,7 +270,7 @@ std::vector<uint8_t> skin_pack(uint32_t uid, uint32_t data_id, uint32_t ref_inde
     return b.d;
 }
 
-// A full-size (312-byte) skin object carrying a composite appearance token at +200.
+// A full-size (312-byte) skin object carrying a composite appearance token at +208.
 std::vector<uint8_t> skin_pack_with_token(uint32_t data_id, uint32_t ref_index, uint64_t token) {
     PackBuilder b;
     size_t ieTable = kArrDescEnd;
@@ -284,7 +284,7 @@ std::vector<uint8_t> skin_pack_with_token(uint32_t data_id, uint32_t ref_index, 
     b.put_u32(cOff + 16, CONTENT_TYPE_SKINS);
     b.put_u32(cOff + 40, data_id);
     b.put_u32(cOff + 48, ref_index);
-    b.put_i64(cOff + 200, static_cast<int64_t>(token));
+    b.put_i64(cOff + 208, static_cast<int64_t>(token));
     b.ensure(cOff + 312);
     b.set_dynarray(10, 312, cOff);
     return b.d;

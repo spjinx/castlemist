@@ -15,12 +15,14 @@ object is 312 bytes. Fields used:
 | +40 | API skin id (dataId) | already known (content_schema.h) |
 | +48 | model fileref (file-index fixup) | `cmap::resolve_all()[0]` |
 | +88 | icon fileref | `cmap::resolve_all()[1]` |
-| +200 | **u64 appearance token** -- the key into the Composite file's `fileData` | identical for two skins that share one armor (517 and 1558); found in every race's fileData (section 2) |
+| +208 | **u64 appearance token** -- the key into the Composite file's `fileData` | identical for two skins that share one armor (517 and 1558); found in every race's fileData (section 2) |
 | +216, +224, +232, +240 | external fixups to the four default dye colors (cntc type 9 objects whose dataId is the API color id) | skin 517 -> colors 67, 19, ... |
 
 Tokens seen: Warden Coat 517 `0x00000348C28A32A3`, Warden Leggings 512
 `0x00000C48C28A32A3`, Holographic Dragon set `0x??A5089844F38644` /
 `0x0125089844F38644`, Benthic Hydrobreather 1993 `0x0021240A1C53E70F`.
+
+(Corrected 2026-10-03: the token is at +208, not +200 -- an off-by-one-word misread of the dump row `+192: 0 0 0 0 C28A32A3 00000348 ...`.)
 
 **The +48 model is only the HumanMale default.** For armor it is not what a
 character of another race/gender wears (Holographic greaves: HumanMale
