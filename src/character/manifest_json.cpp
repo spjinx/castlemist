@@ -29,7 +29,8 @@ json manifest_to_json(const CharacterManifest& m) {
     for (const ManifestPiece& p : m.pieces) {
         json dyes = json::array();
         for (const ManifestDye& d : p.dyes) {
-            dyes.push_back({{"color_id", d.color_id},
+            dyes.push_back({{"slot", d.slot},
+                            {"color_id", d.color_id},
                             {"color_name", d.color_name},
                             {"material", d.material},
                             {"rgb", to_hex(d.rgb)},
@@ -80,6 +81,7 @@ CharacterManifest manifest_from_json(const json& j) {
             p.status = *st;
             for (const json& dj : pj.at("dyes")) {
                 ManifestDye d;
+                d.slot = dj.at("slot").get<int>();
                 d.color_id = dj.at("color_id").get<uint32_t>();
                 d.color_name = dj.at("color_name").get<std::string>();
                 d.material = dj.at("material").get<std::string>();

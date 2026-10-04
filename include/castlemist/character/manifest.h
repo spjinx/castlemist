@@ -26,6 +26,7 @@ const char* to_string(PieceStatus s);
 std::optional<PieceStatus> piece_status_from_string(std::string_view s);
 
 struct ManifestDye {
+    int slot = 0;          // the skin's dye channel (0-3); empty channels have no entry
     uint32_t color_id = 0;
     std::string color_name;
     std::string material;  // the dye slot's material: "cloth", "leather", "metal", "fur"
@@ -40,7 +41,7 @@ struct ManifestPiece {
     uint32_t skin_id = 0;
     std::string skin_name, weight_class;
     std::vector<uint32_t> file_ids;  // content-map assets of the skin, model first
-    std::vector<ManifestDye> dyes;   // one per dye slot the skin has
+    std::vector<ManifestDye> dyes;   // one per non-empty dye slot of the skin, in slot order
     PieceStatus status = PieceStatus::NoSkin;
 };
 

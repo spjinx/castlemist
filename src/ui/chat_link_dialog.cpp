@@ -223,10 +223,19 @@ void cl_resolve_asset() {
 // Throw away the in-memory map and its disk cache, then build it again from the
 // dat (e.g. after a game patch -- the cache carries no game-version check).
 void cl_rebuild_map() {
-    if (content_map_building()) { SetWindowTextW(g_cl_status, L"Still building content map..."); return; }
-    castlemist::cmap::clear();
-    DeleteFileW(cmap_cache_path().c_str());
-    cl_resolve_asset();
+    switch (rebuild_content_map(g_cl_wnd)) {
+    case CmapEnsure::Building: SetWindowTextW(g_cl_status, L"Still building content map..."); return;
+    case CmapEnsure::InUse:
+        SetWindowTextW(g_cl_status, L"Content map in use by a character fetch - try again in a moment.");
+        return;
+    case CmapEnsure::NeedDat:
+        SetWindowTextW(g_cl_status, L"Open the .dat first - the map is rebuilt from it (current map kept).");
+        return;
+    case CmapEnsure::NeedIndex:
+        SetWindowTextW(g_cl_status, L"Open the index DB first - it lists the cntc packs (current map kept).");
+        return;
+    default: cl_resolve_asset(); return;  // Ready/Started: same reporting as Resolve
+    }
 }
 
 // Feed the decoded primary id into the main search box + file-id checkbox, run

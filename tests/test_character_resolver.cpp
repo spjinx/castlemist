@@ -268,3 +268,17 @@ CM_TEST(fetch, fetch_missing_tab_throws) {
     }
     CHECK(threw);
 }
+
+CM_TEST(resolver, dye_slot_index_survives_null_slots) {
+    FakeAssets a;
+    a.skins[10] = {111};
+    ApiSkin s;
+    s.id = 10;
+    s.dye_default = {DyeSlot{5, "cloth"}, std::nullopt, DyeSlot{7, "metal"}};
+    auto m = resolve_character(core(), one(entry(7, 10)), {}, {{10, s}}, {}, a);
+    const auto& d = only_piece(m).dyes;
+    CHECK_EQ(d.size(), size_t{2});
+    CHECK_EQ(d[0].slot, 0);
+    CHECK_EQ(d[1].slot, 2);  // metal is dye channel 2, not 1
+    CHECK_EQ(d[1].material, std::string("metal"));
+}

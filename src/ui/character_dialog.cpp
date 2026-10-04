@@ -52,6 +52,7 @@ HWND g_ch_tab_combo = nullptr;
 HWND g_ch_table = nullptr;
 HWND g_ch_status = nullptr;
 HWND g_ch_fetch_btn = nullptr;
+HWND g_ch_build_btn = nullptr;
 
 ch::KeyStore g_ch_keys;
 std::vector<std::string> g_ch_names;         // character names, combo order
@@ -86,6 +87,7 @@ void set_busy(bool busy) {
     EnableWindow(g_ch_fetch_btn, !busy);
     EnableWindow(g_ch_char_combo, !busy);
     EnableWindow(g_ch_tab_combo, !busy);
+    EnableWindow(g_ch_build_btn, !busy);
 }
 
 // Posts `result` to the dialog, or frees it if the dialog is gone.
@@ -240,6 +242,8 @@ void start_character_fetch(std::optional<int> tab) {
     unsigned req = ++g_ch_request;
     set_busy(true);
     set_status(L"Fetching " + utf8_to_wide(name) + L"...");
+    // Hold the shared map for the whole fetch so a rebuild can't clear it under us.
+    if (had_map) acquire_content_map_reader();
     std::thread([key, name, tab, req, had_map]() {
         auto* r = new FetchDone{req, std::nullopt, {}, had_map};
         try {
@@ -252,6 +256,7 @@ void start_character_fetch(std::optional<int> tab) {
         } catch (const std::exception& e) {
             r->error = e.what();
         }
+        if (had_map) release_content_map_reader();
         post_result(WM_APP_CHAR_FETCH_DONE, r);
     }).detach();
 }
@@ -343,8 +348,11 @@ void build_map() {
         break;
     case CmapEnsure::Building: set_status(L"Still building the content map..."); break;
     case CmapEnsure::Started: set_status(L"Building the content map from the cntc packs... (one-time)"); break;
-    case CmapEnsure::NeedDat: set_status(L"Open Gw2.dat first (File > Open), then Build map."); break;
-    case CmapEnsure::NeedIndex: set_status(L"Open the Gw2.dat index DB first (File > Open Index DB), then Build map."); break;
+    case CmapEnsure::InUse: set_status(L"Wait for the current fetch to finish, then Build map."); break;
+    case CmapEnsure::NeedDat: set_status(L"Open Gw2.dat first (File > Open), then Build map. Current map kept."); break;
+    case CmapEnsure::NeedIndex:
+        set_status(L"Open the Gw2.dat index DB first (File > Open Index DB), then Build map. Current map kept.");
+        break;
     }
 }
 
@@ -387,7 +395,7 @@ LRESULT CALLBACK CharacterWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
     case WM_DESTROY:
         ++g_ch_request;  // drop any in-flight result
         g_ch_wnd = g_ch_key_combo = g_ch_char_combo = g_ch_tab_combo = g_ch_table = g_ch_status = g_ch_fetch_btn =
-            nullptr;
+            g_ch_build_btn = nullptr;
         g_ch_names.clear();
         g_ch_current.reset();
         return 0;
@@ -449,7 +457,7 @@ void open_character_dialog(HWND owner) {
     g_ch_status = mk(L"STATIC", L"", SS_LEFT | SS_ENDELLIPSIS, 10, H - 112, W - 36, 18, 0);
     mk(L"BUTTON", L"Open model", BS_PUSHBUTTON, 10, H - 84, 100, 28, ID_CH_OPEN_MODEL);
     mk(L"BUTTON", L"Save manifest...", BS_PUSHBUTTON, 115, H - 84, 115, 28, ID_CH_SAVE);
-    mk(L"BUTTON", L"Build map", BS_PUSHBUTTON, 235, H - 84, 90, 28, ID_CH_BUILD_MAP);
+    g_ch_build_btn = mk(L"BUTTON", L"Build map", BS_PUSHBUTTON, 235, H - 84, 90, 28, ID_CH_BUILD_MAP);
     mk(L"BUTTON", L"Close", BS_PUSHBUTTON, W - 106, H - 84, 80, 28, ID_CH_CLOSE);
 
     refill_keys();

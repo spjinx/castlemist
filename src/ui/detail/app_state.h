@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <set>
 #include <functional>
 #include <string>
@@ -671,13 +672,26 @@ LRESULT CALLBACK ChatLinkWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
 void open_chat_link_decoder(HWND owner);
 
 // ---- content_map_service.cpp -- the shared cntc content-map build
-enum class CmapEnsure { Ready, Building, Started, NeedDat, NeedIndex };
+enum class CmapEnsure { Ready, Building, Started, NeedDat, NeedIndex, InUse };
+/// ensure_content_map's first answer: Building wins over built() (a build's
+/// finalize already reports built), then Ready; nullopt = go on to load/build.
+std::optional<CmapEnsure> ensure_precheck(bool building, bool built);
+/// Why a rebuild may not discard the current map (nullopt = it may): a build is
+/// running, a reader (character fetch) is using it, or there is no dat / index
+/// to build a new one from.
+std::optional<CmapEnsure> rebuild_precheck(bool building, int readers, bool dat_loaded, bool index_loaded);
+/// Background readers of the shared cmap (character fetches) hold this for as
+/// long as they read it; rebuild_content_map refuses (InUse) meanwhile.
+void acquire_content_map_reader();
+void release_content_map_reader();
+int content_map_readers();
 std::wstring cmap_cache_path();
 /// Ready if built or the disk cache loads; Building/Started post WM_APP_CMAP_DONE
 /// to `notify` when the background build finishes; NeedDat/NeedIndex: the caller
 /// tells the user what to open first.
 CmapEnsure ensure_content_map(HWND notify);
-/// Drops the map and its disk cache, then ensure_content_map(notify).
+/// Drops the map and its disk cache, then ensure_content_map(notify) -- unless
+/// rebuild_precheck() refuses, in which case nothing is touched.
 CmapEnsure rebuild_content_map(HWND notify);
 bool content_map_building();
 

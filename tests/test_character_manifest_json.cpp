@@ -30,8 +30,8 @@ CharacterManifest sample() {
     coat.weight_class = "Heavy";
     coat.file_ids = {1200313, 1200325};
     coat.status = PieceStatus::Ok;
-    coat.dyes.push_back(ManifestDye{6, "Abyss", "cloth", {255, 16, 0}, true});
-    coat.dyes.push_back(ManifestDye{1682, "", "leather", {}, false});
+    coat.dyes.push_back(ManifestDye{0, 6, "Abyss", "cloth", {255, 16, 0}, true});
+    coat.dyes.push_back(ManifestDye{3, 1682, "", "leather", {}, false});
     ManifestPiece ring;
     ring.slot = "Ring1";
     ring.item_id = 37079;
@@ -65,6 +65,7 @@ CM_TEST(manifest_json, round_trip) {
         CHECK(y.status == x.status);
         CHECK_EQ(y.dyes.size(), x.dyes.size());
         for (size_t d = 0; d < x.dyes.size(); ++d) {
+            CHECK_EQ(y.dyes[d].slot, x.dyes[d].slot);
             CHECK_EQ(y.dyes[d].color_id, x.dyes[d].color_id);
             CHECK_EQ(y.dyes[d].color_name, x.dyes[d].color_name);
             CHECK_EQ(y.dyes[d].material, x.dyes[d].material);
@@ -78,6 +79,7 @@ CM_TEST(manifest_json, rgb_is_hex) {
     nlohmann::json j = manifest_to_json(sample());
     CHECK_EQ(j["version"].get<int>(), 1);
     CHECK_EQ(j["pieces"][0]["dyes"][0]["rgb"].get<std::string>(), std::string("#FF1000"));
+    CHECK_EQ(j["pieces"][0]["dyes"][1]["slot"].get<int>(), 3);
     CHECK_EQ(j["pieces"][0]["status"].get<std::string>(), std::string("ok"));
     CHECK_EQ(j["tab"]["id"].get<int>(), 2);
 }

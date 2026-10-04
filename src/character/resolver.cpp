@@ -123,6 +123,7 @@ CharacterManifest resolve_character(const CharacterCore& core, const EquipmentTa
             for (size_t i = 0; i < slots.size(); ++i) {
                 if (!slots[i]) continue;
                 ManifestDye d;
+                d.slot = static_cast<int>(i);
                 d.color_id = i < e.dyes.size() && e.dyes[i] ? *e.dyes[i] : slots[i]->color_id;
                 d.material = slots[i]->material;
                 if (auto cit = colors.find(d.color_id); cit != colors.end()) {

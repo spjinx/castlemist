@@ -8,7 +8,7 @@
 // {"version":1,"name","race","gender","profession","level","tab":{"id","name"},
 //  "pieces":[{"slot","item_id","item_name","skin_id","skin_name","weight_class",
 //             "file_ids":[...],"status":"ok",
-//             "dyes":[{"color_id","color_name","material","rgb":"#RRGGBB","known"}]}]}
+//             "dyes":[{"slot","color_id","color_name","material","rgb":"#RRGGBB","known"}]}]}
 
 #include <nlohmann/json.hpp>
 

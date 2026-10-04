@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -16,6 +17,7 @@ namespace castlemist::ui {
 namespace {
 
 std::atomic<bool> g_cmap_building{false};
+std::atomic<int> g_cmap_readers{0};
 std::mutex g_waiters_mutex;
 std::vector<HWND> g_waiters;  // windows to tell (WM_APP_CMAP_DONE) when the build finishes
 
@@ -37,6 +39,24 @@ void notify_waiters() {
 
 } // namespace
 
+std::optional<CmapEnsure> ensure_precheck(bool building, bool built) {
+    if (building) return CmapEnsure::Building;
+    if (built) return CmapEnsure::Ready;
+    return std::nullopt;
+}
+
+std::optional<CmapEnsure> rebuild_precheck(bool building, int readers, bool dat_loaded, bool index_loaded) {
+    if (building) return CmapEnsure::Building;
+    if (readers > 0) return CmapEnsure::InUse;
+    if (!dat_loaded) return CmapEnsure::NeedDat;
+    if (!index_loaded) return CmapEnsure::NeedIndex;
+    return std::nullopt;
+}
+
+void acquire_content_map_reader() { ++g_cmap_readers; }
+void release_content_map_reader() { --g_cmap_readers; }
+int content_map_readers() { return g_cmap_readers; }
+
 std::wstring cmap_cache_path() {
     wchar_t exe[MAX_PATH] = L"";
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
@@ -50,10 +70,9 @@ std::wstring cmap_cache_path() {
 // one-time background build (parsing every cntc pack -- needs the main Gw2.dat
 // index loaded for the cntc list) and tells `notify` when it is done.
 CmapEnsure ensure_content_map(HWND notify) {
-    if (castlemist::cmap::built()) return CmapEnsure::Ready;
-    if (g_cmap_building) {
-        add_waiter(notify);
-        return CmapEnsure::Building;
+    if (auto early = ensure_precheck(g_cmap_building, castlemist::cmap::built())) {
+        if (*early == CmapEnsure::Building) add_waiter(notify);
+        return *early;
     }
     // The disk cache needs no dat; only a fresh build reads the cntc packs.
     if (castlemist::cmap::load(cmap_cache_path())) return CmapEnsure::Ready;
@@ -93,9 +112,9 @@ CmapEnsure ensure_content_map(HWND notify) {
 // Throw away the in-memory map and its disk cache, then build it again from the
 // dat (e.g. after a game patch -- the cache carries no game-version check).
 CmapEnsure rebuild_content_map(HWND notify) {
-    if (g_cmap_building) {
-        add_waiter(notify);
-        return CmapEnsure::Building;
+    if (auto refuse = rebuild_precheck(g_cmap_building, g_cmap_readers, g_app->dat_loaded, g_app->index_loaded)) {
+        if (*refuse == CmapEnsure::Building) add_waiter(notify);
+        return *refuse;
     }
     castlemist::cmap::clear();
     DeleteFileW(cmap_cache_path().c_str());
