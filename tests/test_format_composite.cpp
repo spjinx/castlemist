@@ -177,3 +177,48 @@ CM_TEST(composite, live_sylvari_female_warden_coat) {
     CHECK(comp->blit_sets.size() >= 4);
     CHECK_EQ(comp->blit_sets[2].name, std::string("ArmorHeavy"));
 }
+
+CM_TEST(composite, parses_skin_styles_faces_and_hair) {
+    CompositeBuilder c = one_race();
+    size_t race = 2048;  // one_race() allocates the race first
+    size_t styles = c.alloc(32);
+    for (int k = 0; k < 4; ++k) c.u64(styles + 8 * k, 0x6272573ull + k);
+    c.arr(race + 176, 1, styles);  // skinStyles
+    size_t faces = c.alloc(16);
+    c.u64(faces, 0x136513ull);
+    c.u64(faces + 8, 0x262cab0ull);
+    c.arr(race + 92, 2, faces);
+    size_t hair = c.alloc(8);
+    c.u64(hair, 0x285c822ull);
+    c.arr(race + 120, 1, hair);
+    size_t ears = c.alloc(8);
+    c.u64(ears, 0x4b3ab8b6ull);
+    c.arr(race + 60, 1, ears);
+    auto comp = parse_composite(c.b);
+    CHECK(comp.has_value());
+    const CompositeRace* r = comp->race("SylvariFemale");
+    CHECK_EQ(r->skin_styles.size(), size_t{1});
+    CHECK_EQ(r->skin_styles[0][0], 0x6272573ull);
+    CHECK_EQ(r->skin_styles[0][3], 0x6272576ull);
+    CHECK(r->faces == (std::vector<uint64_t>{0x136513ull, 0x262cab0ull}));
+    CHECK(r->hair_styles == std::vector<uint64_t>{0x285c822ull});
+    CHECK(r->ears == std::vector<uint64_t>{0x4b3ab8b6ull});
+}
+
+CM_TEST(composite, live_sylvari_female_body_and_head) {
+    const char* env = std::getenv("GW2_TEST_DAT");
+    if (!env || !*env) SKIP("set GW2_TEST_DAT to run against a real Gw2.dat");
+    Gw2Dat dat;
+    load_dat_file(dat, env);
+    uint32_t base = get_by_base_id(dat, 154681);
+    const MftData& e = dat.mft_data_list[base - 1];
+    std::vector<uint8_t> raw = read_entry_bytes(dat.file_info.file_path, e);
+    auto comp = parse_composite(e.compression_flag ? castlemist::cmp::decompress_entry(raw) : raw);
+    const CompositeRace* sf = comp->race("SylvariFemale");
+    CHECK_EQ(sf->skin_styles.size(), size_t{2});
+    CHECK_EQ(sf->skin_styles[0][0], 0x6272573ull);  // chest
+    CHECK_EQ(sf->file_data.at(sf->skin_styles[0][0]).mesh_base, 41502u);
+    CHECK_EQ(sf->faces.size(), size_t{21});
+    CHECK_EQ(sf->hair_styles.size(), size_t{38});
+    CHECK_EQ(int(sf->file_data.at(sf->faces[0]).type), 5);
+}

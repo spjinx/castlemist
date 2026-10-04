@@ -15,6 +15,10 @@ constexpr size_t kBlitSetSize = 40;        // name w, size u32x2, rectIndex a, r
 constexpr size_t kRaceSize = 224;
 constexpr size_t kRaceFileData = 104;
 constexpr size_t kRaceSkeleton = 140;
+constexpr size_t kRaceEars = 60;
+constexpr size_t kRaceFaces = 92;
+constexpr size_t kRaceHairStyles = 120;
+constexpr size_t kRaceSkinStyles = 176;  // {chest, feet, hands, legs} u64 each
 constexpr size_t kFileDataSize = 103;
 
 struct Reader {
@@ -127,6 +131,19 @@ std::optional<Composite> parse_composite(std::span<const uint8_t> d) {
         CompositeRace race;
         race.name = r.wstr(q);
         race.skeleton_file = r.fileref(q + kRaceSkeleton);
+        auto tokens = [&](size_t field) {
+            std::vector<uint64_t> out;
+            auto [n, p] = r.arr(q + field, 8);
+            for (uint32_t k = 0; k < n && r.ok; ++k) out.push_back(r.u64(p + 8 * k));
+            return out;
+        };
+        race.faces = tokens(kRaceFaces);
+        race.hair_styles = tokens(kRaceHairStyles);
+        race.ears = tokens(kRaceEars);
+        auto [ns, ps] = r.arr(q + kRaceSkinStyles, 32);
+        for (uint32_t k = 0; k < ns && r.ok; ++k)
+            race.skin_styles.push_back({r.u64(ps + 32 * k), r.u64(ps + 32 * k + 8), r.u64(ps + 32 * k + 16),
+                                        r.u64(ps + 32 * k + 24)});
         auto [nfd, pfd] = r.arr(q + kRaceFileData, kFileDataSize);
         race.file_data.reserve(nfd);
         for (uint32_t k = 0; k < nfd && r.ok; ++k) {

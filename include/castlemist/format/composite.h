@@ -48,6 +48,11 @@ struct CompositeRace {
     std::string name;  // "SylvariFemale" = API race + gender; also NPC variants ("CreatureCM", ...)
     uint32_t skeleton_file = 0;
     std::unordered_map<uint64_t, CompositeFileData> file_data;  // keyed by token
+    /// Bare-body sets: {chest, feet, hands, legs} tokens into file_data (types 0-3).
+    std::vector<std::array<uint64_t, 4>> skin_styles;
+    std::vector<uint64_t> faces;        // type 5 entries (face + eyes)
+    std::vector<uint64_t> hair_styles;  // type 6 entries
+    std::vector<uint64_t> ears;         // type 7 entries
 };
 
 struct Composite {
