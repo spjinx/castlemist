@@ -6,6 +6,7 @@
 ///        lParam is a heap result this dialog takes ownership of.
 
 #include "detail/app_state.h"
+#include "detail/character_state.h"
 
 #include <atomic>
 #include <cstdio>
@@ -55,13 +56,12 @@ HWND g_ch_fetch_btn = nullptr;
 HWND g_ch_build_btn = nullptr;
 
 ch::KeyStore g_ch_keys;
-std::vector<std::string> g_ch_names;         // character names, combo order
-std::optional<ch::FetchResult> g_ch_current;  // what the table shows
-std::string g_ch_current_key;                 // key the current character list came from
+RipperState g_ch;                             // names / shown character / their key
 std::atomic<unsigned> g_ch_request{0};        // newest request id; stale results are dropped
 
 struct NamesDone {
     unsigned request = 0;
+    std::string key;
     std::vector<std::string> names;
     std::string error;
 };
@@ -161,9 +161,9 @@ std::wstring dyes_text(const ch::ManifestPiece& p) {
 
 void fill_table() {
     SendMessageW(g_ch_table, LVM_DELETEALLITEMS, 0, 0);
-    if (!g_ch_current) return;
+    if (!g_ch.current) return;
     int row = 0;
-    for (const ch::ManifestPiece& p : g_ch_current->manifest.pieces) {
+    for (const ch::ManifestPiece& p : g_ch.current->manifest.pieces) {
         std::wstring slot = utf8_to_wide(p.slot);
         LVITEMW it{};
         it.mask = LVIF_TEXT;
@@ -181,14 +181,14 @@ void fill_table() {
 
 void fill_tabs() {
     SendMessageW(g_ch_tab_combo, CB_RESETCONTENT, 0, 0);
-    if (!g_ch_current) return;
+    if (!g_ch.current) return;
     int i = 0, select = 0;
-    for (const ch::TabSummary& t : g_ch_current->tabs) {
+    for (const ch::TabSummary& t : g_ch.current->tabs) {
         std::wstring label = L"Tab " + std::to_wstring(t.tab);
         if (!t.name.empty()) label += L": " + utf8_to_wide(t.name);
         if (t.is_active) label += L" (active)";
         SendMessageW(g_ch_tab_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
-        if (t.tab == g_ch_current->manifest.tab_id) select = i;
+        if (t.tab == g_ch.current->manifest.tab_id) select = i;
         ++i;
     }
     SendMessageW(g_ch_tab_combo, CB_SETCURSEL, select, 0);
@@ -207,7 +207,7 @@ void start_names_fetch() {
     set_busy(true);
     set_status(L"Checking the key and fetching characters...");
     std::thread([key, req]() {
-        auto* r = new NamesDone{req, {}, {}};
+        auto* r = new NamesDone{req, key, {}, {}};
         try {
             ch::WinHttpClient http;
             ch::Gw2Api api(http, key);
@@ -224,21 +224,20 @@ void start_names_fetch() {
         }
         post_result(WM_APP_CHAR_NAMES_DONE, r);
     }).detach();
-    g_ch_current_key = key;
 }
 
 std::string selected_character() {
     LRESULT sel = SendMessageW(g_ch_char_combo, CB_GETCURSEL, 0, 0);
-    if (sel == CB_ERR || static_cast<size_t>(sel) >= g_ch_names.size()) return {};
-    return g_ch_names[static_cast<size_t>(sel)];
+    if (sel == CB_ERR || static_cast<size_t>(sel) >= g_ch.names.size()) return {};
+    return g_ch.names[static_cast<size_t>(sel)];
 }
 
 void start_character_fetch(std::optional<int> tab) {
     std::string name = selected_character();
-    if (name.empty() || g_ch_current_key.empty()) return;
+    if (name.empty() || g_ch.current_key.empty()) return;
     CmapEnsure map = ensure_content_map(g_ch_wnd);
     bool had_map = map == CmapEnsure::Ready;
-    std::string key = g_ch_current_key;
+    std::string key = g_ch.current_key;
     unsigned req = ++g_ch_request;
     set_busy(true);
     set_status(L"Fetching " + utf8_to_wide(name) + L"...");
@@ -264,33 +263,29 @@ void start_character_fetch(std::optional<int> tab) {
 void on_names_done(std::unique_ptr<NamesDone> r) {
     if (r->request != g_ch_request) return;
     set_busy(false);
-    if (!r->error.empty()) {
-        set_status(utf8_to_wide(r->error));
-        return;
-    }
-    g_ch_names = std::move(r->names);
-    g_ch_current.reset();
+    g_ch.names_done(r->key, std::move(r->names), r->error);
     fill_table();
     fill_tabs();
     SendMessageW(g_ch_char_combo, CB_RESETCONTENT, 0, 0);
-    for (const std::string& n : g_ch_names)
+    for (const std::string& n : g_ch.names)
         SendMessageW(g_ch_char_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(utf8_to_wide(n).c_str()));
-    set_status(std::to_wstring(g_ch_names.size()) + L" characters - pick one.");
+    set_status(r->error.empty() ? std::to_wstring(g_ch.names.size()) + L" characters - pick one."
+                                : utf8_to_wide(r->error));
 }
 
 void on_fetch_done(std::unique_ptr<FetchDone> r) {
     if (r->request != g_ch_request) return;
     set_busy(false);
+    g_ch.fetch_done(std::move(r->result), r->error);
+    fill_tabs();
+    fill_table();
     if (!r->error.empty()) {
         set_status(utf8_to_wide(r->error));
         return;
     }
-    g_ch_current = std::move(r->result);
-    fill_tabs();
-    fill_table();
     size_t ok = 0;
-    for (const ch::ManifestPiece& p : g_ch_current->manifest.pieces) ok += p.status == ch::PieceStatus::Ok;
-    const ch::CharacterManifest& m = g_ch_current->manifest;
+    for (const ch::ManifestPiece& p : g_ch.current->manifest.pieces) ok += p.status == ch::PieceStatus::Ok;
+    const ch::CharacterManifest& m = g_ch.current->manifest;
     std::wstring s = utf8_to_wide(m.name) + L" - " + utf8_to_wide(m.race) + L" " + utf8_to_wide(m.gender) + L" " +
                      utf8_to_wide(m.profession) + L": " + std::to_wstring(ok) + L" of " +
                      std::to_wstring(m.pieces.size()) + L" pieces resolved to models.";
@@ -302,11 +297,11 @@ void on_fetch_done(std::unique_ptr<FetchDone> r) {
 
 void open_selected_model() {
     LRESULT row = SendMessageW(g_ch_table, LVM_GETNEXTITEM, static_cast<WPARAM>(-1), LVNI_SELECTED);
-    if (!g_ch_current || row < 0 || static_cast<size_t>(row) >= g_ch_current->manifest.pieces.size()) {
+    if (!g_ch.current || row < 0 || static_cast<size_t>(row) >= g_ch.current->manifest.pieces.size()) {
         set_status(L"Select a row first.");
         return;
     }
-    const ch::ManifestPiece& p = g_ch_current->manifest.pieces[static_cast<size_t>(row)];
+    const ch::ManifestPiece& p = g_ch.current->manifest.pieces[static_cast<size_t>(row)];
     if (p.status != ch::PieceStatus::Ok || p.file_ids.empty()) {
         set_status(L"That piece has no model (" + utf8_to_wide(ch::to_string(p.status)) + L").");
         return;
@@ -315,11 +310,11 @@ void open_selected_model() {
 }
 
 void save_manifest() {
-    if (!g_ch_current) {
+    if (!g_ch.current) {
         set_status(L"Fetch a character first.");
         return;
     }
-    std::wstring name = utf8_to_wide(g_ch_current->manifest.name);
+    std::wstring name = utf8_to_wide(g_ch.current->manifest.name);
     for (wchar_t& c : name)
         if (wcschr(L"\\/:*?\"<>|", c)) c = L'_';
     wchar_t path[MAX_PATH] = L"";
@@ -335,7 +330,7 @@ void save_manifest() {
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
     if (!GetSaveFileNameW(&ofn)) return;
     std::ofstream out(std::filesystem::path(path), std::ios::binary | std::ios::trunc);
-    out << ch::manifest_to_json(g_ch_current->manifest).dump(2) << '\n';
+    out << ch::manifest_to_json(g_ch.current->manifest).dump(2) << '\n';
     set_status(out ? L"Saved " + std::wstring(path) : L"Could not write " + std::wstring(path));
 }
 
@@ -344,7 +339,7 @@ void build_map() {
     switch (r) {
     case CmapEnsure::Ready:
         set_status(L"Content map ready.");
-        if (g_ch_current) start_character_fetch(g_ch_current->manifest.tab_id);
+        if (g_ch.current) start_character_fetch(g_ch.current->manifest.tab_id);
         break;
     case CmapEnsure::Building: set_status(L"Still building the content map..."); break;
     case CmapEnsure::Started: set_status(L"Building the content map from the cntc packs... (one-time)"); break;
@@ -358,8 +353,8 @@ void build_map() {
 
 std::optional<int> selected_tab() {
     LRESULT sel = SendMessageW(g_ch_tab_combo, CB_GETCURSEL, 0, 0);
-    if (!g_ch_current || sel == CB_ERR || static_cast<size_t>(sel) >= g_ch_current->tabs.size()) return std::nullopt;
-    return g_ch_current->tabs[static_cast<size_t>(sel)].tab;
+    if (!g_ch.current || sel == CB_ERR || static_cast<size_t>(sel) >= g_ch.current->tabs.size()) return std::nullopt;
+    return g_ch.current->tabs[static_cast<size_t>(sel)].tab;
 }
 
 LRESULT CALLBACK CharacterWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
@@ -389,15 +384,14 @@ LRESULT CALLBACK CharacterWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
     case WM_APP_CHAR_FETCH_DONE: on_fetch_done(std::unique_ptr<FetchDone>(reinterpret_cast<FetchDone*>(lparam))); return 0;
     case WM_APP_CMAP_DONE:
         set_status(L"Content map built.");
-        if (g_ch_current) start_character_fetch(g_ch_current->manifest.tab_id);
+        if (g_ch.current) start_character_fetch(g_ch.current->manifest.tab_id);
         return 0;
     case WM_CLOSE: DestroyWindow(hwnd); return 0;
     case WM_DESTROY:
         ++g_ch_request;  // drop any in-flight result
         g_ch_wnd = g_ch_key_combo = g_ch_char_combo = g_ch_tab_combo = g_ch_table = g_ch_status = g_ch_fetch_btn =
             g_ch_build_btn = nullptr;
-        g_ch_names.clear();
-        g_ch_current.reset();
+        g_ch = RipperState{};
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wparam, lparam);
