@@ -15,14 +15,18 @@
 
 struct FakeHttpClient : castlemist::character::HttpClient {
     std::map<std::string, castlemist::character::HttpResponse> routes;
+    /// Fallback when no exact route matches: the first prefix the URL starts with.
+    std::map<std::string, castlemist::character::HttpResponse> prefix_routes;
     std::vector<std::pair<std::string, castlemist::character::Headers>> calls;
 
     castlemist::character::HttpResponse get(const std::string& url,
                                             const castlemist::character::Headers& headers) override {
         calls.emplace_back(url, headers);
         auto it = routes.find(url);
-        if (it == routes.end()) return {404, "{\"text\":\"no such route\"}", ""};
-        return it->second;
+        if (it != routes.end()) return it->second;
+        for (const auto& [prefix, r] : prefix_routes)
+            if (url.rfind(prefix, 0) == 0) return r;
+        return {404, "{\"text\":\"no such route\"}", ""};
     }
 };
 
