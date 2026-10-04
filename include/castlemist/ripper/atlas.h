@@ -27,6 +27,19 @@ struct ImageRgba {
 std::optional<composite::BlitRect> piece_rect(const composite::BlitRectSet& set, float umin, float vmin, float umax,
                                               float vmax);
 
+/// One mesh, as rect selection sees it: its UV box, vertex count, and whether
+/// its material is the body `Skin` (which samples the body texture, not the armor).
+struct MeshUvInfo {
+    float umin = 0, vmin = 0, umax = 0, vmax = 0;
+    size_t verts = 0;
+    bool skin = false;
+};
+
+/// The piece's rect: among non-Skin meshes whose UV box fits a rect, the rect
+/// holding the most vertices. nullopt when none fits.
+std::optional<composite::BlitRect> choose_armor_rect(const composite::BlitRectSet& set,
+                                                     const std::vector<MeshUvInfo>& meshes);
+
 /// The block of `tex` the rect shows: its top-left (rect width/2) x (rect height/2)
 /// texels, transparent where `tex` is smaller.
 ImageRgba crop_piece(const ImageRgba& tex, const composite::BlitRect& rect);

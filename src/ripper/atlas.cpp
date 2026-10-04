@@ -15,6 +15,28 @@ std::optional<composite::BlitRect> piece_rect(const composite::BlitRectSet& set,
     return std::nullopt;
 }
 
+std::optional<composite::BlitRect> choose_armor_rect(const composite::BlitRectSet& set,
+                                                     const std::vector<MeshUvInfo>& meshes) {
+    std::optional<composite::BlitRect> best;
+    size_t best_verts = 0;
+    for (const MeshUvInfo& m : meshes) {
+        if (m.skin || m.verts == 0) continue;
+        auto r = piece_rect(set, m.umin, m.vmin, m.umax, m.vmax);
+        if (!r) continue;
+        size_t total = 0;  // every non-Skin vertex that lives in this rect
+        for (const MeshUvInfo& o : meshes) {
+            if (o.skin || o.verts == 0) continue;
+            auto ro = piece_rect(set, o.umin, o.vmin, o.umax, o.vmax);
+            if (ro && ro->x0 == r->x0 && ro->y0 == r->y0 && ro->x1 == r->x1 && ro->y1 == r->y1) total += o.verts;
+        }
+        if (total > best_verts) {
+            best_verts = total;
+            best = r;
+        }
+    }
+    return best;
+}
+
 ImageRgba crop_piece(const ImageRgba& tex, const composite::BlitRect& rect) {
     ImageRgba out;
     out.w = static_cast<int>(rect.x1 - rect.x0) / 2;

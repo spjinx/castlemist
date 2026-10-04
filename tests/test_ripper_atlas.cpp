@@ -77,3 +77,32 @@ CM_TEST(atlas, remap_uv_maps_rect_to_unit) {
     CHECK_NEAR(u2, 0.5, 1e-6);
     CHECK_NEAR(v2, 0.5, 1e-6);
 }
+
+CM_TEST(atlas, armor_rect_ignores_skin_mesh_listed_first) {
+    BlitRectSet s = armor_heavy();
+    s.rects.push_back({384, 512, 768, 768});  // where Skin meshes sample the body texture
+    std::vector<MeshUvInfo> meshes = {
+        {0.40f, 0.52f, 0.70f, 0.70f, 900, true},     // Skin, inside (384,512,768,768)
+        {0.0018f, 0.5018f, 0.374f, 0.9973f, 763, false},  // armor, inside (0,512,384,1024)
+        {0.0067f, 0.54f, 0.37f, 0.76f, 262, false},       // glow, same rect as the armor
+    };
+    auto r = choose_armor_rect(s, meshes);
+    CHECK(r.has_value());
+    CHECK_EQ(r->x0, 0u);
+    CHECK_EQ(r->y0, 512u);
+}
+
+CM_TEST(atlas, armor_rect_prefers_most_vertices) {
+    std::vector<MeshUvInfo> meshes = {
+        {0.879f, 0.255f, 0.995f, 0.495f, 50, false},     // boots rect, few vertices
+        {0.0018f, 0.5018f, 0.374f, 0.9973f, 763, false},  // coat rect, most vertices
+    };
+    auto r = choose_armor_rect(armor_heavy(), meshes);
+    CHECK(r.has_value());
+    CHECK_EQ(r->x0, 0u);
+}
+
+CM_TEST(atlas, armor_rect_none_when_only_skin) {
+    std::vector<MeshUvInfo> meshes = {{0.0018f, 0.5018f, 0.374f, 0.9973f, 763, true}};
+    CHECK(!choose_armor_rect(armor_heavy(), meshes).has_value());
+}

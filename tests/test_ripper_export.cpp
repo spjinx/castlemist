@@ -203,3 +203,16 @@ CM_TEST(export, weapon_with_stray_token_exports_model) {
     CHECK(r.ok);
     CHECK_EQ(r.status, std::string("model"));
 }
+
+CM_TEST(export, old_manifest_armor_is_not_exported_as_default_model) {
+    // A sub-project-1 manifest: no skin_type, no skin_token, but armor has a weight class.
+    ch::ManifestPiece p = warden_coat();
+    p.skin_type.clear();
+    p.skin_token = 0;
+    p.weight_class = "Heavy";
+    PieceContext ctx{nullptr, nullptr, "SylvariFemale"};  // never reaches the dat
+    PieceExportResult r = export_piece(ctx, p, (scratch("oldmanifest") / "x.glb").string());
+    CHECK_FALSE(r.ok);
+    CHECK_EQ(r.status, std::string("skipped"));
+    CHECK(r.reason.rfind("no appearance token", 0) == 0);
+}

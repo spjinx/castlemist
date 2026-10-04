@@ -1,6 +1,7 @@
 #include "castlemist/ripper/piece_export.h"
 
 #include <algorithm>
+#include <cctype>
 #include <optional>
 #include <vector>
 
@@ -93,22 +94,35 @@ PieceExportResult export_armor(const PieceContext& ctx, const character::Manifes
     if (fd.blit_set >= ctx.comp->blit_sets.size()) return skipped("no mesh inside an atlas rect");
     const composite::BlitRectSet& set = ctx.comp->blit_sets[fd.blit_set];
 
-    // The armor meshes are the ones whose UVs sit inside one atlas rect; the
-    // rest (the Skin material) sample the body texture and stay untextured.
-    std::optional<composite::BlitRect> rect;
-    std::vector<size_t> armor_meshes;
-    for (size_t mi = 0; mi < model->meshes.size(); ++mi) {
-        const auto& verts = model->meshes[mi].vertices;
-        if (verts.empty()) continue;
-        float u0 = 1e9f, v0 = 1e9f, u1 = -1e9f, v1 = -1e9f;
-        for (const auto& v : verts) {
-            u0 = std::min(u0, v.u); u1 = std::max(u1, v.u);
-            v0 = std::min(v0, v.v); v1 = std::max(v1, v.v);
+    // The armor meshes are the non-Skin ones whose UVs sit inside the chosen
+    // atlas rect; the rest (the Skin material) sample the body texture and stay
+    // untextured.
+    std::vector<MeshUvInfo> infos;
+    for (const auto& mesh : model->meshes) {
+        MeshUvInfo info;
+        info.verts = mesh.vertices.size();
+        info.umin = info.vmin = 1e9f;
+        info.umax = info.vmax = -1e9f;
+        for (const auto& v : mesh.vertices) {
+            info.umin = std::min(info.umin, v.u); info.umax = std::max(info.umax, v.u);
+            info.vmin = std::min(info.vmin, v.v); info.vmax = std::max(info.vmax, v.v);
         }
-        auto r = piece_rect(set, u0, v0, u1, v1);
-        if (!r) continue;
-        if (!rect) rect = r;
-        if (r->x0 == rect->x0 && r->y0 == rect->y0) armor_meshes.push_back(mi);
+        if (mesh.materialIndex < model->materials.size()) {
+            std::string name = model->materials[mesh.materialIndex].materialName;
+            std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return std::tolower(c); });
+            info.skin = name == "skin";
+        }
+        infos.push_back(info);
+    }
+    std::optional<composite::BlitRect> rect = choose_armor_rect(set, infos);
+    std::vector<size_t> armor_meshes;
+    if (rect) {
+        for (size_t mi = 0; mi < infos.size(); ++mi) {
+            if (infos[mi].skin || infos[mi].verts == 0) continue;
+            auto r = piece_rect(set, infos[mi].umin, infos[mi].vmin, infos[mi].umax, infos[mi].vmax);
+            if (r && r->x0 == rect->x0 && r->y0 == rect->y0 && r->x1 == rect->x1 && r->y1 == rect->y1)
+                armor_meshes.push_back(mi);
+        }
     }
     if (!rect) return skipped("no mesh inside an atlas rect");
 
@@ -142,7 +156,8 @@ PieceExportResult export_piece(const PieceContext& ctx, const character::Manifes
     // Armor goes through the Composite. The skin type decides, not the token:
     // weapons carry unrelated data in the same field (skin 11871 has 1 there).
     // With no API skin type, a token the Composite knows still counts as armor.
-    const bool armor = piece.skin_type == "Armor";
+    // Manifests saved before skin_type existed still mark armor by its weight class.
+    const bool armor = piece.skin_type == "Armor" || (piece.skin_type.empty() && !piece.weight_class.empty());
     if (piece.skin_token != 0 && (armor || piece.skin_type.empty())) {
         const composite::CompositeRace* race = ctx.comp ? ctx.comp->race(ctx.race_key) : nullptr;
         if (race) {
