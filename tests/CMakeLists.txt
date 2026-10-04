@@ -100,7 +100,7 @@ castlemist_add_test(exportgltf
     PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/exportgltf")
 
 castlemist_add_test(ripper
-    SOURCES test_ripper_dye.cpp test_ripper_atlas.cpp
+    SOURCES test_ripper_dye.cpp test_ripper_atlas.cpp test_ripper_export.cpp
     DEPS    castlemist::ripper ext::json)
 target_compile_definitions(cm_test_ripper PRIVATE
     CM_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
