@@ -53,3 +53,14 @@ CM_TEST(character_state, fetch_success_replaces_character) {
     s.fetch_done(result_for("B"), "");
     CHECK_EQ(s.current->manifest.name, std::string("B"));
 }
+
+CM_TEST(character_state, a_new_fetch_forgets_exported_meshes) {
+    RipperState s;
+    s.fetch_done(result_for("A"), "");
+    s.exported_mesh = {{"Coat", 40405u}};
+    s.fetch_done(result_for("B"), "");
+    CHECK(s.exported_mesh.empty());  // Open model must not jump to A's race mesh for B
+    s.exported_mesh = {{"Coat", 40405u}};
+    s.names_done("KEY", {"X"}, "");
+    CHECK(s.exported_mesh.empty());
+}

@@ -12,6 +12,8 @@
 
 #include "detail/app_state.h"
 
+#include <ole2.h>
+
 #include "castlemist/core/env.h"
 #include "castlemist/core/text.h"
 #include "castlemist/ui/application.h"
@@ -103,6 +105,9 @@ int run(HINSTANCE hInstance, int cmd_show) {
                              ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES | ICC_PROGRESS_CLASS | ICC_BAR_CLASSES |
                                  ICC_TREEVIEW_CLASSES | ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&icc);
+    // The UI thread is an OLE STA: the shell's folder picker (Character Ripper >
+    // Export pieces...) and drag-and-drop need it.
+    OleInitialize(nullptr);
 
     castlemist::hex::register_class(hInstance);
     castlemist::ui::register_splitter_class(hInstance);
@@ -752,6 +757,7 @@ int run(HINSTANCE hInstance, int cmd_show) {
             DispatchMessageW(&msg);
         }
     }
+    OleUninitialize();
     return static_cast<int>(msg.wParam);
 }
 

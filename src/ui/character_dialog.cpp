@@ -58,8 +58,6 @@ HWND g_ch_status = nullptr;
 HWND g_ch_fetch_btn = nullptr;
 HWND g_ch_build_btn = nullptr;
 HWND g_ch_export_btn = nullptr;
-// Race-correct mesh per slot from the last export (the manifest only knows the default model).
-std::vector<std::pair<std::string, uint32_t>> g_ch_exported_mesh;
 
 ch::KeyStore g_ch_keys;
 RipperState g_ch;                             // names / shown character / their key
@@ -315,7 +313,7 @@ void open_selected_model() {
         return;
     }
     uint32_t mesh = p.file_ids[0];
-    for (const auto& [slot, m] : g_ch_exported_mesh)
+    for (const auto& [slot, m] : g_ch.exported_mesh)
         if (slot == p.slot && m) mesh = m;  // the race/gender model once an export resolved it
     navigate_to_file_id(mesh);
 }
@@ -352,7 +350,12 @@ void export_pieces() {
     set_busy(true);
     set_status(L"Exporting " + std::to_wstring(manifest.pieces.size()) + L" pieces to " + folder + L"...");
     std::thread([manifest, dat_path, dir]() {
-        auto* r = new ExportDone{dir, castlemist::ripper::export_character(manifest, dat_path, dir)};
+        auto* r = new ExportDone{dir, {}};
+        try {
+            r->report = castlemist::ripper::export_character(manifest, dat_path, dir);
+        } catch (const std::exception& e) {  // never let a bad texture or full disk take the app down
+            r->report.error = std::string("Export failed: ") + e.what();
+        }
         post_result(WM_APP_CHAR_EXPORT_DONE, r);
     }).detach();
 }
@@ -363,8 +366,8 @@ void on_export_done(std::unique_ptr<ExportDone> r) {
         set_status(utf8_to_wide(r->report.error));
         return;
     }
-    g_ch_exported_mesh.clear();
-    for (const auto& [slot, pr] : r->report.pieces) g_ch_exported_mesh.emplace_back(slot, pr.ok ? pr.mesh : 0);
+    g_ch.exported_mesh.clear();
+    for (const auto& [slot, pr] : r->report.pieces) g_ch.exported_mesh.emplace_back(slot, pr.ok ? pr.mesh : 0);
     set_status(L"Exported " + std::to_wstring(r->report.exported()) + L" of " +
                std::to_wstring(r->report.pieces.size()) + L" pieces to " + utf8_to_wide(r->folder) +
                L" (details: export_report.json).");
@@ -454,7 +457,6 @@ LRESULT CALLBACK CharacterWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
         ++g_ch_request;  // drop any in-flight result
         g_ch_wnd = g_ch_key_combo = g_ch_char_combo = g_ch_tab_combo = g_ch_table = g_ch_status = g_ch_fetch_btn =
             g_ch_build_btn = g_ch_export_btn = nullptr;
-        g_ch_exported_mesh.clear();
         g_ch = RipperState{};
         return 0;
     }
