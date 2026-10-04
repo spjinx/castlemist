@@ -131,3 +131,57 @@ with mask weight `m_i`, `out = lerp(out, M_i(texel), m_i)`, where `M_i` is
 the matrix of the dye in slot i for the slot's material. (The texture is
 authored around `base_rgb`'s hue, which is what the matrix is built to shift.)
 Not yet verified against an in-game screenshot.
+
+## 5. Body, head and assembly (measured 2026-10-04, SylvariFemale)
+
+**Bare body.** `RaceData.skinStyles` (array of `{chest, feet, hands, legs}`
+u64 tokens) points at FileData entries of type 0 (chest), 1 (feet),
+2 (hands), 3 (legs) -- composite entries like armor: SylvariFemale style 0 ->
+meshes 41502 / 41499 / 41500 / 41501, base textures 256x128 / 64x32 / 64x32 /
+128x256, no dye masks. All their meshes are named `skin`.
+
+**Head.** `faces` (u64 tokens -> type 5, 21 for SylvariFemale: meshes like
+904264 with `*_Face`, `EyeShadows`, `Eyes` submeshes), `hairStyles` (type 6,
+38: hair meshes, usually with a `Skin` scalp mesh, base texture + 2 dye
+masks), `ears` (type 7; Sylvari head leaves).
+
+**Everything shares one 1024x1024 character atlas** (blit set
+`fileData.blit_set`, e.g. 2 = ArmorHeavy), by the same rule as armor
+(section 3): each entry's texture at 2x, anchored at the top-left of the rect
+region its meshes' UVs fall in, clipped to those rects.
+
+| Part | Atlas region |
+|---|---|
+| chest body | (384,768)-(896,1024) -- also where armor `Skin` meshes sample (Angler Vest's 504-vertex skin mesh) |
+| feet body | (896,896)-(1024,960) |
+| hands body | (896,960)-(1024,1024) |
+| legs body | (768,512)-(1024,768) + (896,768)-(1024,896), anchored at (768,512) |
+| face (+ eyes) | (384,512)-(768,768) |
+| hair (atlas styles) | (0,0)-(384,256) -- the helm's rect: a helm replaces hair |
+| ears | (384,0)-(512,256) |
+
+Some hair styles (e.g. mesh 930141) don't use the atlas: UVs span the whole
+0..1 square with their own 512x512 texture.
+
+**Mirrored UVs.** Garment halves are mirrored by shifting one half's UVs by
+-1 (Angler Vest u from -0.99 to 0.37); the sampler wraps. Wrap into [0,1]
+before any rect test.
+
+**One skeleton.** Every armor piece references the race skeleton
+(SylvariFemale 31210, 153 joints: `bone:root`, `bone:COG`, `bone:Spine01`,
+...); castlemist resolves it and bone-indexes vertices into it. Back items
+(capes) carry the same `bone:*` names plus their own cape bones.
+
+**Weapon attachment.** Weapons carry `actionpoint:` joints that match the
+race skeleton's holster/hand points by name:
+
+| Weapon joint | Race skeleton joint |
+|---|---|
+| `actionpoint:RGripHand` | `actionpoint:RightHand` |
+| `actionpoint:LGripHand` | `actionpoint:LeftHand` |
+| `actionpoint:RStowBack` / `LStowBack` | `actionpoint:RHolsterBack` / `LHolsterBack` |
+| `actionpoint:RStowHip` / `LStowHip` | `actionpoint:RHolsterHip` / `LHolsterHip` |
+
+Joint matrices are row-vector (`p' = p * M`) with `invWorld` = model -> bone,
+so a weapon vertex moves into the body by
+`p * invWorld_weapon(point) * inverse(invWorld_body(point))`.
