@@ -112,6 +112,7 @@ constexpr UINT_PTR ID_CK_RENAME = 2165;
 constexpr UINT_PTR ID_CK_REMOVE = 2166;
 constexpr UINT_PTR ID_CK_CLOSE = 2167;
 constexpr UINT_PTR ID_CH_EXPORT = 2168;
+constexpr UINT_PTR ID_CH_ASSEMBLE = 2169;
 constexpr int ID_LISTVIEW = 2001;
 constexpr int ID_HEX_BEFORE = 2002;
 constexpr int ID_HEX_AFTER = 2003;
@@ -298,6 +299,7 @@ constexpr UINT WM_APP_GLTF_EXPORT_DONE = WM_APP + 5;
 constexpr UINT WM_APP_CHAR_NAMES_DONE = WM_APP + 6;
 constexpr UINT WM_APP_CHAR_FETCH_DONE = WM_APP + 7;
 constexpr UINT WM_APP_CHAR_EXPORT_DONE = WM_APP + 8;
+constexpr UINT WM_APP_CHAR_ASSEMBLE_DONE = WM_APP + 9;
 
 enum class MiddleTab { Compressed = 0, Decompressed = 1, Structure = 2, Preview = 3 };
 

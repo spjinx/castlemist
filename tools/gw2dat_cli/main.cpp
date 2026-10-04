@@ -20,6 +20,9 @@
 //            [--dat <path> [--index <db>]] rebuilds a missing content map first
 //   character-export --manifest <json> --dat <path> --out <dir> [--index <db>]
 //            -- one .glb per equipped piece (race model, dyes baked), plus a report
+//   character-assemble --manifest <json> --dat <path> --out <file.glb>
+//            [--weapons stowed|hands|none] [--face N] [--hair N] [--index <db>]
+//            -- the whole character as one rigged, upright .glb
 //
 // On success exit code is 0 and the JSON has "ok": true; on failure exit code
 // is 1 and the JSON is {"ok": false, "error": "..."}.
@@ -55,6 +58,7 @@
 #include "castlemist/character/key_store.h"
 #include "castlemist/character/manifest_json.h"
 #include "castlemist/db/index_db.h"
+#include "castlemist/ripper/assemble.h"
 #include "castlemist/ripper/character_export.h"
 
 #ifndef NOMINMAX
@@ -1829,6 +1833,43 @@ void cmd_character(const Args& a) {
     emit(j);
 }
 
+// A manifest (raw, or `character`'s own output) from --manifest.
+castlemist::character::CharacterManifest read_manifest(const Args& a) {
+    std::ifstream f(std::filesystem::path(utf8_arg("--manifest")), std::ios::binary);
+    if (!f) fail("cannot read manifest: " + need(a, "manifest"));
+    json mj = json::parse(f, nullptr, false);
+    if (mj.is_discarded()) fail("manifest is not JSON");
+    if (mj.contains("manifest")) mj = mj["manifest"];
+    return castlemist::character::manifest_from_json(mj);
+}
+
+void cmd_character_assemble(const Args& a) {
+    namespace rp = castlemist::ripper;
+    castlemist::character::CharacterManifest m = read_manifest(a);
+    rp::AssemblyOptions opt;
+    if (has(a, "weapons")) {
+        const std::string w = a.at("weapons");
+        if (w == "stowed") opt.weapons = rp::WeaponPlacement::Stowed;
+        else if (w == "hands") opt.weapons = rp::WeaponPlacement::Hands;
+        else if (w == "none") opt.weapons = rp::WeaponPlacement::None;
+        else fail("--weapons must be stowed, hands or none");
+    }
+    if (has(a, "face")) opt.face = static_cast<int>(to_u64(a.at("face")));
+    if (has(a, "hair")) opt.hair = static_cast<int>(to_u64(a.at("hair")));
+    open_index(a);
+    rp::AssemblyReport rep = rp::assemble_character(m, need(a, "dat"), utf8_arg("--out"), opt);
+    if (!rep.ok) fail(rep.error);
+    json parts = json::array();
+    for (const rp::AssemblyPart& p : rep.parts)
+        parts.push_back({{"part", p.name}, {"status", p.status}, {"reason", p.reason}, {"mesh", p.mesh}});
+    json j;
+    j["ok"] = true;
+    j["joints"] = rep.joints;
+    j["weapons"] = rp::to_string(opt.weapons);
+    j["parts"] = parts;
+    emit(j);
+}
+
 void cmd_character_export(const Args& a) {
     namespace ch = castlemist::character;
     std::ifstream f(std::filesystem::path(utf8_arg("--manifest")), std::ios::binary);
@@ -1856,7 +1897,8 @@ void cmd_character_export(const Args& a) {
 int main(int argc, char** argv) {
     if (argc < 2) {
         fail("usage: gw2dat_cli <info|list|lookup|resolve|extract|texture|parse|sniff|"
-             "compress|decompress|encode-texture|scananim|character|character-export> [--flags]");
+             "compress|decompress|encode-texture|scananim|character|character-export|"
+             "character-assemble> [--flags]");
     }
     std::string cmd = argv[1];
     Args a = parse_args(argc, argv, 2);
@@ -1884,6 +1926,7 @@ int main(int argc, char** argv) {
         else if (cmd == "encode-texture") cmd_encode_texture(a);
         else if (cmd == "character") cmd_character(a);
         else if (cmd == "character-export") cmd_character_export(a);
+        else if (cmd == "character-assemble") cmd_character_assemble(a);
         else fail("unknown command: " + cmd);
     } catch (const std::exception& ex) {
         fail(ex.what());
