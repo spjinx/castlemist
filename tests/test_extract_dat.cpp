@@ -415,3 +415,14 @@ CM_TEST(dat, model_token64_fields_keep_their_high_half) {
             if ((t.token >> 32) != 0) any_high_half = true;
     CHECK(any_high_half);
 }
+
+CM_TEST(dat, texture_decodes_by_file_id) {
+    Gw2Dat& dat = shared_dat();
+    ModelTextureCPU tex;
+    CHECK(decode_texture_rgba(dat, 151455, tex));  // Warden Coat, SylvariFemale base texture
+    CHECK_EQ(tex.width, 512);
+    CHECK_EQ(tex.height, 256);
+    CHECK_EQ(tex.rgba.size(), size_t{512 * 256 * 4});
+    ModelTextureCPU none;
+    CHECK_FALSE(decode_texture_rgba(dat, 0, none));
+}

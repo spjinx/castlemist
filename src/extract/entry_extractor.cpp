@@ -564,3 +564,8 @@ ExtractedEntry extract_loose_file(std::vector<uint8_t> bytes, const std::string&
     if (plain_ok) return plain;
     return decompress_raw_entry(std::move(bytes), 0, source_path, /*already_plain=*/true);
 }
+
+bool decode_texture_rgba(Gw2Dat& dat, uint32_t file_id, ModelTextureCPU& out) {
+    if (file_id == 0) return false;
+    return decode_texture_by_fileid(dat, file_id, out);
+}

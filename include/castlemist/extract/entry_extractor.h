@@ -191,6 +191,13 @@ ExtractedEntry extract_loose_file(std::vector<uint8_t> bytes, const std::string&
 /// Takes effect on the next model (re)load.
 /// @{
 void set_texture_full_res(bool full); ///< true (default) = prefer the full-res member.
+
+/// @brief Decode the texture a fileId resolves to into CPU RGBA8888.
+///
+/// The same path model materials use (honours ::texture_full_res). Only safe
+/// on the thread that owns @p dat. @return false for an unknown fileId or one
+/// that isn't a decodable texture.
+bool decode_texture_rgba(Gw2Dat& dat, uint32_t file_id, ModelTextureCPU& out);
 bool texture_full_res();              ///< Current preference.
 /// @}
 
