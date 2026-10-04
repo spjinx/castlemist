@@ -139,6 +139,11 @@ castlemist_add_layer(sim    DEPS castlemist::extract ext::glm)
 # native/db) to build the glTF JSON chunk without hand-rolled escaping.
 castlemist_add_layer(exportgltf DEPS castlemist::extract ext::stb ext::json)
 
+# ripper turns a character manifest into exported pieces: composite lookup,
+# dye baking and atlas cropping on top of extract + exportgltf.
+castlemist_add_layer(ripper DEPS castlemist::character castlemist::extract castlemist::exportgltf
+                                 castlemist::format castlemist::db ext::json)
+
 castlemist_add_layer(render DEPS castlemist::extract castlemist::sim
                                  d3d11 dxgi d3dcompiler dxguid)
 
