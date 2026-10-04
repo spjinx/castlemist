@@ -79,6 +79,7 @@ struct NoMapLookup final : ch::AssetLookup {
     bool built() const override { return false; }
     std::vector<uint32_t> skin_assets(uint32_t) const override { return {}; }
     std::optional<uint32_t> item_skin(uint32_t) const override { return std::nullopt; }
+    uint64_t skin_token(uint32_t) const override { return 0; }
 };
 
 void set_status(const std::wstring& s) { SetWindowTextW(g_ch_status, s.c_str()); }

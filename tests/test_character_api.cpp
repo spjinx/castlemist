@@ -239,3 +239,15 @@ CM_TEST(api, malformed_json_is_api_error) {
     }
     CHECK(threw);
 }
+
+CM_TEST(api, colors_keep_shift) {
+    FakeHttpClient f = fixture_client();
+    Gw2Api api(f, "KEY");
+    auto colors = api.colors(ids_of(fixture("colors.json")));
+    const DyeShift& cloth = colors.at(1).shift.at("cloth");  // Dye Remover
+    CHECK_NEAR(cloth.brightness, 15.0, 1e-6);
+    CHECK_NEAR(cloth.contrast, 1.25, 1e-6);
+    CHECK_NEAR(cloth.hue, 38.0, 1e-6);
+    CHECK_NEAR(cloth.saturation, 0.28125, 1e-6);
+    CHECK_NEAR(cloth.lightness, 1.44531, 1e-6);
+}

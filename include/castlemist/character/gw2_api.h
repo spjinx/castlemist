@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "castlemist/character/http.h"
+#include "castlemist/character/manifest.h"
 
 namespace castlemist::character {
 
@@ -83,6 +84,7 @@ struct ApiColor {
     uint32_t id = 0;
     std::string name;
     std::map<std::string, std::array<uint8_t, 3>> rgb;  // per material
+    std::map<std::string, DyeShift> shift;              // per material
 };
 
 class Gw2Api {

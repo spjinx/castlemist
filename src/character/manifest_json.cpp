@@ -1,6 +1,7 @@
 #include "castlemist/character/manifest_json.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 
 namespace castlemist::character {
@@ -12,6 +13,16 @@ std::string to_hex(const std::array<uint8_t, 3>& rgb) {
     char buf[8];
     std::snprintf(buf, sizeof buf, "#%02X%02X%02X", rgb[0], rgb[1], rgb[2]);
     return buf;
+}
+
+std::string to_hex64(uint64_t v) {
+    char buf[24];
+    std::snprintf(buf, sizeof buf, "0x%016llX", static_cast<unsigned long long>(v));
+    return buf;
+}
+
+uint64_t from_hex64(const std::string& s) {
+    return s.size() > 2 ? std::strtoull(s.c_str() + 2, nullptr, 16) : 0;
 }
 
 std::array<uint8_t, 3> from_hex(const std::string& s) {
@@ -29,12 +40,17 @@ json manifest_to_json(const CharacterManifest& m) {
     for (const ManifestPiece& p : m.pieces) {
         json dyes = json::array();
         for (const ManifestDye& d : p.dyes) {
-            dyes.push_back({{"slot", d.slot},
+            json dj = {{"slot", d.slot},
                             {"color_id", d.color_id},
                             {"color_name", d.color_name},
                             {"material", d.material},
                             {"rgb", to_hex(d.rgb)},
-                            {"known", d.known}});
+                            {"known", d.known}};
+            if (d.shift)
+                dj["shift"] = {{"brightness", d.shift->brightness}, {"contrast", d.shift->contrast},
+                               {"hue", d.shift->hue}, {"saturation", d.shift->saturation},
+                               {"lightness", d.shift->lightness}};
+            dyes.push_back(std::move(dj));
         }
         pieces.push_back({{"slot", p.slot},
                           {"item_id", p.item_id},
@@ -42,6 +58,8 @@ json manifest_to_json(const CharacterManifest& m) {
                           {"skin_id", p.skin_id},
                           {"skin_name", p.skin_name},
                           {"weight_class", p.weight_class},
+                          {"skin_type", p.skin_type},
+                          {"skin_token", to_hex64(p.skin_token)},
                           {"file_ids", p.file_ids},
                           {"status", to_string(p.status)},
                           {"dyes", dyes}});
@@ -75,6 +93,8 @@ CharacterManifest manifest_from_json(const json& j) {
             p.skin_id = pj.at("skin_id").get<uint32_t>();
             p.skin_name = pj.at("skin_name").get<std::string>();
             p.weight_class = pj.at("weight_class").get<std::string>();
+            p.skin_type = pj.value("skin_type", std::string());
+            p.skin_token = from_hex64(pj.value("skin_token", std::string()));
             p.file_ids = pj.at("file_ids").get<std::vector<uint32_t>>();
             auto st = piece_status_from_string(pj.at("status").get<std::string>());
             if (!st) throw std::runtime_error("unknown piece status");
@@ -87,6 +107,12 @@ CharacterManifest manifest_from_json(const json& j) {
                 d.material = dj.at("material").get<std::string>();
                 d.rgb = from_hex(dj.at("rgb").get<std::string>());
                 d.known = dj.at("known").get<bool>();
+                if (dj.contains("shift")) {
+                    const json& sj = dj["shift"];
+                    d.shift = DyeShift{sj.at("brightness").get<float>(), sj.at("contrast").get<float>(),
+                                       sj.at("hue").get<float>(), sj.at("saturation").get<float>(),
+                                       sj.at("lightness").get<float>()};
+                }
                 p.dyes.push_back(std::move(d));
             }
             m.pieces.push_back(std::move(p));

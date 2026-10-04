@@ -21,11 +21,16 @@ struct FakeAssets : AssetLookup {
     bool is_built = true;
     std::map<uint32_t, std::vector<uint32_t>> skins;
     std::map<uint32_t, uint32_t> item_skins;
+    std::map<uint32_t, uint64_t> tokens;
 
     bool built() const override { return is_built; }
     std::vector<uint32_t> skin_assets(uint32_t skin_id) const override {
         auto it = skins.find(skin_id);
         return it == skins.end() ? std::vector<uint32_t>{} : it->second;
+    }
+    uint64_t skin_token(uint32_t skin_id) const override {
+        auto it = tokens.find(skin_id);
+        return it == tokens.end() ? 0 : it->second;
     }
     std::optional<uint32_t> item_skin(uint32_t item_id) const override {
         auto it = item_skins.find(item_id);
@@ -281,4 +286,22 @@ CM_TEST(resolver, dye_slot_index_survives_null_slots) {
     CHECK_EQ(d[0].slot, 0);
     CHECK_EQ(d[1].slot, 2);  // metal is dye channel 2, not 1
     CHECK_EQ(d[1].material, std::string("metal"));
+}
+
+CM_TEST(resolver, piece_carries_token_type_and_shift) {
+    FakeAssets a;
+    a.skins[10] = {111};
+    a.tokens[10] = 0x00000348C28A32A3ull;
+    ApiSkin s;
+    s.id = 10;
+    s.type = "Armor";
+    s.dye_default = {DyeSlot{5, "cloth"}};
+    ApiColor c = color(5, {1, 2, 3}, {4, 5, 6});
+    c.shift["cloth"] = DyeShift{15, 1.25f, 38, 0.28125f, 1.44531f};
+    auto m = resolve_character(core(), one(entry(7, 10)), {}, {{10, s}}, {{5, c}}, a);
+    const ManifestPiece& p = only_piece(m);
+    CHECK_EQ(p.skin_token, 0x00000348C28A32A3ull);
+    CHECK_EQ(p.skin_type, std::string("Armor"));
+    CHECK(p.dyes[0].shift.has_value());
+    CHECK_NEAR(p.dyes[0].shift->contrast, 1.25, 1e-6);
 }

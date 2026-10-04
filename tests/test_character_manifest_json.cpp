@@ -30,7 +30,9 @@ CharacterManifest sample() {
     coat.weight_class = "Heavy";
     coat.file_ids = {1200313, 1200325};
     coat.status = PieceStatus::Ok;
-    coat.dyes.push_back(ManifestDye{0, 6, "Abyss", "cloth", {255, 16, 0}, true});
+    coat.skin_type = "Armor";
+    coat.skin_token = 0x00000348C28A32A3ull;
+    coat.dyes.push_back(ManifestDye{0, 6, "Abyss", "cloth", {255, 16, 0}, true, DyeShift{-8, 1.0f, 34, 0.3125f, 1.09375f}});
     coat.dyes.push_back(ManifestDye{3, 1682, "", "leather", {}, false});
     ManifestPiece ring;
     ring.slot = "Ring1";
@@ -63,6 +65,8 @@ CM_TEST(manifest_json, round_trip) {
         CHECK_EQ(y.weight_class, x.weight_class);
         CHECK(y.file_ids == x.file_ids);
         CHECK(y.status == x.status);
+        CHECK_EQ(y.skin_type, x.skin_type);
+        CHECK_EQ(y.skin_token, x.skin_token);
         CHECK_EQ(y.dyes.size(), x.dyes.size());
         for (size_t d = 0; d < x.dyes.size(); ++d) {
             CHECK_EQ(y.dyes[d].slot, x.dyes[d].slot);
@@ -71,6 +75,8 @@ CM_TEST(manifest_json, round_trip) {
             CHECK_EQ(y.dyes[d].material, x.dyes[d].material);
             CHECK(y.dyes[d].rgb == x.dyes[d].rgb);
             CHECK_EQ(y.dyes[d].known, x.dyes[d].known);
+            CHECK_EQ(y.dyes[d].shift.has_value(), x.dyes[d].shift.has_value());
+            if (x.dyes[d].shift) CHECK_NEAR(y.dyes[d].shift->hue, x.dyes[d].shift->hue, 1e-6);
         }
     }
 }
@@ -90,4 +96,22 @@ CM_TEST(manifest_json, rejects_other_versions) {
     bool threw = false;
     try { manifest_from_json(j); } catch (const std::runtime_error&) { threw = true; }
     CHECK(threw);
+}
+
+CM_TEST(manifest_json, old_manifest_without_new_fields_loads) {
+    nlohmann::json j = manifest_to_json(sample());
+    for (auto& p : j["pieces"]) {
+        p.erase("skin_type");
+        p.erase("skin_token");
+        for (auto& d : p["dyes"]) d.erase("shift");
+    }
+    CharacterManifest m = manifest_from_json(j);
+    CHECK(m.pieces[0].skin_type.empty());
+    CHECK_EQ(m.pieces[0].skin_token, 0ull);
+    CHECK(!m.pieces[0].dyes[0].shift.has_value());
+}
+
+CM_TEST(manifest_json, token_is_hex_string) {
+    nlohmann::json j = manifest_to_json(sample());
+    CHECK_EQ(j["pieces"][0]["skin_token"].get<std::string>(), std::string("0x00000348C28A32A3"));
 }

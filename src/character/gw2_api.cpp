@@ -196,6 +196,9 @@ std::map<uint32_t, ApiColor> Gw2Api::colors(const std::vector<uint32_t>& ids) {
         c.name = str(o, "name");
         for (const char* m : {"cloth", "leather", "metal", "fur"}) {
             if (!o.contains(m) || !o[m].is_object() || !o[m].contains("rgb")) continue;
+            const json& mo = o[m];
+            c.shift[m] = DyeShift{mo.value("brightness", 0.0f), mo.value("contrast", 1.0f), mo.value("hue", 0.0f),
+                                  mo.value("saturation", 1.0f), mo.value("lightness", 1.0f)};
             const json& rgb = o[m]["rgb"];
             if (rgb.is_array() && rgb.size() == 3)
                 c.rgb[m] = {rgb[0].get<uint8_t>(), rgb[1].get<uint8_t>(), rgb[2].get<uint8_t>()};

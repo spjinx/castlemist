@@ -23,6 +23,8 @@ public:
     virtual std::vector<uint32_t> skin_assets(uint32_t skin_id) const = 0;
     /// The item's own skin according to the dat (for items the API didn't return).
     virtual std::optional<uint32_t> item_skin(uint32_t item_id) const = 0;
+    /// The skin's composite appearance token (armor), 0 when unknown.
+    virtual uint64_t skin_token(uint32_t skin_id) const = 0;
 };
 
 /// AssetLookup over the process-wide castlemist::cmap content map.
@@ -31,6 +33,7 @@ public:
     bool built() const override;
     std::vector<uint32_t> skin_assets(uint32_t skin_id) const override;
     std::optional<uint32_t> item_skin(uint32_t item_id) const override;
+    uint64_t skin_token(uint32_t skin_id) const override;
 };
 
 /// Ids to batch-fetch for a tab; each sorted and de-duplicated.

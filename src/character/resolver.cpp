@@ -34,6 +34,8 @@ std::optional<uint32_t> CmapAssetLookup::item_skin(uint32_t item_id) const {
     return std::nullopt;
 }
 
+uint64_t CmapAssetLookup::skin_token(uint32_t skin_id) const { return cmap::skin_token(skin_id); }
+
 namespace {
 
 std::vector<uint32_t> sorted_unique(std::vector<uint32_t> v) {
@@ -109,6 +111,7 @@ CharacterManifest resolve_character(const CharacterCore& core, const EquipmentTa
             m.pieces.push_back(std::move(p));
             continue;
         }
+        p.skin_token = assets.skin_token(p.skin_id);
         if (!assets.built()) {
             p.status = PieceStatus::NoContentMap;
         } else {
@@ -119,6 +122,7 @@ CharacterManifest resolve_character(const CharacterCore& core, const EquipmentTa
             const ApiSkin& s = sit->second;
             p.skin_name = s.name;
             p.weight_class = s.weight_class;
+            p.skin_type = s.type;
             const DyeSlots& slots = dye_slots_for(s, race_gender);
             for (size_t i = 0; i < slots.size(); ++i) {
                 if (!slots[i]) continue;
@@ -128,6 +132,8 @@ CharacterManifest resolve_character(const CharacterCore& core, const EquipmentTa
                 d.material = slots[i]->material;
                 if (auto cit = colors.find(d.color_id); cit != colors.end()) {
                     d.color_name = cit->second.name;
+                    if (auto shit = cit->second.shift.find(d.material); shit != cit->second.shift.end())
+                        d.shift = shit->second;
                     if (auto rit = cit->second.rgb.find(d.material); rit != cit->second.rgb.end()) {
                         d.rgb = rit->second;
                         d.known = true;
