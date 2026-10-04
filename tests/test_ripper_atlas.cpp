@@ -130,3 +130,49 @@ CM_TEST(atlas, wrap_uv_folds_mirrored_halves_back) {
     CHECK_NEAR(wrap_uv(0.0f), 0.0, 1e-6);
     CHECK_NEAR(wrap_uv(1.25f), 0.25, 1e-6);
 }
+
+namespace {
+BlitRectSet heavy_full() {
+    BlitRectSet s = armor_heavy();
+    s.rects.push_back({384, 768, 896, 1024});  // chest skin
+    s.rects.push_back({768, 512, 1024, 768});  // legs (upper)
+    s.rects.push_back({896, 768, 1024, 896});  // legs (lower)
+    return s;
+}
+std::vector<std::pair<float, float>> pts(std::initializer_list<std::pair<int, int>> px) {
+    std::vector<std::pair<float, float>> out;
+    for (auto [x, y] : px) out.push_back({x / 1024.0f, y / 1024.0f});
+    return out;
+}
+} // namespace
+
+CM_TEST(atlas, region_spans_every_rect_its_points_hit) {
+    // Legs body: points in (768,512)-(1024,768) and (896,768)-(1024,896).
+    AtlasRegion r = region_for(heavy_full(), pts({{780, 520}, {1000, 700}, {900, 800}, {1010, 890}}));
+    CHECK_EQ(r.rects.size(), size_t{2});
+    CHECK_EQ(r.ax, 768u);
+    CHECK_EQ(r.ay, 512u);
+}
+
+CM_TEST(atlas, region_ignores_stray_points) {
+    std::vector<std::pair<float, float>> p;
+    for (int i = 0; i < 200; ++i) p.push_back({(10 + i) / 1024.0f, 600 / 1024.0f});  // coat rect
+    p.push_back({950 / 1024.0f, 300 / 1024.0f});                                     // one stray in the boots rect
+    AtlasRegion r = region_for(heavy_full(), p);
+    CHECK_EQ(r.rects.size(), size_t{1});
+    CHECK_EQ(r.ax, 0u);
+    CHECK_EQ(r.ay, 512u);
+}
+
+CM_TEST(atlas, blit_places_texture_at_2x_inside_its_rects_only) {
+    ImageRgba atlas{1024, 1024, std::vector<uint8_t>(1024 * 1024 * 4, 0)};
+    ImageRgba tex = solid(512, 256, 90);      // covers 1024x512 atlas px from the anchor
+    tex.px[(10 * 512 + 20) * 4] = 222;        // texel (20,10)
+    AtlasRegion r{{BlitRect{0, 512, 384, 1024}}, 0, 512};
+    blit(atlas, tex, r);
+    auto at = [&](int x, int y) { return int(atlas.px[(static_cast<size_t>(y) * 1024 + x) * 4]); };
+    CHECK_EQ(at(40, 512 + 20), 222);  // texel (20,10) -> atlas (40,532)
+    CHECK_EQ(at(41, 512 + 21), 222);
+    CHECK_EQ(at(100, 700), 90);
+    CHECK_EQ(at(500, 700), 0);        // outside the rect: untouched, though the texture reaches it
+}

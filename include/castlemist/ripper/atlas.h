@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "castlemist/format/composite.h"
@@ -53,6 +54,23 @@ ImageRgba crop_piece(const ImageRgba& tex, const composite::BlitRect& rect);
 /// Nearest-neighbour resize (dye masks that come at another resolution than
 /// the base texture are brought to its size rather than dropped).
 ImageRgba resize_nearest(const ImageRgba& src, int w, int h);
+
+/// Where one part's texture lands in the full character atlas: the rects its
+/// UV points fall in, and the anchor (their common top-left) the texture is
+/// drawn from at 2x.
+struct AtlasRegion {
+    std::vector<composite::BlitRect> rects;
+    uint32_t ax = 0, ay = 0;
+};
+
+/// The rects of `set` containing the (already wrapped) UV points, ignoring
+/// rects hit by fewer than 1% of them (stray vertices on a border); anchor =
+/// their top-left. Empty when no rect is hit.
+AtlasRegion region_for(const composite::BlitRectSet& set, const std::vector<std::pair<float, float>>& uvs);
+
+/// Draws `tex` into the atlas at 2x from the region's anchor, writing only
+/// pixels inside the region's rects (nearest texel; alpha copied).
+void blit(ImageRgba& atlas, const ImageRgba& tex, const AtlasRegion& region);
 
 /// Atlas UV -> UV within the cropped block: u' = (u*1024 - x0) / (x1 - x0), same for v.
 void remap_uv(float& u, float& v, const composite::BlitRect& rect);

@@ -69,6 +69,49 @@ ImageRgba resize_nearest(const ImageRgba& src, int w, int h) {
     return out;
 }
 
+AtlasRegion region_for(const composite::BlitRectSet& set, const std::vector<std::pair<float, float>>& uvs) {
+    std::vector<size_t> hits(set.rects.size(), 0);
+    for (const auto& [u, v] : uvs) {
+        const float x = u * kAtlasSize, y = v * kAtlasSize;
+        for (size_t i = 0; i < set.rects.size(); ++i) {
+            const composite::BlitRect& r = set.rects[i];
+            if (x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1) {
+                ++hits[i];
+                break;  // first rect wins on a shared border
+            }
+        }
+    }
+    AtlasRegion out;
+    const size_t min_hits = std::max<size_t>(1, uvs.size() / 100);
+    for (size_t i = 0; i < set.rects.size(); ++i) {
+        if (hits[i] < min_hits) continue;
+        const composite::BlitRect& r = set.rects[i];
+        if (out.rects.empty()) {
+            out.ax = r.x0;
+            out.ay = r.y0;
+        }
+        out.ax = std::min(out.ax, r.x0);
+        out.ay = std::min(out.ay, r.y0);
+        out.rects.push_back(r);
+    }
+    return out;
+}
+
+void blit(ImageRgba& atlas, const ImageRgba& tex, const AtlasRegion& region) {
+    for (const composite::BlitRect& r : region.rects) {
+        for (uint32_t y = r.y0; y < r.y1 && y < static_cast<uint32_t>(atlas.h); ++y) {
+            const int ty = static_cast<int>((y - region.ay) / 2);
+            if (y < region.ay || ty >= tex.h) continue;
+            for (uint32_t x = r.x0; x < r.x1 && x < static_cast<uint32_t>(atlas.w); ++x) {
+                const int tx = static_cast<int>((x - region.ax) / 2);
+                if (x < region.ax || tx >= tex.w) continue;
+                std::memcpy(atlas.px.data() + (static_cast<size_t>(y) * atlas.w + x) * 4,
+                            tex.px.data() + (static_cast<size_t>(ty) * tex.w + tx) * 4, 4);
+            }
+        }
+    }
+}
+
 void remap_uv(float& u, float& v, const composite::BlitRect& rect) {
     u = (u * kAtlasSize - static_cast<float>(rect.x0)) / static_cast<float>(rect.x1 - rect.x0);
     v = (v * kAtlasSize - static_cast<float>(rect.y0)) / static_cast<float>(rect.y1 - rect.y0);
