@@ -1,0 +1,774 @@
+[
+  {
+    "name": "Tempered Scale Chestplate",
+    "type": "Armor",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 129,
+    "icon": "https://render.guildwars2.com/file/931252B1EA070F7B627338905D780D6918B5B056/61545.png",
+    "details": {
+      "type": "Coat",
+      "weight_class": "Heavy",
+      "dye_slots": {
+        "default": [
+          {
+            "color_id": 1,
+            "material": "metal"
+          },
+          {
+            "color_id": 1,
+            "material": "metal"
+          },
+          {
+            "color_id": 1,
+            "material": "metal"
+          },
+          null
+        ],
+        "overrides": {}
+      }
+    }
+  },
+  {
+    "name": "Tempered Scale Legs",
+    "type": "Armor",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 130,
+    "icon": "https://render.guildwars2.com/file/B5379D04CEA26367C097F402B3406B6B51ADA65D/61548.png",
+    "details": {
+      "type": "Leggings",
+      "weight_class": "Heavy",
+      "dye_slots": {
+        "default": [
+          {
+            "color_id": 1,
+            "material": "metal"
+          },
+          {
+            "color_id": 1,
+            "material": "metal"
+          },
+          {
+            "color_id": 1,
+            "material": "metal"
+          },
+          null
+        ],
+        "overrides": {}
+      }
+    }
+  },
+  {
+    "name": "Tempered Scale Pauldrons",
+    "type": "Armor",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 137,
+    "icon": "https://render.guildwars2.com/file/04D2317D7B75E20C95223E72CF6B1A2FE2E55237/61549.png",
+    "details": {
+      "type": "Shoulders",
+      "weight_class": "Heavy",
+      "dye_slots": {
+        "default": [
+          {
+            "color_id": 1,
+            "material": "metal"
+          },
+          {
+            "color_id": 1,
+            "material": "metal"
+          },
+          {
+            "color_id": 1,
+            "material": "metal"
+          },
+          null
+        ],
+        "overrides": {}
+      }
+    }
+  },
+  {
+    "name": "Tempered Scale Greaves",
+    "type": "Armor",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 139,
+    "icon": "https://render.guildwars2.com/file/39AD0FFC116EB9190E07E73446484DE8279151E7/61544.png",
+    "details": {
+      "type": "Boots",
+      "weight_class": "Heavy",
+      "dye_slots": {
+        "default": [
+          {
+            "color_id": 1,
+            "material": "metal"
+          },
+          {
+            "color_id": 1,
+            "material": "metal"
+          },
+          {
+            "color_id": 1,
+            "material": "metal"
+          },
+          null
+        ],
+        "overrides": {}
+      }
+    }
+  },
+  {
+    "name": "Tempered Scale Gauntlets",
+    "type": "Armor",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 244,
+    "icon": "https://render.guildwars2.com/file/2995BC049673C7B2A9F41C111154FC77F31F4F02/61546.png",
+    "details": {
+      "type": "Gloves",
+      "weight_class": "Heavy",
+      "dye_slots": {
+        "default": [
+          {
+            "color_id": 1,
+            "material": "metal"
+          },
+          {
+            "color_id": 1,
+            "material": "metal"
+          },
+          {
+            "color_id": 1,
+            "material": "metal"
+          },
+          null
+        ],
+        "overrides": {}
+      }
+    }
+  },
+  {
+    "name": "Warden Leggings",
+    "type": "Armor",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [
+      "Sylvari"
+    ],
+    "rarity": "Basic",
+    "id": 512,
+    "icon": "https://render.guildwars2.com/file/A546F3F117B96505B1786F960B9D24D0F35ED31F/61173.png",
+    "details": {
+      "type": "Leggings",
+      "weight_class": "Heavy",
+      "dye_slots": {
+        "default": [
+          null,
+          null,
+          null,
+          null
+        ],
+        "overrides": {
+          "AsuraFemale": [
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            null
+          ],
+          "AsuraMale": [
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            null
+          ],
+          "CharrFemale": [
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            {
+              "color_id": 1,
+              "material": "leather"
+            },
+            null
+          ],
+          "CharrMale": [
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            {
+              "color_id": 1,
+              "material": "leather"
+            },
+            null
+          ],
+          "SylvariFemale": [
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            null
+          ],
+          "SylvariMale": [
+            null,
+            {
+              "color_id": 1,
+              "material": "cloth"
+            },
+            {
+              "color_id": 1,
+              "material": "cloth"
+            },
+            {
+              "color_id": 1,
+              "material": "cloth"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "Warden Coat",
+    "type": "Armor",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [
+      "Sylvari"
+    ],
+    "rarity": "Basic",
+    "id": 517,
+    "icon": "https://render.guildwars2.com/file/F51C00ECBF0973754A9B0940F24679072E13EC1A/61170.png",
+    "details": {
+      "type": "Coat",
+      "weight_class": "Heavy",
+      "dye_slots": {
+        "default": [
+          null,
+          null,
+          null,
+          null
+        ],
+        "overrides": {
+          "AsuraFemale": [
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            null
+          ],
+          "AsuraMale": [
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            null
+          ],
+          "CharrFemale": [
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            {
+              "color_id": 1,
+              "material": "leather"
+            },
+            null
+          ],
+          "CharrMale": [
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            {
+              "color_id": 1,
+              "material": "leather"
+            },
+            null
+          ],
+          "SylvariFemale": [
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            {
+              "color_id": 1,
+              "material": "metal"
+            },
+            null
+          ],
+          "SylvariMale": [
+            null,
+            {
+              "color_id": 1,
+              "material": "cloth"
+            },
+            {
+              "color_id": 1,
+              "material": "cloth"
+            },
+            {
+              "color_id": 1,
+              "material": "cloth"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "Benthic Hydrobreather",
+    "type": "Armor",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 1993,
+    "icon": "https://render.guildwars2.com/file/0C500B9CC36790FCC297F21907C72E7C52450E39/638363.png",
+    "details": {
+      "type": "HelmAquatic",
+      "weight_class": "Heavy",
+      "dye_slots": {
+        "default": [
+          {
+            "color_id": 1,
+            "material": "metal"
+          },
+          {
+            "color_id": 1,
+            "material": "metal"
+          },
+          {
+            "color_id": 1,
+            "material": "metal"
+          },
+          null
+        ],
+        "overrides": {}
+      }
+    }
+  },
+  {
+    "name": "Visionary's Helm",
+    "type": "Armor",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 2052,
+    "icon": "https://render.guildwars2.com/file/EEAFCC0ADD3FAA041BE7592F0C514F92E3B8CA1C/61753.png",
+    "details": {
+      "type": "Helm",
+      "weight_class": "Heavy",
+      "dye_slots": {
+        "default": [
+          {
+            "color_id": 1,
+            "material": "metal"
+          },
+          {
+            "color_id": 1,
+            "material": "metal"
+          },
+          {
+            "color_id": 1,
+            "material": "metal"
+          },
+          null
+        ],
+        "overrides": {}
+      }
+    }
+  },
+  {
+    "name": "Green Wood Trident",
+    "type": "Weapon",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 3889,
+    "icon": "https://render.guildwars2.com/file/195C62FCE31ECE47100E4020CE6C909AB69FEA9C/562000.png",
+    "details": {
+      "type": "Trident",
+      "damage_type": "Physical"
+    }
+  },
+  {
+    "name": "Bronze Spear",
+    "type": "Weapon",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 3977,
+    "icon": "https://render.guildwars2.com/file/9AC302D1031B5C31806D0703FBC1944C01D4A240/561998.png",
+    "details": {
+      "type": "Spear",
+      "damage_type": "Physical"
+    }
+  },
+  {
+    "name": "Al'ir'aska",
+    "type": "Weapon",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 4789,
+    "icon": "https://render.guildwars2.com/file/06485C57677F1FB939A8D540EB945CE10E08FC24/780593.png",
+    "details": {
+      "type": "Spear",
+      "damage_type": "Physical"
+    }
+  },
+  {
+    "name": "Jaws of Death",
+    "type": "Weapon",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 4815,
+    "icon": "https://render.guildwars2.com/file/4D22B9EB5A3601D77E7E56BEDB4FECAF531F1FD5/340670.png",
+    "details": {
+      "type": "Axe",
+      "damage_type": "Physical"
+    }
+  },
+  {
+    "name": "Whisper's Secret Trident",
+    "type": "Weapon",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 4918,
+    "icon": "https://render.guildwars2.com/file/E4F9C809C0714A07E820A3F2E37E94BADFA66FF4/63128.png",
+    "details": {
+      "type": "Trident",
+      "damage_type": "Physical"
+    }
+  },
+  {
+    "name": "Mawdrey",
+    "description": "<c=@flavor>After spending so much time cultivating this powerful vine through the generations, it's hard to not feel an attachment to it. Your beloved pet almost cuddles you in its tendrils. Clearly it feels a similar attachment.</c>",
+    "type": "Back",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 5544,
+    "icon": "https://render.guildwars2.com/file/9D0D0E79270D4D0DDD7BEBAC159A0D6BBF1E69FB/855365.png"
+  },
+  {
+    "name": "Caladbolg Orchida",
+    "description": "<c=@flavor>From the smallest blade of grass to the largest mountain, where life goes, so too should you.</c>",
+    "type": "Weapon",
+    "flags": [
+      "ShowInWardrobe",
+      "HideIfLocked"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 7160,
+    "icon": "https://render.guildwars2.com/file/04052512C8726E51F10A92274702CDF4341BB4E3/1653657.png",
+    "details": {
+      "type": "Greatsword",
+      "damage_type": "Physical"
+    }
+  },
+  {
+    "name": "Holographic Dawn",
+    "description": "<c=@flavor>Modeled after a weapon wielded by a great hero.</c>",
+    "type": "Weapon",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 8813,
+    "icon": "https://render.guildwars2.com/file/AEC914461E236F55C95A6353F62E215A50EC171C/2163007.png",
+    "details": {
+      "type": "Greatsword",
+      "damage_type": "Physical"
+    }
+  },
+  {
+    "name": "Holographic Dragon Helm",
+    "type": "Armor",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 8826,
+    "icon": "https://render.guildwars2.com/file/68CE400125A173DAF4450DB2B85A7E0B7C52EC7B/2163428.png",
+    "details": {
+      "type": "Helm",
+      "weight_class": "Heavy",
+      "dye_slots": {
+        "default": [
+          {
+            "color_id": 1,
+            "material": "cloth"
+          },
+          {
+            "color_id": 1,
+            "material": "cloth"
+          },
+          {
+            "color_id": 1,
+            "material": "cloth"
+          },
+          {
+            "color_id": 1,
+            "material": "cloth"
+          }
+        ],
+        "overrides": {}
+      }
+    }
+  },
+  {
+    "name": "Royal Flame Axe",
+    "description": "<c=@flavor>The forges of the Mad Realm burn eternally over the year, awaiting the orders of their king.</c>",
+    "type": "Weapon",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 8996,
+    "icon": "https://render.guildwars2.com/file/74459725B41A01CFB51D76D691AA3DEB37E3A7D2/2212637.png",
+    "details": {
+      "type": "Axe",
+      "damage_type": "Fire"
+    }
+  },
+  {
+    "name": "Holographic Dragon Shoulders",
+    "type": "Armor",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 9472,
+    "icon": "https://render.guildwars2.com/file/79BCAE253A0BF2346076284716752CFFDD7BFD37/2306972.png",
+    "details": {
+      "type": "Shoulders",
+      "weight_class": "Heavy",
+      "dye_slots": {
+        "default": [
+          {
+            "color_id": 1,
+            "material": "cloth"
+          },
+          {
+            "color_id": 1,
+            "material": "cloth"
+          },
+          null,
+          {
+            "color_id": 1,
+            "material": "cloth"
+          }
+        ],
+        "overrides": {}
+      }
+    }
+  },
+  {
+    "name": "Holographic Dragon Gloves",
+    "type": "Armor",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 10026,
+    "icon": "https://render.guildwars2.com/file/579FD9B300F32129BC4329FA25B718D6A092684F/2461198.png",
+    "details": {
+      "type": "Gloves",
+      "weight_class": "Heavy",
+      "dye_slots": {
+        "default": [
+          {
+            "color_id": 1,
+            "material": "cloth"
+          },
+          {
+            "color_id": 1,
+            "material": "cloth"
+          },
+          {
+            "color_id": 1,
+            "material": "cloth"
+          },
+          {
+            "color_id": 1,
+            "material": "cloth"
+          }
+        ],
+        "overrides": {}
+      }
+    }
+  },
+  {
+    "name": "Spindrift Torch",
+    "type": "Weapon",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 10305,
+    "icon": "https://render.guildwars2.com/file/B7F05464067E52D2FF957CEAD2541B626C4B4561/2596669.png",
+    "details": {
+      "type": "Torch",
+      "damage_type": "Physical"
+    }
+  },
+  {
+    "name": "Holographic Dragon Greaves",
+    "type": "Armor",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 10875,
+    "icon": "https://render.guildwars2.com/file/A9D00ECFF32C0252F59E78573036EFBCC2F56B47/2694528.png",
+    "details": {
+      "type": "Boots",
+      "weight_class": "Heavy",
+      "dye_slots": {
+        "default": [
+          {
+            "color_id": 1,
+            "material": "cloth"
+          },
+          {
+            "color_id": 1,
+            "material": "cloth"
+          },
+          {
+            "color_id": 1,
+            "material": "cloth"
+          },
+          {
+            "color_id": 1,
+            "material": "cloth"
+          }
+        ],
+        "overrides": {}
+      }
+    }
+  },
+  {
+    "name": "Soulfire Lantern Torch",
+    "type": "Weapon",
+    "flags": [
+      "ShowInWardrobe"
+    ],
+    "restrictions": [],
+    "rarity": "Basic",
+    "id": 11871,
+    "icon": "https://render.guildwars2.com/file/115709635A4499661F68CE3EDB943AA45A80119C/3171946.png",
+    "details": {
+      "type": "Torch",
+      "damage_type": "Physical"
+    }
+  }
+]
