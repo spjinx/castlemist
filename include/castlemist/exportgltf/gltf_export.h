@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <array>
 #include <string>
 #include <vector>
 
@@ -46,6 +47,15 @@ struct GltfExportOptions {
     /// `castlemist::granny::sample()`, which is format-agnostic and is what
     /// most game-asset exporters do.
     int animFps = 30;
+
+    /// @brief The scene root's rotation (glTF xyzw quaternion). The default is
+    ///        the fixed -90-degrees-about-X Z-up -> Y-up turn every export has
+    ///        always used; the character assembler passes an upright-facing
+    ///        turn instead (GW2 characters are authored with height along -Z).
+    std::array<double, 4> rootRotation = {-0.70710678, 0.0, 0.0, 0.70710678};
+    /// @brief Uniform scale on the scene root; 1 writes no scale at all.
+    ///        0.0254 turns GW2's inch units into glTF metres.
+    double rootScale = 1.0;
 };
 
 /// @brief Result of one export call.

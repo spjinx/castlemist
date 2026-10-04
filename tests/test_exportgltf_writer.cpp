@@ -461,3 +461,37 @@ CM_TEST(exportgltf, map_export_shares_geometry_across_instances) {
     }
     CHECK(differs); // different placement -> different instance matrices
 }
+
+CM_TEST(exportgltf, root_rotation_and_scale_are_configurable) {
+    ModelPreview model = make_static_quad();
+    fs::path dir = make_temp_dir("rootxform");
+    fs::path glbPath = dir / "quad.glb";
+    GltfExportOptions opts;
+    opts.rootRotation = {0.0, -0.70710678, 0.70710678, 0.0};  // the character assembler's upright turn
+    opts.rootScale = 0.0254;                                   // GW2 inches -> metres
+    GltfExportResult result = export_model_gltf(model, glbPath.string(), opts);
+    CHECK(result.ok);
+
+    ParsedGlb g = parse_glb(read_bytes(glbPath));
+    const json* root = nullptr;
+    for (const json& node : g.doc["nodes"])
+        if (node.value("name", std::string()) == "GW2_ZupToYup") root = &node;
+    CHECK(root != nullptr);
+    CHECK_NEAR((*root)["rotation"][1].get<double>(), -0.70710678, 1e-6);
+    CHECK_NEAR((*root)["rotation"][2].get<double>(), 0.70710678, 1e-6);
+    CHECK_NEAR((*root)["scale"][0].get<double>(), 0.0254, 1e-9);
+    CHECK_NEAR((*root)["scale"][2].get<double>(), 0.0254, 1e-9);
+}
+
+CM_TEST(exportgltf, default_root_has_no_scale) {
+    ModelPreview model = make_static_quad();
+    fs::path dir = make_temp_dir("rootdefault");
+    fs::path glbPath = dir / "quad.glb";
+    CHECK(export_model_gltf(model, glbPath.string()).ok);
+    ParsedGlb g = parse_glb(read_bytes(glbPath));
+    for (const json& node : g.doc["nodes"])
+        if (node.value("name", std::string()) == "GW2_ZupToYup") {
+            CHECK(!node.contains("scale"));
+            CHECK_NEAR(node["rotation"][0].get<double>(), -0.70710678, 1e-6);
+        }
+}
