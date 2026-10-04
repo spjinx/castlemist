@@ -109,6 +109,10 @@ std::vector<uint8_t> decompress_by_index(Gw2Dat& dat, uint32_t index);
 /// @return false when the fileId is unknown or is not a decodable texture.
 bool decode_texture_by_fileid(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out);
 
+/// @brief As decode_texture_by_fileid, with the full/reduced choice made explicit
+///        instead of read from ::texture_full_res.
+bool decode_texture_by_fileid_res(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out, bool want_full);
+
 // -------------------------------------------------------------- game shaders --
 // game_shader.cpp
 

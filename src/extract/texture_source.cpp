@@ -156,11 +156,15 @@ static bool decode_mft_atex(Gw2Dat& dat, size_t i0, ModelTextureCPU& out) {
 // choosing the full- or reduced-resolution member of its pair per g_tex_full_res.
 // Returns false if the fileId isn't found or isn't a decodable texture.
 bool decode_texture_by_fileid(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out) {
+    return decode_texture_by_fileid_res(dat, fileId, out, g_tex_full_res.load());
+}
+
+bool decode_texture_by_fileid_res(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out, bool want_full) {
     uint32_t base = get_by_base_id(dat, fileId);
     if (base == 0 || base - 1 >= dat.mft_data_list.size()) {
         return false;
     }
-    size_t i0 = resolve_res_index(dat, base - 1, g_tex_full_res.load());
+    size_t i0 = resolve_res_index(dat, base - 1, want_full);
     if (!decode_mft_atex(dat, i0, out)) return false;
     out.fileId = fileId;
     return true;

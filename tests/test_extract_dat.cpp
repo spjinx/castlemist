@@ -426,3 +426,18 @@ CM_TEST(dat, texture_decodes_by_file_id) {
     ModelTextureCPU none;
     CHECK_FALSE(decode_texture_rgba(dat, 0, none));
 }
+
+CM_TEST(dat, texture_rgba_ignores_the_reduced_resolution_toggle) {
+    Gw2Dat& dat = shared_dat();
+    // Armor base textures from a real export; any with a reduced member exposes the toggle.
+    for (uint32_t id : {151455u, 151485u, 418445u, 2693767u, 2460768u, 2162270u, 2306526u, 2162253u, 1202479u}) {
+        ModelTextureCPU full, reduced;
+        CHECK(decode_texture_rgba(dat, id, full));
+        set_texture_full_res(false);  // the viewer's "reduced" setting
+        bool ok = decode_texture_rgba(dat, id, reduced);
+        set_texture_full_res(true);
+        CHECK(ok);
+        CHECK_EQ(reduced.width, full.width);  // the ripper's atlas math needs the full member
+        CHECK_EQ(reduced.height, full.height);
+    }
+}

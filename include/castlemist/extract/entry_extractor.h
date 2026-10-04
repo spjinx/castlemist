@@ -194,7 +194,9 @@ void set_texture_full_res(bool full); ///< true (default) = prefer the full-res 
 
 /// @brief Decode the texture a fileId resolves to into CPU RGBA8888.
 ///
-/// The same path model materials use (honours ::texture_full_res). Only safe
+/// The same path model materials use, but always the full-resolution member of
+/// a full/reduced pair, whatever ::texture_full_res says (the character ripper's
+/// atlas math depends on full-size textures). Only safe
 /// on the thread that owns @p dat. @return false for an unknown fileId or one
 /// that isn't a decodable texture.
 bool decode_texture_rgba(Gw2Dat& dat, uint32_t file_id, ModelTextureCPU& out);
