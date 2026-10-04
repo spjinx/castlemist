@@ -84,8 +84,8 @@ std::optional<std::vector<uint8_t>> cl_load_pack_bytes(uint32_t base_id) {
     return e.decompressed;
 }
 
-// Typed item detail (type/rarity/level/armor, and -- when found -- the item's
-// skin), decoded from the one cntc pack content_map's build() recorded this
+// Typed item detail (type/rarity/level/armor), decoded from the one cntc pack
+// content_map's build() recorded this
 // item id in. Empty when that pack isn't known this session (a fresh
 // content_map load from disk cache, before any rebuild -- see
 // content_map.h's content_base_id() docstring) or the id isn't an item.
@@ -98,7 +98,7 @@ std::wstring cl_item_detail_report(uint32_t item_id) {
     if (!pack) return L"";
 
     for (const auto& obj : get_objects_of_type(*pack, CONTENT_TYPE_ITEMS)) {
-        if (obj.unique_id() != item_id) continue;
+        if (obj.data_id() != item_id) continue;
 
         ItemFields f = decode_item_fields(obj);
         const char* type_name = to_string(static_cast<ItemType>(f.item_type_raw));
@@ -120,17 +120,6 @@ std::wstring cl_item_detail_report(uint32_t item_id) {
             rep += line;
         }
 
-        auto skin = resolve_item_skin(base_id, *pack, obj, cl_load_pack_bytes);
-        if (skin) {
-            swprintf(line, 256, L"  Skin id: %u (from cntc pack %u)\r\n", skin->skin_id, skin->skin_base_id);
-            rep += line;
-            const std::vector<uint32_t>& skin_fids =
-                castlemist::cmap::resolve_all(castlemist::cmap::CONTENT_TYPE_SKIN, skin->skin_id);
-            if (!skin_fids.empty()) {
-                swprintf(line, 256, L"    skin asset fileId: %u\r\n", skin_fids.front());
-                rep += line;
-            }
-        }
         return rep;
     }
     return L"";
@@ -147,45 +136,57 @@ void cl_show_resolved() {
         SetWindowTextW(g_cl_status, L"This link type has no cntc asset mapping (item/skin/outfit only).");
         return;
     }
-    const std::vector<uint32_t>& fids = castlemist::cmap::resolve_all(ctype, id);
     std::wstring rep = castlemist::core::from_ascii(castlemist::chat::to_report(g_cl_last));
-    std::wstring item_detail =
-        ctype == castlemist::cmap::CONTENT_TYPE_ITEM ? cl_item_detail_report(id) : L"";
-    if (fids.empty()) {
-        wchar_t st[200];
-        swprintf(st, 200, L"id %u: no asset in content map (%zu entries)", id, castlemist::cmap::size());
-        SetWindowTextW(g_cl_status, st);
-        rep += L"\r\nAssets (cntc): none found\r\n";
-        rep += item_detail;
-        SetWindowTextW(g_cl_output, rep.c_str());
-        return;
-    }
-    rep += L"\r\nAssets (cntc):\r\n";
-    for (uint32_t fid : fids) {
-        uint32_t base = get_by_base_id(g_app->data_gw2, fid);
-        std::string kind = "?";
-        if (g_app->index_loaded && base) {
-            castlemist::db::EntryInfo e = castlemist::db::lookup(base);
-            kind = !e.container.empty() ? e.container : e.type;
+    size_t total = 0;
+    // Classify each fileId via the index, arm the first texture / model, and list it.
+    auto list_assets = [&](const wchar_t* heading, const std::vector<uint32_t>& fids) {
+        rep += heading;
+        if (fids.empty()) { rep += L"  none found\r\n"; return; }
+        for (uint32_t fid : fids) {
+            uint32_t base = get_by_base_id(g_app->data_gw2, fid);
+            std::string kind = "?";
+            if (g_app->index_loaded && base) {
+                castlemist::db::EntryInfo e = castlemist::db::lookup(base);
+                kind = !e.container.empty() ? e.container : e.type;
+            }
+            bool tex = (kind == "texture" || kind == "dds" || kind.rfind("ATE", 0) == 0);
+            bool mdl = (kind == "MODL");
+            if (tex && !g_cl_icon_fid) g_cl_icon_fid = fid;
+            if (mdl && !g_cl_model_fid) g_cl_model_fid = fid;
+            wchar_t line[96];
+            swprintf(line, 96, L"  fileId %u   (%hs)%ls\r\n", fid, kind.c_str(),
+                     (fid == g_cl_icon_fid ? L"  <- texture" : fid == g_cl_model_fid ? L"  <- model" : L""));
+            rep += line;
         }
-        bool tex = (kind == "texture" || kind == "dds" || kind.rfind("ATE", 0) == 0);
-        bool mdl = (kind == "MODL");
-        if (tex && !g_cl_icon_fid) g_cl_icon_fid = fid;
-        if (mdl && !g_cl_model_fid) g_cl_model_fid = fid;
-        wchar_t line[96];
-        swprintf(line, 96, L"  fileId %u   (%hs)%ls\r\n", fid, kind.c_str(),
-                 (fid == g_cl_icon_fid ? L"  <- texture" : fid == g_cl_model_fid ? L"  <- model" : L""));
-        rep += line;
+        total += fids.size();
+    };
+
+    // Item: its own refs are just the icon; models live on what it grants (its
+    // skin, an unlock's skin / mount skin / outfit, a container's items' skins).
+    list_assets(L"\r\nAssets (cntc):\r\n", castlemist::cmap::resolve_all(ctype, id));
+    if (ctype == castlemist::cmap::CONTENT_TYPE_ITEM) {
+        const auto& links = castlemist::cmap::item_links(id);
+        for (const castlemist::cmap::ContentLink& l : links) {
+            const wchar_t* kind = l.type == castlemist::cmap::CONTENT_TYPE_MOUNT_SKIN ? L"Mount skin"
+                                  : l.type == castlemist::cmap::CONTENT_TYPE_OUTFIT  ? L"Outfit"
+                                                                                     : L"Skin";
+            wchar_t h[128];
+            if (l.via_item)
+                swprintf(h, 128, L"\r\n%ls %u (via item %u) assets (cntc):\r\n", kind, l.id, l.via_item);
+            else
+                swprintf(h, 128, L"\r\n%ls %u assets (cntc):\r\n", kind, l.id);
+            list_assets(h, castlemist::cmap::resolve_all(l.type, l.id));
+        }
+        if (links.empty()) rep += L"\r\nNo skin / mount skin / outfit linked in the content map\r\n";
+        rep += cl_item_detail_report(id);
     }
-    // NOTE: cntc content references the appearance MODEL + its material/render
-    // textures + sounds -- NOT the 2D inventory icon (that fileId comes from the
-    // server render service and is not stored in cntc).
-    rep += L"\r\n(2D inventory icon is not in cntc; texture above = a model material)\r\n";
-    rep += item_detail;
     SetWindowTextW(g_cl_output, rep.c_str());
     wchar_t st[200];
-    swprintf(st, 200, L"id %u -> %zu asset(s). model=%u  texture=%u", id, fids.size(), g_cl_model_fid,
-             g_cl_icon_fid);
+    if (total == 0)
+        swprintf(st, 200, L"id %u: no asset in content map (%zu entries)", id, castlemist::cmap::size());
+    else
+        swprintf(st, 200, L"id %u -> %zu asset(s). model=%u  texture=%u", id, total, g_cl_model_fid,
+                 g_cl_icon_fid);
     SetWindowTextW(g_cl_status, st);
 }
 
@@ -230,11 +231,17 @@ void cl_resolve_asset() {
     }
     // Copy the MftData for each cntc (baseId -> physical index baseId-1) so the
     // worker touches no shared mutable state.
+    // Also each pack's fileId: cross-pack (item->skin) links count packs in fileId order.
     std::vector<MftData> entries;
+    std::vector<uint32_t> file_ids;
     entries.reserve(base_ids.size());
+    file_ids.reserve(base_ids.size());
     for (uint32_t b : base_ids) {
         uint32_t idx = b - 1;
-        if (idx < g_app->data_gw2.mft_data_list.size()) entries.push_back(g_app->data_gw2.mft_data_list[idx]);
+        if (idx >= g_app->data_gw2.mft_data_list.size()) continue;
+        entries.push_back(g_app->data_gw2.mft_data_list[idx]);
+        std::vector<uint32_t> fids = get_by_file_id(g_app->data_gw2, b);
+        file_ids.push_back(fids.empty() ? 0 : *std::min_element(fids.begin(), fids.end()));
     }
     std::string dat_path = g_app->data_gw2.file_info.file_path;
     std::wstring cache = cmap_cache_path();
@@ -242,12 +249,21 @@ void cl_resolve_asset() {
     wchar_t st[128];
     swprintf(st, 128, L"Building content map from %zu cntc packs... (one-time)", entries.size());
     SetWindowTextW(g_cl_status, st);
-    std::thread([dat_path, entries, cache]() {
-        castlemist::cmap::build(dat_path, entries, nullptr);
+    std::thread([dat_path, entries, file_ids, cache]() {
+        castlemist::cmap::build(dat_path, entries, file_ids, nullptr);
         castlemist::cmap::save(cache);
         g_cmap_building = false;
         if (g_cl_wnd) PostMessageW(g_cl_wnd, WM_APP_CMAP_DONE, 0, 0);
     }).detach();
+}
+
+// Throw away the in-memory map and its disk cache, then build it again from the
+// dat (e.g. after a game patch -- the cache carries no game-version check).
+void cl_rebuild_map() {
+    if (g_cmap_building) { SetWindowTextW(g_cl_status, L"Still building content map..."); return; }
+    castlemist::cmap::clear();
+    DeleteFileW(cmap_cache_path().c_str());
+    cl_resolve_asset();
 }
 
 // Feed the decoded primary id into the main search box + file-id checkbox, run
@@ -277,6 +293,7 @@ LRESULT CALLBACK ChatLinkWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         switch (LOWORD(wparam)) {
         case ID_CL_DECODE: cl_do_decode(); return 0;
         case ID_CL_RESOLVE: cl_resolve_asset(); return 0;
+        case ID_CL_REBUILD: cl_rebuild_map(); return 0;
         case ID_CL_OPEN_ICON: cl_open_fid(g_cl_icon_fid); return 0;
         case ID_CL_OPEN_MODEL: cl_open_fid(g_cl_model_fid); return 0;
         case ID_CL_SEARCH_BASE: cl_search(false); return 0;
@@ -337,6 +354,7 @@ void open_chat_link_decoder(HWND owner) {
 
     mk(L"BUTTON", L"Resolve assets via cntc (Item/Skin/Outfit)", BS_PUSHBUTTON, 10, H - 128, 290, 26,
        ID_CL_RESOLVE);
+    mk(L"BUTTON", L"Rebuild map", BS_PUSHBUTTON, 305, H - 128, 100, 26, ID_CL_REBUILD);
     g_cl_status = mk(L"STATIC", L"", SS_LEFT, 10, H - 98, W - 24, 18, 0);
     mk(L"BUTTON", L"Open model", BS_PUSHBUTTON, 10, H - 76, 100, 28, ID_CL_OPEN_MODEL);
     mk(L"BUTTON", L"Open texture", BS_PUSHBUTTON, 115, H - 76, 100, 28, ID_CL_OPEN_ICON);

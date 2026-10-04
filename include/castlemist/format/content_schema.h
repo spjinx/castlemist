@@ -48,11 +48,11 @@
 //
 // An object's numeric id is the u32 at content-relative +20. This is the
 // one field two independent parts of this codebase already agree on against
-// real data: content_map.h's docstring says it was empirically validated
-// against real chat links, and content_store.cpp's live-cntc-measured
-// parse_cntc_objects() reads the same offset. unique_id() below is that
-// field; spjinx/t3d's schema additionally names a "dataId" at +40, but nothing
-// in this codebase corroborates it, so it is not exposed here.
+// real data: content_store.cpp's live-cntc-measured parse_cntc_objects()
+// reads the same offset. unique_id() below is that field. It is NOT the
+// API / chat-link id: that is spjinx/t3d's "dataId" at +40 (data_id()),
+// verified against a live Gw2.dat + the GW2 API -- the cntc skin object with
+// dataId 6506 (Astralaria) has uid 13497, which is a dagger's API id.
 
 #include <cstdint>
 #include <functional>
@@ -100,7 +100,8 @@ struct ContentObject {
     uint32_t begin = 0, end = 0;
     std::span<const uint8_t> bytes;
 
-    uint32_t unique_id() const;  // @+20 -- see header comment
+    uint32_t unique_id() const;  // @+20 -- internal uid, see header comment
+    uint32_t data_id() const;    // @+40 -- API / chat-link id
 };
 
 /// Decodes GW2's compressed Fileref/Filename pointer pair -- two u16 halves,

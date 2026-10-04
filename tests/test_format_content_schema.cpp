@@ -11,6 +11,7 @@
 
 #include "test_framework.h"
 
+#include "castlemist/format/content_map.h"
 #include "castlemist/format/content_schema.h"
 
 #include <cstdint>
@@ -237,4 +238,224 @@ CM_TEST(content_schema, item_with_no_external_offsets_resolves_no_skin) {
     std::optional<SkinResolution> skin =
         resolve_item_skin(5000, *pack, get_objects_of_type(*pack, CONTENT_TYPE_ITEMS)[0], load);
     CHECK_FALSE(skin.has_value());
+}
+
+// ---- content_map (castlemist::cmap) ----------------------------------------
+// Lives here to reuse PackBuilder. Mirrors the real layout measured against a
+// live Gw2.dat (Astralaria: API skin 6506 is the cntc object with dataId@+40 ==
+// 6506 and uid@+20 == 13497; its +48 model slot holds fileRefs index 27344,
+// not a fileId, and only one pack in the whole datastore carries fileRefs).
+
+namespace {
+
+// One Skins object (dataId@+40, uid@+20) whose +48 slot is a fileIndices reloc
+// holding `ref_index` -- an index into the shared fileRefs table.
+std::vector<uint8_t> skin_pack(uint32_t uid, uint32_t data_id, uint32_t ref_index) {
+    PackBuilder b;
+    size_t ieTable = kArrDescEnd;
+    b.put_u32(ieTable, CONTENT_TYPE_SKINS);
+    b.ensure(ieTable + 16);
+    b.set_dynarray(3, 1, ieTable);
+    size_t fiTable = ieTable + 16;
+    b.put_u32(fiTable, 48);  // reloc: content-relative offset of the model slot
+    b.set_dynarray(6, 1, fiTable);
+    size_t cOff = 300;
+    b.put_u32(cOff + 16, CONTENT_TYPE_SKINS);
+    b.put_u32(cOff + 20, uid);
+    b.put_u32(cOff + 40, data_id);
+    b.put_u32(cOff + 48, ref_index);
+    b.ensure(cOff + 128);
+    b.set_dynarray(10, 128, cOff);
+    return b.d;
+}
+
+// A pack carrying only the shared fileRefs table: [0] = 500, [1] = 777.
+std::vector<uint8_t> file_refs_pack() {
+    PackBuilder b;
+    size_t frPtrs = kArrDescEnd;
+    size_t frPairs = frPtrs + 2 * 8;
+    b.put_i64(frPtrs + 0, static_cast<int64_t>(frPairs) - static_cast<int64_t>(frPtrs));
+    b.put_i64(frPtrs + 8, static_cast<int64_t>(frPairs + 4) - static_cast<int64_t>(frPtrs + 8));
+    b.put_bytes(frPairs + 0, {0xF3, 0x02, 0x00, 0x01});  // fileId 500
+    b.put_bytes(frPairs + 4, {0x08, 0x04, 0x00, 0x01});  // fileId 777
+    b.set_dynarray(2, 2, frPtrs);
+    size_t ieTable = frPairs + 8;
+    b.put_u32(ieTable, 1);
+    b.ensure(ieTable + 16);
+    b.set_dynarray(3, 1, ieTable);
+    b.ensure(400 + 64);
+    b.set_dynarray(10, 64, 400);
+    return b.d;
+}
+
+// One Items object (dataId@+40) whose +176 skin slot is an externalOffsets
+// fixup to file index `skin_file_index`, object offset `skin_offset`; its +64
+// icon slot is fileRefs index 0.
+std::vector<uint8_t> item_pack(uint32_t data_id, uint32_t skin_file_index, uint32_t skin_offset) {
+    PackBuilder b;
+    size_t ieTable = kArrDescEnd;
+    b.put_u32(ieTable, CONTENT_TYPE_ITEMS);
+    b.ensure(ieTable + 16);
+    b.set_dynarray(3, 1, ieTable);
+    size_t eoTable = ieTable + 16;
+    b.put_u32(eoTable + 0, 176);
+    b.put_u32(eoTable + 4, skin_file_index);
+    b.set_dynarray(5, 1, eoTable);
+    size_t fiTable = eoTable + 8;
+    b.put_u32(fiTable, 64);
+    b.set_dynarray(6, 1, fiTable);
+    size_t cOff = 300;
+    b.put_u32(cOff + 16, CONTENT_TYPE_ITEMS);
+    b.put_u32(cOff + 40, data_id);
+    b.put_u32(cOff + 64, 0);
+    b.put_u32(cOff + 176, skin_offset);
+    b.ensure(cOff + 288);
+    b.set_dynarray(10, 288, cOff);
+    return b.d;
+}
+
+// dataId of the first item_links() entry of `type`, 0 if none.
+uint32_t first_link(uint32_t item_id, uint32_t type) {
+    for (const auto& l : castlemist::cmap::item_links(item_id))
+        if (l.type == type) return l.id;
+    return 0;
+}
+
+// One pack of objects wired by in-pack (localOffsets) pointers. Each object is
+// {type, dataId}; each link is {from object, field, to object}.
+struct LocalGraph {
+    struct Obj { uint32_t type, data_id; };
+    struct Link { size_t from; uint32_t field; size_t to; };
+    std::vector<Obj> objs;
+    std::vector<Link> links;
+
+    std::vector<uint8_t> build() const {
+        constexpr uint32_t kObjSize = 288;
+        PackBuilder b;
+        size_t ieTable = kArrDescEnd;
+        b.ensure(ieTable + 16 * objs.size());
+        for (size_t i = 0; i < objs.size(); ++i) {
+            b.put_u32(ieTable + 16 * i, objs[i].type);
+            b.put_u32(ieTable + 16 * i + 4, static_cast<uint32_t>(i * kObjSize));
+        }
+        b.set_dynarray(3, static_cast<uint32_t>(objs.size()), ieTable);
+        size_t loTable = ieTable + 16 * objs.size();
+        for (size_t i = 0; i < links.size(); ++i)
+            b.put_u32(loTable + 4 * i, static_cast<uint32_t>(links[i].from * kObjSize + links[i].field));
+        b.set_dynarray(4, static_cast<uint32_t>(links.size()), loTable);
+        size_t cOff = loTable + 4 * links.size() + 16;
+        for (size_t i = 0; i < objs.size(); ++i) {
+            b.put_u32(cOff + i * kObjSize + 16, objs[i].type);
+            b.put_u32(cOff + i * kObjSize + 40, objs[i].data_id);
+        }
+        for (const Link& l : links)
+            b.put_u32(cOff + l.from * kObjSize + l.field, static_cast<uint32_t>(l.to * kObjSize));
+        uint32_t cLen = static_cast<uint32_t>(objs.size() * kObjSize);
+        b.ensure(cOff + cLen);
+        b.set_dynarray(10, cLen, cOff);
+        return b.d;
+    }
+};
+
+} // namespace
+
+CM_TEST(content_map, keys_by_data_id_and_resolves_refs_through_the_shared_file_refs_table) {
+    namespace cmap = castlemist::cmap;
+    cmap::clear();
+    // Object pack first, fileRefs pack second: resolution must not depend on order.
+    cmap::build_from_packs({{20, 0, skin_pack(13497, 6506, 1)}, {10, 0, file_refs_pack()}});
+
+    const std::vector<uint32_t>& fids = cmap::resolve_all(cmap::CONTENT_TYPE_SKIN, 6506);
+    CHECK_EQ(fids.size(), size_t{1});
+    if (!fids.empty()) CHECK_EQ(fids[0], 777u);  // fileRefs[1], not the raw index 1
+    CHECK(cmap::resolve_all(cmap::CONTENT_TYPE_SKIN, 13497).empty());  // +20 uid is not the chat-link id
+    CHECK_EQ(cmap::content_base_id(cmap::CONTENT_TYPE_SKIN, 6506), 20u);
+    cmap::clear();
+}
+
+CM_TEST(content_map, follows_an_items_skin_link_by_file_id_order_from_the_file_refs_pack) {
+    namespace cmap = castlemist::cmap;
+    cmap::clear();
+    // fileIds 900 (fileRefs), 901 (skin), 902 (item); baseIds deliberately out of
+    // order -- the link's file index counts fileIds, not baseIds.
+    cmap::build_from_packs({{7, 902, item_pack(76158, 1, 0)},
+                            {50, 901, skin_pack(13497, 6506, 1)},
+                            {30, 900, file_refs_pack()}});
+
+    CHECK_EQ(first_link(76158, cmap::CONTENT_TYPE_SKIN), 6506u);
+    const std::vector<uint32_t>& icon = cmap::resolve_all(cmap::CONTENT_TYPE_ITEM, 76158);
+    CHECK_EQ(icon.size(), size_t{1});
+    if (!icon.empty()) CHECK_EQ(icon[0], 500u);
+    CHECK_EQ(cmap::resolve(cmap::CONTENT_TYPE_SKIN, first_link(76158, cmap::CONTENT_TYPE_SKIN)), 777u);
+    cmap::clear();
+}
+
+CM_TEST(content_map, follows_an_items_skin_link_to_a_skin_in_the_same_pack) {
+    // Claw of the Khan-Ur (item 87109 -> skin 8051): skin in the item's own pack,
+    // so +176 is a localOffsets pointer to the skin object, not an external fixup.
+    namespace cmap = castlemist::cmap;
+    cmap::clear();
+    PackBuilder b;
+    size_t ieTable = kArrDescEnd;
+    b.ensure(ieTable + 32);
+    b.put_u32(ieTable, CONTENT_TYPE_ITEMS);
+    b.put_u32(ieTable + 16, CONTENT_TYPE_SKINS);
+    b.put_u32(ieTable + 16 + 4, 288);  // skin object at content offset 288
+    b.set_dynarray(3, 2, ieTable);
+    size_t loTable = ieTable + 32;
+    b.put_u32(loTable, 176);  // localOffsets: item+176 is an in-pack pointer
+    b.set_dynarray(4, 1, loTable);
+    size_t fiTable = loTable + 4;
+    b.put_u32(fiTable, 288 + 48);  // skin's model slot
+    b.set_dynarray(6, 1, fiTable);
+    size_t cOff = 400;
+    b.put_u32(cOff + 16, CONTENT_TYPE_ITEMS);
+    b.put_u32(cOff + 40, 87109);
+    b.put_u32(cOff + 176, 288);
+    b.put_u32(cOff + 288 + 16, CONTENT_TYPE_SKINS);
+    b.put_u32(cOff + 288 + 40, 8051);
+    b.put_u32(cOff + 288 + 48, 1);
+    b.ensure(cOff + 416);
+    b.set_dynarray(10, 416, cOff);
+
+    cmap::build_from_packs({{5, 0, b.d}, {10, 0, file_refs_pack()}});  // no fileIds needed in-pack
+    CHECK_EQ(first_link(87109, cmap::CONTENT_TYPE_SKIN), 8051u);
+    CHECK_EQ(cmap::resolve(cmap::CONTENT_TYPE_SKIN, 8051), 777u);
+    cmap::clear();
+}
+
+CM_TEST(content_map, an_unlock_item_links_to_its_mount_skin) {
+    // Dark Monarch Skyscale Skin (item 93703): +264 points at mount skin 292.
+    namespace cmap = castlemist::cmap;
+    cmap::clear();
+    LocalGraph g;
+    g.objs = {{CONTENT_TYPE_ITEMS, 93703}, {cmap::CONTENT_TYPE_MOUNT_SKIN, 292}};
+    g.links = {{0, 264, 1}};
+    cmap::build_from_packs({{5, 0, g.build()}, {10, 0, file_refs_pack()}});
+    CHECK_EQ(first_link(93703, cmap::CONTENT_TYPE_MOUNT_SKIN), 292u);
+    cmap::clear();
+}
+
+CM_TEST(content_map, a_container_item_links_to_the_skins_of_the_items_inside_it) {
+    // Holographic Dragon Helm (container item 91359): +248 -> contents list ->
+    // the heavy/light helm items -> their skins.
+    namespace cmap = castlemist::cmap;
+    cmap::clear();
+    LocalGraph g;
+    g.objs = {{CONTENT_TYPE_ITEMS, 91359}, {cmap::CONTENT_TYPE_CONTAINER, 0},
+              {CONTENT_TYPE_ITEMS, 91284}, {CONTENT_TYPE_ITEMS, 91357},
+              {CONTENT_TYPE_SKINS, 8826},  {CONTENT_TYPE_SKINS, 8817}};
+    g.links = {{0, 248, 1}, {1, 64, 2}, {1, 88, 3}, {2, 176, 4}, {3, 176, 5}};
+    cmap::build_from_packs({{5, 0, g.build()}, {10, 0, file_refs_pack()}});
+
+    const auto& links = cmap::item_links(91359);
+    CHECK_EQ(links.size(), size_t{2});
+    if (links.size() == 2) {
+        CHECK_EQ(links[0].id, 8826u);
+        CHECK_EQ(links[0].via_item, 91284u);
+        CHECK_EQ(links[1].id, 8817u);
+        CHECK_EQ(links[1].via_item, 91357u);
+    }
+    CHECK_EQ(first_link(91284, cmap::CONTENT_TYPE_SKIN), 8826u);  // the inner items still resolve directly
+    cmap::clear();
 }

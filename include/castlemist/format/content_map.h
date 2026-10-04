@@ -4,11 +4,13 @@
 // Offline chat-link id -> dat asset map, built from the GW2 content datastore
 // (cntc / PackContent packfiles). A chat link carries a game/API id (item id,
 // skin id, ...); the .dat addresses assets by fileId. The content datastore
-// bridges the two: each content object has a contentType (item = 35) at +16, a
-// numeric id at +20, and its primary asset (icon texture / model / sound) as a
-// fileId reference recorded in the pack's `fileIndices` fixup table, at object
-// offset +64. See the gw2-chat-links memory note for how this was reversed
-// (CnData.cpp loader + empirical validation against real cntc files).
+// bridges the two: each content object has a contentType (item = 35) at +16, its
+// API / chat-link "dataId" at +40 (+20 is an internal uid, NOT the chat-link id),
+// and its asset references in slots recorded by the pack's `fileIndices` fixup
+// table. Each slot holds an index into the datastore's single shared fileRefs
+// table (carried by one pack), which decodes to the real fileId. Verified against
+// a live Gw2.dat + the GW2 API: item 76158 / skin 6506 (Astralaria) -> icon
+// 1200325, skin model 1200313.
 //
 // build() parses every cntc pack once into an in-memory (contentType,id)->fileId
 // table; resolve() answers lookups. The table can be cached to disk so it only
@@ -28,6 +30,8 @@ namespace castlemist::cmap {
 constexpr uint32_t CONTENT_TYPE_ITEM = 35;
 constexpr uint32_t CONTENT_TYPE_OUTFIT = 51;
 constexpr uint32_t CONTENT_TYPE_SKIN = 66;
+constexpr uint32_t CONTENT_TYPE_CONTAINER = 240;   // a container item's contents list
+constexpr uint32_t CONTENT_TYPE_MOUNT_SKIN = 302;  // dataId = /v2/mounts/skins id
 
 /// The chat link header byte -> content type it resolves against (0 = unmapped).
 uint32_t content_type_for_header(uint8_t header);
@@ -38,17 +42,44 @@ void clear();
 
 /// Parse the supplied cntc entries (raw MftData, copied by the caller so this is
 /// safe on a background thread) and build the map. `dat_path` is the archive the
-/// entries live in. `progress(done,total)` is called after each pack. Returns the
-/// number of (type,id) entries collected. Adds to whatever is already loaded.
+/// entries live in. `file_ids[i]` is entry i's fileId (any of them; 0 = unknown) --
+/// cross-pack links address packs by fileId order, so item_links() needs these.
+/// `progress(done,total)` is called after each pack. Returns the number of
+/// (type,id) entries collected. Adds to whatever is already loaded.
 size_t build(const std::string& dat_path, const std::vector<MftData>& cntc_entries,
+             const std::vector<uint32_t>& file_ids,
              const std::function<void(size_t done, size_t total)>& progress);
 
-/// All asset fileIds a content object references (in object order; models are
-/// literal fileIds, textures are the object's icons/variants). Empty = not found.
+/// One already-decompressed cntc pack, for build_from_packs().
+struct PackBytes {
+    uint32_t base_id = 0;
+    uint32_t file_id = 0;
+    std::vector<uint8_t> bytes;
+};
+
+/// build() over already-decompressed cntc packs.
+size_t build_from_packs(const std::vector<PackBytes>& packs);
+
+/// All asset fileIds a content object references, in object order (item: icon;
+/// skin/outfit: model first, then icon/variants). Keyed by dataId. Empty = not found.
 /// The caller classifies each fileId (texture/model/audio) via the dat/index.
 const std::vector<uint32_t>& resolve_all(uint32_t content_type, uint32_t id);
 
-/// The object's primary asset fileId (first reference, at +64 when present).
+/// One appearance object an item grants: a skin, mount skin or outfit (`type` is
+/// its CONTENT_TYPE_*, `id` its dataId -- look its assets up with resolve_all()).
+/// `via_item` is the item inside a container it came from, 0 if direct.
+struct ContentLink {
+    uint32_t type = 0;
+    uint32_t id = 0;
+    uint32_t via_item = 0;
+};
+
+/// What an item grants, in field order: its own skin (weapons/armor/backs), an
+/// unlock consumable's skin / mount skin / outfit, and for a container the skins
+/// of the items inside it. Empty if none/unknown. Part of the disk cache.
+const std::vector<ContentLink>& item_links(uint32_t item_id);
+
+/// The object's first asset fileId (item: icon; skin/outfit: model).
 uint32_t resolve(uint32_t content_type, uint32_t id);
 inline uint32_t resolve_item(uint32_t item_id) { return resolve(CONTENT_TYPE_ITEM, item_id); }
 

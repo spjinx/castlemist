@@ -87,6 +87,7 @@ constexpr UINT_PTR ID_CL_CLOSE = 2075;
 constexpr UINT_PTR ID_CL_RESOLVE = 2076;
 constexpr UINT_PTR ID_CL_OPEN_ICON = 2077;
 constexpr UINT_PTR ID_CL_OPEN_MODEL = 2078;
+constexpr UINT_PTR ID_CL_REBUILD = 2080;
 constexpr int ID_LISTVIEW = 2001;
 constexpr int ID_HEX_BEFORE = 2002;
 constexpr int ID_HEX_AFTER = 2003;
