@@ -109,6 +109,10 @@ castlemist_add_layer(format DEPS castlemist::core castlemist::native
                                  ext::jpegturbo ext::webp ext::stb
                                  windowscodecs ole32 oleaut32 uuid)
 
+# character talks to the public GW2 API (WinHTTP) and resolves a character's
+# equipment through format's content map. No UI dependency.
+castlemist_add_layer(character DEPS castlemist::format ext::json winhttp)
+
 # db also builds the index (index_builder), which reads the archive directly and
 # resolves chunk struct variants from the JSON template.
 castlemist_add_layer(db     DEPS castlemist::core castlemist::native ext::sqlite ext::json)

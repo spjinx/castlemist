@@ -58,6 +58,12 @@ castlemist_add_test(format
             test_format_content_schema.cpp
     DEPS    castlemist::format)
 
+castlemist_add_test(character
+    SOURCES test_character_key_store.cpp
+    DEPS    castlemist::character ext::json)
+target_compile_definitions(cm_test_character PRIVATE
+    CM_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+
 castlemist_add_test(db
     SOURCES test_db_index.cpp test_db_type_names.cpp
     DEPS    castlemist::db ext::sqlite)
