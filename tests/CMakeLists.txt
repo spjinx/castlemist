@@ -56,6 +56,7 @@ castlemist_add_test(format
             test_format_chat_link.cpp
             test_format_strs.cpp
             test_format_content_schema.cpp
+            test_format_composite.cpp
     DEPS    castlemist::format)
 
 castlemist_add_test(character
