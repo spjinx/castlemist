@@ -1,0 +1,79 @@
+/// @file
+/// @brief Tests for the character-atlas math (ripper/atlas.h): which blit rect
+///        a piece's UVs live in, cropping its texture, and remapping its UVs.
+
+#include "test_framework.h"
+
+#include "castlemist/ripper/atlas.h"
+
+using namespace castlemist::ripper;
+using castlemist::composite::BlitRect;
+using castlemist::composite::BlitRectSet;
+
+namespace {
+
+BlitRectSet armor_heavy() {
+    BlitRectSet s;
+    s.name = "ArmorHeavy";
+    s.width = s.height = 1024;
+    s.rects = {{0, 512, 384, 1024}, {512, 0, 1024, 256}, {640, 256, 896, 512}, {896, 256, 1024, 512},
+               {512, 384, 640, 512}, {0, 0, 384, 256},   {0, 256, 256, 512}};
+    return s;
+}
+
+ImageRgba solid(int w, int h, uint8_t r) {
+    ImageRgba im{w, h, std::vector<uint8_t>(static_cast<size_t>(w) * h * 4, 0)};
+    for (size_t i = 0; i < im.px.size(); i += 4) {
+        im.px[i] = r;
+        im.px[i + 3] = 255;
+    }
+    return im;
+}
+
+} // namespace
+
+CM_TEST(atlas, rect_contains_uv_box) {
+    auto coat = piece_rect(armor_heavy(), 0.0018f, 0.5018f, 0.374f, 0.9973f);
+    CHECK(coat.has_value());
+    CHECK_EQ(coat->x0, 0u);
+    CHECK_EQ(coat->y0, 512u);
+    CHECK_EQ(coat->x1, 384u);
+    auto boots = piece_rect(armor_heavy(), 0.879f, 0.255f, 0.995f, 0.495f);
+    CHECK(boots.has_value());
+    CHECK_EQ(boots->x0, 896u);
+    CHECK_EQ(boots->y0, 256u);
+}
+
+CM_TEST(atlas, no_rect_is_nullopt) {
+    CHECK(!piece_rect(armor_heavy(), 0.1f, 0.1f, 0.9f, 0.9f).has_value());
+}
+
+CM_TEST(atlas, crop_takes_half_rect_block) {
+    ImageRgba tex = solid(512, 256, 10);
+    tex.px[(20 * 512 + 10) * 4] = 99;  // pixel (10,20)
+    ImageRgba out = crop_piece(tex, BlitRect{0, 512, 384, 1024});
+    CHECK_EQ(out.w, 192);
+    CHECK_EQ(out.h, 256);
+    CHECK_EQ(int(out.px[(20 * 192 + 10) * 4]), 99);
+    CHECK_EQ(int(out.px[(255 * 192 + 191) * 4]), 10);
+}
+
+CM_TEST(atlas, crop_pads_small_texture) {
+    ImageRgba tex = solid(64, 64, 200);
+    ImageRgba out = crop_piece(tex, BlitRect{0, 256, 256, 512});
+    CHECK_EQ(out.w, 128);
+    CHECK_EQ(out.h, 128);
+    CHECK_EQ(int(out.px[(10 * 128 + 10) * 4]), 200);
+    CHECK_EQ(int(out.px[(100 * 128 + 100) * 4 + 3]), 0);  // beyond the 64x64 texture: transparent
+}
+
+CM_TEST(atlas, remap_uv_maps_rect_to_unit) {
+    float u = 384.0f / 1024.0f, v = 512.0f / 1024.0f;
+    remap_uv(u, v, BlitRect{0, 512, 384, 1024});
+    CHECK_NEAR(u, 1.0, 1e-6);
+    CHECK_NEAR(v, 0.0, 1e-6);
+    float u2 = 192.0f / 1024.0f, v2 = 768.0f / 1024.0f;
+    remap_uv(u2, v2, BlitRect{0, 512, 384, 1024});
+    CHECK_NEAR(u2, 0.5, 1e-6);
+    CHECK_NEAR(v2, 0.5, 1e-6);
+}
