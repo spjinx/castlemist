@@ -17,6 +17,9 @@
 //            [--out <json>] [--cmap <content_map.bin>]
 //            -- lists an account's characters, or resolves one character's
 //            equipment to a manifest (GOES ONLINE: api.guildwars2.com only)
+//            [--dat <path> [--index <db>]] rebuilds a missing content map first
+//   character-export --manifest <json> --dat <path> --out <dir> [--index <db>]
+//            -- one .glb per equipped piece (race model, dyes baked), plus a report
 //
 // On success exit code is 0 and the JSON has "ok": true; on failure exit code
 // is 1 and the JSON is {"ok": false, "error": "..."}.
@@ -51,6 +54,8 @@
 #include "castlemist/character/fetch.h"
 #include "castlemist/character/key_store.h"
 #include "castlemist/character/manifest_json.h"
+#include "castlemist/db/index_db.h"
+#include "castlemist/ripper/character_export.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -1726,6 +1731,42 @@ std::filesystem::path exe_dir() {
     return std::filesystem::path(exe).parent_path();
 }
 
+// Opens the index DB (needed to enumerate content packs and find the Composite):
+// --index, else dumps/index/gw2_index.db under the castlemist root. Not fatal.
+void open_index(const Args& a) {
+    if (castlemist::db::is_open()) return;
+    std::filesystem::path p = has(a, "index") ? std::filesystem::path(utf8_arg("--index"))
+                                              : castlemist::character::find_castlemist_root(exe_dir()) / "dumps" /
+                                                    "index" / "gw2_index.db";
+    std::error_code ec;
+    if (!std::filesystem::exists(p, ec) || std::filesystem::file_size(p, ec) == 0) return;
+    std::string err;
+    castlemist::db::open(p.wstring(), err);
+}
+
+// The content map: the cache beside the exe (or --cmap); failing that, with
+// --dat and an index DB, a fresh build from the dat's content packs, cached.
+void ensure_cmap(const Args& a) {
+    std::filesystem::path cmap_file = has(a, "cmap") ? std::filesystem::path(utf8_arg("--cmap"))
+                                                     : exe_dir() / "content_map.bin";
+    if (castlemist::cmap::built() || castlemist::cmap::load(cmap_file.wstring())) return;
+    if (!has(a, "dat")) return;
+    open_index(a);
+    if (!castlemist::db::is_open()) return;
+    Gw2Dat dat;
+    load_dat_file(dat, a.at("dat"));
+    std::vector<MftData> entries;
+    std::vector<uint32_t> file_ids;
+    for (uint32_t b : castlemist::db::query_base_ids("", "cntc", 0, false, false, 100000)) {
+        if (b == 0 || b - 1 >= dat.mft_data_list.size()) continue;
+        entries.push_back(dat.mft_data_list[b - 1]);
+        std::vector<uint32_t> f = get_by_file_id(dat, b);
+        file_ids.push_back(f.empty() ? 0 : *std::min_element(f.begin(), f.end()));
+    }
+    castlemist::cmap::build(dat.file_info.file_path, entries, file_ids, nullptr);
+    castlemist::cmap::save(cmap_file.wstring());
+}
+
 void cmd_character(const Args& a) {
     namespace ch = castlemist::character;
     std::string key;
@@ -1760,9 +1801,7 @@ void cmd_character(const Args& a) {
         return;
     }
 
-    std::filesystem::path cmap_file = has(a, "cmap") ? std::filesystem::path(utf8_arg("--cmap"))
-                                                     : exe_dir() / "content_map.bin";
-    if (!castlemist::cmap::built()) castlemist::cmap::load(cmap_file.wstring());  // not fatal: pieces say no_content_map
+    ensure_cmap(a);  // not fatal: without it pieces say no_content_map
 
     std::optional<int> tab;
     if (has(a, "tab")) tab = static_cast<int>(to_u64(a.at("tab")));
@@ -1785,12 +1824,34 @@ void cmd_character(const Args& a) {
     emit(j);
 }
 
+void cmd_character_export(const Args& a) {
+    namespace ch = castlemist::character;
+    std::ifstream f(std::filesystem::path(utf8_arg("--manifest")), std::ios::binary);
+    if (!f) fail("cannot read manifest: " + need(a, "manifest"));
+    json mj = json::parse(f, nullptr, false);
+    if (mj.is_discarded()) fail("manifest is not JSON");
+    if (mj.contains("manifest")) mj = mj["manifest"];  // accept `character`'s own output too
+    ch::CharacterManifest m = ch::manifest_from_json(mj);
+    open_index(a);
+    castlemist::ripper::CharacterExportReport rep =
+        castlemist::ripper::export_character(m, need(a, "dat"), utf8_arg("--out").empty() ? need(a, "out") : utf8_arg("--out"));
+    if (!rep.error.empty()) fail(rep.error);
+    json pieces = json::array();
+    for (const auto& [slot, r] : rep.pieces)
+        pieces.push_back({{"slot", slot}, {"status", r.status}, {"file", r.glb_path}, {"reason", r.reason}});
+    json j;
+    j["ok"] = true;
+    j["exported"] = rep.exported();
+    j["pieces"] = pieces;
+    emit(j);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
         fail("usage: gw2dat_cli <info|list|lookup|resolve|extract|texture|parse|sniff|"
-             "compress|decompress|encode-texture|scananim|character> [--flags]");
+             "compress|decompress|encode-texture|scananim|character|character-export> [--flags]");
     }
     std::string cmd = argv[1];
     Args a = parse_args(argc, argv, 2);
@@ -1817,6 +1878,7 @@ int main(int argc, char** argv) {
         else if (cmd == "decompress") cmd_decompress(a);
         else if (cmd == "encode-texture") cmd_encode_texture(a);
         else if (cmd == "character") cmd_character(a);
+        else if (cmd == "character-export") cmd_character_export(a);
         else fail("unknown command: " + cmd);
     } catch (const std::exception& ex) {
         fail(ex.what());

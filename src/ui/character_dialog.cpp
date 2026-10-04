@@ -23,6 +23,9 @@
 #include "castlemist/character/key_store.h"
 #include "castlemist/character/manifest_json.h"
 #include "castlemist/format/content_map.h"
+#include "castlemist/ripper/character_export.h"
+
+#include <shlobj.h>
 
 namespace castlemist::ui {
 
@@ -54,6 +57,9 @@ HWND g_ch_table = nullptr;
 HWND g_ch_status = nullptr;
 HWND g_ch_fetch_btn = nullptr;
 HWND g_ch_build_btn = nullptr;
+HWND g_ch_export_btn = nullptr;
+// Race-correct mesh per slot from the last export (the manifest only knows the default model).
+std::vector<std::pair<std::string, uint32_t>> g_ch_exported_mesh;
 
 ch::KeyStore g_ch_keys;
 RipperState g_ch;                             // names / shown character / their key
@@ -89,6 +95,7 @@ void set_busy(bool busy) {
     EnableWindow(g_ch_char_combo, !busy);
     EnableWindow(g_ch_tab_combo, !busy);
     EnableWindow(g_ch_build_btn, !busy);
+    EnableWindow(g_ch_export_btn, !busy);
 }
 
 // Posts `result` to the dialog, or frees it if the dialog is gone.
@@ -307,7 +314,60 @@ void open_selected_model() {
         set_status(L"That piece has no model (" + utf8_to_wide(ch::to_string(p.status)) + L").");
         return;
     }
-    navigate_to_file_id(p.file_ids[0]);
+    uint32_t mesh = p.file_ids[0];
+    for (const auto& [slot, m] : g_ch_exported_mesh)
+        if (slot == p.slot && m) mesh = m;  // the race/gender model once an export resolved it
+    navigate_to_file_id(mesh);
+}
+
+struct ExportDone {
+    std::string folder;
+    castlemist::ripper::CharacterExportReport report;
+};
+
+// Exports every piece of the shown character into a folder the user picks.
+void export_pieces() {
+    if (!g_ch.current) {
+        set_status(L"Fetch a character first.");
+        return;
+    }
+    if (!g_app->dat_loaded) {
+        set_status(L"Open Gw2.dat first (File > Open) - the models and textures come from it.");
+        return;
+    }
+    BROWSEINFOW bi{};
+    bi.hwndOwner = g_ch_wnd;
+    bi.lpszTitle = L"Export the character's pieces (.glb) into:";
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
+    if (!pidl) return;
+    wchar_t folder[MAX_PATH] = L"";
+    bool ok = SHGetPathFromIDListW(pidl, folder);
+    CoTaskMemFree(pidl);
+    if (!ok) return;
+    std::string dir = wide_to_utf8(folder);
+    std::string dat_path = g_app->data_gw2.file_info.file_path;
+    ch::CharacterManifest manifest = g_ch.current->manifest;
+    ++g_ch_request;
+    set_busy(true);
+    set_status(L"Exporting " + std::to_wstring(manifest.pieces.size()) + L" pieces to " + folder + L"...");
+    std::thread([manifest, dat_path, dir]() {
+        auto* r = new ExportDone{dir, castlemist::ripper::export_character(manifest, dat_path, dir)};
+        post_result(WM_APP_CHAR_EXPORT_DONE, r);
+    }).detach();
+}
+
+void on_export_done(std::unique_ptr<ExportDone> r) {
+    set_busy(false);
+    if (!r->report.error.empty()) {
+        set_status(utf8_to_wide(r->report.error));
+        return;
+    }
+    g_ch_exported_mesh.clear();
+    for (const auto& [slot, pr] : r->report.pieces) g_ch_exported_mesh.emplace_back(slot, pr.ok ? pr.mesh : 0);
+    set_status(L"Exported " + std::to_wstring(r->report.exported()) + L" of " +
+               std::to_wstring(r->report.pieces.size()) + L" pieces to " + utf8_to_wide(r->folder) +
+               L" (details: export_report.json).");
 }
 
 void save_manifest() {
@@ -373,6 +433,7 @@ LRESULT CALLBACK CharacterWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
         case ID_CH_OPEN_MODEL: open_selected_model(); return 0;
         case ID_CH_SAVE: save_manifest(); return 0;
         case ID_CH_BUILD_MAP: build_map(); return 0;
+        case ID_CH_EXPORT: export_pieces(); return 0;
         case ID_CH_CLOSE: DestroyWindow(hwnd); return 0;
         }
         break;
@@ -383,6 +444,7 @@ LRESULT CALLBACK CharacterWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
     }
     case WM_APP_CHAR_NAMES_DONE: on_names_done(std::unique_ptr<NamesDone>(reinterpret_cast<NamesDone*>(lparam))); return 0;
     case WM_APP_CHAR_FETCH_DONE: on_fetch_done(std::unique_ptr<FetchDone>(reinterpret_cast<FetchDone*>(lparam))); return 0;
+    case WM_APP_CHAR_EXPORT_DONE: on_export_done(std::unique_ptr<ExportDone>(reinterpret_cast<ExportDone*>(lparam))); return 0;
     case WM_APP_CMAP_DONE:
         set_status(L"Content map built.");
         if (g_ch.current) start_character_fetch(g_ch.current->manifest.tab_id);
@@ -391,7 +453,8 @@ LRESULT CALLBACK CharacterWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
     case WM_DESTROY:
         ++g_ch_request;  // drop any in-flight result
         g_ch_wnd = g_ch_key_combo = g_ch_char_combo = g_ch_tab_combo = g_ch_table = g_ch_status = g_ch_fetch_btn =
-            g_ch_build_btn = nullptr;
+            g_ch_build_btn = g_ch_export_btn = nullptr;
+        g_ch_exported_mesh.clear();
         g_ch = RipperState{};
         return 0;
     }
@@ -453,6 +516,7 @@ void open_character_dialog(HWND owner) {
     mk(L"BUTTON", L"Open model", BS_PUSHBUTTON, 10, H - 84, 100, 28, ID_CH_OPEN_MODEL);
     mk(L"BUTTON", L"Save manifest...", BS_PUSHBUTTON, 115, H - 84, 115, 28, ID_CH_SAVE);
     g_ch_build_btn = mk(L"BUTTON", L"Build map", BS_PUSHBUTTON, 235, H - 84, 90, 28, ID_CH_BUILD_MAP);
+    g_ch_export_btn = mk(L"BUTTON", L"Export pieces...", BS_PUSHBUTTON, 330, H - 84, 115, 28, ID_CH_EXPORT);
     mk(L"BUTTON", L"Close", BS_PUSHBUTTON, W - 106, H - 84, 80, 28, ID_CH_CLOSE);
 
     refill_keys();
