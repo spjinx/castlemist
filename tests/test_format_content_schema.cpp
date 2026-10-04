@@ -15,6 +15,7 @@
 #include "castlemist/format/content_schema.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <vector>
 
 using namespace castlemist::cschema;
@@ -269,6 +270,26 @@ std::vector<uint8_t> skin_pack(uint32_t uid, uint32_t data_id, uint32_t ref_inde
     return b.d;
 }
 
+// A full-size (312-byte) skin object carrying a composite appearance token at +200.
+std::vector<uint8_t> skin_pack_with_token(uint32_t data_id, uint32_t ref_index, uint64_t token) {
+    PackBuilder b;
+    size_t ieTable = kArrDescEnd;
+    b.put_u32(ieTable, CONTENT_TYPE_SKINS);
+    b.ensure(ieTable + 16);
+    b.set_dynarray(3, 1, ieTable);
+    size_t fiTable = ieTable + 16;
+    b.put_u32(fiTable, 48);
+    b.set_dynarray(6, 1, fiTable);
+    size_t cOff = 300;
+    b.put_u32(cOff + 16, CONTENT_TYPE_SKINS);
+    b.put_u32(cOff + 40, data_id);
+    b.put_u32(cOff + 48, ref_index);
+    b.put_i64(cOff + 200, static_cast<int64_t>(token));
+    b.ensure(cOff + 312);
+    b.set_dynarray(10, 312, cOff);
+    return b.d;
+}
+
 // A pack carrying only the shared fileRefs table: [0] = 500, [1] = 777.
 std::vector<uint8_t> file_refs_pack() {
     PackBuilder b;
@@ -458,4 +479,21 @@ CM_TEST(content_map, a_container_item_links_to_the_skins_of_the_items_inside_it)
     }
     CHECK_EQ(first_link(91284, cmap::CONTENT_TYPE_SKIN), 8826u);  // the inner items still resolve directly
     cmap::clear();
+}
+
+CM_TEST(content_map, cmap_skin_token_recorded) {
+    namespace cmap = castlemist::cmap;
+    cmap::clear();
+    cmap::build_from_packs({{20, 0, skin_pack_with_token(517, 1, 0x00000348C28A32A3ull)}, {10, 0, file_refs_pack()}});
+    CHECK_EQ(cmap::skin_token(517), 0x00000348C28A32A3ull);
+    CHECK_EQ(cmap::skin_token(999), 0ull);
+
+    std::wstring path = (std::filesystem::temp_directory_path() / "cm_test_cmap_token.bin").wstring();
+    CHECK(cmap::save(path));
+    cmap::clear();
+    CHECK_EQ(cmap::skin_token(517), 0ull);
+    CHECK(cmap::load(path));
+    CHECK_EQ(cmap::skin_token(517), 0x00000348C28A32A3ull);
+    cmap::clear();
+    std::filesystem::remove(path);
 }

@@ -50,6 +50,7 @@ std::vector<PendingObject> g_pending;
 // item dataId -> the appearance content it grants, in field order (see
 // item_links()). Part of the disk cache.
 std::unordered_map<uint32_t, std::vector<ContentLink>> g_item_links;
+std::unordered_map<uint32_t, uint64_t> g_skin_tokens;  // skin dataId -> appearance token (+200)
 constexpr size_t kMaxLinksPerItem = 64;
 
 // Object graph behind item_links(). Items and containers point at other objects
@@ -251,6 +252,11 @@ void parse_cntc(const std::vector<uint8_t>& d, uint32_t base_id, uint32_t file_i
             for (const auto& [reloc, edge] : out) g_edges.push_back(edge);
         }
 
+        if (type == CONTENT_TYPE_SKIN && o + 208 <= nextOff && cOff + o + 208 <= n) {
+            uint64_t token = u32(cOff + o + 200) | (static_cast<uint64_t>(u32(cOff + o + 204)) << 32);
+            if (token) g_skin_tokens[id] = token;
+        }
+
         // Collect every fileIndices reloc inside this object [o, nextOff), in
         // object order: item +64 = icon; skin +48 = model, +88 = icon, then
         // variants. These are fileRefs indices (0 is a valid one).
@@ -358,6 +364,7 @@ void clear() {
     g_file_refs.clear();
     g_pending.clear();
     g_item_links.clear();
+    g_skin_tokens.clear();
     g_obj_at.clear();
     g_edges.clear();
     g_pack_file_ids.clear();
@@ -411,6 +418,11 @@ uint32_t content_base_id(uint32_t content_type, uint32_t id) {
     return it == g_base_id.end() ? 0 : it->second;
 }
 
+uint64_t skin_token(uint32_t skin_id) {
+    auto it = g_skin_tokens.find(skin_id);
+    return it == g_skin_tokens.end() ? 0 : it->second;
+}
+
 const std::vector<ContentLink>& item_links(uint32_t item_id) {
     static const std::vector<ContentLink> none;
     auto it = g_item_links.find(item_id);
@@ -427,7 +439,7 @@ const std::string& name_for_fileid(uint32_t file_id) {
 // (GC2N caches were keyed by uid@+20 and stored raw fileRefs indices as fileIds;
 // GC3N/GC4N caches held only partial item->skin links. load() rejects them all,
 // so the map is rebuilt.)
-constexpr uint32_t kCacheMagic = 0x4E354347;  // 'GC5N'
+constexpr uint32_t kCacheMagic = 0x4E364347;  // 'GC6N' (adds skin tokens)
 bool save(const std::wstring& path) {
     FILE* f = _wfopen(path.c_str(), L"wb");
     if (!f) return false;
@@ -451,6 +463,12 @@ bool save(const std::wstring& path) {
             uint32_t rec[3] = {links[i].type, links[i].id, links[i].via_item};
             std::fwrite(rec, 4, 3, f);
         }
+    }
+    uint32_t count3 = static_cast<uint32_t>(g_skin_tokens.size());
+    std::fwrite(&count3, 4, 1, f);
+    for (const auto& [skin, token] : g_skin_tokens) {
+        std::fwrite(&skin, 4, 1, f);
+        std::fwrite(&token, 8, 1, f);
     }
     std::fclose(f);
     return true;
@@ -485,6 +503,15 @@ bool load(const std::wstring& path) {
             }
             if (!ok) break;
             g_item_links[item] = std::move(links);
+        }
+    }
+    uint32_t count3 = 0;
+    if (std::fread(&count3, 4, 1, f) == 1) {
+        for (uint32_t i = 0; i < count3; ++i) {
+            uint32_t skin;
+            uint64_t token;
+            if (std::fread(&skin, 4, 1, f) != 1 || std::fread(&token, 8, 1, f) != 1) break;
+            g_skin_tokens[skin] = token;
         }
     }
     std::fclose(f);
