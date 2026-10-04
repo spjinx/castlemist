@@ -13,6 +13,10 @@
 //   parse    (--dat <path> (--index N | --file-id N) | --data <bin>) --template <json>
 //                                            [--max-depth D] [--max-nodes N] [--out <json>]
 //   sniff    --dat <path> (--index N | --file-id N)
+//   character (--key-name NAME | --key KEY) [--character NAME] [--tab N]
+//            [--out <json>] [--cmap <content_map.bin>]
+//            -- lists an account's characters, or resolves one character's
+//            equipment to a manifest (GOES ONLINE: api.guildwars2.com only)
 //
 // On success exit code is 0 and the JSON has "ok": true; on failure exit code
 // is 1 and the JSON is {"ok": false, "error": "..."}.
@@ -23,9 +27,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <map>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -41,6 +47,19 @@
 #include "castlemist/native/BinaryParser.h"
 #include "castlemist/native/gw2model.hpp"
 #include "castlemist/native/granny_anim.hpp"
+#include "castlemist/format/content_map.h"
+#include "castlemist/character/fetch.h"
+#include "castlemist/character/key_store.h"
+#include "castlemist/character/manifest_json.h"
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <shellapi.h>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -1682,12 +1701,96 @@ void cmd_encode_texture(const Args& a) {
     emit(j);
 }
 
+// The UTF-8 value of `--flag` from the wide command line. argv is in the ANSI
+// code page, which mangles character names like "Þórr"; the API needs UTF-8.
+std::string utf8_arg(const char* flag) {
+    int n = 0;
+    LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &n);
+    std::string out;
+    std::wstring wflag(flag, flag + std::strlen(flag));
+    for (int i = 0; wargv && i + 1 < n; ++i) {
+        if (wflag != wargv[i]) continue;
+        const wchar_t* w = wargv[i + 1];
+        int len = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+        out.resize(len > 0 ? static_cast<size_t>(len - 1) : 0);
+        if (len > 1) WideCharToMultiByte(CP_UTF8, 0, w, -1, out.data(), len, nullptr, nullptr);
+        break;
+    }
+    if (wargv) LocalFree(wargv);
+    return out;
+}
+
+std::filesystem::path exe_dir() {
+    wchar_t exe[MAX_PATH] = L"";
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    return std::filesystem::path(exe).parent_path();
+}
+
+void cmd_character(const Args& a) {
+    namespace ch = castlemist::character;
+    std::string key;
+    if (has(a, "key")) {
+        key = a.at("key");
+    } else if (has(a, "key-name")) {
+        std::filesystem::path file = ch::default_key_file();
+        ch::KeyStore ks;
+        std::string err;
+        if (!ks.load(file, &err)) fail(err);
+        const ch::ApiKey* k = ks.get(a.at("key-name"));
+        if (!k) fail("no saved key named '" + a.at("key-name") + "' in " + file.string());
+        key = k->key;
+    } else {
+        fail("need --key or --key-name");
+    }
+
+    ch::WinHttpClient http;
+    ch::Gw2Api api(http, key);
+    std::vector<std::string> missing = ch::missing_scopes(api.token_info());
+    if (!missing.empty()) {
+        std::string list;
+        for (const std::string& m : missing) list += (list.empty() ? "" : ", ") + m;
+        fail("API key is missing scopes: " + list);
+    }
+
+    if (!has(a, "character")) {
+        json j;
+        j["ok"] = true;
+        j["characters"] = api.character_names();
+        emit(j);
+        return;
+    }
+
+    std::filesystem::path cmap_file = has(a, "cmap") ? std::filesystem::path(utf8_arg("--cmap"))
+                                                     : exe_dir() / "content_map.bin";
+    if (!castlemist::cmap::built()) castlemist::cmap::load(cmap_file.wstring());  // not fatal: pieces say no_content_map
+
+    std::optional<int> tab;
+    if (has(a, "tab")) tab = static_cast<int>(to_u64(a.at("tab")));
+    ch::CmapAssetLookup assets;
+    ch::FetchResult r = ch::fetch_character(api, utf8_arg("--character"), tab, assets);
+    json manifest = ch::manifest_to_json(r.manifest);
+
+    if (has(a, "out")) {
+        std::ofstream of(std::filesystem::path(utf8_arg("--out")), std::ios::binary);
+        if (!of) fail("cannot write " + a.at("out"));
+        of << manifest.dump(2) << '\n';
+    }
+    json tabs = json::array();
+    for (const ch::TabSummary& t : r.tabs) tabs.push_back({{"id", t.tab}, {"name", t.name}, {"active", t.is_active}});
+    json j;
+    j["ok"] = true;
+    j["cmap"] = castlemist::cmap::built();
+    j["tabs"] = tabs;
+    j["manifest"] = manifest;
+    emit(j);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
         fail("usage: gw2dat_cli <info|list|lookup|resolve|extract|texture|parse|sniff|"
-             "compress|decompress|encode-texture|scananim> [--flags]");
+             "compress|decompress|encode-texture|scananim|character> [--flags]");
     }
     std::string cmd = argv[1];
     Args a = parse_args(argc, argv, 2);
@@ -1713,6 +1816,7 @@ int main(int argc, char** argv) {
         else if (cmd == "compress") cmd_compress(a);
         else if (cmd == "decompress") cmd_decompress(a);
         else if (cmd == "encode-texture") cmd_encode_texture(a);
+        else if (cmd == "character") cmd_character(a);
         else fail("unknown command: " + cmd);
     } catch (const std::exception& ex) {
         fail(ex.what());

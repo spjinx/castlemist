@@ -45,7 +45,7 @@ castlemist_add_tool(gw2index
 # -----------------------------------------------------------------------------
 castlemist_add_tool(gw2dat_cli
     SOURCES gw2dat_cli/main.cpp
-    DEPS    castlemist::native ext::json ext::stb)
+    DEPS    castlemist::native castlemist::character ext::json ext::stb shell32)
 
 # -----------------------------------------------------------------------------
 # The two prototype viewers the renderer was developed against. They predate
