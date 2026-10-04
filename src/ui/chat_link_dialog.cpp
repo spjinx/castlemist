@@ -180,7 +180,7 @@ void cl_show_resolved() {
 }
 
 // Navigate the main browser to a resolved asset fileId (reuses the file-id search).
-void cl_open_fid(uint32_t fid) {
+void navigate_to_file_id(uint32_t fid) {
     if (!fid) { MessageBeep(MB_ICONWARNING); return; }
     if (!g_app->dat_loaded && !g_app->index_loaded) return;
     wchar_t num[16];
@@ -190,6 +190,8 @@ void cl_open_fid(uint32_t fid) {
     apply_filters();
     if (g_app->hwnd_main) { SetForegroundWindow(g_app->hwnd_main); SetFocus(g_app->hwnd_list); }
 }
+
+void cl_open_fid(uint32_t fid) { navigate_to_file_id(fid); }
 
 // Resolve the decoded link to dat assets via the cntc content map. Builds the map
 // on first use (from a disk cache if present, else by parsing every cntc pack on a

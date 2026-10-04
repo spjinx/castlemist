@@ -55,8 +55,9 @@ CmapEnsure ensure_content_map(HWND notify) {
         add_waiter(notify);
         return CmapEnsure::Building;
     }
-    if (!g_app->dat_loaded) return CmapEnsure::NeedDat;
+    // The disk cache needs no dat; only a fresh build reads the cntc packs.
     if (castlemist::cmap::load(cmap_cache_path())) return CmapEnsure::Ready;
+    if (!g_app->dat_loaded) return CmapEnsure::NeedDat;
 
     std::vector<uint32_t> base_ids;
     if (g_app->index_loaded) base_ids = castlemist::db::query_base_ids("", "cntc", 0, false, false, 100000);

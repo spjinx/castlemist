@@ -17,6 +17,7 @@
 #include <atomic>
 #include <memory>
 #include <set>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -73,6 +74,7 @@ constexpr UINT_PTR ID_VIEW_THEME_DARK   = 1010;
 constexpr UINT_PTR ID_VIEW_THEME_LIGHT  = 1011;
 constexpr UINT_PTR ID_VIEW_THEME_CUSTOM = 1012;
 constexpr UINT_PTR ID_VIEW_THEME_ACCENT = 1013;
+constexpr UINT_PTR ID_TOOLS_CHARACTER = 1019;      // Character Ripper (GW2 API) dialog
 constexpr UINT_PTR ID_TOOLS_DECODE_TOKEN = 1015;   // token/filename-bytes decoder popup
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL = 1016; // Export glTF... (single model, plain decoded textures)
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MAP = 1017;   // Export glTF... (whole map scene)
@@ -88,6 +90,26 @@ constexpr UINT_PTR ID_CL_RESOLVE = 2076;
 constexpr UINT_PTR ID_CL_OPEN_ICON = 2077;
 constexpr UINT_PTR ID_CL_OPEN_MODEL = 2078;
 constexpr UINT_PTR ID_CL_REBUILD = 2080;
+
+// Character Ripper dialog (character_dialog.cpp) and its key manager (character_keys_dialog.cpp).
+constexpr UINT_PTR ID_CH_KEY_COMBO = 2150;
+constexpr UINT_PTR ID_CH_MANAGE = 2151;
+constexpr UINT_PTR ID_CH_FETCH = 2152;
+constexpr UINT_PTR ID_CH_CHAR_LIST = 2153;
+constexpr UINT_PTR ID_CH_TAB_COMBO = 2154;
+constexpr UINT_PTR ID_CH_TABLE = 2155;
+constexpr UINT_PTR ID_CH_OPEN_MODEL = 2156;
+constexpr UINT_PTR ID_CH_SAVE = 2157;
+constexpr UINT_PTR ID_CH_CLOSE = 2158;
+constexpr UINT_PTR ID_CH_BUILD_MAP = 2159;
+constexpr UINT_PTR ID_CK_LIST = 2160;
+constexpr UINT_PTR ID_CK_NAME = 2161;
+constexpr UINT_PTR ID_CK_KEY = 2162;
+constexpr UINT_PTR ID_CK_SHOW = 2163;
+constexpr UINT_PTR ID_CK_SAVE = 2164;
+constexpr UINT_PTR ID_CK_RENAME = 2165;
+constexpr UINT_PTR ID_CK_REMOVE = 2166;
+constexpr UINT_PTR ID_CK_CLOSE = 2167;
 constexpr int ID_LISTVIEW = 2001;
 constexpr int ID_HEX_BEFORE = 2002;
 constexpr int ID_HEX_AFTER = 2003;
@@ -270,6 +292,9 @@ constexpr UINT WM_APP_INDEX_PROGRESS = WM_APP + 3;
 constexpr UINT WM_APP_INDEX_DONE = WM_APP + 4;
 /// Posted when a background glTF export finishes; result is in g_gltf_export_result.
 constexpr UINT WM_APP_GLTF_EXPORT_DONE = WM_APP + 5;
+// Character Ripper workers -> dialog; lParam owns a heap result the dialog deletes.
+constexpr UINT WM_APP_CHAR_NAMES_DONE = WM_APP + 6;
+constexpr UINT WM_APP_CHAR_FETCH_DONE = WM_APP + 7;
 
 enum class MiddleTab { Compressed = 0, Decompressed = 1, Structure = 2, Preview = 3 };
 
@@ -655,6 +680,15 @@ CmapEnsure ensure_content_map(HWND notify);
 /// Drops the map and its disk cache, then ensure_content_map(notify).
 CmapEnsure rebuild_content_map(HWND notify);
 bool content_map_building();
+
+/// Point the main browser at a dat fileId (file-id search) and bring it forward.
+void navigate_to_file_id(uint32_t fid);
+
+// ---- character_dialog.cpp / character_keys_dialog.cpp -- Character Ripper
+void open_character_dialog(HWND owner);
+void open_character_keys_dialog(HWND owner, std::function<void()> on_changed);
+std::wstring utf8_to_wide(const std::string& s);
+std::string wide_to_utf8(const std::wstring& w);
 
 // ---- token_decoder_dialog.cpp -- token / filename-bytes decoder popup
 LRESULT CALLBACK TokenDecoderWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);

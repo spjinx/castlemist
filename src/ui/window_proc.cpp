@@ -42,6 +42,7 @@ HMENU build_menu() {
 
     HMENU tools_menu = CreatePopupMenu();
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DECODE_LINK, L"&Decode Chat Link... ([&...])");
+    AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_CHARACTER, L"&Character Ripper... (GW2 API)");
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DECODE_TOKEN,
                 L"Decode &Token / Filename Bytes...");
 
@@ -1187,6 +1188,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             return 0;
         case ID_TOOLS_DECODE_LINK:
             open_chat_link_decoder(hwnd);
+            return 0;
+        case ID_TOOLS_CHARACTER:
+            open_character_dialog(hwnd);
             return 0;
         case ID_TOOLS_DECODE_TOKEN:
             open_token_decoder(hwnd);

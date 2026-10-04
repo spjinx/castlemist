@@ -168,7 +168,7 @@ endif()
 # dwmapi is *not* linked -- DwmSetWindowAttribute is resolved with GetProcAddress
 # so the exe still starts on a Windows without it.
 castlemist_add_layer(ui     DEPS castlemist::render castlemist::db castlemist::extract
-                                 castlemist::exportgltf
+                                 castlemist::exportgltf castlemist::character
                                  comctl32 comdlg32 shell32 user32 gdi32 advapi32 uxtheme)
 
 
