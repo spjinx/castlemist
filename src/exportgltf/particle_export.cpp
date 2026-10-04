@@ -24,6 +24,7 @@
 
 #include "internal.h"
 
+#include <filesystem>
 #include <fstream>
 
 namespace castlemist::exportgltf {
@@ -142,7 +143,7 @@ std::string write_particle_sidecar(const ModelPreview& model, const std::vector<
     }
 
     std::string jsonPath = glbPath.substr(0, glbPath.find_last_of('.')) + "_particles.json";
-    std::ofstream out(jsonPath);
+    std::ofstream out(std::filesystem::path(std::u8string(jsonPath.begin(), jsonPath.end())));  // UTF-8
     if (!out) return {};
     out << doc.dump(2);
     if (!out) return {};

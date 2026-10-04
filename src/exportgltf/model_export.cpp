@@ -21,7 +21,7 @@ GltfExportResult export_model_gltf(const ModelPreview& model, const std::string&
         return result;
     }
 
-    fs::path outPath(glbPath);
+    fs::path outPath = fs::path(std::u8string(glbPath.begin(), glbPath.end()));  // glbPath is UTF-8
     std::string stem = outPath.stem().string();
 
     std::error_code ec;
@@ -73,7 +73,7 @@ GltfExportResult export_model_gltf(const ModelPreview& model, const std::string&
     w.add_scene_root(rootIndex);
 
     std::vector<uint8_t> glb = w.finish();
-    std::ofstream out(glbPath, std::ios::binary);
+    std::ofstream out(outPath, std::ios::binary);
     if (!out) {
         result.error = "Could not open '" + glbPath + "' for writing.";
         return result;

@@ -417,7 +417,7 @@ void do_export_gltf_model(HWND hwnd) {
     // background writer thread below.
     auto model = std::make_shared<ModelPreview>(*g_app->current_entry.model);
 
-    std::string glbPath = castlemist::core::to_ansi(path);
+    std::string glbPath = wide_to_utf8(path);
     SetWindowTextW(g_app->hwnd_status_label, L"Exporting glTF...");
 
     std::thread([hwnd, model, glbPath]() {
@@ -468,7 +468,7 @@ void do_export_gltf_model_atlas(HWND hwnd) {
         SetCursor(old_cursor);
     }
 
-    std::string glbPath = castlemist::core::to_ansi(path);
+    std::string glbPath = wide_to_utf8(path);
     SetWindowTextW(g_app->hwnd_status_label, L"Exporting glTF...");
 
     std::thread([hwnd, model, glbPath]() {
@@ -487,7 +487,7 @@ void do_export_gltf_map(HWND hwnd) {
     if (!prompt_gltf_save_path(hwnd, path)) return;
 
     std::shared_ptr<MapScene> scene = g_app->current_entry.map;
-    std::string glbPath = castlemist::core::to_ansi(path);
+    std::string glbPath = wide_to_utf8(path);
     SetWindowTextW(g_app->hwnd_status_label, L"Exporting glTF (map)... this can take a while for a large area.");
 
     std::thread([hwnd, scene, glbPath]() {
@@ -499,7 +499,7 @@ void do_export_gltf_map(HWND hwnd) {
 void on_gltf_export_done(HWND hwnd) {
     if (!g_gltf_export_result.ok) {
         SetWindowTextW(g_app->hwnd_status_label, L"glTF export failed.");
-        MessageBoxA(hwnd, g_gltf_export_result.error.c_str(), "glTF export failed", MB_ICONERROR);
+        MessageBoxW(hwnd, utf8_to_wide(g_gltf_export_result.error).c_str(), L"glTF export failed", MB_ICONERROR);
         return;
     }
     SetWindowTextW(g_app->hwnd_status_label, L"glTF export finished.");
@@ -511,7 +511,7 @@ void on_gltf_export_done(HWND hwnd) {
         msg += "\n\nThis model also carries baked particle effects, described in:\n" +
                g_gltf_export_result.particlesJsonPath;
     }
-    MessageBoxA(hwnd, msg.c_str(), "glTF export finished", MB_ICONINFORMATION);
+    MessageBoxW(hwnd, utf8_to_wide(msg).c_str(), L"glTF export finished", MB_ICONINFORMATION);
 }
 
 // "Save Texture As..." from the texture panel's right-click menu. The panel

@@ -59,7 +59,7 @@ PieceExportResult write(const ModelPreview& model, const std::string& glb_path, 
     exportgltf::GltfExportResult g = exportgltf::export_model_gltf(model, glb_path);
     if (!g.ok) return skipped("glTF export failed: " + g.error);
     r.ok = true;
-    r.glb_path = g.glbPath.empty() ? glb_path : g.glbPath;
+    r.glb_path = glb_path;  // UTF-8, as the caller gave it
     return r;
 }
 

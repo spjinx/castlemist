@@ -64,7 +64,7 @@ struct GltfExportResult {
 ///
 /// @param model   A fully built model preview (meshes, materials, textures,
 ///                skeleton and animation clips already decoded).
-/// @param glbPath Destination .glb path.
+/// @param glbPath Destination .glb path, UTF-8.
 GltfExportResult export_model_gltf(const ModelPreview& model, const std::string& glbPath,
                                    const GltfExportOptions& opts = {});
 
@@ -81,7 +81,7 @@ GltfExportResult export_model_gltf(const ModelPreview& model, const std::string&
 /// into `scene.instances`).
 ///
 /// @param scene   A built map scene (::build_map_scene / ::build_map_zone_layer).
-/// @param glbPath Destination .glb path.
+/// @param glbPath Destination .glb path, UTF-8.
 GltfExportResult export_map_gltf(const MapScene& scene, const std::string& glbPath,
                                  const GltfExportOptions& opts = {});
 

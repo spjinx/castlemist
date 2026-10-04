@@ -216,3 +216,22 @@ CM_TEST(export, old_manifest_armor_is_not_exported_as_default_model) {
     CHECK_EQ(r.status, std::string("skipped"));
     CHECK(r.reason.rfind("no appearance token", 0) == 0);
 }
+
+CM_TEST(export, export_character_into_a_non_ascii_folder) {
+    if (!dat_env()) SKIP("set GW2_TEST_DAT to run against a real Gw2.dat");
+    ch::CharacterManifest m;
+    m.name = "Test Character";
+    m.race = "Sylvari";
+    m.gender = "Female";
+    m.pieces.push_back(warden_coat());
+    fs::path dir = fs::temp_directory_path() / fs::path(u8"cm_test_ripper_José");
+    fs::remove_all(dir);
+    std::u8string u8 = dir.u8string();
+    CharacterExportReport rep = export_character(m, dat_env(), std::string(u8.begin(), u8.end()));
+    CHECK(rep.error.empty());
+    CHECK_EQ(rep.pieces.size(), size_t{1});
+    if (!rep.pieces.empty()) CHECK_EQ(rep.pieces[0].second.reason, std::string());
+    CHECK_EQ(rep.exported(), size_t{1});
+    CHECK(fs::exists(dir / "01_Coat_Warden_Coat.glb"));
+    fs::remove_all(dir);
+}
