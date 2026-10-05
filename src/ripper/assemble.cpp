@@ -19,6 +19,7 @@
 #include "castlemist/ripper/face_morphs.h"
 #include "castlemist/ripper/skeleton_merge.h"
 #include "castlemist/ripper/thumbnail.h"
+#include "castlemist/ripper/vrchat.h"
 #include "internal.h"
 
 namespace castlemist::ripper {
@@ -491,7 +492,8 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
     return out;
 }
 
-bool write_glb(const ModelPreview& model, const std::string& path, const AssemblyOptions& opt, AssemblyReport& rep) {
+bool write_glb(ModelPreview model, const std::string& path, const AssemblyOptions& opt, AssemblyReport& rep) {
+    detail::mirror_x(model);  // GW2 is left-handed: un-mirror for glTF
     // GW2 characters stand along -Z; the avatar should stand along glTF +Y,
     // still facing +Z: -90 about X, then 180 about the forward axis. Units stay
     // GW2's (inches) unless asked for metres.
@@ -646,6 +648,7 @@ AssemblyReport assemble_character(const CharacterManifest& manifest, const std::
     sel.weapons.assign(std::begin(kWeaponSlots), std::end(kWeaponSlots));
     sel.drop_shared_holster = true;
     ModelPreview model = build(*ctx, manifest, opt, sel, rep);
+    if (opt.vrchat) rep.physbone_chains = make_vrchat_ready(model);
     if (!write_glb(model, glb_path, opt, rep)) return rep;
     rep.joints = model.joints.size();
     rep.ok = true;

@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <functional>
+#include <optional>
 #include <unordered_map>
 
 namespace castlemist::ripper {
@@ -143,62 +144,71 @@ const std::vector<std::string>& face_slider_names() {
     return names;
 }
 
-size_t add_face_morphs(ModelPreview& model, const std::map<std::string, float>& values) {
+namespace {
+
+// A shape key: every joint's effective deformation (its own edit, then its
+// parents'), and whether it moves at all.
+struct Key {
+    std::string name;
+    float weight;
+    std::vector<Mat> eff;
+    std::vector<bool> moved;
+};
+
+struct Rig {
+    const ModelPreview& model;
     std::unordered_map<std::string, int> by_name;
-    for (size_t i = 0; i < model.joints.size(); ++i) by_name.emplace(model.joints[i].name, static_cast<int>(i));
-    const auto head = by_name.find("bone:Head");
-    if (head == by_name.end()) return 0;
-    const double centre_x = model.joints[static_cast<size_t>(head->second)].pos[0];
+    double centre_x = 0;
+};
 
-    // For each shape key: every joint's effective deformation (its own edit,
-    // then its parents'), and whether it moves at all.
-    struct Key {
-        std::string name;
-        float weight;
-        std::vector<Mat> eff;
-        std::vector<bool> moved;
-    };
-    std::vector<Key> keys;
-    for (const Slider& sl : sliders()) {
-        auto v = values.find(sl.name);
-        const float value = v == values.end() ? 0.5f : std::clamp(v->second, 0.0f, 1.0f);
-        for (int s : {+1, -1}) {
-            Key k{std::string(sl.name) + (s > 0 ? "+" : "-"),
-                  s > 0 ? std::max(0.0f, (value - 0.5f) * 2) : std::max(0.0f, (0.5f - value) * 2),
-                  std::vector<Mat>(model.joints.size(), identity()), std::vector<bool>(model.joints.size(), false)};
-            std::vector<Mat> own(model.joints.size(), identity());
-            std::vector<bool> has(model.joints.size(), false);
-            for (const Edit& e : sl.edits) {
-                auto it = by_name.find(e.joint);
-                if (it == by_name.end()) continue;
-                const size_t ji = static_cast<size_t>(it->second);
-                own[ji] = mul(own[ji], edit_matrix(e, model.joints[ji], centre_x, s));
-                has[ji] = true;
-            }
-            std::vector<int> done(model.joints.size(), 0);
-            std::function<void(size_t)> resolve = [&](size_t ji) {
-                if (done[ji]) return;
-                done[ji] = 1;
-                const int p = model.joints[ji].parent;
-                Mat parent = identity();
-                bool parent_moved = false;
-                if (p >= 0 && static_cast<size_t>(p) < model.joints.size() && static_cast<size_t>(p) != ji) {
-                    resolve(static_cast<size_t>(p));
-                    parent = k.eff[static_cast<size_t>(p)];
-                    parent_moved = k.moved[static_cast<size_t>(p)];
-                }
-                k.eff[ji] = mul(own[ji], parent);
-                k.moved[ji] = has[ji] || parent_moved;
-            };
-            for (size_t ji = 0; ji < model.joints.size(); ++ji) resolve(ji);
-            keys.push_back(std::move(k));
-        }
+std::optional<Rig> rig_of(const ModelPreview& model) {
+    Rig r{model, {}, 0};
+    for (size_t i = 0; i < model.joints.size(); ++i) r.by_name.emplace(model.joints[i].name, static_cast<int>(i));
+    const auto head = r.by_name.find("bone:Head");
+    if (head == r.by_name.end()) return std::nullopt;
+    r.centre_x = model.joints[static_cast<size_t>(head->second)].pos[0];
+    return r;
+}
+
+Key make_key(const Rig& rig, std::string name, float weight, const std::vector<Edit>& edits, int sign) {
+    const ModelPreview& model = rig.model;
+    Key k{std::move(name), weight, std::vector<Mat>(model.joints.size(), identity()),
+          std::vector<bool>(model.joints.size(), false)};
+    std::vector<Mat> own(model.joints.size(), identity());
+    std::vector<bool> has(model.joints.size(), false);
+    for (const Edit& e : edits) {
+        auto it = rig.by_name.find(e.joint);
+        if (it == rig.by_name.end()) continue;
+        const size_t ji = static_cast<size_t>(it->second);
+        own[ji] = mul(own[ji], edit_matrix(e, model.joints[ji], rig.centre_x, sign));
+        has[ji] = true;
     }
+    std::vector<int> done(model.joints.size(), 0);
+    std::function<void(size_t)> resolve = [&](size_t ji) {
+        if (done[ji]) return;
+        done[ji] = 1;
+        const int p = model.joints[ji].parent;
+        Mat parent = identity();
+        bool parent_moved = false;
+        if (p >= 0 && static_cast<size_t>(p) < model.joints.size() && static_cast<size_t>(p) != ji) {
+            resolve(static_cast<size_t>(p));
+            parent = k.eff[static_cast<size_t>(p)];
+            parent_moved = k.moved[static_cast<size_t>(p)];
+        }
+        k.eff[ji] = mul(own[ji], parent);
+        k.moved[ji] = has[ji] || parent_moved;
+    };
+    for (size_t ji = 0; ji < model.joints.size(); ++ji) resolve(ji);
+    return k;
+}
 
+// Bakes the keys through the skin weights into morph targets on every skinned
+// mesh they move (appended to existing targets). Returns meshes touched.
+size_t bake_keys(ModelPreview& model, const std::vector<Key>& keys) {
     size_t touched = 0;
     for (ModelMeshCPU& mesh : model.meshes) {
         if (!mesh.hasSkin) continue;
-        std::vector<MorphTargetCPU> targets;
+        bool added = false;
         for (const Key& k : keys) {
             MorphTargetCPU t{k.name, std::vector<float>(mesh.vertices.size() * 3, 0.0f), k.weight};
             bool any = false;
@@ -222,14 +232,96 @@ size_t add_face_morphs(ModelPreview& model, const std::map<std::string, float>& 
                 for (int c = 0; c < 3; ++c) t.delta[vi * 3 + c] = static_cast<float>(d[c]);
                 any = true;
             }
-            if (any) targets.push_back(std::move(t));
+            if (any) {
+                mesh.morphs.push_back(std::move(t));
+                added = true;
+            }
         }
-        if (!targets.empty()) {
-            mesh.morphs = std::move(targets);
-            ++touched;
-        }
+        touched += added;
     }
     return touched;
+}
+
+// VRChat's own shape keys: blinks for eye tracking and the 15 visemes it
+// drives from the voice (Avatar Descriptor > LipSync > Viseme Blend Shape).
+// Approximations from the face rig: the jaw opens by turning bone:Jaw about
+// its pivot (negative = the chin goes down), the corners move in or out, the
+// lips push forward.
+struct NamedKey {
+    const char* name;
+    std::vector<Edit> edits;
+};
+
+std::vector<Edit> mouth(double jaw_deg, double corners_out, double lips_fwd, double press = 0) {
+    constexpr double fwd = -1, up = -1;
+    std::vector<Edit> e = {{"bone:Jaw", {1, 1, 1}, -jaw_deg},
+                           {"bone:MouthL", {1, 1, 1}, 0, {0, 0, 0}, corners_out},
+                           {"bone:MouthR", {1, 1, 1}, 0, {0, 0, 0}, corners_out}};
+    if (lips_fwd != 0 || press != 0) {
+        e.push_back({"bone:MouthTop", {1, 1, 1}, 0, {0, lips_fwd * fwd, press * -up}});
+        e.push_back({"bone:MouthBot", {1, 1, 1}, 0, {0, lips_fwd * fwd, press * up}});
+        e.push_back({"bone:LipMidTopL", {1, 1, 1}, 0, {0, lips_fwd * 0.8 * fwd, press * -up}});
+        e.push_back({"bone:LipMidTopR", {1, 1, 1}, 0, {0, lips_fwd * 0.8 * fwd, press * -up}});
+        e.push_back({"bone:LipMidBotL", {1, 1, 1}, 0, {0, lips_fwd * 0.8 * fwd, press * up}});
+        e.push_back({"bone:LipMidBotR", {1, 1, 1}, 0, {0, lips_fwd * 0.8 * fwd, press * up}});
+    }
+    return e;
+}
+
+const std::vector<NamedKey>& vrchat_keys() {
+    static const std::vector<NamedKey> k = {
+        {"Blink", {{"bone:EyelidUpperL", {1, 1, 1}, -30}, {"bone:EyelidUpperR", {1, 1, 1}, -30},
+                   {"bone:EyelidBotmL", {1, 1, 1}, 8}, {"bone:EyelidBotmR", {1, 1, 1}, 8}}},
+        {"Blink_L", {{"bone:EyelidUpperL", {1, 1, 1}, -30}, {"bone:EyelidBotmL", {1, 1, 1}, 8}}},
+        {"Blink_R", {{"bone:EyelidUpperR", {1, 1, 1}, -30}, {"bone:EyelidBotmR", {1, 1, 1}, 8}}},
+        {"vrc.v_aa", mouth(14, 0.05, 0)},
+        {"vrc.v_ch", mouth(6, -0.10, 0.08)},
+        {"vrc.v_dd", mouth(8, 0, 0)},
+        {"vrc.v_e", mouth(7, 0.15, 0)},
+        {"vrc.v_ff", mouth(3, 0.04, 0, 0.04)},
+        {"vrc.v_ih", mouth(5, 0.10, 0)},
+        {"vrc.v_kk", mouth(7, 0.05, 0)},
+        {"vrc.v_nn", mouth(5, 0, 0)},
+        {"vrc.v_oh", mouth(11, -0.18, 0.10)},
+        {"vrc.v_ou", mouth(6, -0.25, 0.15)},
+        {"vrc.v_pp", mouth(0, 0, 0.02, 0.06)},
+        {"vrc.v_rr", mouth(5, -0.08, 0.04)},
+        {"vrc.v_ss", mouth(3, 0.12, 0)},
+        {"vrc.v_th", mouth(5, 0, 0.05)},
+    };
+    return k;
+}
+
+} // namespace
+
+size_t add_face_morphs(ModelPreview& model, const std::map<std::string, float>& values) {
+    const std::optional<Rig> rig = rig_of(model);
+    if (!rig) return 0;
+    std::vector<Key> keys;
+    for (const Slider& sl : sliders()) {
+        auto v = values.find(sl.name);
+        const float value = v == values.end() ? 0.5f : std::clamp(v->second, 0.0f, 1.0f);
+        keys.push_back(make_key(*rig, std::string(sl.name) + "+", std::max(0.0f, (value - 0.5f) * 2), sl.edits, +1));
+        keys.push_back(make_key(*rig, std::string(sl.name) + "-", std::max(0.0f, (0.5f - value) * 2), sl.edits, -1));
+    }
+    return bake_keys(model, keys);
+}
+
+size_t add_vrchat_face_keys(ModelPreview& model) {
+    const std::optional<Rig> rig = rig_of(model);
+    if (!rig) return 0;
+    std::vector<Key> keys;
+    for (const NamedKey& nk : vrchat_keys()) keys.push_back(make_key(*rig, nk.name, 0, nk.edits, +1));
+    return bake_keys(model, keys);
+}
+
+const std::vector<std::string>& vrchat_face_key_names() {
+    static const std::vector<std::string> names = [] {
+        std::vector<std::string> n;
+        for (const NamedKey& k : vrchat_keys()) n.push_back(k.name);
+        return n;
+    }();
+    return names;
 }
 
 } // namespace castlemist::ripper

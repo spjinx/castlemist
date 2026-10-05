@@ -29,6 +29,13 @@ const std::vector<std::string>& face_slider_names();
 /// name); returns the number of meshes that received targets.
 size_t add_face_morphs(ModelPreview& model, const std::map<std::string, float>& values = {});
 
+/// VRChat's face keys -- "Blink", "Blink_L", "Blink_R" and the visemes
+/// "vrc.v_aa" .. "vrc.v_th" -- from the same face rig (jaw opening, mouth
+/// corners, lips, eyelids), appended to the meshes they move. Approximate:
+/// the game has no visemes. Returns the number of meshes that received keys.
+size_t add_vrchat_face_keys(ModelPreview& model);
+const std::vector<std::string>& vrchat_face_key_names();
+
 } // namespace castlemist::ripper
 
 #endif // CASTLEMIST_RIPPER_FACE_MORPHS_H

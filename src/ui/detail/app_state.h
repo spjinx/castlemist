@@ -123,6 +123,7 @@ constexpr UINT_PTR ID_CH_HAIR_COLOR = 2174;
 constexpr UINT_PTR ID_CH_HAIR_COLOR2 = 2175;
 constexpr UINT_PTR ID_CH_SAVE_LOOK = 2176;
 constexpr UINT_PTR ID_CH_EDIT_LOOK = 2177;  // opens the Look dialog
+constexpr UINT_PTR ID_CH_VRCHAT = 2178;     // Export for VRChat...
 constexpr int ID_LISTVIEW = 2001;
 constexpr int ID_HEX_BEFORE = 2002;
 constexpr int ID_HEX_AFTER = 2003;
@@ -310,6 +311,7 @@ constexpr UINT WM_APP_CHAR_NAMES_DONE = WM_APP + 6;
 constexpr UINT WM_APP_CHAR_FETCH_DONE = WM_APP + 7;
 constexpr UINT WM_APP_CHAR_EXPORT_DONE = WM_APP + 8;
 constexpr UINT WM_APP_CHAR_ASSEMBLE_DONE = WM_APP + 9;
+constexpr UINT WM_APP_CHAR_VRCHAT_DONE = WM_APP + 11;  // (+10: look_dialog thumbnails)
 
 enum class MiddleTab { Compressed = 0, Decompressed = 1, Structure = 2, Preview = 3 };
 

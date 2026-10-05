@@ -28,7 +28,8 @@ PieceExportResult skipped(std::string reason) {
     return r;
 }
 
-PieceExportResult write(const ModelPreview& model, const std::string& glb_path, PieceExportResult r) {
+PieceExportResult write(ModelPreview model, const std::string& glb_path, PieceExportResult r) {
+    detail::mirror_x(model);  // GW2 is left-handed: un-mirror for glTF
     exportgltf::GltfExportResult g = exportgltf::export_model_gltf(model, glb_path);
     if (!g.ok) return skipped("glTF export failed: " + g.error);
     r.ok = true;

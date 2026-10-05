@@ -42,6 +42,13 @@ std::optional<BakedTextures> bake_part(Gw2Dat& dat, const composite::CompositeFi
                                        bool preview = false);  // reduced textures, no normal map (thumbnails)
 
 /// The mesh's material is the body skin ("Skin", "SylvariSkin1", ...).
+// GW2 model space is left-handed (Z down, X/Y east/north); glTF is
+// right-handed, so a rotation alone exports a mirror image ("Left" bones on the
+// character's right). Reflects X in place: vertices, normals, tangent frames,
+// blend-shape deltas, triangle winding, and the skeleton's bind data (S*M*S).
+// Animation clips are dropped (not mirrored).
+void mirror_x(ModelPreview& model);
+
 bool is_skin_mesh(const ModelPreview& m, const ModelMeshCPU& mesh);
 
 /// The mesh's UVs wrapped into [0,1] (mirrored halves sit at u-1).

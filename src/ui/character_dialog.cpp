@@ -30,6 +30,7 @@
 #include "castlemist/ripper/assemble.h"
 #include "castlemist/ripper/character_export.h"
 #include "castlemist/ripper/look.h"
+#include "castlemist/ripper/vrchat.h"
 
 #include <shlobj.h>
 #include <windowsx.h>
@@ -68,6 +69,7 @@ HWND g_ch_export_btn = nullptr;
 HWND g_ch_assemble_btn = nullptr;
 HWND g_ch_combine_chk = nullptr;
 HWND g_ch_look_btn = nullptr;
+HWND g_ch_vrchat_btn = nullptr;
 
 ch::KeyStore g_ch_keys;
 RipperState g_ch;                             // names / shown character / their key
@@ -105,6 +107,7 @@ void set_busy(bool busy) {
     EnableWindow(g_ch_build_btn, !busy);
     EnableWindow(g_ch_export_btn, !busy);
     EnableWindow(g_ch_assemble_btn, !busy);
+    EnableWindow(g_ch_vrchat_btn, !busy);
 }
 
 // Posts `result` to the dialog, or frees it if the dialog is gone.
@@ -451,6 +454,73 @@ void assemble_character_glb() {
     }).detach();
 }
 
+struct VrchatDone {
+    castlemist::ripper::VrchatReport report;
+};
+
+// The character as a VRChat avatar (.glb, .fbx via Blender, setup notes) in a
+// folder the user picks, with the saved look.
+void export_vrchat() {
+    if (!g_ch.current) {
+        set_status(L"Fetch a character first.");
+        return;
+    }
+    if (!g_app->dat_loaded) {
+        set_status(L"Open Gw2.dat first (File > Open) - the models and textures come from it.");
+        return;
+    }
+    BROWSEINFOW bi{};
+    bi.hwndOwner = g_ch_wnd;
+    bi.lpszTitle = L"Export the VRChat avatar (.fbx + .glb + setup notes) into:";
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
+    if (!pidl) return;
+    wchar_t folder[MAX_PATH] = L"";
+    bool ok = SHGetPathFromIDListW(pidl, folder);
+    CoTaskMemFree(pidl);
+    if (!ok) return;
+    std::wstring name = utf8_to_wide(g_ch.current->manifest.name);
+    for (wchar_t& c : name)
+        if (wcschr(L"\/:*?\"<>|", c)) c = L'_';
+    const std::string out = wide_to_utf8(std::wstring(folder) + L"\\" + name + L" (VRChat)");
+    const std::string dat_path = g_app->data_gw2.file_info.file_path;
+    const ch::CharacterManifest manifest = g_ch.current->manifest;
+    castlemist::ripper::AssemblyOptions opt;
+    opt.weapons = castlemist::ripper::WeaponPlacement::None;  // an avatar, not a loadout
+    {
+        ch::LookStore store;
+        std::string err;
+        ch::CharacterLook look;
+        if (store.load(ch::default_look_file(), &err)) look = store.get(manifest.name).value_or(ch::CharacterLook{});
+        if (!content_map_building() && castlemist::cmap::built())
+            castlemist::ripper::apply_look(opt, look, manifest.race, manifest.gender);
+    }
+    ++g_ch_request;
+    set_busy(true);
+    set_status(L"Building the VRChat avatar of " + name + L" (Blender runs in the background)...");
+    std::thread([manifest, dat_path, out, opt]() {
+        auto* r = new VrchatDone{};
+        try {
+            r->report = castlemist::ripper::export_vrchat(manifest, dat_path, out, opt);
+        } catch (const std::exception& e) {
+            r->report.error = std::string("VRChat export failed: ") + e.what();
+        }
+        post_result(WM_APP_CHAR_VRCHAT_DONE, r);
+    }).detach();
+}
+
+void on_vrchat_done(std::unique_ptr<VrchatDone> r) {
+    set_busy(false);
+    if (!r->report.ok) {
+        set_status(utf8_to_wide(r->report.error));
+        return;
+    }
+    if (!r->report.fbx.empty())
+        set_status(L"Saved " + utf8_to_wide(r->report.fbx) + L" - see the VRChat setup notes beside it.");
+    else
+        set_status(L"Saved " + utf8_to_wide(r->report.glb) + L" - no .fbx: " + utf8_to_wide(r->report.blender));
+}
+
 void on_assemble_done(std::unique_ptr<AssembleDone> r) {
     set_busy(false);
     if (!r->report.ok) {
@@ -545,6 +615,7 @@ LRESULT CALLBACK CharacterWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
         case ID_CH_BUILD_MAP: build_map(); return 0;
         case ID_CH_EXPORT: export_pieces(); return 0;
         case ID_CH_ASSEMBLE: assemble_character_glb(); return 0;
+        case ID_CH_VRCHAT: export_vrchat(); return 0;
         case ID_CH_EDIT_LOOK:
             if (g_ch.current) open_look_dialog(hwnd, g_ch.current->manifest);
             else set_status(L"Fetch a character first.");
@@ -560,6 +631,7 @@ LRESULT CALLBACK CharacterWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
     case WM_APP_CHAR_NAMES_DONE: on_names_done(std::unique_ptr<NamesDone>(reinterpret_cast<NamesDone*>(lparam))); return 0;
     case WM_APP_CHAR_FETCH_DONE: on_fetch_done(std::unique_ptr<FetchDone>(reinterpret_cast<FetchDone*>(lparam))); return 0;
     case WM_APP_CHAR_EXPORT_DONE: on_export_done(std::unique_ptr<ExportDone>(reinterpret_cast<ExportDone*>(lparam))); return 0;
+    case WM_APP_CHAR_VRCHAT_DONE: on_vrchat_done(std::unique_ptr<VrchatDone>(reinterpret_cast<VrchatDone*>(lparam))); return 0;
     case WM_APP_CHAR_ASSEMBLE_DONE: on_assemble_done(std::unique_ptr<AssembleDone>(reinterpret_cast<AssembleDone*>(lparam))); return 0;
     case WM_APP_CMAP_DONE:
         set_status(L"Content map built.");
@@ -569,7 +641,7 @@ LRESULT CALLBACK CharacterWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
     case WM_DESTROY:
         ++g_ch_request;  // drop any in-flight result
         g_ch_wnd = g_ch_key_combo = g_ch_char_combo = g_ch_tab_combo = g_ch_table = g_ch_status = g_ch_fetch_btn =
-            g_ch_build_btn = g_ch_export_btn = g_ch_assemble_btn = g_ch_combine_chk = g_ch_look_btn = nullptr;
+            g_ch_build_btn = g_ch_export_btn = g_ch_assemble_btn = g_ch_combine_chk = g_ch_look_btn = g_ch_vrchat_btn = nullptr;
         g_ch = RipperState{};
         return 0;
     }
@@ -629,8 +701,9 @@ void open_character_dialog(HWND owner) {
 
     // What the API doesn't say -- face, hair, colours -- picked in its own dialog.
     g_ch_look_btn = mk(L"BUTTON", L"Edit look...", BS_PUSHBUTTON, 10, H - 150, 110, 28, ID_CH_EDIT_LOOK);
-    mk(L"STATIC", L"Face, hair, ears, pattern and colours from the game's character creator; Export character uses the saved look.",
-       SS_LEFT | SS_ENDELLIPSIS, 128, H - 144, W - 160, 18, 0);
+    g_ch_vrchat_btn = mk(L"BUTTON", L"Export for VRChat...", BS_PUSHBUTTON, 126, H - 150, 140, 28, ID_CH_VRCHAT);
+    mk(L"STATIC", L"Look from the game's character creator; the exports use the saved look. VRChat: .fbx via Blender + setup notes.",
+       SS_LEFT | SS_ENDELLIPSIS, 274, H - 144, W - 300, 18, 0);
 
     g_ch_status = mk(L"STATIC", L"", SS_LEFT | SS_ENDELLIPSIS, 10, H - 112, W - 36, 18, 0);
     mk(L"BUTTON", L"Open model", BS_PUSHBUTTON, 10, H - 84, 100, 28, ID_CH_OPEN_MODEL);

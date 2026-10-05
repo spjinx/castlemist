@@ -54,6 +54,26 @@ void add_cloth_meshes(ModelPreview& m) {
                 v.bwt[k] = best->bwt[k];
             }
         }
+        // Cloth proxies are often wound opposite to their normals; engines that
+        // cull back faces (Unity) would hide them. Match the winding to the normals.
+        long agree = 0;
+        for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
+            const GVertex* t[3];
+            bool ok = true;
+            for (int k = 0; k < 3; ++k) {
+                if (mesh.indices[i + k] >= mesh.vertices.size()) { ok = false; break; }
+                t[k] = &mesh.vertices[mesh.indices[i + k]];
+            }
+            if (!ok) continue;
+            const float ax = t[1]->px - t[0]->px, ay = t[1]->py - t[0]->py, az = t[1]->pz - t[0]->pz;
+            const float bx = t[2]->px - t[0]->px, by = t[2]->py - t[0]->py, bz = t[2]->pz - t[0]->pz;
+            const float gx = ay * bz - az * by, gy = az * bx - ax * bz, gz = ax * by - ay * bx;
+            const float nx = t[0]->nx + t[1]->nx + t[2]->nx, ny = t[0]->ny + t[1]->ny + t[2]->ny,
+                        nz = t[0]->nz + t[1]->nz + t[2]->nz;
+            agree += (gx * nx + gy * ny + gz * nz) >= 0 ? 1 : -1;
+        }
+        if (agree < 0)
+            for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) std::swap(mesh.indices[i + 1], mesh.indices[i + 2]);
         m.totalVerts += static_cast<uint32_t>(mesh.vertices.size());
         m.totalTris += static_cast<uint32_t>(mesh.indices.size() / 3);
         m.meshes.push_back(std::move(mesh));
@@ -150,6 +170,39 @@ std::optional<BakedTextures> bake_part(Gw2Dat& dat, const composite::CompositeFi
         }
     }
     return out;
+}
+
+void mirror_x(ModelPreview& model) {
+    for (ModelMeshCPU& mesh : model.meshes) {
+        for (GVertex& v : mesh.vertices) {
+            v.px = -v.px;
+            v.nx = -v.nx;
+            v.tx = -v.tx;
+            v.bx = -v.bx;
+        }
+        auto flip = [](std::vector<uint32_t>& idx) {
+            for (size_t i = 0; i + 2 < idx.size(); i += 3) std::swap(idx[i + 1], idx[i + 2]);
+        };
+        flip(mesh.indices);
+        for (auto& lod : mesh.lodIndices) flip(lod);
+        for (MorphTargetCPU& t : mesh.morphs)
+            for (size_t i = 0; i < t.delta.size(); i += 3) t.delta[i] = -t.delta[i];
+    }
+    for (ModelJoint& j : model.joints) {
+        j.pos[0] = -j.pos[0];
+        j.localPos[0] = -j.localPos[0];
+        j.localQuat[1] = -j.localQuat[1];
+        j.localQuat[2] = -j.localQuat[2];
+        for (int r = 0; r < 3; ++r)
+            for (int c = 0; c < 3; ++c)
+                if ((r == 0) != (c == 0)) j.localScale[r * 3 + c] = -j.localScale[r * 3 + c];
+        for (int r = 0; r < 4; ++r)
+            for (int c = 0; c < 4; ++c)
+                if ((r == 0) != (c == 0)) j.invWorld[r * 4 + c] = -j.invWorld[r * 4 + c];
+    }
+    model.animClips.clear();
+    model.animClipBank.clear();
+    model.hasAnimation = false;
 }
 
 bool is_skin_mesh(const ModelPreview& m, const ModelMeshCPU& mesh) {

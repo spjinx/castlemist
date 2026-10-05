@@ -80,3 +80,45 @@ CM_TEST(look, views_stay_upright_and_unmirrored) {
     const float dot = t.up[0] * t.forward[0] + t.up[1] * t.forward[1] + t.up[2] * t.forward[2];
     CHECK_NEAR(dot, 0.0, 1e-5);
 }
+
+#include "castlemist/ripper/vrchat.h"
+
+CM_TEST(vrchat, humanoid_names_follow_unity) {
+    CHECK_EQ(humanoid_name("bone:COG"), std::string("Hips"));
+    CHECK_EQ(humanoid_name("bone:Spine03"), std::string("UpperChest"));
+    CHECK_EQ(humanoid_name("bone:ShoulderL"), std::string("LeftUpperArm"));
+    CHECK_EQ(humanoid_name("bone:KneeR"), std::string("RightLowerLeg"));
+    CHECK_EQ(humanoid_name("bone:PinkyL02"), std::string("LeftLittleIntermediate"));
+    CHECK_EQ(humanoid_name("bone:EyeR"), std::string("RightEye"));
+    CHECK(humanoid_name("bone:Hair01").empty());
+}
+
+CM_TEST(vrchat, prepares_merges_prunes_and_renames) {
+    ModelPreview m;
+    auto joint = [](const char* n, int parent) { ModelJoint j; j.name = n; j.parent = parent; return j; };
+    m.joints = {joint("bone:root", -1), joint("bone:COG", 0), joint("actionpoint:BodyCam", 0), joint("bone:Hair01", 1),
+                joint("bone:Hair02", 3)};
+    auto mesh = [](uint32_t bone) {
+        ModelMeshCPU me;
+        GVertex v{};
+        v.bidx[0] = bone;
+        v.bwt[0] = 1;
+        me.vertices = {v, v, v};
+        me.indices = {0, 1, 2};
+        me.hasSkin = true;
+        return me;
+    };
+    m.meshes = {mesh(1), mesh(4)};  // same material: merged
+    m.materials.resize(1);
+    m.materials[0].materialName = "import2:AmatShader1";
+    const std::vector<std::string> chains = make_vrchat_ready(m);
+    CHECK_EQ(m.meshes.size(), size_t{1});
+    CHECK_EQ(m.meshes[0].vertices.size(), size_t{6});
+    CHECK_EQ(m.joints.size(), size_t{4});               // the unweighted camera point is gone
+    CHECK_EQ(m.joints[1].name, std::string("Hips"));
+    CHECK_EQ(m.joints[2].name, std::string("Hair01"));  // kept: an ancestor of a weighted bone
+    CHECK_EQ(m.materials[0].materialName, std::string("AmatShader1"));
+    CHECK_EQ(chains.size(), size_t{1});
+    CHECK_EQ(chains[0], std::string("Hair01"));
+    CHECK_EQ(m.meshes[0].vertices[3].bidx[0], 3u);       // Hair02, remapped
+}

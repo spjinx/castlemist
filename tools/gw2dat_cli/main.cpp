@@ -20,6 +20,8 @@
 //            [--dat <path> [--index <db>]] rebuilds a missing content map first
 //   character-export --manifest <json> --dat <path> --out <dir> [--index <db>]
 //            -- one .glb per equipped piece (race model, dyes baked), plus a report
+//   character-vrchat --manifest <json> --dat <path> --out <dir> [--weapons ..] [--blender <exe>]
+//            -- VRChat avatar (.glb + .fbx via Blender + setup notes), with the saved look
 //   palette  [--id N] [--dat <path>]   -- colour palettes (character creator colours)
 //   look-options --race R --gender G --dat <path>   -- faces, hair styles, skin/hair colours
 //   look-set --character NAME [--face N] [--hair N] [--skin-color ID] [--hair-color ID]
@@ -69,6 +71,7 @@
 #include "castlemist/db/index_db.h"
 #include "castlemist/ripper/assemble.h"
 #include "castlemist/ripper/look.h"
+#include "castlemist/ripper/vrchat.h"
 #include "castlemist/ripper/character_export.h"
 
 #ifndef NOMINMAX
@@ -1996,6 +1999,36 @@ void cmd_character_assemble(const Args& a) {
     emit(j);
 }
 
+// VRChat avatar: character-vrchat --manifest m --dat d --out <dir> [--weapons
+// stowed|hands|none (default none)] [--blender <blender.exe>] -- the saved look,
+// one combined model in metres with humanoid bone names, face keys and
+// visemes; Blender (found or given) turns it into an .fbx for Unity.
+void cmd_character_vrchat(const Args& a) {
+    namespace rp = castlemist::ripper;
+    namespace ch = castlemist::character;
+    ch::CharacterManifest m = read_manifest(a);
+    rp::AssemblyOptions opt;
+    opt.weapons = rp::WeaponPlacement::None;
+    if (has(a, "weapons")) {
+        const std::string w = a.at("weapons");
+        opt.weapons = w == "stowed" ? rp::WeaponPlacement::Stowed : w == "hands" ? rp::WeaponPlacement::Hands
+                                                                                  : rp::WeaponPlacement::None;
+    }
+    open_index(a);
+    ch::LookStore store;
+    std::string err;
+    ch::CharacterLook look;
+    if (store.load(ch::default_look_file(), &err)) look = store.get(m.name).value_or(ch::CharacterLook{});
+    ensure_cmap(a);
+    rp::apply_look(opt, look, m.race, m.gender);
+    rp::VrchatOptions vo;
+    if (has(a, "blender")) vo.blender_exe = utf8_arg("--blender");
+    rp::VrchatReport r = rp::export_vrchat(m, need(a, "dat"), utf8_arg("--out"), opt, vo);
+    if (!r.ok) fail(r.error);
+    emit({{"ok", true}, {"glb", r.glb}, {"fbx", r.fbx}, {"notes", r.notes}, {"blender", r.blender},
+          {"joints", r.joints}, {"physbone_chains", r.physbone_chains}});
+}
+
 // What a race can look like: face / hair style counts and its skin and hair
 // palettes with swatch colours (needs the content map for the colours).
 void cmd_look_options(const Args& a) {
@@ -2190,6 +2223,7 @@ int main(int argc, char** argv) {
         else if (cmd == "look-options") cmd_look_options(a);
         else if (cmd == "look-set") cmd_look_set(a);
         else if (cmd == "look-thumbs") cmd_look_thumbs(a);
+        else if (cmd == "character-vrchat") cmd_character_vrchat(a);
         else if (cmd == "character") cmd_character(a);
         else if (cmd == "character-export") cmd_character_export(a);
         else if (cmd == "character-assemble") cmd_character_assemble(a);

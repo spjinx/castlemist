@@ -47,6 +47,9 @@ struct AssemblyOptions {
     /// rig moves; `face_sliders` (name -> 0..1) sets their default weights.
     bool face_morphs = true;
     std::map<std::string, float> face_sliders;
+    /// VRChat preparation (ripper/vrchat.h make_vrchat_ready) before writing
+    /// the combined file: face keys, meshes merged, humanoid bone names.
+    bool vrchat = false;
 };
 
 struct AssemblyPart {
@@ -62,6 +65,7 @@ struct AssemblyReport {
     std::string error;
     std::vector<AssemblyPart> parts;
     size_t joints = 0;
+    std::vector<std::string> physbone_chains;  // vrchat: chain roots for VRC PhysBones
 };
 
 /// Combined: the whole character as ONE rigged .glb. Bare-body parts under
