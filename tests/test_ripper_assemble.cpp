@@ -14,6 +14,7 @@
 #include <iterator>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <vector>
 
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
@@ -212,4 +213,29 @@ CM_TEST(assemble, separate_mode_writes_a_body_and_pieces_on_one_skeleton) {
     CHECK(body.size() >= 153);
     CHECK(joint_names(glb_json(dir / "01_Coat_Angler_Vest.glb")) == body);
     CHECK(joint_names(glb_json(dir / "03_WeaponA1_Holographic_Dawn.glb")) == body);
+}
+
+CM_TEST(assemble, holsters_spread_the_whole_kit) {
+    // Musa Blossom's kit: greatsword, axe, torch, spear, trident.
+    const std::vector<std::string> slots = {"WeaponA1", "WeaponB1", "WeaponB2", "WeaponAquaticA", "WeaponAquaticB"};
+    const std::vector<std::vector<std::string>> stows = {
+        {"actionpoint:RStowBack"},
+        {"actionpoint:LStowHip", "actionpoint:RStowHip"},
+        {"actionpoint:RStowHip"},
+        {"actionpoint:LStowBack", "actionpoint:RStowBack"},
+        {"actionpoint:LStowBack", "actionpoint:RStowBack"}};
+    const std::vector<std::string> h = choose_holsters(slots, stows);
+    CHECK_EQ(h[0], std::string("actionpoint:RStowBack"));
+    CHECK_EQ(h[1], std::string("actionpoint:LStowHip"));  // the torch can only go right
+    CHECK_EQ(h[2], std::string("actionpoint:RStowHip"));
+    CHECK_EQ(h[3], std::string("actionpoint:LStowBack"));
+    CHECK(!h[4].empty());  // no holster left: shares one
+}
+
+CM_TEST(assemble, holsters_main_hand_right_off_hand_left) {
+    const std::vector<std::string> both = {"actionpoint:LStowHip", "actionpoint:RStowHip"};
+    const std::vector<std::string> h = choose_holsters({"WeaponA1", "WeaponA2"}, {both, both});
+    CHECK_EQ(h[0], std::string("actionpoint:RStowHip"));
+    CHECK_EQ(h[1], std::string("actionpoint:LStowHip"));
+    CHECK(choose_holsters({"WeaponB1"}, {{}})[0].empty());  // no stow point
 }

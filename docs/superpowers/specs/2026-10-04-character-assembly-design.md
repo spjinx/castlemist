@@ -98,6 +98,13 @@ ONTO it, unless I say I want it combined."
   `actionpoint:CStowBack` onto the body's `actionpoint:CHolsterBack` -- but
   keep their bones (`attach_skinned`), re-parented under the holster so they
   stay animatable. Back items skinned to body bones (capes) still merge by name.
+- **The whole weapon kit** (A1, A2, B1, B2, AquaticA, AquaticB) is exported,
+  superseding "only weapon set A". Holsters are chosen once for all outputs
+  (`choose_holsters`): as many weapons as possible on a holster of their own,
+  ties to earlier slots, then main hands right / off-hands left. A weapon left
+  with only a shared holster still gets its file in separate mode; combined
+  leaves it out (reported) rather than clip two weapons together. With
+  `weapons=hands`, set A goes in the hands and the rest are stowed.
 - **Dark face / black skin fix:** the glTF writer de-duplicated textures by dat
   fileId, and both baked atlases carried fileId 0, so the normal map slot got
   the diffuse atlas. Generated (fileId 0) textures are never shared now.

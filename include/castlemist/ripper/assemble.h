@@ -44,7 +44,8 @@ struct AssemblyReport {
 };
 
 /// Combined: the whole character as ONE rigged .glb. Bare-body parts under
-/// armor and hair strands under a helm are left out. Opens its own handle on
+/// armor and hair strands under a helm are left out; every weapon of the kit
+/// sits on its own holster (one with no free holster is left out). Opens its own handle on
 /// the dat (safe on a worker thread). `glb_path` is UTF-8.
 AssemblyReport assemble_character(const character::CharacterManifest& manifest, const std::string& dat_path,
                                   const std::string& glb_path, const AssemblyOptions& options = {});
@@ -52,12 +53,26 @@ AssemblyReport assemble_character(const character::CharacterManifest& manifest, 
 /// Separate: a folder holding `body.glb` (the full bare body + head, nothing
 /// hidden) and one .glb per armor piece, back item and weapon, every file on
 /// the same full race skeleton with the same root, so each piece fits onto the
-/// body. `out_dir` is UTF-8; files are named NN_<Slot>_<skin name>.glb.
+/// body. Every weapon of the kit gets a file, on its holster. `out_dir` is UTF-8; files are named NN_<Slot>_<skin name>.glb.
 AssemblyReport assemble_character_separate(const character::CharacterManifest& manifest,
                                            const std::string& dat_path, const std::string& out_dir,
                                            const AssemblyOptions& options = {});
 
 const char* to_string(WeaponPlacement w);
+
+/// Every weapon slot of the kit, in placement priority: the active set, the
+/// second set, then the underwater weapons.
+extern const char* const kWeaponSlots[6];
+
+/// Picks a body holster for each stowed weapon. `stow_joints[i]` are weapon
+/// i's own stow points ("actionpoint:RStowBack", ...), weapons in priority
+/// order (`slots[i]` names them, e.g. "WeaponB2"). Maximises the weapons on a
+/// holster of their own; ties favour earlier slots, then main hands (x1,
+/// AquaticA) on the right and off-hands (x2, AquaticB) on the left. Returns the
+/// chosen weapon stow joint per weapon ("" = it has none); a weapon that could
+/// only share gets the same holster as an earlier one.
+std::vector<std::string> choose_holsters(const std::vector<std::string>& slots,
+                                         const std::vector<std::vector<std::string>>& stow_joints);
 
 } // namespace castlemist::ripper
 

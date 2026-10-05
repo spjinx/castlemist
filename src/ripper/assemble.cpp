@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <exception>
 #include <filesystem>
+#include <iterator>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -99,11 +101,59 @@ struct Context {
     std::string race_key;
     ModelPreview skeleton;  // the race skeleton alone (no meshes), seeding every output
 
+    // Every weapon of the kit, loaded once and placed once for all outputs (so
+    // separate files don't stack two weapons on one holster).
+    struct Weapon {
+        const ManifestPiece* piece = nullptr;
+        std::optional<ModelPreview> model;
+        std::optional<AttachPair> at;
+        std::string shares;  // the earlier slot already on that holster
+    };
+    std::map<std::string, Weapon> weapons;
+
     const composite::CompositeFileData* entry(uint64_t token) const {
         auto it = race->file_data.find(token);
         return it == race->file_data.end() ? nullptr : &it->second;
     }
 };
+
+// Loads every weapon of the kit and gives each its attach point: the active
+// set in the hands when asked, the rest spread over the holsters.
+void plan_weapons(Context& ctx, const CharacterManifest& manifest, const AssemblyOptions& opt) {
+    std::vector<std::string> stowed_slots;
+    std::vector<std::vector<std::string>> stow_joints;
+    for (const char* slot : kWeaponSlots) {
+        const ManifestPiece* piece = find_slot(manifest, slot);
+        if (!piece || piece->file_ids.empty()) continue;
+        Context::Weapon& w = ctx.weapons[slot];
+        w.piece = piece;
+        if (opt.weapons == WeaponPlacement::None) continue;
+        w.model = detail::load_model(ctx.dat, piece->file_ids[0]);
+        if (!w.model) continue;
+        const std::string s = slot;
+        if (opt.weapons == WeaponPlacement::Hands && (s == "WeaponA1" || s == "WeaponA2")) {
+            const AttachPair hand = s == "WeaponA2" ? kLeftHand : kRightHand;
+            if (has_joint(*w.model, hand.weapon)) w.at = hand;
+            else if (has_joint(*w.model, kRightHand.weapon)) w.at = kRightHand;  // off-hands often only carry RGripHand
+            if (w.at) continue;
+        }
+        std::vector<std::string> own;
+        for (const AttachPair& p : kStow)
+            if (has_joint(*w.model, p.weapon)) own.push_back(p.weapon);
+        stowed_slots.push_back(s);
+        stow_joints.push_back(std::move(own));
+    }
+    const std::vector<std::string> chosen = choose_holsters(stowed_slots, stow_joints);
+    std::map<std::string, std::string> holder;  // body holster -> first slot on it
+    for (size_t i = 0; i < stowed_slots.size(); ++i) {
+        Context::Weapon& w = ctx.weapons[stowed_slots[i]];
+        for (const AttachPair& p : kStow)
+            if (chosen[i] == p.weapon) w.at = p;
+        if (!w.at) continue;
+        auto [it, fresh] = holder.emplace(w.at->body, stowed_slots[i]);
+        if (!fresh) w.shares = it->second;
+    }
+}
 
 std::unique_ptr<Context> open_context(const CharacterManifest& manifest, const std::string& dat_path,
                                       const AssemblyOptions& opt, AssemblyReport& rep) {
@@ -141,6 +191,7 @@ std::unique_ptr<Context> open_context(const CharacterManifest& manifest, const s
         rep.error = "the race skeleton could not be loaded";
         return nullptr;
     }
+    plan_weapons(*ctx, manifest, opt);
     return ctx;
 }
 
@@ -154,6 +205,7 @@ struct Selection {
     std::set<std::string> worn;               // every armor slot the character wears
     bool back = false;
     std::vector<std::string> weapons;         // slots
+    bool drop_shared_holster = false;         // combined: no two weapons on one holster
     std::string file;                         // separate mode: recorded on the report's parts
 };
 
@@ -321,30 +373,24 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
 
     // ---- weapons ----------------------------------------------------------------------
     for (const std::string& slot : sel.weapons) {
-        const ManifestPiece* w = find_slot(manifest, slot);
-        if (!w || w->file_ids.empty()) continue;
+        auto it = ctx.weapons.find(slot);
+        if (it == ctx.weapons.end()) continue;
+        const Context::Weapon& w = it->second;
+        const uint32_t file = w.piece->file_ids[0];
         if (opt.weapons == WeaponPlacement::None) {
-            report(slot, "dropped", "weapons: none", w->file_ids[0]);
-            continue;
+            report(slot, "dropped", "weapons: none", file);
+        } else if (!w.model) {
+            report(slot, "dropped", "model failed to load", file);
+        } else if (!w.at) {
+            report(slot, "dropped", "no matching attach point", file);
+        } else if (!w.shares.empty() && sel.drop_shared_holster) {
+            report(slot, "dropped", std::string(w.at->body) + " is taken by " + w.shares, file);
+        } else if (attach_rigid(out, *w.model, w.at->weapon, w.at->body)) {
+            report(slot, "used", std::string("on ") + w.at->body + (w.shares.empty() ? "" : " (shared with " + w.shares + ")"),
+                   file);
+        } else {
+            report(slot, "dropped", "no matching attach point", file);
         }
-        std::optional<ModelPreview> m = detail::load_model(ctx.dat, w->file_ids[0]);
-        if (!m) {
-            report(slot, "dropped", "model failed to load", w->file_ids[0]);
-            continue;
-        }
-        std::optional<AttachPair> at;
-        if (opt.weapons == WeaponPlacement::Hands) {
-            const AttachPair hand = slot == "WeaponA2" ? kLeftHand : kRightHand;
-            if (has_joint(*m, hand.weapon)) at = hand;
-            else if (has_joint(*m, kRightHand.weapon)) at = kRightHand;  // off-hands often only carry RGripHand
-        }
-        if (!at)
-            for (const AttachPair& p : kStow)
-                if (has_joint(*m, p.weapon)) { at = p; break; }
-        if (at && attach_rigid(out, *m, at->weapon, at->body))
-            report(slot, "used", std::string("on ") + at->body, w->file_ids[0]);
-        else
-            report(slot, "dropped", "no matching attach point", w->file_ids[0]);
     }
     return out;
 }
@@ -379,6 +425,52 @@ std::vector<const ManifestPiece*> armor_pieces(const CharacterManifest& m) {
 
 } // namespace
 
+const char* const kWeaponSlots[6] = {"WeaponA1", "WeaponA2", "WeaponB1", "WeaponB2", "WeaponAquaticA", "WeaponAquaticB"};
+
+std::vector<std::string> choose_holsters(const std::vector<std::string>& slots,
+                                         const std::vector<std::vector<std::string>>& stow_joints) {
+    // The body holster a weapon stow joint goes to.
+    auto holster = [](const std::string& joint) -> std::string {
+        for (const AttachPair& p : kStow)
+            if (joint == p.weapon) return p.body;
+        return joint;
+    };
+    auto off_hand = [](const std::string& slot) { return slot.back() == '2' || slot.back() == 'B'; };
+    const size_t n = slots.size();
+    std::vector<size_t> pick(n, 0), best;
+    long best_score = -1;
+    // At most 6 weapons x 4 stow points: try every assignment.
+    while (true) {
+        long unshared = 0, priority = 0, side = 0;
+        std::set<std::string> taken;
+        for (size_t i = 0; i < n; ++i) {
+            if (stow_joints[i].empty()) continue;
+            const std::string& j = stow_joints[i][pick[i]];
+            if (taken.insert(holster(j)).second) {
+                ++unshared;
+                priority += 1L << (n - i);
+            }
+            const bool right = j.rfind("actionpoint:R", 0) == 0;
+            side += right != off_hand(slots[i]);
+        }
+        const long score = unshared * 1000000 + priority * 100 + side;
+        if (score > best_score) {
+            best_score = score;
+            best = pick;
+        }
+        size_t i = 0;
+        for (; i < n; ++i) {
+            if (++pick[i] < std::max<size_t>(stow_joints[i].size(), 1)) break;
+            pick[i] = 0;
+        }
+        if (i == n) break;
+    }
+    std::vector<std::string> out(n);
+    for (size_t i = 0; i < n; ++i)
+        if (!stow_joints[i].empty()) out[i] = stow_joints[i][best[i]];
+    return out;
+}
+
 const char* to_string(WeaponPlacement w) {
     switch (w) {
     case WeaponPlacement::Stowed: return "stowed";
@@ -397,7 +489,8 @@ AssemblyReport assemble_character(const CharacterManifest& manifest, const std::
     sel.armor = armor_pieces(manifest);
     sel.worn = worn_slots(*ctx, manifest);
     sel.back = true;
-    sel.weapons = {"WeaponA1", "WeaponA2"};
+    sel.weapons.assign(std::begin(kWeaponSlots), std::end(kWeaponSlots));
+    sel.drop_shared_holster = true;
     ModelPreview model = build(*ctx, manifest, opt, sel, rep);
     if (!write_glb(model, glb_path, opt, rep)) return rep;
     rep.joints = model.joints.size();
@@ -455,7 +548,7 @@ AssemblyReport assemble_character_separate(const CharacterManifest& manifest, co
         ModelPreview m = build(*ctx, manifest, opt, s, rep);
         if (!m.meshes.empty() && !write(m, s.file)) return rep;
     }
-    for (const char* slot : {"WeaponA1", "WeaponA2"}) {
+    for (const char* slot : kWeaponSlots) {
         const ManifestPiece* w = find_slot(manifest, slot);
         if (!w || w->file_ids.empty()) continue;
         Selection s;
