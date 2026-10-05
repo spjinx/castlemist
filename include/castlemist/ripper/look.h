@@ -54,9 +54,9 @@ std::array<uint8_t, 3> swatch_rgb(const cmap::Palette& palette, const cmap::Pale
 /// GW2 wiki's lists, matched to the palettes (see color_names.inc).
 std::string color_name(uint32_t color_id);
 
-/// Puts `look` into assembly options: face and hair style indices, and the skin
-/// and hair colours resolved through the race's palettes (a colour the content
-/// map doesn't know is left untinted).
+/// Puts `look` into assembly options: face, hair style, ears and pattern
+/// indices, and the skin / hair / eye / pattern / glow colours resolved through
+/// the race's palettes (a colour the content map doesn't know is left untinted).
 void apply_look(AssemblyOptions& options, const character::CharacterLook& look, const std::string& race,
                 const std::string& gender);
 

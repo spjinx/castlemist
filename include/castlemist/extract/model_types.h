@@ -100,6 +100,7 @@ struct ModelMaterialCPU {
     int kind = 0;                         ///< 0 normal, 1 terrain, 2 water (procedural shading).
     int diffuseTex = -1;                  ///< Index into ModelPreview::textures (-1 = none).
     int normalTex = -1;                   ///< Index into ModelPreview::textures (-1 = none).
+    int emissiveTex = -1;                 ///< Index into ModelPreview::textures (-1 = none): a baked glow.
     /// @brief Which UV channel (GVertex.u/v = 0, .uv1[c-1] = c) diffuseTex/normalTex
     ///        actually sample -- MatTexture::uvIndex (gw2model.hpp), carried through
     ///        from whichever raw texture entry was picked as each of those. Almost

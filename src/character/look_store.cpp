@@ -40,6 +40,12 @@ bool LookStore::load(const fs::path& file, std::string* error) {
         look.skin_color = l.value("skin_color", 0u);
         look.hair_color = l.value("hair_color", 0u);
         look.hair_color2 = l.value("hair_color2", 0u);
+        look.ears = l.value("ears", 0);
+        look.eye_color = l.value("eye_color", 0u);
+        look.pattern = l.value("pattern", -1);
+        look.pattern_color = l.value("pattern_color", 0u);
+        look.glow_color = l.value("glow_color", 0u);
+        look.glow_intensity = l.value("glow_intensity", 1.0f);
         parsed[name] = look;
     }
     looks_ = std::move(parsed);
@@ -53,7 +59,13 @@ bool LookStore::save(const fs::path& file, std::string* error) const {
                        {"hair", l.hair},
                        {"skin_color", l.skin_color},
                        {"hair_color", l.hair_color},
-                       {"hair_color2", l.hair_color2}};
+                       {"hair_color2", l.hair_color2},
+                       {"ears", l.ears},
+                       {"eye_color", l.eye_color},
+                       {"pattern", l.pattern},
+                       {"pattern_color", l.pattern_color},
+                       {"glow_color", l.glow_color},
+                       {"glow_intensity", l.glow_intensity}};
     std::ofstream f(file, std::ios::binary | std::ios::trunc);
     if (!f) {
         if (error) *error = "cannot write " + file.string();

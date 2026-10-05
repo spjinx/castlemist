@@ -108,6 +108,13 @@ std::vector<int> write_materials(GltfWriter& w, const ModelPreview& model, const
             }
         }
 
+        // A baked glow (e.g. a sylvari's pattern glow) rides on its own texture.
+        if (mat.emissiveTex >= 0 && mat.emissiveTex < static_cast<int>(texIndices.size()) &&
+            texIndices[static_cast<size_t>(mat.emissiveTex)] >= 0) {
+            material["emissiveTexture"] = {{"index", texIndices[static_cast<size_t>(mat.emissiveTex)]}};
+            material["emissiveFactor"] = {1.0, 1.0, 1.0};
+        }
+
         // Every named MODL material constant this codebase doesn't already
         // map to a real glTF property (glow, sss, scroll speed, the raw
         // specpwr/specstr behind the roughness approximation above, ...),

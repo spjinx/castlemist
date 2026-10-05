@@ -7,6 +7,7 @@
 // texture atlas rebuilt the way the game composites it (dyes baked in).
 // docs/superpowers/specs/2026-10-04-character-assembly-design.md
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -32,6 +33,13 @@ struct AssemblyOptions {
     /// scalp around the hair; hair_tint the hair's first dye channel,
     /// hair_tint2 its second. None = as the texture is authored.
     std::optional<character::DyeShift> skin_tint, hair_tint, hair_tint2;
+    int ears = 0;                                // index into the race's ears
+    std::optional<character::DyeShift> eye_tint;  // the iris (sylvari: the face's cut mask)
+    int pattern = -1;                            // index into the race's skin patterns; -1 = none
+    std::optional<character::DyeShift> pattern_tint;
+    /// Glow (sylvari): the pattern lit in this colour, as an emissive texture.
+    std::optional<std::array<uint8_t, 3>> glow_rgb;
+    float glow_intensity = 1;
 };
 
 struct AssemblyPart {

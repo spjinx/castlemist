@@ -22,6 +22,12 @@ struct CharacterLook {
     uint32_t skin_color = 0;    // colour id in the race's skin palette
     uint32_t hair_color = 0;    // colour id in the race's hair palette
     uint32_t hair_color2 = 0;   // the hair's second dye channel; 0 = same as hair_color
+    int ears = 0;               // index into the race's ears
+    uint32_t eye_color = 0;     // colour id in the race's eye palette
+    int pattern = -1;           // index into the race's skin patterns; -1 = none
+    uint32_t pattern_color = 0; // colour id in the race's pattern palette
+    uint32_t glow_color = 0;    // sylvari: colour id in the glow palette; 0 = no glow
+    float glow_intensity = 1;   // 0..1
 
     bool operator==(const CharacterLook&) const = default;
 };

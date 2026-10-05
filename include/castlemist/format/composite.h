@@ -53,6 +53,10 @@ struct CompositeRace {
     std::vector<uint64_t> faces;        // type 5 entries (face + eyes)
     std::vector<uint64_t> hair_styles;  // type 6 entries
     std::vector<uint64_t> ears;         // type 7 entries
+    /// Skin patterns (sylvari patterns, norn tattoos, ...): per pattern one
+    /// greyscale mask fileId per bare part, each in that part's own texture
+    /// space -- {chest, face, feet, hands, legs, ears}.
+    std::vector<std::array<uint32_t, 6>> skin_patterns;
 };
 
 struct Composite {

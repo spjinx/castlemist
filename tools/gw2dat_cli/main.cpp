@@ -23,7 +23,8 @@
 //   palette  [--id N] [--dat <path>]   -- colour palettes (character creator colours)
 //   look-options --race R --gender G --dat <path>   -- faces, hair styles, skin/hair colours
 //   look-set --character NAME [--face N] [--hair N] [--skin-color ID] [--hair-color ID]
-//            [--hair-color2 ID] [--remove]   -- saves the look character-assemble applies
+//            [--hair-color2 ID] [--ears N] [--eye-color ID] [--pattern N] [--pattern-color ID]
+//            [--glow-color ID] [--glow-intensity 0..1] [--remove]   -- saves the look character-assemble applies
 //   cntc-dump --dat <path> --out-dir <dir>   -- research: every content pack, decompressed
 //   character-assemble --manifest <json> --dat <path> --out <dir | file.glb with --combined>
 //            [--combined] [--weapons stowed|hands|none] [--face N] [--hair N] [--metres] [--index <db>]
@@ -1926,9 +1927,17 @@ void cmd_character_assemble(const Args& a) {
     if (has(a, "skin-color")) look.skin_color = static_cast<uint32_t>(to_u64(a.at("skin-color")));
     if (has(a, "hair-color")) look.hair_color = static_cast<uint32_t>(to_u64(a.at("hair-color")));
     if (has(a, "hair-color2")) look.hair_color2 = static_cast<uint32_t>(to_u64(a.at("hair-color2")));
+    if (has(a, "ears")) look.ears = static_cast<int>(to_u64(a.at("ears")));
+    if (has(a, "eye-color")) look.eye_color = static_cast<uint32_t>(to_u64(a.at("eye-color")));
+    if (has(a, "pattern")) look.pattern = std::stoi(a.at("pattern"));
+    if (has(a, "pattern-color")) look.pattern_color = static_cast<uint32_t>(to_u64(a.at("pattern-color")));
+    if (has(a, "glow-color")) look.glow_color = static_cast<uint32_t>(to_u64(a.at("glow-color")));
+    if (has(a, "glow-intensity")) look.glow_intensity = std::stof(a.at("glow-intensity"));
     opt.metres = has(a, "metres");
     open_index(a);
-    if (look.skin_color || look.hair_color || look.hair_color2) ensure_cmap(a);  // the palettes
+    if (look.skin_color || look.hair_color || look.hair_color2 || look.eye_color || look.pattern_color ||
+        look.glow_color)
+        ensure_cmap(a);  // the palettes
     rp::apply_look(opt, look, m.race, m.gender);
     if (look.skin_color && !opt.skin_tint) fail("skin colour " + std::to_string(look.skin_color) + " is not in the " + m.race + " skin palette (or the content map is missing)");
     if (look.hair_color && !opt.hair_tint) fail("hair colour " + std::to_string(look.hair_color) + " is not in the " + m.race + " hair palette (or the content map is missing)");
@@ -1947,7 +1956,9 @@ void cmd_character_assemble(const Args& a) {
     j["weapons"] = rp::to_string(opt.weapons);
     j["mode"] = combined ? "combined" : "separate";
     j["look"] = {{"saved", saved}, {"face", look.face}, {"hair", look.hair}, {"skin_color", look.skin_color},
-                 {"hair_color", look.hair_color}, {"hair_color2", look.hair_color2}};
+                 {"hair_color", look.hair_color}, {"hair_color2", look.hair_color2}, {"ears", look.ears},
+                 {"eye_color", look.eye_color}, {"pattern", look.pattern}, {"pattern_color", look.pattern_color},
+                 {"glow_color", look.glow_color}, {"glow_intensity", look.glow_intensity}};
     j["parts"] = parts;
     emit(j);
 }
@@ -2006,13 +2017,21 @@ void cmd_look_set(const Args& a) {
         if (has(a, "skin-color")) look.skin_color = static_cast<uint32_t>(to_u64(a.at("skin-color")));
         if (has(a, "hair-color")) look.hair_color = static_cast<uint32_t>(to_u64(a.at("hair-color")));
         if (has(a, "hair-color2")) look.hair_color2 = static_cast<uint32_t>(to_u64(a.at("hair-color2")));
+        if (has(a, "ears")) look.ears = static_cast<int>(to_u64(a.at("ears")));
+        if (has(a, "eye-color")) look.eye_color = static_cast<uint32_t>(to_u64(a.at("eye-color")));
+        if (has(a, "pattern")) look.pattern = std::stoi(a.at("pattern"));
+        if (has(a, "pattern-color")) look.pattern_color = static_cast<uint32_t>(to_u64(a.at("pattern-color")));
+        if (has(a, "glow-color")) look.glow_color = static_cast<uint32_t>(to_u64(a.at("glow-color")));
+        if (has(a, "glow-intensity")) look.glow_intensity = std::stof(a.at("glow-intensity"));
         store.set(name, look);
     }
     if (!store.save(ch::default_look_file(), &err)) fail(err);
     json j{{"ok", true}, {"file", ch::default_look_file().string()}};
     if (auto l = store.get(name))
-        j["look"] = {{"face", l->face}, {"hair", l->hair}, {"skin_color", l->skin_color},
-                     {"hair_color", l->hair_color}, {"hair_color2", l->hair_color2}};
+        j["look"] = {{"face", (*l).face}, {"hair", (*l).hair}, {"skin_color", (*l).skin_color},
+                 {"hair_color", (*l).hair_color}, {"hair_color2", (*l).hair_color2}, {"ears", (*l).ears},
+                 {"eye_color", (*l).eye_color}, {"pattern", (*l).pattern}, {"pattern_color", (*l).pattern_color},
+                 {"glow_color", (*l).glow_color}, {"glow_intensity", (*l).glow_intensity}};
     emit(j);
 }
 

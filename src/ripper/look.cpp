@@ -70,6 +70,24 @@ void apply_look(AssemblyOptions& options, const character::CharacterLook& look, 
     options.skin_tint = palette_shift(pal.skin, look.skin_color);
     options.hair_tint = palette_shift(pal.hair, look.hair_color);
     options.hair_tint2 = palette_shift(pal.hair, look.hair_color2 ? look.hair_color2 : look.hair_color);
+    options.ears = look.ears;
+    options.eye_tint = palette_shift(pal.eye, look.eye_color);
+    options.pattern = look.pattern;
+    options.pattern_tint = palette_shift(pal.pattern, look.pattern_color);
+    options.glow_rgb.reset();
+    options.glow_intensity = look.glow_intensity;
+    if (look.glow_color && pal.glow)
+        if (const cmap::Palette* p = cmap::palette(pal.glow))
+            for (const cmap::PaletteColor& c : p->colors)
+                if (c.id == look.glow_color) {
+                    // Glow swatches are dim (Banana = 5A3D00); the game adds the glow
+                    // boosted. Light it at full brightness, same hue.
+                    std::array<uint8_t, 3> rgb = swatch_rgb(*p, c);
+                    const int peak = std::max({rgb[0], rgb[1], rgb[2]});
+                    if (peak > 0)
+                        for (uint8_t& v : rgb) v = static_cast<uint8_t>(v * 255 / peak);
+                    options.glow_rgb = rgb;
+                }
 }
 
 } // namespace castlemist::ripper

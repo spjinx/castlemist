@@ -18,6 +18,7 @@ constexpr size_t kRaceSkeleton = 140;
 constexpr size_t kRaceEars = 60;
 constexpr size_t kRaceFaces = 92;
 constexpr size_t kRaceHairStyles = 120;
+constexpr size_t kRaceSkinPatterns = 148;  // 48-byte records: 6 filerefs
 constexpr size_t kRaceSkinStyles = 176;  // {chest, feet, hands, legs} u64 each
 constexpr size_t kFileDataSize = 103;
 
@@ -140,6 +141,12 @@ std::optional<Composite> parse_composite(std::span<const uint8_t> d) {
         race.faces = tokens(kRaceFaces);
         race.hair_styles = tokens(kRaceHairStyles);
         race.ears = tokens(kRaceEars);
+        auto [npat, ppat] = r.arr(q + kRaceSkinPatterns, 48);
+        for (uint32_t k = 0; k < npat && r.ok; ++k) {
+            std::array<uint32_t, 6> files{};
+            for (size_t m = 0; m < 6; ++m) files[m] = r.fileref(ppat + 48 * k + 8 * m);
+            race.skin_patterns.push_back(files);
+        }
         auto [ns, ps] = r.arr(q + kRaceSkinStyles, 32);
         for (uint32_t k = 0; k < ns && r.ok; ++k)
             race.skin_styles.push_back({r.u64(ps + 32 * k), r.u64(ps + 32 * k + 8), r.u64(ps + 32 * k + 16),

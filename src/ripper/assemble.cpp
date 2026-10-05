@@ -13,6 +13,7 @@
 #include <set>
 
 #include "castlemist/exportgltf/gltf_export.h"
+#include "castlemist/extract/entry_extractor.h"
 #include "castlemist/ripper/character_export.h"
 #include "castlemist/ripper/dye.h"
 #include "castlemist/ripper/skeleton_merge.h"
@@ -36,6 +37,7 @@ struct Part {
     bool skin_meshes_are_part = false;     // body parts: their "skin" meshes ARE the part
     std::string hidden_reason;
     bool scalp_only = false;               // hair under a helm: keep its skin (scalp) meshes, drop the strands
+    int pattern_slot = -1;                 // which mask of a skin pattern is this part's (chest 0, face 1, ...)
 };
 
 bool is_armor(const ManifestPiece& p) {
@@ -230,7 +232,8 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
                 if (sel.body_meshes) report(names[k], "dropped", "no body part for " + ctx.race_key, 0);
                 continue;
             }
-            Part body{names[k], fd, nullptr, sel.body_meshes, true, {}};
+            constexpr int kPatternSlot[4] = {0, 2, 3, 4};  // chest, feet, hands, legs
+            Part body{names[k], fd, nullptr, sel.body_meshes, true, {}, false, kPatternSlot[k]};
             if (sel.body_meshes && sel.hide_body_under_armor && sel.worn.count(covered_by[k])) {
                 body.keep_mesh = false;
                 body.hidden_reason = std::string("under the ") + covered_by[k];
@@ -240,14 +243,14 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
         }
     }
     if (sel.head) {
-        auto head_part = [&](const char* name, const std::vector<uint64_t>& list, int index) {
+        auto head_part = [&](const char* name, const std::vector<uint64_t>& list, int index, int pattern_slot) {
             if (index < 0 || static_cast<size_t>(index) >= list.size()) return;
             if (const composite::CompositeFileData* fd = ctx.entry(list[static_cast<size_t>(index)]))
-                parts.push_back(Part{name, fd, nullptr, true, false, {}});
+                parts.push_back(Part{name, fd, nullptr, true, false, {}, false, pattern_slot});
         };
-        head_part("face", race->faces, opt.face);
-        head_part("ears", race->ears, 0);
-        head_part("hair", race->hair_styles, opt.hair);
+        head_part("face", race->faces, opt.face, 1);
+        head_part("ears", race->ears, opt.ears, 5);
+        head_part("hair", race->hair_styles, opt.hair, -1);
         if (sel.hair_under_helm_scalp_only && sel.worn.count("Helm") && !parts.empty() && parts.back().name == "hair")
             parts.back().scalp_only = true;
     }
@@ -271,6 +274,13 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
         normal.px[i + 3] = 255;
     }
     std::vector<size_t> atlas_meshes;  // indices into out.meshes that sample the atlas
+    // Glow: the pattern masks lit in the glow colour, on the same atlas layout.
+    const bool glowing = opt.glow_rgb && opt.glow_intensity > 0 && opt.pattern >= 0 &&
+                         static_cast<size_t>(opt.pattern) < race->skin_patterns.size();
+    ImageRgba emissive;
+    if (glowing) emissive = ImageRgba{kAtlas, kAtlas, std::vector<uint8_t>(static_cast<size_t>(kAtlas) * kAtlas * 4, 0)};
+    bool any_glow = false;
+    const bool sylvari = ctx.race_key.rfind("Sylvari", 0) == 0;
 
     for (const Part& part : parts) {
         std::optional<ModelPreview> model = detail::load_model(ctx.dat, part.fd->mesh_base);
@@ -295,8 +305,29 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
                     }
             }
         }
+        // A skin pattern rides on dye channel 1 (bare parts have no dye masks of
+        // their own), the iris on channel 2 (sylvari faces: the cut mask is it).
+        composite::CompositeFileData fd = *part.fd;
+        uint32_t pattern_mask = 0;
+        if (!part.piece && part.pattern_slot >= 0 && opt.pattern >= 0 &&
+            static_cast<size_t>(opt.pattern) < race->skin_patterns.size())
+            pattern_mask = race->skin_patterns[static_cast<size_t>(opt.pattern)][static_cast<size_t>(part.pattern_slot)];
+        if (pattern_mask && opt.pattern_tint) {
+            fd.mask_dye = {pattern_mask, 0, 0, 0};
+            character::ManifestDye d;
+            d.slot = 0;
+            d.shift = opt.pattern_tint;
+            look_dyes.push_back(d);
+        }
+        if (!part.piece && part.name == "face" && sylvari && opt.eye_tint && part.fd->mask_cut) {
+            fd.mask_dye[1] = part.fd->mask_cut;
+            character::ManifestDye d;
+            d.slot = 1;
+            d.shift = opt.eye_tint;
+            look_dyes.push_back(d);
+        }
         std::optional<detail::BakedTextures> baked =
-            detail::bake_part(ctx.dat, *part.fd, part.piece ? part.piece->dyes : look_dyes, skin);
+            detail::bake_part(ctx.dat, fd, part.piece ? part.piece->dyes : look_dyes, skin);
         if (!baked) {
             report(part.name, "dropped", "texture failed to decode", part.fd->mesh_base);
             continue;
@@ -321,6 +352,20 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
             blit(diffuse, detail::to_image(baked->base), region, baked->scale, mode);
             if (baked->normal && mode == BlitMode::Replace)
                 blit(normal, detail::to_image(*baked->normal), region, baked->normal_scale);
+            ModelTextureCPU mask;
+            if (glowing && pattern_mask && decode_texture_full(ctx.dat, pattern_mask, mask) && mask.width > 0) {
+                ImageRgba glow{mask.width, mask.height, std::vector<uint8_t>(mask.rgba.size())};
+                const float k = std::clamp(opt.glow_intensity, 0.0f, 1.0f) / 255.0f;
+                for (size_t t = 0; t + 3 < mask.rgba.size(); t += 4) {
+                    const float w = mask.rgba[t] * k;  // greyscale: R = G = B
+                    for (int c = 0; c < 3; ++c) glow.px[t + c] = static_cast<uint8_t>((*opt.glow_rgb)[c] * w + 0.5f);
+                    glow.px[t + 3] = 255;
+                }
+                // Same footprint as the part's texture: scale by the width ratio.
+                const float scale = baked->scale * static_cast<float>(baked->base.width) / static_cast<float>(mask.width);
+                blit(emissive, glow, region, scale);
+                any_glow = true;
+            }
         }
 
         if (!part.keep_mesh) {
@@ -364,6 +409,7 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
         mat.materialName = "CharacterAtlas";
         mat.diffuseTex = d;
         mat.normalTex = n;
+        if (any_glow) mat.emissiveTex = detail::add_texture(out, emissive, 0, false);
         out.materials.push_back(mat);
         for (size_t mi : atlas_meshes) out.meshes[mi].materialIndex = mat.index;
     }
