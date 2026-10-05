@@ -38,7 +38,8 @@ struct BakedTextures {
 // on the bare body, face, ears and scalp); none leaves them as authored.
 std::optional<BakedTextures> bake_part(Gw2Dat& dat, const composite::CompositeFileData& fd,
                                        const std::vector<character::ManifestDye>& dyes,
-                                       const std::optional<ColorMatrix>& rest = std::nullopt);
+                                       const std::optional<ColorMatrix>& rest = std::nullopt,
+                                       bool preview = false);  // reduced textures, no normal map (thumbnails)
 
 /// The mesh's material is the body skin ("Skin", "SylvariSkin1", ...).
 bool is_skin_mesh(const ModelPreview& m, const ModelMeshCPU& mesh);

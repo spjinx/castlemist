@@ -37,3 +37,32 @@ CM_TEST(look, eye_swatches_use_the_iris_red_when_the_palette_has_no_base) {
     castlemist::cmap::PaletteColor plain{1, {castlemist::cmap::ColorShift{}}};
     CHECK(swatch_rgb(eyes, plain) == (std::array<uint8_t, 3>{192, 0, 0}));
 }
+
+#include "castlemist/ripper/thumbnail.h"
+
+CM_TEST(look, thumbnail_draws_a_textured_front_facing_triangle) {
+    ModelPreview m;
+    ModelMeshCPU mesh;
+    auto vert = [](float x, float z) {
+        GVertex v{};
+        v.px = x; v.py = 0; v.pz = z;  // in the x/-z plane, facing the camera (-y)
+        v.ny = -1;
+        v.u = 0.5f; v.v = 0.5f;
+        return v;
+    };
+    mesh.vertices = {vert(-1, 1), vert(1, 1), vert(0, -1)};
+    mesh.indices = {0, 1, 2};
+    m.meshes.push_back(mesh);
+    ModelMaterialCPU mat;
+    mat.diffuseTex = 0;
+    m.materials.push_back(mat);
+    ModelTextureCPU tex;
+    tex.width = tex.height = 1;
+    tex.rgba = {200, 20, 20, 255};
+    m.textures.push_back(tex);
+    ImageRgba img = render_thumbnail(m, 32);
+    const uint8_t* c = img.px.data() + (16 * 32 + 16) * 4;  // the middle: inside the triangle
+    CHECK(c[0] > 100 && c[1] < 60);                          // textured red, lit
+    const uint8_t* corner = img.px.data();
+    CHECK_EQ(int(corner[0]), 118);                           // background
+}

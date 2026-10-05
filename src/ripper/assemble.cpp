@@ -17,6 +17,7 @@
 #include "castlemist/ripper/character_export.h"
 #include "castlemist/ripper/dye.h"
 #include "castlemist/ripper/skeleton_merge.h"
+#include "castlemist/ripper/thumbnail.h"
 #include "internal.h"
 
 namespace castlemist::ripper {
@@ -114,6 +115,17 @@ struct Context {
     };
     std::map<std::string, Weapon> weapons;
 
+    // Thumbnails (one look, many builds): bare parts' baked textures by token.
+    std::map<uint64_t, std::optional<detail::BakedTextures>> preview_bakes;
+
+    // Parts' models by fileId: thumbnails rebuild the same head many times.
+    std::map<uint32_t, std::optional<ModelPreview>> models;
+    std::optional<ModelPreview> model(uint32_t file_id) {
+        auto it = models.find(file_id);
+        if (it == models.end()) it = models.emplace(file_id, detail::load_model(dat, file_id)).first;
+        return it->second;
+    }
+
     const composite::CompositeFileData* entry(uint64_t token) const {
         auto it = race->file_data.find(token);
         return it == race->file_data.end() ? nullptr : &it->second;
@@ -200,6 +212,8 @@ std::unique_ptr<Context> open_context(const CharacterManifest& manifest, const s
 
 // What goes into one output file.
 struct Selection {
+    bool body_parts = true;             // false: no bare-body parts at all (head thumbnails)
+    bool preview = false;               // thumbnails: reduced textures, no normal maps
     bool body_meshes = true;            // false: bare-body textures only (armor skin patches need them)
     bool hide_body_under_armor = true;  // combined: drop the bare part an armor piece covers
     bool head = true;
@@ -222,7 +236,7 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
 
     // ---- the part list: body, head, armor ---------------------------------------
     std::vector<Part> parts;
-    if (opt.skin_style >= 0 && static_cast<size_t>(opt.skin_style) < race->skin_styles.size()) {
+    if (sel.body_parts && opt.skin_style >= 0 && static_cast<size_t>(opt.skin_style) < race->skin_styles.size()) {
         const auto& style = race->skin_styles[static_cast<size_t>(opt.skin_style)];
         const char* names[4] = {"body chest", "body feet", "body hands", "body legs"};
         const char* covered_by[4] = {"Coat", "Boots", "Gloves", "Leggings"};
@@ -266,7 +280,8 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
     // ---- textures into the atlas, meshes onto the skeleton -------------------------
     ModelPreview out = ctx.skeleton;
     ImageRgba diffuse{kAtlas, kAtlas, std::vector<uint8_t>(static_cast<size_t>(kAtlas) * kAtlas * 4, 0)};
-    ImageRgba normal{kAtlas, kAtlas, std::vector<uint8_t>(static_cast<size_t>(kAtlas) * kAtlas * 4, 0)};
+    ImageRgba normal;
+    if (!sel.preview) normal = ImageRgba{kAtlas, kAtlas, std::vector<uint8_t>(static_cast<size_t>(kAtlas) * kAtlas * 4, 0)};
     for (size_t i = 0; i < normal.px.size(); i += 4) {
         normal.px[i] = 128;
         normal.px[i + 1] = 128;
@@ -283,7 +298,7 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
     const bool sylvari = ctx.race_key.rfind("Sylvari", 0) == 0;
 
     for (const Part& part : parts) {
-        std::optional<ModelPreview> model = detail::load_model(ctx.dat, part.fd->mesh_base);
+        std::optional<ModelPreview> model = ctx.model(part.fd->mesh_base);
         if (!model) {
             report(part.name, "dropped", "model failed to load", part.fd->mesh_base);
             continue;
@@ -326,8 +341,15 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
             d.shift = opt.eye_tint;
             look_dyes.push_back(d);
         }
-        std::optional<detail::BakedTextures> baked =
-            detail::bake_part(ctx.dat, fd, part.piece ? part.piece->dyes : look_dyes, skin);
+        std::optional<detail::BakedTextures> baked;
+        if (sel.preview) {
+            auto it = ctx.preview_bakes.find(part.fd->token);
+            if (it == ctx.preview_bakes.end())
+                it = ctx.preview_bakes.emplace(part.fd->token, detail::bake_part(ctx.dat, fd, look_dyes, skin, true)).first;
+            baked = it->second;
+        } else {
+            baked = detail::bake_part(ctx.dat, fd, part.piece ? part.piece->dyes : look_dyes, skin);
+        }
         if (!baked) {
             report(part.name, "dropped", "texture failed to decode", part.fd->mesh_base);
             continue;
@@ -403,7 +425,7 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
     // One material for everything that samples the atlas.
     if (!atlas_meshes.empty()) {
         int d = detail::add_texture(out, diffuse, 0, false);
-        int n = detail::add_texture(out, normal, 0, true);
+        int n = sel.preview ? -1 : detail::add_texture(out, normal, 0, true);
         ModelMaterialCPU mat;
         mat.index = static_cast<uint32_t>(out.materials.size());
         mat.materialName = "CharacterAtlas";
@@ -487,6 +509,60 @@ std::vector<const ManifestPiece*> armor_pieces(const CharacterManifest& m) {
 }
 
 } // namespace
+
+std::vector<ImageRgba> look_thumbnails(const CharacterManifest& manifest, const std::string& dat_path, LookPart part,
+                                       const AssemblyOptions& options, int size, std::string* error) {
+    AssemblyReport rep;
+    AssemblyOptions opt = options;
+    opt.weapons = WeaponPlacement::None;
+    std::unique_ptr<Context> ctx = open_context(manifest, dat_path, opt, rep);
+    if (!ctx) {
+        if (error) *error = rep.error;
+        return {};
+    }
+    const std::vector<uint64_t>& list =
+        part == LookPart::Face ? ctx->race->faces : part == LookPart::Hair ? ctx->race->hair_styles : ctx->race->ears;
+    Selection sel;
+    sel.body_parts = false;
+    sel.preview = true;
+    sel.hair_under_helm_scalp_only = false;
+    std::vector<ImageRgba> out;
+    for (size_t i = 0; i < list.size(); ++i) {
+        (part == LookPart::Face ? opt.face : part == LookPart::Hair ? opt.hair : opt.ears) = static_cast<int>(i);
+        AssemblyReport r;
+        ModelPreview head = build(*ctx, manifest, opt, sel, r);
+        out.push_back(render_thumbnail(head, size));
+    }
+    return out;
+}
+
+std::vector<ImageRgba> pattern_thumbnails(const CharacterManifest& manifest, const std::string& dat_path,
+                                          std::array<uint8_t, 3> skin_rgb, std::array<uint8_t, 3> pattern_rgb, int size,
+                                          std::string* error) {
+    AssemblyReport rep;
+    AssemblyOptions opt;
+    opt.weapons = WeaponPlacement::None;
+    std::unique_ptr<Context> ctx = open_context(manifest, dat_path, opt, rep);
+    if (!ctx) {
+        if (error) *error = rep.error;
+        return {};
+    }
+    std::vector<ImageRgba> out;
+    for (const auto& files : ctx->race->skin_patterns) {
+        ModelTextureCPU mask;
+        ImageRgba img{size, size / 2, std::vector<uint8_t>(static_cast<size_t>(size) * (size / 2) * 4, 255)};
+        if (files[0] && decode_texture_full(ctx->dat, files[0], mask) && mask.width > 0) {
+            const ImageRgba m = resize_bilinear(ImageRgba{mask.width, mask.height, mask.rgba}, img.w, img.h);
+            for (size_t t = 0; t + 3 < img.px.size(); t += 4) {
+                const float w = m.px[t] / 255.0f;
+                for (int c = 0; c < 3; ++c)
+                    img.px[t + c] = static_cast<uint8_t>(skin_rgb[c] + (pattern_rgb[c] - skin_rgb[c]) * w + 0.5f);
+            }
+        }
+        out.push_back(std::move(img));
+    }
+    return out;
+}
 
 const char* const kWeaponSlots[6] = {"WeaponA1", "WeaponA2", "WeaponB1", "WeaponB2", "WeaponAquaticA", "WeaponAquaticB"};
 

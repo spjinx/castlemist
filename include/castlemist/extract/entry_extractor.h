@@ -208,6 +208,11 @@ bool decode_texture_rgba(Gw2Dat& dat, uint32_t file_id, ModelTextureCPU& out);
 ///        itself. `exact_width`, when given, receives the width of the entry
 ///        the fileId names, so the caller can tell the two apart.
 bool decode_texture_full(Gw2Dat& dat, uint32_t file_id, ModelTextureCPU& out, int* exact_width = nullptr);
+
+/// @brief The model at `file_id`, built against the already-open `dat` --
+///        unlike extract_entry(), which reopens (re-parses) the whole dat for
+///        every model it builds. nullptr if it isn't a model or fails to load.
+std::shared_ptr<ModelPreview> load_model_by_fileid(Gw2Dat& dat, uint32_t file_id);
 bool texture_full_res();              ///< Current preference.
 /// @}
 

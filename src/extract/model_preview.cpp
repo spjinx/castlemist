@@ -2,6 +2,7 @@
 /// @brief MODL packfile to renderable ModelPreview.
 
 #include "internal.h"
+#include "castlemist/extract/entry_extractor.h"
 
 #include <algorithm>
 #include <cmath>
@@ -13,6 +14,7 @@
 #include "castlemist/native/cmp_decompress_method0.hpp"
 #include "castlemist/core/packfile.h"
 #include "castlemist/core/text.h"
+#include "castlemist/format/struct_template.h"
 
 namespace castlemist::extract {
 
@@ -515,3 +517,12 @@ std::vector<uint8_t> load_modl_bytes_by_fileid(Gw2Dat& dat, uint32_t fileId) {
 // hasWaterZ/waterZ: the real water plane, parsed from PackMapCollideV16::
 
 } // namespace castlemist::extract
+
+// Public (entry_extractor.h, global namespace): a model against the open dat.
+std::shared_ptr<ModelPreview> load_model_by_fileid(Gw2Dat& dat, uint32_t file_id) {
+    auto tpl = castlemist::tpl::get_or_auto_load();
+    if (!tpl) return nullptr;
+    std::vector<uint8_t> bytes = castlemist::extract::load_modl_bytes_by_fileid(dat, file_id);
+    if (bytes.empty()) return nullptr;
+    return castlemist::extract::build_model_preview(bytes, dat, *tpl, /*want_game=*/true);
+}

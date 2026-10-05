@@ -20,15 +20,12 @@ bool alpha_cuts(const ImageRgba& im) {
 } // namespace
 
 std::optional<ModelPreview> load_model(Gw2Dat& dat, uint32_t file_id) {
-    uint32_t base = get_by_base_id(dat, file_id);
-    if (base == 0 || base > dat.mft_data_list.size()) return std::nullopt;
     try {
-        ExtractedEntry e = extract_entry(dat.file_info.file_path, dat.mft_data_list[base - 1]);
-        if (!e.model) return std::nullopt;
-        return *e.model;
+        // Against the open dat: extract_entry() would reopen it for every model.
+        if (auto m = load_model_by_fileid(dat, file_id)) return *m;
     } catch (const std::exception&) {
-        return std::nullopt;
     }
+    return std::nullopt;
 }
 
 ImageRgba to_image(const ModelTextureCPU& t) { return ImageRgba{t.width, t.height, t.rgba}; }
@@ -49,20 +46,26 @@ int add_texture(ModelPreview& m, const ImageRgba& im, uint32_t file_id, bool is_
 
 std::optional<BakedTextures> bake_part(Gw2Dat& dat, const composite::CompositeFileData& fd,
                                        const std::vector<character::ManifestDye>& manifest_dyes,
-                                       const std::optional<ColorMatrix>& rest) {
+                                       const std::optional<ColorMatrix>& rest, bool preview) {
     BakedTextures out;
     // The highest resolution GW2 ships: a texture's full-size copy when there is
     // one. The Composite names the reduced entry, which the atlas draws at 2x;
     // a copy twice that size draws at 1x.
     auto scale_of = [](int exact_w, int used_w) { return used_w > 0 && exact_w > 0 ? 2.0f * exact_w / used_w : 2.0f; };
     int exact_w = 0;
-    if (!decode_texture_full(dat, fd.texture_base, out.base, &exact_w)) return std::nullopt;
+    auto decode = [&](uint32_t id, ModelTextureCPU& t, int* w) {
+        if (!preview) return decode_texture_full(dat, id, t, w);
+        if (!decode_texture_rgba(dat, id, t)) return false;
+        if (w) *w = t.width;
+        return true;
+    };
+    if (!decode(fd.texture_base, out.base, &exact_w)) return std::nullopt;
     out.scale = scale_of(exact_w, out.base.width);
     std::array<ModelTextureCPU, 4> decoded;
     std::array<bool, 4> have{};
     int target_w = out.base.width, target_h = out.base.height;
     for (size_t i = 0; i < 4; ++i) {
-        if (!fd.mask_dye[i] || !decode_texture_full(dat, fd.mask_dye[i], decoded[i])) continue;
+        if (!fd.mask_dye[i] || !decode(fd.mask_dye[i], decoded[i], nullptr)) continue;
         have[i] = true;
         if (decoded[i].width > target_w) {  // a sharper mask: bake at its resolution
             target_w = decoded[i].width;
@@ -93,7 +96,7 @@ std::optional<BakedTextures> bake_part(Gw2Dat& dat, const composite::CompositeFi
         (mask_px[static_cast<size_t>(d.slot)] ? out.dyed : out.undyed)++;
     }
     bake_dyes(out.base.rgba, out.base.width, out.base.height, mask_px, dyes, rest);
-    if (fd.texture_normal) {
+    if (fd.texture_normal && !preview) {
         ModelTextureCPU n;
         int normal_exact_w = 0;
         if (decode_texture_full(dat, fd.texture_normal, n, &normal_exact_w)) {

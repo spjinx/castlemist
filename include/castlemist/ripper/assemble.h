@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "castlemist/character/manifest.h"
+#include "castlemist/ripper/atlas.h"
 
 namespace castlemist::ripper {
 
@@ -73,6 +74,22 @@ AssemblyReport assemble_character_separate(const character::CharacterManifest& m
                                            const AssemblyOptions& options = {});
 
 const char* to_string(WeaponPlacement w);
+
+enum class LookPart { Face, Hair, Ears };
+
+/// Front-view thumbnails of every face / hair style / ear option of the
+/// manifest's race: the head (face, ears, hair) in `options`' look with that
+/// one choice swapped, `size` px square, in option order. Empty + `*error` on
+/// failure. Slow-ish (one head build per option): run it off the UI thread.
+std::vector<ImageRgba> look_thumbnails(const character::CharacterManifest& manifest, const std::string& dat_path,
+                                       LookPart part, const AssemblyOptions& options, int size,
+                                       std::string* error = nullptr);
+
+/// One swatch per skin pattern of the race: its chest mask blended from
+/// `skin_rgb` (no pattern) to `pattern_rgb`, `size` px wide (2:1).
+std::vector<ImageRgba> pattern_thumbnails(const character::CharacterManifest& manifest, const std::string& dat_path,
+                                          std::array<uint8_t, 3> skin_rgb, std::array<uint8_t, 3> pattern_rgb,
+                                          int size, std::string* error = nullptr);
 
 /// Every weapon slot of the kit, in placement priority: the active set, the
 /// second set, then the underwater weapons.

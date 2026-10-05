@@ -1999,6 +1999,58 @@ void cmd_look_options(const Args& a) {
     emit(j);
 }
 
+// Picker thumbnails, as PNGs plus one contact sheet: look-thumbs --manifest m
+// --dat d --kind face|hair|ears|pattern --out dir [--size 128] (the character's
+// saved look supplies the colours).
+void cmd_look_thumbs(const Args& a) {
+    namespace rp = castlemist::ripper;
+    namespace ch = castlemist::character;
+    ch::CharacterManifest m = read_manifest(a);
+    const std::string kind = need(a, "kind");
+    const int size = has(a, "size") ? std::stoi(a.at("size")) : 128;
+    open_index(a);
+    ensure_cmap(a);
+    ch::LookStore store;
+    std::string err;
+    store.load(ch::default_look_file(), &err);
+    const ch::CharacterLook look = store.get(m.name).value_or(ch::CharacterLook{});
+    rp::AssemblyOptions opt;
+    rp::apply_look(opt, look, m.race, m.gender);
+    std::vector<rp::ImageRgba> imgs;
+    if (kind == "pattern") {
+        const rp::RacePalettes pal = rp::race_palettes(m.race, m.gender);
+        auto rgb_of = [](uint32_t palette, uint32_t id, std::array<uint8_t, 3> fallback) {
+            if (const castlemist::cmap::Palette* p = castlemist::cmap::palette(palette))
+                for (const auto& c : p->colors)
+                    if (c.id == id) return rp::swatch_rgb(*p, c);
+            return fallback;
+        };
+        imgs = rp::pattern_thumbnails(m, need(a, "dat"), rgb_of(pal.skin, look.skin_color, {200, 170, 130}),
+                                      rgb_of(pal.pattern, look.pattern_color, {40, 80, 40}), size, &err);
+    } else {
+        const rp::LookPart part = kind == "face" ? rp::LookPart::Face : kind == "hair" ? rp::LookPart::Hair
+                                : kind == "ears" ? rp::LookPart::Ears : (fail("--kind must be face, hair, ears or pattern"), rp::LookPart::Face);
+        imgs = rp::look_thumbnails(m, need(a, "dat"), part, opt, size, &err);
+    }
+    if (imgs.empty()) fail(err.empty() ? "no options" : err);
+    const std::filesystem::path dir = utf8_arg("--out");
+    std::filesystem::create_directories(dir);
+    const int cols = 8, cw = imgs[0].w, chh = imgs[0].h;
+    const int rows = static_cast<int>((imgs.size() + cols - 1) / cols);
+    std::vector<uint8_t> sheet(static_cast<size_t>(cols * cw) * rows * chh * 4, 0);
+    for (size_t i = 0; i < imgs.size(); ++i) {
+        const auto& im = imgs[i];
+        stbi_write_png((dir / (kind + "_" + std::to_string(i + 1) + ".png")).string().c_str(), im.w, im.h, 4,
+                       im.px.data(), im.w * 4);
+        const int ox = static_cast<int>(i % cols) * cw, oy = static_cast<int>(i / cols) * chh;
+        for (int y = 0; y < im.h; ++y)
+            std::copy_n(im.px.data() + static_cast<size_t>(y) * im.w * 4, im.w * 4,
+                        sheet.data() + (static_cast<size_t>(oy + y) * cols * cw + ox) * 4);
+    }
+    stbi_write_png((dir / (kind + "_sheet.png")).string().c_str(), cols * cw, rows * chh, 4, sheet.data(), cols * cw * 4);
+    emit({{"ok", true}, {"count", imgs.size()}, {"sheet", (dir / (kind + "_sheet.png")).string()}});
+}
+
 // Saves a character's look: look-set --character NAME [--face N] [--hair N]
 // [--skin-color ID] [--hair-color ID] [--hair-color2 ID] (unset fields keep
 // their saved value); --remove forgets it.
@@ -2093,6 +2145,7 @@ int main(int argc, char** argv) {
         else if (cmd == "palette") cmd_palette(a);
         else if (cmd == "look-options") cmd_look_options(a);
         else if (cmd == "look-set") cmd_look_set(a);
+        else if (cmd == "look-thumbs") cmd_look_thumbs(a);
         else if (cmd == "character") cmd_character(a);
         else if (cmd == "character-export") cmd_character_export(a);
         else if (cmd == "character-assemble") cmd_character_assemble(a);
