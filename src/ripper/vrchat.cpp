@@ -1,6 +1,8 @@
 #include "castlemist/ripper/vrchat.h"
 
 #include <algorithm>
+#include <array>
+#include <tuple>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -9,6 +11,7 @@
 
 #include "castlemist/character/key_store.h"
 #include "castlemist/ripper/face_morphs.h"
+#include "castlemist/ripper/skeleton_merge.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -27,12 +30,13 @@ std::string to_utf8(const fs::path& p) {
     return std::string(s.begin(), s.end());
 }
 
-// Meshes sharing a material and skinning become one: vertices appended,
-// indices offset, blend shapes unioned by name (zero where a part has none).
-void merge_meshes_by_material(ModelPreview& model) {
-    std::map<std::pair<uint32_t, bool>, std::vector<size_t>> groups;
+// Meshes of one avatar piece (meshName: Body, Hair, Coat, ...) sharing a
+// material and skinning become one: vertices appended, indices offset, blend
+// shapes unioned by name (zero where a part has none). Pieces stay apart.
+void merge_meshes_by_piece(ModelPreview& model) {
+    std::map<std::tuple<std::string, uint32_t, bool>, std::vector<size_t>> groups;
     for (size_t i = 0; i < model.meshes.size(); ++i)
-        groups[{model.meshes[i].materialIndex, model.meshes[i].hasSkin}].push_back(i);
+        groups[{model.meshes[i].meshName, model.meshes[i].materialIndex, model.meshes[i].hasSkin}].push_back(i);
     std::vector<ModelMeshCPU> merged;
     for (const auto& [key, idx] : groups) {
         if (idx.size() == 1) {
@@ -40,10 +44,10 @@ void merge_meshes_by_material(ModelPreview& model) {
             continue;
         }
         ModelMeshCPU out;
-        out.materialIndex = key.first;
-        out.hasSkin = key.second;
+        out.meshName = std::get<0>(key);
+        out.materialIndex = std::get<1>(key);
+        out.hasSkin = std::get<2>(key);
         out.hasTangents = true;
-        out.meshName = "merged";
         std::vector<std::string> names;  // union of blend shapes, first-seen order
         for (size_t i : idx)
             for (const MorphTargetCPU& t : model.meshes[i].morphs)
@@ -59,6 +63,7 @@ void merge_meshes_by_material(ModelPreview& model) {
         for (size_t i : idx) {
             ModelMeshCPU& m = model.meshes[i];
             out.hasTangents = out.hasTangents && m.hasTangents;
+            out.exportUv1 = out.exportUv1 || m.exportUv1;
             for (uint32_t ix : m.indices) out.indices.push_back(static_cast<uint32_t>(base + ix));
             for (const MorphTargetCPU& t : m.morphs) {
                 const size_t k = static_cast<size_t>(std::find(names.begin(), names.end(), t.name) - names.begin());
@@ -85,8 +90,13 @@ bool is_dynamic_name(const std::string& n) {
 std::string humanoid_name(const std::string& j) {
     static const std::unordered_map<std::string, std::string> map = [] {
         std::unordered_map<std::string, std::string> m = {
-            {"bone:COG", "Hips"}, {"bone:Spine01", "Spine"}, {"bone:Spine02", "Chest"},
-            {"bone:Spine03", "UpperChest"}, {"bone:Neck01", "Neck"}, {"bone:Head", "Head"}, {"bone:Jaw", "Jaw"},
+            // VRChat: the shoulders and neck must be direct children of the Chest,
+            // and GW2 hangs them on Spine03 -- so Spine03 is the Chest and Spine02
+            // folds into Spine (fold_joints).
+            {"bone:COG", "Hips"}, {"bone:Spine01", "Spine"}, {"bone:Spine03", "Chest"},
+            // bone:Jaw stays unmapped ("JawBone"): lip sync runs on the vrc.v_* blend
+            // shapes, and a humanoid Jaw would fight them.
+            {"bone:Neck01", "Neck"}, {"bone:Head", "Head"}, {"bone:Jaw", "JawBone"},
         };
         for (const char* side : {"L", "R"}) {
             const std::string s = side, u = s == "L" ? "Left" : "Right";
@@ -113,6 +123,71 @@ std::string humanoid_name(const std::string& j) {
 }
 
 namespace {
+
+int joint_index(const ModelPreview& m, const std::string& name) {
+    for (size_t i = 0; i < m.joints.size(); ++i)
+        if (m.joints[i].name == name) return static_cast<int>(i);
+    return -1;
+}
+
+// Re-derives a joint's bind local transform after its parent changed.
+void relocal(ModelPreview& m, size_t ji) {
+    const std::array<float, 7> l = local_from_bind(m, ji);
+    ModelJoint& j = m.joints[ji];
+    for (int k = 0; k < 3; ++k) j.localPos[k] = l[static_cast<size_t>(k)];
+    for (int k = 0; k < 4; ++k) j.localQuat[k] = l[static_cast<size_t>(3 + k)];
+    for (int k = 0; k < 9; ++k) j.localScale[k] = (k % 4 == 0) ? 1.0f : 0.0f;
+}
+
+// Removes joint `name`: its skin weight goes to its parent, its children hang
+// from that parent (bind pose unchanged). What CATS' "Fix Model" does for the
+// extra spine, pelvis and twist bones VRChat's IK trips over.
+void fold_joint(ModelPreview& m, const std::string& name) {
+    const int ji = joint_index(m, name);
+    if (ji < 0) return;
+    const int parent = m.joints[static_cast<size_t>(ji)].parent;
+    if (parent < 0) return;
+    for (ModelMeshCPU& mesh : m.meshes)
+        for (GVertex& v : mesh.vertices) {
+            for (int k = 0; k < 4; ++k)
+                if (v.bidx[k] == static_cast<uint32_t>(ji)) v.bidx[k] = static_cast<uint32_t>(parent);
+            for (int a = 0; a < 4; ++a)  // one bone, one slot
+                for (int b = a + 1; b < 4; ++b)
+                    if (v.bwt[b] > 0 && v.bidx[a] == v.bidx[b]) {
+                        v.bwt[a] += v.bwt[b];
+                        v.bwt[b] = 0;
+                    }
+        }
+    for (size_t c = 0; c < m.joints.size(); ++c)
+        if (m.joints[c].parent == ji) {
+            m.joints[c].parent = parent;
+            relocal(m, c);
+        }
+    // Erase it; shift every index past it.
+    m.joints.erase(m.joints.begin() + ji);
+    for (ModelJoint& j : m.joints)
+        if (j.parent > ji) --j.parent;
+    for (ModelMeshCPU& mesh : m.meshes)
+        for (GVertex& v : mesh.vertices)
+            for (int k = 0; k < 4; ++k)
+                if (v.bidx[k] > static_cast<uint32_t>(ji)) --v.bidx[k];
+}
+
+// The humanoid chain VRChat wants: Hips > Spine > Chest > (Neck, Shoulders),
+// Hips > UpperLeg, eyes straight under the Head, no twist bones in the arms.
+void fix_hierarchy(ModelPreview& m) {
+    for (const char* j : {"bone:Spine02", "bone:Pelvis", "bone:TwistElbowL", "bone:TwistElbowR", "bone:TwistWristL",
+                          "bone:TwistWristR"})
+        fold_joint(m, j);
+    const int head = joint_index(m, "bone:Head");
+    for (const char* eye : {"bone:EyeL", "bone:EyeR"}) {
+        const int e = joint_index(m, eye);
+        if (e >= 0 && head >= 0 && m.joints[static_cast<size_t>(e)].parent != head) {
+            m.joints[static_cast<size_t>(e)].parent = head;
+            relocal(m, static_cast<size_t>(e));
+        }
+    }
+}
 
 // Drops joints nothing needs: not humanoid, no skin weight, no kept child.
 void prune_joints(ModelPreview& model) {
@@ -149,7 +224,8 @@ void prune_joints(ModelPreview& model) {
 
 std::vector<std::string> make_vrchat_ready(ModelPreview& model) {
     add_vrchat_face_keys(model);
-    merge_meshes_by_material(model);
+    merge_meshes_by_piece(model);
+    fix_hierarchy(model);
     prune_joints(model);
     for (ModelMaterialCPU& m : model.materials) {  // "import2:AmatShader1" -> "AmatShader1"
         const size_t c = m.materialName.rfind(':');
@@ -304,7 +380,7 @@ VrchatReport export_vrchat(const character::CharacterManifest& manifest, const s
                                          : ".fbx  (import this into Unity; the .glb is the same avatar for Blender)\n")
       << "\nUnity (VRChat Creator Companion project, Avatars SDK)\n"
       << "  1. Drag the .fbx into Assets. Select it > Rig > Animation Type: Humanoid > Apply.\n"
-      << "     The bones are named for Unity's auto-mapper (Hips, Spine, Chest, UpperChest, Neck, Head,\n"
+      << "     The bones are named for Unity's auto-mapper (Hips, Spine, Chest, Neck, Head,\n"
       << "     LeftShoulder / LeftUpperArm / LeftLowerArm / LeftHand, LeftUpperLeg / LeftLowerLeg / LeftFoot /\n"
       << "     LeftToes, fingers, LeftEye / RightEye, Jaw). Configure... should show every bone green.\n"
       << "  2. Materials tab > Extract Textures, then give the materials Poiyomi (or VRChat/Mobile/Toon Lit).\n"

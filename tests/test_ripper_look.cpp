@@ -85,7 +85,8 @@ CM_TEST(look, views_stay_upright_and_unmirrored) {
 
 CM_TEST(vrchat, humanoid_names_follow_unity) {
     CHECK_EQ(humanoid_name("bone:COG"), std::string("Hips"));
-    CHECK_EQ(humanoid_name("bone:Spine03"), std::string("UpperChest"));
+    CHECK_EQ(humanoid_name("bone:Spine03"), std::string("Chest"));  // the shoulders' and neck's parent
+    CHECK(humanoid_name("bone:Spine02").empty());                   // folded into Spine
     CHECK_EQ(humanoid_name("bone:ShoulderL"), std::string("LeftUpperArm"));
     CHECK_EQ(humanoid_name("bone:KneeR"), std::string("RightLowerLeg"));
     CHECK_EQ(humanoid_name("bone:PinkyL02"), std::string("LeftLittleIntermediate"));

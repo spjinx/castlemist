@@ -62,6 +62,8 @@ std::vector<MeshExportInfo> write_meshes(GltfWriter& w, const ModelPreview& mode
             addChannel(mat.normalUv);
             for (const auto& ex : mat.extraTextures) addChannel(ex.uvIndex);
         }
+        if (mesh.exportUv1 && std::find(extraChannels.begin(), extraChannels.end(), uint8_t{1}) == extraChannels.end())
+            extraChannels.push_back(1);
         std::vector<std::vector<float>> extraUvs(extraChannels.size());
         for (auto& e : extraUvs) e.reserve(n * 2);
 

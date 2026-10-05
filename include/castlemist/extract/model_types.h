@@ -275,6 +275,9 @@ struct ModelMeshCPU {
     /// @brief Blend shapes (exported as glTF morph targets; Blender shape keys,
     ///        Unity blendshapes). Each delta has 3 floats per vertex.
     std::vector<MorphTargetCPU> morphs;
+    /// Export GVertex::uv1[0] as TEXCOORD_1 even when no material samples it
+    /// (the character ripper's VRChat export puts UV-tile-discard tiles there).
+    bool exportUv1 = false;
 };
 
 /// @brief One rig joint in bind pose.

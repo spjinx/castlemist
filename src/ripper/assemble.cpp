@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
@@ -228,6 +229,42 @@ struct Selection {
     std::string file;                         // separate mode: recorded on the report's parts
 };
 
+// VRChat: a bare-body part stays (nothing is dropped under armor) but can be
+// hidden two ways -- a "Hide <part>" blend shape that pulls it 1.5 cm inside
+// itself (on by default under worn armor), and a UV1 tile for Poiyomi's UV
+// Tile Discard (chest 1, legs 2, hands 3, feet row 2 tile 0; everything else
+// tile 0). Applies to meshes [first, end).
+void vrchat_body_part(ModelPreview& out, size_t first, const std::string& part, const std::set<std::string>& worn) {
+    struct Info { const char* part; const char* key; const char* covered_by; float tu, tv; };
+    static const Info kParts[] = {{"body chest", "Hide Chest", "Coat", 1, 0},
+                                  {"body legs", "Hide Legs", "Leggings", 2, 0},
+                                  {"body hands", "Hide Hands", "Gloves", 3, 0},
+                                  {"body feet", "Hide Feet", "Boots", 0, 1}};
+    const Info* info = nullptr;
+    for (const Info& i : kParts)
+        if (part == i.part) info = &i;
+    constexpr float kShrink = 0.6f;  // GW2 inches (~1.5 cm)
+    for (size_t mi = first; mi < out.meshes.size(); ++mi) {
+        ModelMeshCPU& mesh = out.meshes[mi];
+        mesh.exportUv1 = true;
+        for (GVertex& v : mesh.vertices) {
+            v.uv1[0][0] = v.u - std::floor(v.u) + (info ? info->tu : 0);
+            v.uv1[0][1] = v.v - std::floor(v.v) + (info ? info->tv : 0);
+        }
+        if (!info || !mesh.hasSkin) continue;
+        MorphTargetCPU t{info->key, std::vector<float>(mesh.vertices.size() * 3), worn.count(info->covered_by) ? 1.0f : 0.0f};
+        for (size_t vi = 0; vi < mesh.vertices.size(); ++vi) {
+            const GVertex& v = mesh.vertices[vi];
+            const float l = std::sqrt(v.nx * v.nx + v.ny * v.ny + v.nz * v.nz);
+            if (l < 1e-6f) continue;
+            t.delta[vi * 3] = -v.nx / l * kShrink;
+            t.delta[vi * 3 + 1] = -v.ny / l * kShrink;
+            t.delta[vi * 3 + 2] = -v.nz / l * kShrink;
+        }
+        mesh.morphs.push_back(std::move(t));
+    }
+}
+
 // Builds one output model on the race skeleton; appends to the report.
 ModelPreview build(Context& ctx, const CharacterManifest& manifest, const AssemblyOptions& opt, const Selection& sel,
                    AssemblyReport& rep) {
@@ -305,6 +342,10 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
             report(part.name, "dropped", "model failed to load", part.fd->mesh_base);
             continue;
         }
+        // A piece's overlap mesh: the part reaching onto a neighbouring slot
+        // (gauntlets up the forearm, greaves up the shin). Same texture.
+        if (part.piece && part.fd->mesh_overlap)
+            if (std::optional<ModelPreview> ov = ctx.model(part.fd->mesh_overlap)) merge_into(*model, *ov);
         // Armor keeps its own dyes; bare-body parts, face, ears and the scalp
         // take the skin colour, and hair its colours on its dye channels.
         std::vector<character::ManifestDye> look_dyes;
@@ -428,6 +469,11 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
         const size_t first = merge_into(out, *model);
         if (in_atlas)
             for (size_t mi = first; mi < out.meshes.size(); ++mi) atlas_meshes.push_back(mi);
+        // Which avatar piece these meshes belong to: the bare body and head,
+        // the hair, or the armor slot (vrchat merges per piece).
+        const std::string group = part.piece ? part.piece->slot : part.name == "hair" ? "Hair" : "Body";
+        for (size_t mi = first; mi < out.meshes.size(); ++mi) out.meshes[mi].meshName = group;
+        if (opt.vrchat) vrchat_body_part(out, first, part.name, sel.worn);
         report(part.name, "used", part.scalp_only ? "scalp only, strands under the Helm" : "", part.fd->mesh_base);
     }
 
@@ -453,12 +499,14 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
                 // Its own rig hung from the shared root (Mawdrey, wings, ...) goes
                 // onto the back holster; one skinned to body bones (capes) merges
                 // by name.
+                const size_t back_first = out.meshes.size();
                 if (back_is_self_rigged(*m, out) && attach_skinned(out, *m, kBackStow.weapon, kBackStow.body)) {
                     report("Backpack", "used", std::string("on ") + kBackStow.body, back->file_ids[0]);
                 } else {
                     merge_into(out, *m);
                     report("Backpack", "used", "", back->file_ids[0]);
                 }
+                for (size_t mi = back_first; mi < out.meshes.size(); ++mi) out.meshes[mi].meshName = "Backpack";
             } else {
                 report("Backpack", "dropped", "model failed to load", back->file_ids[0]);
             }
@@ -479,7 +527,8 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
             report(slot, "dropped", "no matching attach point", file);
         } else if (!w.shares.empty() && sel.drop_shared_holster) {
             report(slot, "dropped", std::string(w.at->body) + " is taken by " + w.shares, file);
-        } else if (attach_rigid(out, *w.model, w.at->weapon, w.at->body)) {
+        } else if (const size_t wfirst = out.meshes.size(); attach_rigid(out, *w.model, w.at->weapon, w.at->body)) {
+            for (size_t mi = wfirst; mi < out.meshes.size(); ++mi) out.meshes[mi].meshName = slot;
             report(slot, "used", std::string("on ") + w.at->body + (w.shares.empty() ? "" : " (shared with " + w.shares + ")"),
                    file);
         } else {
@@ -647,6 +696,10 @@ AssemblyReport assemble_character(const CharacterManifest& manifest, const std::
     sel.back = true;
     sel.weapons.assign(std::begin(kWeaponSlots), std::end(kWeaponSlots));
     sel.drop_shared_holster = true;
+    if (opt.vrchat) {  // the whole body and hair: armor toggles in-game, so nothing is cut
+        sel.hide_body_under_armor = false;
+        sel.hair_under_helm_scalp_only = false;
+    }
     ModelPreview model = build(*ctx, manifest, opt, sel, rep);
     if (opt.vrchat) rep.physbone_chains = make_vrchat_ready(model);
     if (!write_glb(model, glb_path, opt, rep)) return rep;
