@@ -73,10 +73,18 @@ struct AtlasRegion {
 /// their top-left. Empty when no rect is hit.
 AtlasRegion region_for(const composite::BlitRectSet& set, const std::vector<std::pair<float, float>>& uvs);
 
+/// How a part's texture meets what is already in the atlas.
+enum class BlitMode {
+    Replace,  // copy RGBA (armor and body: their alpha is a cut-out)
+    Over,     // blend RGB by the texture's alpha, keep the atlas alpha (hair and
+              // scalp layers painted over the face, as the game composites them)
+};
+
 /// Draws `tex` into the atlas from the region's anchor at `scale` atlas pixels
 /// per texel (2 = the usual reduced texture, 1 = a full-resolution copy),
 /// bilinearly filtered, writing only pixels inside the region's rects.
-void blit(ImageRgba& atlas, const ImageRgba& tex, const AtlasRegion& region, float scale = 2.0f);
+void blit(ImageRgba& atlas, const ImageRgba& tex, const AtlasRegion& region, float scale = 2.0f,
+          BlitMode mode = BlitMode::Replace);
 
 /// Atlas UV -> UV within the cropped block: u' = (u*1024 - x0) / (x1 - x0), same for v.
 void remap_uv(float& u, float& v, const composite::BlitRect& rect);

@@ -174,8 +174,12 @@ AssemblyReport assemble_character(const CharacterManifest& manifest, const std::
         AtlasRegion region = set ? region_for(*set, uvs) : AtlasRegion{};
         const bool in_atlas = !region.rects.empty();
         if (in_atlas) {
-            blit(diffuse, detail::to_image(baked->base), region, baked->scale);
-            if (baked->normal) blit(normal, detail::to_image(*baked->normal), region, baked->normal_scale);
+            // Hair and bald-scalp layers paint over the face's region the way the
+            // game composites them (by their alpha); everything else replaces.
+            const BlitMode mode = part.name == "hair" ? BlitMode::Over : BlitMode::Replace;
+            blit(diffuse, detail::to_image(baked->base), region, baked->scale, mode);
+            if (baked->normal && mode == BlitMode::Replace)
+                blit(normal, detail::to_image(*baked->normal), region, baked->normal_scale);
         }
 
         if (!part.keep_mesh) {

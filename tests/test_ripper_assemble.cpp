@@ -15,6 +15,10 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 using namespace castlemist::ripper;
 namespace ch = castlemist::character;
 namespace fs = std::filesystem;
@@ -94,6 +98,28 @@ CM_TEST(assemble, sylvari_female_with_vest_leggings_and_greatsword) {
         if (node.value("name", std::string()) == "GW2_ZupToYup")
             upright_unscaled = !node.contains("scale") && std::abs(node["rotation"][2].get<double>() - 0.70710678) < 1e-6;
     CHECK(upright_unscaled);
+
+    // The face must survive the hair/scalp layer drawn over it (it used to go black).
+    std::vector<uint8_t> bin(b.begin() + 20 + jlen + 8, b.end());
+    for (const auto& mat : j["materials"]) {
+        if (mat.value("name", std::string()) != "CharacterAtlas") continue;
+        size_t img = j["textures"][mat["pbrMetallicRoughness"]["baseColorTexture"]["index"].get<size_t>()]["source"];
+        const auto& bv = j["bufferViews"][j["images"][img]["bufferView"].get<size_t>()];
+        int w = 0, h = 0, n = 0;
+        unsigned char* px = stbi_load_from_memory(bin.data() + bv.value("byteOffset", size_t{0}),
+                                                  static_cast<int>(bv["byteLength"].get<size_t>()), &w, &h, &n, 4);
+        CHECK(px != nullptr);
+        if (!px) break;
+        double red = 0;
+        size_t count = 0;
+        for (int y = 512; y < 768; ++y)
+            for (int x = 384; x < 768; ++x) {
+                red += px[(static_cast<size_t>(y) * w + x) * 4];
+                ++count;
+            }
+        stbi_image_free(px);
+        CHECK(red / count > 30.0);  // the face's own colour, not black
+    }
 }
 
 CM_TEST(assemble, helm_keeps_the_scalp_and_metres_option_scales) {

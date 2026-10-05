@@ -220,3 +220,20 @@ CM_TEST(atlas, resize_bilinear_blends_between_texels) {
     const int mid = big.px[1 * 4];            // between them: a blend
     CHECK(mid > 20 && mid < 120);
 }
+
+CM_TEST(atlas, blit_over_layers_by_alpha_and_keeps_the_base_alpha) {
+    // A face already in the atlas; a hair/scalp overlay drawn over it.
+    ImageRgba atlas{1024, 1024, std::vector<uint8_t>(1024 * 1024 * 4, 0)};
+    auto px = [&](int x, int y) { return atlas.px.data() + (static_cast<size_t>(y) * 1024 + x) * 4; };
+    for (int x = 0; x < 4; ++x) {
+        uint8_t* p = px(x, 0);
+        p[0] = 100; p[1] = 50; p[2] = 40; p[3] = 103;  // face colour, alpha = its shading map
+    }
+    ImageRgba overlay{2, 1, {0, 0, 0, 0,  200, 200, 200, 255}};  // transparent, then opaque grey
+    AtlasRegion r{{BlitRect{0, 0, 4, 1}}, 0, 0};
+    blit(atlas, overlay, r, 2.0f, BlitMode::Over);
+    CHECK_EQ(int(px(0, 0)[0]), 100);  // under the transparent texel: the face is untouched
+    CHECK_EQ(int(px(0, 0)[3]), 103);  // and keeps its own alpha
+    CHECK_EQ(int(px(3, 0)[0]), 200);  // under the opaque texel: the overlay
+    CHECK_EQ(int(px(3, 0)[3]), 103);
+}

@@ -97,7 +97,7 @@ AtlasRegion region_for(const composite::BlitRectSet& set, const std::vector<std:
     return out;
 }
 
-void blit(ImageRgba& atlas, const ImageRgba& tex, const AtlasRegion& region, float scale) {
+void blit(ImageRgba& atlas, const ImageRgba& tex, const AtlasRegion& region, float scale, BlitMode mode) {
     if (tex.w <= 0 || tex.h <= 0 || scale <= 0) return;
     auto texel = [&](int x, int y, int c) {
         x = std::clamp(x, 0, tex.w - 1);
@@ -116,10 +116,18 @@ void blit(ImageRgba& atlas, const ImageRgba& tex, const AtlasRegion& region, flo
                 const int x0 = static_cast<int>(std::floor(fx));
                 const float tx = fx - static_cast<float>(x0);
                 uint8_t* dst = atlas.px.data() + (static_cast<size_t>(y) * atlas.w + x) * 4;
+                float s[4];
                 for (int c = 0; c < 4; ++c) {
                     const float top = texel(x0, y0, c) * (1 - tx) + texel(x0 + 1, y0, c) * tx;
                     const float bottom = texel(x0, y0 + 1, c) * (1 - tx) + texel(x0 + 1, y0 + 1, c) * tx;
-                    dst[c] = static_cast<uint8_t>(std::clamp(top * (1 - ty) + bottom * ty + 0.5f, 0.0f, 255.0f));
+                    s[c] = top * (1 - ty) + bottom * ty;
+                }
+                if (mode == BlitMode::Over) {
+                    const float a = s[3] / 255.0f;
+                    for (int c = 0; c < 3; ++c)
+                        dst[c] = static_cast<uint8_t>(std::clamp(dst[c] + (s[c] - dst[c]) * a + 0.5f, 0.0f, 255.0f));
+                } else {
+                    for (int c = 0; c < 4; ++c) dst[c] = static_cast<uint8_t>(std::clamp(s[c] + 0.5f, 0.0f, 255.0f));
                 }
             }
         }
