@@ -79,6 +79,7 @@ enum class BlitMode {
     Over,     // blend RGB by the texture's alpha, alpha = the larger of the two
               // (hair and scalp layers painted over the face, as the game
               // composites them; strands outside the face keep their coverage)
+    Add,      // add RGB, alpha = the larger of the two (glow layers summing)
 };
 
 /// Draws `tex` into the atlas from the region's anchor at `scale` atlas pixels

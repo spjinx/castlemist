@@ -251,6 +251,70 @@ void vrchat_body_part(ModelPreview& out, size_t first, const std::string& part, 
     }
 }
 
+// The layers an armor piece's material adds over its base colour (its
+// mask_tex / decal_tex, by sampler role) and whether it glows.
+struct PieceLayers {
+    uint32_t mask = 0;   // R = metal, G = gloss, B = silk / sheen, A = glow (atlas layout)
+    uint32_t decal = 0;  // a detail layer: highlights / pattern over the base colour
+    bool glow = false;   // the material has glow constants (glow, glowcm): mask A lights up
+};
+PieceLayers piece_layers(const ModelPreview& m) {
+    PieceLayers l;
+    for (const ModelMaterialCPU& mat : m.materials) {
+        for (const auto& ex : mat.extraTextures) {
+            if (ex.role == "mask" && !l.mask) l.mask = ex.fileId;
+            if (ex.role == "decal" && !l.decal) l.decal = ex.fileId;
+        }
+        for (const auto& c : mat.namedConstants)
+            if (c.first == "glow" || c.first == "glowcm") l.glow = true;
+    }
+    return l;
+}
+
+// Calls f(index of the RGBA pixel) for every atlas pixel inside the region's rects.
+template <class F>
+void for_region(const AtlasRegion& region, int w, int h, F f) {
+    for (const composite::BlitRect& r : region.rects)
+        for (uint32_t y = r.y0; y < r.y1 && y < static_cast<uint32_t>(h); ++y)
+            for (uint32_t x = r.x0; x < r.x1 && x < static_cast<uint32_t>(w); ++x)
+                f((static_cast<size_t>(y) * static_cast<size_t>(w) + x) * 4);
+}
+
+// Marks (value 1) every atlas pixel the meshes' UV triangles cover, wrapped
+// UVs; skin meshes (sampling the body's region) are skipped unless asked for.
+std::vector<uint8_t> uv_coverage(const ModelPreview& m, int w, int h, bool skin_meshes) {
+    std::vector<uint8_t> cov(static_cast<size_t>(w) * static_cast<size_t>(h), 0);
+    for (const ModelMeshCPU& mesh : m.meshes) {
+        if (!skin_meshes && detail::is_skin_mesh(m, mesh)) continue;
+        for (size_t t = 0; t + 2 < mesh.indices.size(); t += 3) {
+            float px[3], py[3];
+            bool ok = true;
+            for (int k = 0; k < 3; ++k) {
+                const uint32_t vi = mesh.indices[t + k];
+                if (vi >= mesh.vertices.size()) { ok = false; break; }
+                px[k] = wrap_uv(mesh.vertices[vi].u) * static_cast<float>(w);
+                py[k] = wrap_uv(mesh.vertices[vi].v) * static_cast<float>(h);
+            }
+            if (!ok) continue;
+            const float area = (px[1] - px[0]) * (py[2] - py[0]) - (px[2] - px[0]) * (py[1] - py[0]);
+            if (std::fabs(area) < 1e-6f) continue;
+            const int x0 = std::max(0, static_cast<int>(std::floor(std::min({px[0], px[1], px[2]}))));
+            const int x1 = std::min(w - 1, static_cast<int>(std::ceil(std::max({px[0], px[1], px[2]}))));
+            const int y0 = std::max(0, static_cast<int>(std::floor(std::min({py[0], py[1], py[2]}))));
+            const int y1 = std::min(h - 1, static_cast<int>(std::ceil(std::max({py[0], py[1], py[2]}))));
+            for (int y = y0; y <= y1; ++y)
+                for (int x = x0; x <= x1; ++x) {
+                    const float cx = static_cast<float>(x) + 0.5f, cy = static_cast<float>(y) + 0.5f;
+                    const float a = ((px[1] - cx) * (py[2] - cy) - (px[2] - cx) * (py[1] - cy)) / area;
+                    const float b = ((px[2] - cx) * (py[0] - cy) - (px[0] - cx) * (py[2] - cy)) / area;
+                    const float c = 1.0f - a - b;
+                    if (a >= -0.01f && b >= -0.01f && c >= -0.01f) cov[static_cast<size_t>(y) * w + x] = 1;
+                }
+        }
+    }
+    return cov;
+}
+
 // Builds one output model on the race skeleton; appends to the report.
 ModelPreview build(Context& ctx, const CharacterManifest& manifest, const AssemblyOptions& opt, const Selection& sel,
                    AssemblyReport& rep) {
@@ -314,22 +378,144 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
         normal.px[i + 3] = 255;
     }
     std::vector<size_t> atlas_meshes;  // indices into out.meshes that sample the atlas
-    // Glow: the pattern masks lit in the glow colour, on the same atlas layout.
-    const bool glowing = opt.glow_rgb && opt.glow_intensity > 0 && opt.pattern >= 0 &&
-                         static_cast<size_t>(opt.pattern) < race->skin_patterns.size();
-    ImageRgba emissive;
-    if (glowing) emissive = ImageRgba{kAtlas, kAtlas, std::vector<uint8_t>(static_cast<size_t>(kAtlas) * kAtlas * 4, 0)};
-    bool any_glow = false;
+    // Armor surface maps on the same layout, each piece only inside its own
+    // rects (a set's mask covers the whole set; the other pieces' parts of it
+    // are left out): glTF metallic-roughness (G = roughness, B = metal) and a
+    // detail layer. Bare skin: not metal, fairly rough.
+    ImageRgba metal_rough{kAtlas, kAtlas, std::vector<uint8_t>(static_cast<size_t>(kAtlas) * kAtlas * 4, 255)};
+    for (size_t i = 0; i < metal_rough.px.size(); i += 4) {
+        metal_rough.px[i + 1] = 180;
+        metal_rough.px[i + 2] = 0;
+    }
+    std::optional<ImageRgba> detail_map;
+    bool any_armor = false;
+    // Glow, in the glow colour on the same atlas layout: the skin pattern's
+    // masks, and a sylvari's own glow on the face and hair (their model
+    // materials' mask_tex -- greyscale spots and veins, sampled by UV0).
     const bool sylvari = ctx.race_key.rfind("Sylvari", 0) == 0;
+    const bool glowing = opt.glow_rgb && opt.glow_intensity > 0;
+    const bool pattern_glowing = glowing && opt.pattern >= 0 &&
+                                 static_cast<size_t>(opt.pattern) < race->skin_patterns.size();
+    ImageRgba emissive{kAtlas, kAtlas, std::vector<uint8_t>(static_cast<size_t>(kAtlas) * kAtlas * 4, 0)};
+    bool any_glow = false;
+    // A greyscale mask lit in the glow colour.
+    auto glow_image = [&](const ModelTextureCPU& mask) {
+        ImageRgba glow{mask.width, mask.height, std::vector<uint8_t>(mask.rgba.size())};
+        const float k = std::clamp(opt.glow_intensity, 0.0f, 1.0f) / 255.0f;
+        for (size_t t = 0; t + 3 < mask.rgba.size(); t += 4) {
+            const float w = mask.rgba[t] * k;  // greyscale: R = G = B
+            for (int c = 0; c < 3; ++c) glow.px[t + c] = static_cast<uint8_t>((*opt.glow_rgb)[c] * w + 0.5f);
+            glow.px[t + 3] = 255;
+        }
+        return glow;
+    };
+    // The glow mask of a sylvari face / hair model (0 = none): the mask_tex of
+    // the material drawing most of it (hair: the strands, not the scalp under
+    // them, whose mask is laid out for the scalp's texture).
+    auto own_glow_mask = [&](const ModelPreview& m) -> uint32_t {
+        std::map<uint32_t, size_t> tris;
+        for (const ModelMeshCPU& mesh : m.meshes) tris[mesh.materialIndex] += mesh.indices.size() / 3;
+        uint32_t best = 0;
+        size_t most = 0;
+        for (const ModelMaterialCPU& mat : m.materials)
+            for (const auto& ex : mat.extraTextures)
+                if (ex.role == "mask" && ex.fileId && tris[mat.index] > most) {
+                    most = tris[mat.index];
+                    best = ex.fileId;
+                }
+        return best;
+    };
+
+    // An armor piece just painted into the atlas: what its base colour's alpha
+    // is (cut-out holes vs a specular / gloss map -- character armor is alpha
+    // tested, and the alpha of an opaque piece carries its shine), its metal /
+    // gloss / glow mask and detail layer, into the surface atlases. Returns
+    // the workflow, for the report.
+    auto armor_surface = [&](const ModelPreview& model, const detail::BakedTextures& baked,
+                             const AtlasRegion& region, bool skin_meshes) -> std::string {
+        (void)baked;
+        any_armor = true;
+        const PieceLayers layers = piece_layers(model);
+        // Holes are counted only where the piece's own triangles sample.
+        const std::vector<uint8_t> used = uv_coverage(model, kAtlas, kAtlas, skin_meshes);
+        // Masks and decals are sampled by the atlas UVs: they span the whole
+        // atlas (a set's mask holds every piece of the set), clipped to the rects.
+        AtlasRegion whole = region;
+        whole.ax = whole.ay = 0;
+        // Alpha: below kHole is a hole; the rest is shine, the texel opaque.
+        constexpr uint8_t kHole = 16;
+        size_t total = 0, holes = 0, lo = 255, hi = 0;
+        for_region(region, kAtlas, kAtlas, [&](size_t i) {
+            uint8_t* p = diffuse.px.data() + i;
+            const bool sampled = used[i / 4] != 0;
+            total += sampled;
+            if (p[3] < kHole) {
+                holes += sampled;
+                p[3] = 0;
+                return;
+            }
+            lo = std::min<size_t>(lo, p[3]);
+            hi = std::max<size_t>(hi, p[3]);
+            // Shine -> roughness (full shine 0.4, none 1.0); not metal.
+            metal_rough.px[i + 1] = static_cast<uint8_t>(255 - p[3] * 6 / 10);
+            metal_rough.px[i + 2] = 0;
+            p[3] = 255;
+        });
+        std::string wf;
+        ModelTextureCPU mask;
+        if (layers.mask && decode_texture_full(ctx.dat, layers.mask, mask) && mask.width > 0) {
+            // Masked PBR: metal and gloss from the mask; glow from its alpha.
+            ImageRgba m{mask.width, mask.height, std::move(mask.rgba)};
+            ImageRgba tmp{kAtlas, kAtlas, std::vector<uint8_t>(static_cast<size_t>(kAtlas) * kAtlas * 4, 0)};
+            blit(tmp, m, whole, static_cast<float>(kAtlas) / static_cast<float>(m.w));
+            size_t metal = 0, glow = 0;
+            for_region(region, kAtlas, kAtlas, [&](size_t i) {
+                const uint8_t* t = tmp.px.data() + i;
+                metal_rough.px[i + 1] = static_cast<uint8_t>(255 - t[1]);
+                metal_rough.px[i + 2] = t[0];
+                if (t[0] > 127) ++metal;
+                if (layers.glow && t[3] > 8 && diffuse.px[i + 3]) {
+                    ++glow;
+                    for (int c = 0; c < 3; ++c)
+                        emissive.px[i + c] = static_cast<uint8_t>(diffuse.px[i + c] * t[3] / 255);
+                    emissive.px[i + 3] = 255;
+                }
+            });
+            if (glow) any_glow = true;
+            wf = metal ? "metallic (mask: metal R, gloss G)" : "masked gloss (mask: gloss G, no metal)";
+            if (glow) wf += ", glow (mask A)";
+        } else {
+            wf = "legacy (base colour + normal only)";
+        }
+        if (layers.decal) {
+            ModelTextureCPU dec;
+            if (decode_texture_full(ctx.dat, layers.decal, dec) && dec.width > 0) {
+                if (!detail_map)
+                    detail_map = ImageRgba{kAtlas, kAtlas, std::vector<uint8_t>(static_cast<size_t>(kAtlas) * kAtlas * 4, 0)};
+                blit(*detail_map, ImageRgba{dec.width, dec.height, std::move(dec.rgba)}, whole,
+                     static_cast<float>(kAtlas) / static_cast<float>(dec.width));
+                wf += ", detail layer (decal)";
+            }
+        }
+        if (total) {
+            if (holes * 200 > total) wf += "; alpha = cut-out holes + shine";
+            else if (hi > lo + 16) wf += "; alpha = shine (specular), opaque";
+            else wf += "; alpha unused, opaque";
+        }
+        return wf;
+    };
 
     // VRChat: the body and hair get the atlas as it is before any armor paints
     // over it (a helm takes the hair's rect, gloves the hands'...), so with the
     // armor toggled off they still show their own textures.
-    std::optional<ImageRgba> body_diffuse, body_normal;
+    std::optional<ImageRgba> body_diffuse, body_normal, body_emissive;
+    bool body_glow = false;
     for (const Part& part : parts) {
         if (opt.vrchat && part.piece && !body_diffuse) {
             body_diffuse = diffuse;
             body_normal = normal;
+            body_emissive = emissive;
+            body_glow = any_glow;
         }
         std::optional<ModelPreview> model = ctx.model(part.fd->mesh_base);
         if (!model) {
@@ -385,6 +571,7 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
             d.shift = opt.eye_tint;
             look_dyes.push_back(d);
         }
+        std::string workflow;  // armor: how its surface is made (for the report)
         std::optional<detail::BakedTextures> baked;
         if (sel.preview) {
             auto it = ctx.preview_bakes.find(part.fd->token);
@@ -418,19 +605,31 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
             blit(diffuse, detail::to_image(baked->base), region, baked->scale, mode);
             if (baked->normal && mode == BlitMode::Replace)
                 blit(normal, detail::to_image(*baked->normal), region, baked->normal_scale);
-            ModelTextureCPU mask;
-            if (glowing && pattern_mask && decode_texture_full(ctx.dat, pattern_mask, mask) && mask.width > 0) {
-                ImageRgba glow{mask.width, mask.height, std::vector<uint8_t>(mask.rgba.size())};
-                const float k = std::clamp(opt.glow_intensity, 0.0f, 1.0f) / 255.0f;
-                for (size_t t = 0; t + 3 < mask.rgba.size(); t += 4) {
-                    const float w = mask.rgba[t] * k;  // greyscale: R = G = B
-                    for (int c = 0; c < 3; ++c) glow.px[t + c] = static_cast<uint8_t>((*opt.glow_rgb)[c] * w + 0.5f);
-                    glow.px[t + 3] = 255;
-                }
-                // Same footprint as the part's texture: scale by the width ratio.
+            // Glow masks span the same UV space as the part's texture: scale
+            // by the width ratio. Armor painted over a region puts out the glow
+            // beneath it.
+            auto blit_glow = [&](uint32_t mask_file, BlitMode m) {
+                ModelTextureCPU mask;
+                if (!mask_file || !decode_texture_full(ctx.dat, mask_file, mask) || mask.width <= 0) return;
                 const float scale = baked->scale * static_cast<float>(baked->base.width) / static_cast<float>(mask.width);
-                blit(emissive, glow, region, scale);
+                blit(emissive, glow_image(mask), region, scale, m);
                 any_glow = true;
+            };
+            if (part.piece) {
+                ImageRgba dark{baked->base.width, baked->base.height,
+                               std::vector<uint8_t>(static_cast<size_t>(baked->base.width) * baked->base.height * 4, 0)};
+                for (size_t t = 3; t < dark.px.size(); t += 4) dark.px[t] = 255;
+                blit(emissive, dark, region, baked->scale);
+                workflow = armor_surface(*model, *baked, region, part.skin_meshes_are_part);
+            }
+            if (pattern_glowing && pattern_mask) blit_glow(pattern_mask, BlitMode::Replace);
+            if (glowing && sylvari && !part.piece) blit_glow(own_glow_mask(*model), BlitMode::Add);
+        } else if (glowing && sylvari && !part.piece && part.keep_mesh) {
+            // Self-textured hair: its glow on its own UVs.
+            ModelTextureCPU mask;
+            if (uint32_t f = own_glow_mask(*model); f && decode_texture_full(ctx.dat, f, mask) && mask.width > 0) {
+                int e = detail::add_texture(*model, glow_image(mask), 0, false);
+                for (ModelMaterialCPU& mat : model->materials) mat.emissiveTex = e;
             }
         }
 
@@ -468,7 +667,7 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
         const std::string group = part.piece ? part.piece->slot : part.name == "hair" ? "Hair" : "Body";
         for (size_t mi = first; mi < out.meshes.size(); ++mi) out.meshes[mi].meshName = group;
         if (opt.vrchat) vrchat_body_part(out, first, part.name, sel.worn);
-        report(part.name, "used", part.scalp_only ? "scalp only, strands under the Helm" : "", part.fd->mesh_base);
+        report(part.name, "used", part.scalp_only ? "scalp only, strands under the Helm" : workflow, part.fd->mesh_base);
     }
 
     // One material for everything that samples the atlas.
@@ -481,6 +680,9 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
         mat.diffuseTex = d;
         mat.normalTex = n;
         if (any_glow) mat.emissiveTex = detail::add_texture(out, emissive, 0, false);
+        if (any_armor && !sel.preview) mat.metalRoughTex = detail::add_texture(out, metal_rough, 0, false);
+        if (detail_map && !sel.preview)
+            mat.extraTextures.push_back({detail::add_texture(out, *detail_map, 0, false), 0, 0, "decal"});
         out.materials.push_back(mat);
         for (size_t mi : atlas_meshes) out.meshes[mi].materialIndex = mat.index;
         if (opt.vrchat) {  // Body and Hair on the pre-armor atlas
@@ -489,10 +691,14 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
                 body_normal = normal;
             }
             ModelMaterialCPU body = mat;
+            body.metalRoughTex = -1;  // bare skin and hair
+            body.extraTextures.clear();
             body.index = static_cast<uint32_t>(out.materials.size());
             body.materialName = "BodyAtlas";
             body.diffuseTex = detail::add_texture(out, *body_diffuse, 0, false);
             body.normalTex = sel.preview ? -1 : detail::add_texture(out, *body_normal, 0, true);
+            if (body_emissive && body_glow) body.emissiveTex = detail::add_texture(out, *body_emissive, 0, false);
+            else if (!body_glow && body_emissive) body.emissiveTex = -1;
             out.materials.push_back(body);
             for (size_t mi : atlas_meshes)
                 if (out.meshes[mi].meshName == "Body" || out.meshes[mi].meshName == "Hair")
@@ -710,7 +916,10 @@ AssemblyReport assemble_character(const CharacterManifest& manifest, const std::
         sel.hair_under_helm_scalp_only = false;
     }
     ModelPreview model = build(*ctx, manifest, opt, sel, rep);
-    if (opt.vrchat) rep.physbone_chains = make_vrchat_ready(model);
+    if (opt.vrchat) {
+        rep.physbone_chains = make_vrchat_ready(model);
+        write_vrchat_maps(model, glb_path);
+    }
     if (!write_glb(model, glb_path, opt, rep)) return rep;
     rep.joints = model.joints.size();
     rep.ok = true;

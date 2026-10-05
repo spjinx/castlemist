@@ -14,6 +14,11 @@
 #include "castlemist/ripper/face_morphs.h"
 #include "castlemist/ripper/skeleton_merge.h"
 
+// A private copy (see gw2dat_cli's note: several layers carry stb).
+#define STB_IMAGE_WRITE_STATIC
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -341,6 +346,47 @@ std::string safe_name(std::string s) {
 
 } // namespace
 
+std::string write_vrchat_maps(const ModelPreview& model, const std::string& glb_path) {
+    const fs::path glb = from_utf8(glb_path);
+    const fs::path dir = glb.parent_path() / (glb.stem().wstring() + L" Textures");
+    std::error_code ec;
+    bool any = false;
+    auto save = [&](const std::string& file, int w, int h, const std::vector<uint8_t>& rgba) {
+        if (w <= 0 || h <= 0 || rgba.size() < static_cast<size_t>(w) * h * 4) return;
+        fs::create_directories(dir, ec);
+        const fs::path path = dir / from_utf8(file + ".png");
+        int len = 0;
+        unsigned char* png = stbi_write_png_to_mem(rgba.data(), w * 4, w, h, 4, &len);
+        if (!png) return;
+        std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(png), len);
+        STBIW_FREE(png);
+        any = true;
+    };
+    auto tex = [&](int i) -> const ModelTextureCPU* {
+        return i >= 0 && static_cast<size_t>(i) < model.textures.size() ? &model.textures[static_cast<size_t>(i)] : nullptr;
+    };
+    for (const ModelMaterialCPU& mat : model.materials) {
+        if (mat.materialName != "CharacterAtlas" && mat.materialName != "BodyAtlas") continue;
+        const std::string n = mat.materialName;
+        if (const ModelTextureCPU* t = tex(mat.diffuseTex)) save(n + " - BaseColor", t->width, t->height, t->rgba);
+        if (const ModelTextureCPU* t = tex(mat.normalTex)) save(n + " - Normal", t->width, t->height, t->rgba);
+        if (const ModelTextureCPU* t = tex(mat.emissiveTex)) save(n + " - Emission", t->width, t->height, t->rgba);
+        if (const ModelTextureCPU* t = tex(mat.metalRoughTex)) {
+            // glTF (G = roughness, B = metal) -> Unity (R = metal, A = smoothness).
+            std::vector<uint8_t> ms(t->rgba.size());
+            for (size_t i = 0; i + 3 < ms.size(); i += 4) {
+                ms[i] = ms[i + 1] = ms[i + 2] = t->rgba[i + 2];
+                ms[i + 3] = static_cast<uint8_t>(255 - t->rgba[i + 1]);
+            }
+            save(n + " - MetallicSmoothness", t->width, t->height, ms);
+        }
+        for (const auto& ex : mat.extraTextures)
+            if (ex.role == "decal")
+                if (const ModelTextureCPU* t = tex(ex.texIndex)) save(n + " - Detail", t->width, t->height, t->rgba);
+    }
+    return any ? to_utf8(dir) : std::string();
+}
+
 VrchatReport export_vrchat(const character::CharacterManifest& manifest, const std::string& dat_path,
                            const std::string& out_dir, AssemblyOptions options, const VrchatOptions& vrc) {
     VrchatReport r;
@@ -396,7 +442,15 @@ VrchatReport export_vrchat(const character::CharacterManifest& manifest, const s
       << "     LeftToes, fingers, LeftEye / RightEye, Jaw). Configure... should show every bone green.\n"
       << "  2. Materials tab > Extract Textures, then give the materials Poiyomi (or VRChat/Mobile/Toon Lit).\n"
       << "     CharacterAtlas: base colour + normal map, alpha cutout 0.25; its emissive map is the glow.\n"
-      << "  3. Drag the model into the scene, add a VRC Avatar Descriptor:\n"
+      << "     Every map is also in the \"" << name << " Textures\" folder: BaseColor, Normal, Emission,\n"
+      << "     MetallicSmoothness (Unity layout: R = metal, A = smoothness) and Detail (a set's highlight\n"
+      << "     layer, if any). Armor alpha is already a clean cut-out; the shine it carried is in\n"
+      << "     MetallicSmoothness. How each armor piece is made:\n"
+      ;
+    for (const AssemblyPart& p : r.assembly.parts)
+        if (!p.reason.empty() && p.reason.find('(') != std::string::npos && p.name.rfind("Weapon", 0) != 0)
+            n << "       " << p.name << ": " << p.reason << "\n";
+    n << "  3. Drag the model into the scene, add a VRC Avatar Descriptor:\n"
       << "     View Position: between the eyes.  LipSync: Viseme Blend Shape, mesh Body -- the vrc.v_* keys\n"
       << "     are already named so 'Auto Detect' fills them.  Eye Look: eyes LeftEye / RightEye,\n"
       << "     Eyelids: Blendshapes, Blink = Blink.\n"

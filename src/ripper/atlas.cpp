@@ -129,6 +129,10 @@ void blit(ImageRgba& atlas, const ImageRgba& tex, const AtlasRegion& region, flo
                     // Coverage adds up: hair strands outside the face's islands
                     // keep their own alpha, the face keeps its own under them.
                     dst[3] = static_cast<uint8_t>(std::max<float>(dst[3], std::clamp(s[3] + 0.5f, 0.0f, 255.0f)));
+                } else if (mode == BlitMode::Add) {
+                    for (int c = 0; c < 3; ++c)
+                        dst[c] = static_cast<uint8_t>(std::clamp(dst[c] + s[c] + 0.5f, 0.0f, 255.0f));
+                    dst[3] = static_cast<uint8_t>(std::max<float>(dst[3], std::clamp(s[3] + 0.5f, 0.0f, 255.0f)));
                 } else {
                     for (int c = 0; c < 4; ++c) dst[c] = static_cast<uint8_t>(std::clamp(s[c] + 0.5f, 0.0f, 255.0f));
                 }

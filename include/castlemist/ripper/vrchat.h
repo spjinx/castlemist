@@ -28,6 +28,12 @@ std::string humanoid_name(const std::string& gw2_joint);
 /// stems and back-item bones.
 std::vector<std::string> make_vrchat_ready(ModelPreview& model);
 
+/// Writes the atlas materials' maps as PNGs into "<glb stem> Textures" beside
+/// `glb_path` (UTF-8), laid out for Unity / Poiyomi: "<Material> - BaseColor",
+/// "- Normal", "- Emission", "- MetallicSmoothness" (R = metal, A = smoothness)
+/// and "- Detail". Returns the folder, or empty when nothing was written.
+std::string write_vrchat_maps(const ModelPreview& model, const std::string& glb_path);
+
 struct VrchatOptions {
     std::string blender_exe;  // empty: find_blender(); none found -> .glb only
     std::string script;       // empty: <castlemist root>/tools/blender/castlemist_vrchat.py

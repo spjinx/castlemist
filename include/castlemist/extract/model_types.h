@@ -101,6 +101,9 @@ struct ModelMaterialCPU {
     int diffuseTex = -1;                  ///< Index into ModelPreview::textures (-1 = none).
     int normalTex = -1;                   ///< Index into ModelPreview::textures (-1 = none).
     int emissiveTex = -1;                 ///< Index into ModelPreview::textures (-1 = none): a baked glow.
+    /// Index into ModelPreview::textures (-1 = none): a glTF metallic-roughness
+    /// map (G = roughness, B = metal), e.g. the ripper's per-piece armor masks.
+    int metalRoughTex = -1;
     /// @brief Which UV channel (GVertex.u/v = 0, .uv1[c-1] = c) diffuseTex/normalTex
     ///        actually sample -- MatTexture::uvIndex (gw2model.hpp), carried through
     ///        from whichever raw texture entry was picked as each of those. Almost
@@ -164,6 +167,9 @@ struct ModelMaterialCPU {
         int texIndex = -1;    ///< Index into ModelPreview::textures.
         uint8_t uvIndex = 0;  ///< Which UV channel it samples (see diffuseUv's doc comment).
         uint32_t fileId = 0;  ///< Source fileId, for the extras JSON / info panel.
+        /// The sampler role, decoded from the material's texture token:
+        /// its name up to the first '_': "mask", "decal", "glow", "glowmask", ... (empty = unknown).
+        std::string role;
     };
     /// @brief Every other texture this material references. Cleared by a
     ///        successful atlas bake (gw2bgfx_view.cpp) -- baking already folds

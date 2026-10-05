@@ -99,7 +99,7 @@ CM_TEST(export, exports_sylvari_female_warden_coat) {
     CHECK(fs::exists(out));
 
     auto [j, bin] = read_glb(out);
-    bool found_192x256 = false;
+    bool found_384x512 = false;  // the full-resolution copy (the reduced one is 192x256)
     CHECK(j.contains("images"));
     for (const auto& img : j.value("images", json::array())) {
         if (!img.contains("bufferView")) continue;
@@ -108,9 +108,9 @@ CM_TEST(export, exports_sylvari_female_warden_coat) {
         auto be32 = [&](size_t at) {
             return (uint32_t(bin[at]) << 24) | (uint32_t(bin[at + 1]) << 16) | (uint32_t(bin[at + 2]) << 8) | bin[at + 3];
         };
-        if (be32(off + 16) == 192 && be32(off + 20) == 256) found_192x256 = true;  // PNG IHDR
+        if (be32(off + 16) == 384 && be32(off + 20) == 512) found_384x512 = true;  // PNG IHDR
     }
-    CHECK(found_192x256);
+    CHECK(found_384x512);
 
     // Every primitive whose material has a baseColorTexture samples UVs in [0,1].
     size_t textured = 0;

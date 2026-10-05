@@ -8,6 +8,8 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <map>
+#include <set>
 #include <unordered_map>
 
 #include <span>
@@ -67,6 +69,11 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
         } catch (const std::exception&) { /* leave unresolved; info panel still shows the ref */ }
     }
 
+    // Texture roles (the material's token, up to its first '_': "mask",
+    // "decal", "glow", "glowmask", ...) that are layers over the base colour.
+    auto is_layer_role = [](const std::string& r) {
+        return r == "mask" || r == "decal" || r.rfind("glow", 0) == 0 || r == "detail";
+    };
     std::map<uint32_t, int> tex_cache; // fileId -> index into out->textures (-1 = tried, failed)
     auto get_texture = [&](uint32_t fileId) -> int {
         if (fileId == 0) return -1;
@@ -102,8 +109,16 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
             if (it != materialNameByIndex.end()) mat.materialName = it->second;
         }
         mat.textureFileIds = m.textureFileIds();
+        // A texture the material names as a mask / decal / glow layer is never
+        // its base colour, even when it is the biggest one it has -- character
+        // armor and hair leave the real diffuse slot empty (fileId 0, filled
+        // from the composite atlas) and keep only those layers.
+        std::set<uint32_t> layerFiles;
+        for (const auto& t : m.textures)
+            if (is_layer_role(castlemist::model::detokenizeName64(t.token))) layerFiles.insert(t.fileId);
         long bestDiffuseArea = -1, bestNormalArea = -1;
         for (uint32_t fid : mat.textureFileIds) {
+            if (layerFiles.count(fid)) continue;
             int ti = get_texture(fid);
             if (ti < 0) continue;
             const ModelTextureCPU& t = out->textures[ti];
@@ -220,12 +235,12 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
         // castlemist doesn't reconstruct -- kept as an ExtraTexture instead of
         // silently dropped (see that struct's own doc comment).
         for (const auto& t : m.textures) {
-            auto it = tex_cache.find(t.fileId);
-            if (it == tex_cache.end() || it->second < 0) continue;
-            int ti = it->second;
+            int ti = get_texture(t.fileId);
+            if (ti < 0) continue;
+            if (layerFiles.count(t.fileId) && ti == mat.diffuseTex) mat.diffuseTex = -1;  // see layerFiles
             if (ti == mat.diffuseTex) { mat.diffuseUv = t.uvIndex; continue; }
             if (ti == mat.normalTex) { mat.normalUv = t.uvIndex; continue; }
-            mat.extraTextures.push_back({ti, t.uvIndex, t.fileId});
+            mat.extraTextures.push_back({ti, t.uvIndex, t.fileId, castlemist::model::detokenizeName64(t.token)});
         }
 
         out->materials.push_back(std::move(mat));

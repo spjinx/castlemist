@@ -69,6 +69,7 @@
 #include "castlemist/character/look_store.h"
 #include "castlemist/character/manifest_json.h"
 #include "castlemist/db/index_db.h"
+#include "castlemist/extract/entry_extractor.h"
 #include "castlemist/ripper/assemble.h"
 #include "castlemist/ripper/look.h"
 #include "castlemist/ripper/vrchat.h"
@@ -928,6 +929,23 @@ void cmd_model(const Args& a) {
                          {"min", {mn[0], mn[1], mn[2]}}, {"max", {mx[0], mx[1], mx[2]}}});
     }
     j["cloth"] = std::move(cloth);
+    // The built preview's game-shader facts per material (alpha test, extra roles).
+    Gw2Dat pdat;
+    load_dat_file(pdat, need(a, "dat"));
+    if (auto pv = load_model_by_fileid(pdat, static_cast<uint32_t>(to_u64(a.at("file-id"))))) {
+        json gm = json::array();
+        for (const auto& g : pv->gameMaterials)
+            gm.push_back(json{{"index", g.index}, {"ok", g.ok}, {"prepassCutout", g.prepassCutout}});
+        j["gameMaterials"] = gm;
+        json roles = json::array();
+        for (const auto& m : pv->materials) {
+            json r = json::array();
+            for (const auto& ex : m.extraTextures)
+                r.push_back(json{{"role", ex.role}, {"fileId", ex.fileId}, {"uv", static_cast<int>(ex.uvIndex)}});
+            roles.push_back(json{{"index", m.index}, {"extras", r}, {"diffuse", m.diffuseTex}, {"normal", m.normalTex}});
+        }
+        j["materialRoles"] = roles;
+    }
     // particle clouds + effect lights
     const auto& fx = model.effects;
     json emitters = json::array();

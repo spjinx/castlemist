@@ -55,7 +55,7 @@ struct AssemblyOptions {
 struct AssemblyPart {
     std::string name;    // "body chest", "face", "hair", "Coat", "WeaponA1", ...
     std::string status;  // "used", "hidden" (texture only), "dropped"
-    std::string reason;  // why it was hidden/dropped
+    std::string reason;  // why it was hidden/dropped; armor: how its surface is made
     uint32_t mesh = 0;
     std::string file;    // separate mode: the .glb it went into (file name only)
 };
