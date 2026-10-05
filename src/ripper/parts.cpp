@@ -19,10 +19,55 @@ bool alpha_cuts(const ImageRgba& im) {
 
 } // namespace
 
+void add_cloth_meshes(ModelPreview& m) {
+    // In-game the cloth pieces ARE drawn: hair fronds, cape tails, skirt flaps
+    // hang from the static mesh as simulated cloth (the frond style: a 402-vert
+    // static mesh plus a 357-vert cloth piece reaching further down). Export
+    // them as ordinary meshes in their authored rest shape. They carry no skin
+    // weights (the simulation drives them), so each vertex follows the nearest
+    // vertex of the model's skinned meshes.
+    if (m.clothPieces.empty()) return;
+    std::vector<const GVertex*> skinned;
+    for (const ModelMeshCPU& mesh : m.meshes)
+        if (mesh.hasSkin)
+            for (const GVertex& v : mesh.vertices) skinned.push_back(&v);
+    for (const ClothPieceCPU& cp : m.clothPieces) {
+        if (cp.vertices.empty() || cp.indices.size() < 3) continue;
+        ModelMeshCPU mesh;
+        mesh.vertices = cp.vertices;
+        mesh.indices = cp.indices;
+        mesh.materialIndex = cp.materialIndex;
+        mesh.vertexCount = static_cast<uint32_t>(cp.vertices.size());
+        mesh.meshName = "cloth";
+        mesh.hasSkin = !skinned.empty();
+        for (GVertex& v : mesh.vertices) {
+            const GVertex* best = nullptr;
+            float best_d = 0;
+            for (const GVertex* s : skinned) {
+                const float dx = s->px - v.px, dy = s->py - v.py, dz = s->pz - v.pz;
+                const float d = dx * dx + dy * dy + dz * dz;
+                if (!best || d < best_d) best = s, best_d = d;
+            }
+            if (!best) continue;
+            for (int k = 0; k < 4; ++k) {
+                v.bidx[k] = best->bidx[k];
+                v.bwt[k] = best->bwt[k];
+            }
+        }
+        m.totalVerts += static_cast<uint32_t>(mesh.vertices.size());
+        m.totalTris += static_cast<uint32_t>(mesh.indices.size() / 3);
+        m.meshes.push_back(std::move(mesh));
+    }
+}
+
 std::optional<ModelPreview> load_model(Gw2Dat& dat, uint32_t file_id) {
     try {
         // Against the open dat: extract_entry() would reopen it for every model.
-        if (auto m = load_model_by_fileid(dat, file_id)) return *m;
+        if (auto m = load_model_by_fileid(dat, file_id)) {
+            ModelPreview out = *m;
+            add_cloth_meshes(out);
+            return out;
+        }
     } catch (const std::exception&) {
     }
     return std::nullopt;

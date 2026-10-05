@@ -904,6 +904,26 @@ void cmd_model(const Args& a) {
     j["totalTriangles"] = totalTri;
     j["meshes"] = std::move(meshes);
     j["materials"] = std::move(mats);
+    json cloth = json::array();
+    for (const auto& cp : model.clothPieces) {
+        float mn[3] = {1e30f, 1e30f, 1e30f}, mx[3] = {-1e30f, -1e30f, -1e30f};
+        for (const auto& v : cp.verts) {
+            const float p[3] = {v.px, v.py, v.pz};
+            for (int k = 0; k < 3; ++k) mn[k] = std::min(mn[k], p[k]), mx[k] = std::max(mx[k], p[k]);
+        }
+        float umn = 1e30f, umx = -1e30f, vmn = 1e30f, vmx = -1e30f;
+        size_t weighted = 0;
+        for (const auto& v : cp.verts) {
+            umn = std::min(umn, v.u); umx = std::max(umx, v.u);
+            vmn = std::min(vmn, v.v); vmx = std::max(vmx, v.v);
+            weighted += (v.boneWt[1] > 0 || v.boneIdx[0] != 0);
+        }
+        cloth.push_back({{"materialIndex", cp.materialIndex}, {"lockCount", cp.lockCount}, {"vertices", cp.verts.size()},
+                         {"uv", {umn, umx, vmn, vmx}}, {"skinnedVerts", weighted},
+                         {"triangles", cp.indices.size() / 3}, {"edges", cp.edges.size()},
+                         {"min", {mn[0], mn[1], mn[2]}}, {"max", {mx[0], mx[1], mx[2]}}});
+    }
+    j["cloth"] = std::move(cloth);
     // particle clouds + effect lights
     const auto& fx = model.effects;
     json emitters = json::array();
