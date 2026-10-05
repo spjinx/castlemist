@@ -114,6 +114,13 @@ constexpr UINT_PTR ID_CK_CLOSE = 2167;
 constexpr UINT_PTR ID_CH_EXPORT = 2168;
 constexpr UINT_PTR ID_CH_ASSEMBLE = 2169;
 constexpr UINT_PTR ID_CH_COMBINE = 2170;  // "Combine into one file" checkbox
+// The Look row: face / hair style combos, skin / hair / hair 2 colour swatches.
+constexpr UINT_PTR ID_CH_FACE = 2171;
+constexpr UINT_PTR ID_CH_HAIR = 2172;
+constexpr UINT_PTR ID_CH_SKIN_COLOR = 2173;
+constexpr UINT_PTR ID_CH_HAIR_COLOR = 2174;
+constexpr UINT_PTR ID_CH_HAIR_COLOR2 = 2175;
+constexpr UINT_PTR ID_CH_SAVE_LOOK = 2176;
 constexpr int ID_LISTVIEW = 2001;
 constexpr int ID_HEX_BEFORE = 2002;
 constexpr int ID_HEX_AFTER = 2003;
