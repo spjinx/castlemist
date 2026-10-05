@@ -1975,12 +1975,16 @@ void cmd_look_options(const Args& a) {
                 auto rgb = rp::swatch_rgb(*p, c);
                 char hex[8];
                 std::snprintf(hex, sizeof hex, "%02X%02X%02X", rgb[0], rgb[1], rgb[2]);
-                colors.push_back({{"id", c.id}, {"rgb", hex}});
+                colors.push_back({{"id", c.id}, {"rgb", hex}, {"name", rp::color_name(c.id)}});
             }
         return json{{"palette", uid}, {"colors", colors}};
     };
     j["skin"] = palette_json(pal.skin);
     j["hair_colors"] = palette_json(pal.hair);
+    j["eye_colors"] = palette_json(pal.eye);
+    if (pal.pattern) j["pattern_colors"] = palette_json(pal.pattern);
+    if (pal.glow) j["glow_colors"] = palette_json(pal.glow);
+    if (pal.accessory) j["accessory_colors"] = palette_json(pal.accessory);
     emit(j);
 }
 

@@ -1,19 +1,26 @@
 #include "castlemist/ripper/look.h"
 
+#include <algorithm>
+#include <iterator>
+
 #include "castlemist/ripper/dye.h"
 
 namespace castlemist::ripper {
 
 RacePalettes race_palettes(const std::string& race, const std::string& gender) {
     (void)gender;  // both genders share their race's palettes
-    // Palette uids, matched against the wiki's per-race swatch lists:
-    //   67 human/norn skin (36)   7 human/norn/asura hair (46)
-    //   89 asura skin (34)        20 charr fur and hair (35)
-    //   70 sylvari skin (96)      50 sylvari hair (148; the wiki lists 76 of them)
-    if (race == "Human" || race == "Norn") return {67, 7};
-    if (race == "Asura") return {89, 7};
-    if (race == "Charr") return {20, 20};
-    if (race == "Sylvari") return {70, 50};
+    // Palette uids, matched against the wiki's per-race swatch lists (regular +
+    // makeover-kit exclusive counts):
+    //   skin:    67 human/norn (36), 89 asura (34), 20 charr fur (35), 70 sylvari (96)
+    //   hair:    72 human/norn/asura (46+72), 57 charr (35+72), 50 sylvari (76+72)
+    //   eyes:    6 human/norn (31+50), 15 asura/charr (43+50), 25 sylvari (36+50)
+    //   pattern: 66 norn tattoos (14), 75 sylvari (64); the others reuse skin
+    //   glow:    52 sylvari (40);  accessory: 51 (21+30)
+    if (race == "Human") return {67, 72, 6, 67, 0, 51};
+    if (race == "Norn") return {67, 72, 6, 66, 0, 51};
+    if (race == "Asura") return {89, 72, 15, 89, 0, 51};
+    if (race == "Charr") return {20, 57, 15, 20, 0, 51};
+    if (race == "Sylvari") return {70, 50, 25, 75, 52, 0};
     return {};
 }
 
@@ -31,8 +38,28 @@ std::optional<character::DyeShift> palette_shift(uint32_t palette_uid, uint32_t 
 }
 
 std::array<uint8_t, 3> swatch_rgb(const cmap::Palette& palette, const cmap::PaletteColor& color) {
-    if (color.materials.empty()) return palette.base;
-    return apply_dye(dye_matrix(to_dye_shift(color.materials[0])), palette.base);
+    const std::array<uint8_t, 3> base =
+        palette.base == std::array<uint8_t, 3>{} ? std::array<uint8_t, 3>{192, 0, 0} : palette.base;
+    if (color.materials.empty()) return base;
+    return apply_dye(dye_matrix(to_dye_shift(color.materials[0])), base);
+}
+
+namespace {
+struct NamedColor {
+    uint32_t id;
+    const char8_t* name;
+};
+constexpr NamedColor kColorNames[] = {
+#include "color_names.inc"
+};
+} // namespace
+
+std::string color_name(uint32_t color_id) {
+    auto it = std::lower_bound(std::begin(kColorNames), std::end(kColorNames), color_id,
+                               [](const NamedColor& c, uint32_t id) { return c.id < id; });
+    if (it == std::end(kColorNames) || it->id != color_id) return {};
+    const char8_t* s = it->name;
+    return std::string(reinterpret_cast<const char*>(s));
 }
 
 void apply_look(AssemblyOptions& options, const character::CharacterLook& look, const std::string& race,

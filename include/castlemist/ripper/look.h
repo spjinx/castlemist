@@ -23,9 +23,14 @@
 namespace castlemist::ripper {
 
 /// Palette uids (cmap::palette()) of a race's character-creator colours; 0 = none.
+/// Each holds the regular colours first, then the Total Makeover Kit exclusives.
 struct RacePalettes {
     uint32_t skin = 0;
     uint32_t hair = 0;
+    uint32_t eye = 0;
+    uint32_t pattern = 0;    // sylvari skin pattern, norn tattoos, charr fur pattern, asura markings
+    uint32_t glow = 0;       // sylvari only
+    uint32_t accessory = 0;  // horns, tusks, ... (not sylvari)
 };
 
 /// By manifest race ("Sylvari") and gender ("Female"). Unknown race -> all 0.
@@ -39,8 +44,15 @@ character::DyeShift to_dye_shift(const cmap::ColorShift& s);
 std::optional<character::DyeShift> palette_shift(uint32_t palette_uid, uint32_t color_id);
 
 /// What a swatch of the colour looks like: its shift applied to the palette's
-/// base colour (exactly the wiki's swatch colours).
+/// base colour (exactly the wiki's swatch colours). Eye palettes store no base;
+/// their swatches use the iris red (192,0,0), which reproduces the wiki's eye
+/// swatches to within a few levels.
 std::array<uint8_t, 3> swatch_rgb(const cmap::Palette& palette, const cmap::PaletteColor& color);
+
+/// The colour's name ("Banana", "Midnight Green", "Aquamarine", ...), or empty
+/// when unknown. Dye names are the API's; character-creator names come from the
+/// GW2 wiki's lists, matched to the palettes (see color_names.inc).
+std::string color_name(uint32_t color_id);
 
 /// Puts `look` into assembly options: face and hair style indices, and the skin
 /// and hair colours resolved through the race's palettes (a colour the content

@@ -465,9 +465,12 @@ LRESULT CALLBACK PaletteWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
         const int i = GET_Y_LPARAM(lparam) / kCell * kCols + GET_X_LPARAM(lparam) / kCell;
         const castlemist::cmap::Palette* p = look_palette(g_ch_palette_target);
         if (i == 0) set_status(L"As the texture is authored (no colour).");
-        else if (p && i - 1 < static_cast<int>(p->colors.size()))
-            set_status(L"Colour " + std::to_wstring(i) + L" of " + std::to_wstring(p->colors.size()) + L" (id " +
-                       std::to_wstring(p->colors[static_cast<size_t>(i - 1)].id) + L")");
+        else if (p && i - 1 < static_cast<int>(p->colors.size())) {
+            const uint32_t id = p->colors[static_cast<size_t>(i - 1)].id;
+            const std::string name = castlemist::ripper::color_name(id);
+            set_status((name.empty() ? L"Colour" : utf8_to_wide(name)) + L" - " + std::to_wstring(i) + L" of " +
+                       std::to_wstring(p->colors.size()) + L" (id " + std::to_wstring(id) + L")");
+        }
         return 0;
     }
     case WM_LBUTTONDOWN: {
@@ -475,9 +478,12 @@ LRESULT CALLBACK PaletteWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
         const int i = row * kCols + col;
         const castlemist::cmap::Palette* p = look_palette(g_ch_palette_target);
         if (col < kCols && i < palette_cells()) {
-            look_color(g_ch_palette_target) = (i == 0 || !p) ? 0 : p->colors[static_cast<size_t>(i - 1)].id;
+            const uint32_t id = (i == 0 || !p) ? 0 : p->colors[static_cast<size_t>(i - 1)].id;
+            look_color(g_ch_palette_target) = id;
             refresh_swatches();
-            set_status(L"Look changed - Save look to keep it for this character.");
+            const std::string name = id ? castlemist::ripper::color_name(id) : std::string("default");
+            set_status(utf8_to_wide(name.empty() ? "colour " + std::to_string(id) : name) +
+                       L" - Save look to keep it for this character.");
         }
         DestroyWindow(hwnd);
         return 0;

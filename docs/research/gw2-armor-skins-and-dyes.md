@@ -234,7 +234,31 @@ identifies the palettes (uid: size):
 | accessory (all races) | 84 (21) |
 | every dye | 82 (643) |
 
-Eye palettes have a zero base and did not match by colour; not identified.
+Each palette lists the regular colours, then the Total Makeover Kit
+exclusives (wiki: Physical appearance/Exclusive_<race>): human/norn/asura
+hair = 72 (46 + 72; 7 is the regular part), charr hair = 57 (35 + 72),
+sylvari hair 50 (76 + 72), accessories 51 (21 + 30).
+
+**Eyes** have their own palettes with a zero base: 6 human/norn (31 + 50),
+15 asura/charr (43 + 50), 25 sylvari (36 + 50) -- the regular lists align by
+position; the shifts reproduce the wiki's eye swatches against an iris red of
+about (192,0,0) (human/asura within ~1 level; sylvari less exactly). The 50
+exclusives are shared colour objects (human = asura; sylvari shares 44).
+
+**Names.** Dye names are the API's. Creator colours have none in the API
+(sylvari skin: 0 of 96), and the game's own text is RC4-packed (needs keys
+captured from a live client), so `src/ripper/color_names.inc` carries the wiki
+names matched to colour ids (1302 names; 57 sylvari exclusive hair names are
+nearest-colour guesses).
+
+**Patterns.** Race `skinPatterns` is an array of 8-byte filerefs (sylvari
+female: 41497, 41487, 41491, 41493, 41495, 41489, 41473, 41463 -- textures).
+
+**Physique and face sliders.** `bodyBoneScales` (sylvari female: 6 =
+physiques) and `faceBoneScales` (25 = the face-detail sliders) are 24-byte
+records {array of 24-byte entries, array}: entry = {u64 bone token
+(tokenizeBoneName of the joint's leaf name: bone:Jaw, bone:Chin, ...), f32,
+array of packed sub-records}. Sub-records not decoded yet.
 
 **Applying.** A race's skin textures are authored in its skin palette's base
 colour (sylvari red = the dye base (128,26,26); human skin ~ (149,110,88)), so
