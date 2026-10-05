@@ -605,14 +605,26 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
             blit(diffuse, detail::to_image(baked->base), region, baked->scale, mode);
             if (baked->normal && mode == BlitMode::Replace)
                 blit(normal, detail::to_image(*baked->normal), region, baked->normal_scale);
-            // Glow masks span the same UV space as the part's texture: scale
-            // by the width ratio. Armor painted over a region puts out the glow
-            // beneath it.
-            auto blit_glow = [&](uint32_t mask_file, BlitMode m) {
+            // Glow masks, from the region's top-left. A skin pattern's mask
+            // covers the part's texture footprint; a sylvari's own glow mask
+            // (face, hair, ears) covers the width of the part's atlas rects,
+            // uniformly scaled -- not the texture, which can reach past them
+            // (the face's is 512 wide in a 384-wide rect, the hair's the whole
+            // atlas). Armor painted over a region puts out the glow beneath it.
+            auto blit_glow = [&](uint32_t mask_file, BlitMode m, bool own) {
                 ModelTextureCPU mask;
                 if (!mask_file || !decode_texture_full(ctx.dat, mask_file, mask) || mask.width <= 0) return;
-                const float scale = baked->scale * static_cast<float>(baked->base.width) / static_cast<float>(mask.width);
-                blit(emissive, glow_image(mask), region, scale, m);
+                int fw = static_cast<int>(std::lround(baked->scale * static_cast<float>(baked->base.width)));
+                int fh = static_cast<int>(std::lround(baked->scale * static_cast<float>(baked->base.height)));
+                if (own) {
+                    uint32_t x1 = region.ax;
+                    for (const composite::BlitRect& r : region.rects) x1 = std::max(x1, r.x1);
+                    fw = static_cast<int>(x1 - region.ax);
+                    fh = static_cast<int>(std::lround(static_cast<float>(fw) * static_cast<float>(mask.height) /
+                                                      static_cast<float>(mask.width)));
+                }
+                if (fw <= 0 || fh <= 0) return;
+                blit(emissive, resize_bilinear(glow_image(mask), fw, fh), region, 1.0f, m);
                 any_glow = true;
             };
             if (part.piece) {
@@ -622,8 +634,8 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
                 blit(emissive, dark, region, baked->scale);
                 workflow = armor_surface(*model, *baked, region, part.skin_meshes_are_part);
             }
-            if (pattern_glowing && pattern_mask) blit_glow(pattern_mask, BlitMode::Replace);
-            if (glowing && sylvari && !part.piece) blit_glow(own_glow_mask(*model), BlitMode::Add);
+            if (pattern_glowing && pattern_mask) blit_glow(pattern_mask, BlitMode::Replace, false);
+            if (glowing && sylvari && !part.piece) blit_glow(own_glow_mask(*model), BlitMode::Add, true);
         } else if (glowing && sylvari && !part.piece && part.keep_mesh) {
             // Self-textured hair: its glow on its own UVs.
             ModelTextureCPU mask;
