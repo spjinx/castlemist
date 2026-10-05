@@ -309,9 +309,16 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
         std::vector<character::ManifestDye> look_dyes;
         std::optional<ColorMatrix> skin;
         if (!part.piece) {
-            if (opt.skin_tint) skin = dye_matrix(*opt.skin_tint);
+            // Hair texels outside its dye masks are authored accents, not skin.
+            if (opt.skin_tint && part.name != "hair") skin = dye_matrix(*opt.skin_tint);
             if (part.name == "hair") {
-                const std::optional<character::DyeShift> tints[2] = {opt.hair_tint, opt.hair_tint2};
+                // Sylvari hair: channel 1 (a mask over the whole style) takes the
+                // skin colour and channel 2 the hair colour -- leaves it leaves
+                // out (striped fronds, accents) stay skin-toned, as in game.
+                // Other races: hair colour, then the second hair colour.
+                const bool sylvari_hair = ctx.race_key.rfind("Sylvari", 0) == 0;
+                const std::optional<character::DyeShift> tints[2] = {
+                    sylvari_hair ? opt.skin_tint : opt.hair_tint, sylvari_hair ? opt.hair_tint : opt.hair_tint2};
                 for (int ch = 0; ch < 2; ++ch)
                     if (tints[ch]) {
                         character::ManifestDye d;
