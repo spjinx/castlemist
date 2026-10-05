@@ -457,3 +457,17 @@ CM_TEST(dat, texture_rgba_decodes_the_exact_entry) {
         CHECK_EQ(t.baseId, get_by_base_id(dat, id));
     }
 }
+
+CM_TEST(dat, texture_full_prefers_the_high_res_copy) {
+    Gw2Dat& dat = shared_dat();
+    ModelTextureCPU t;
+    int exact_w = 0;
+    CHECK(decode_texture_full(dat, 151449, t, &exact_w));  // Warden Coat mask: 512x256 + a 1024x512 copy
+    CHECK_EQ(t.width, 1024);
+    CHECK_EQ(t.height, 512);
+    CHECK_EQ(exact_w, 512);
+    ModelTextureCPU base;
+    CHECK(decode_texture_full(dat, 2585044, base, &exact_w));  // Angler Vest base: no larger copy
+    CHECK_EQ(base.width, 512);
+    CHECK_EQ(exact_w, 512);
+}

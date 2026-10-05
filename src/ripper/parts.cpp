@@ -50,15 +50,39 @@ int add_texture(ModelPreview& m, const ImageRgba& im, uint32_t file_id, bool is_
 std::optional<BakedTextures> bake_part(Gw2Dat& dat, const composite::CompositeFileData& fd,
                                        const std::vector<character::ManifestDye>& manifest_dyes) {
     BakedTextures out;
-    if (!decode_texture_rgba(dat, fd.texture_base, out.base)) return std::nullopt;
+    // The highest resolution GW2 ships: a texture's full-size copy when there is
+    // one. The Composite names the reduced entry, which the atlas draws at 2x;
+    // a copy twice that size draws at 1x.
+    auto scale_of = [](int exact_w, int used_w) { return used_w > 0 && exact_w > 0 ? 2.0f * exact_w / used_w : 2.0f; };
+    int exact_w = 0;
+    if (!decode_texture_full(dat, fd.texture_base, out.base, &exact_w)) return std::nullopt;
+    out.scale = scale_of(exact_w, out.base.width);
+    std::array<ModelTextureCPU, 4> decoded;
+    std::array<bool, 4> have{};
+    int target_w = out.base.width, target_h = out.base.height;
+    for (size_t i = 0; i < 4; ++i) {
+        if (!fd.mask_dye[i] || !decode_texture_full(dat, fd.mask_dye[i], decoded[i])) continue;
+        have[i] = true;
+        if (decoded[i].width > target_w) {  // a sharper mask: bake at its resolution
+            target_w = decoded[i].width;
+            target_h = decoded[i].height;
+        }
+    }
+    if (target_w != out.base.width) {
+        out.scale *= static_cast<float>(out.base.width) / static_cast<float>(target_w);
+        ImageRgba up = resize_bilinear(to_image(out.base), target_w, target_h);
+        out.base.width = up.w;
+        out.base.height = up.h;
+        out.base.rgba = std::move(up.px);
+    }
     std::array<std::vector<uint8_t>, 4> masks;
     std::array<const std::vector<uint8_t>*, 4> mask_px{};
     std::array<std::optional<ColorMatrix>, 4> dyes{};
     for (size_t i = 0; i < 4; ++i) {
-        ModelTextureCPU m;
-        if (!fd.mask_dye[i] || !decode_texture_rgba(dat, fd.mask_dye[i], m)) continue;
+        if (!have[i]) continue;
+        ModelTextureCPU& m = decoded[i];
         if (m.width != out.base.width || m.height != out.base.height)  // resize rather than drop the channel
-            m.rgba = resize_nearest(to_image(m), out.base.width, out.base.height).px;
+            m.rgba = resize_bilinear(to_image(m), out.base.width, out.base.height).px;
         masks[i] = std::move(m.rgba);
         mask_px[i] = &masks[i];
     }
@@ -70,7 +94,11 @@ std::optional<BakedTextures> bake_part(Gw2Dat& dat, const composite::CompositeFi
     bake_dyes(out.base.rgba, out.base.width, out.base.height, mask_px, dyes);
     if (fd.texture_normal) {
         ModelTextureCPU n;
-        if (decode_texture_rgba(dat, fd.texture_normal, n)) out.normal = std::move(n);
+        int normal_exact_w = 0;
+        if (decode_texture_full(dat, fd.texture_normal, n, &normal_exact_w)) {
+            out.normal_scale = scale_of(normal_exact_w, n.width);
+            out.normal = std::move(n);
+        }
     }
     return out;
 }

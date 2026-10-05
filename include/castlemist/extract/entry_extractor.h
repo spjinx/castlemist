@@ -202,6 +202,12 @@ void set_texture_full_res(bool full); ///< true (default) = prefer the full-res 
 /// on the thread that owns @p dat. @return false for an unknown fileId or one
 /// that isn't a decodable texture.
 bool decode_texture_rgba(Gw2Dat& dat, uint32_t file_id, ModelTextureCPU& out);
+
+/// @brief The full-resolution copy of a fileId's texture when GW2 ships one (a
+///        same-format neighbour entry at exactly double size), else the entry
+///        itself. `exact_width`, when given, receives the width of the entry
+///        the fileId names, so the caller can tell the two apart.
+bool decode_texture_full(Gw2Dat& dat, uint32_t file_id, ModelTextureCPU& out, int* exact_width = nullptr);
 bool texture_full_res();              ///< Current preference.
 /// @}
 

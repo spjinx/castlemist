@@ -47,13 +47,18 @@ struct MeshUvInfo {
 std::optional<composite::BlitRect> choose_armor_rect(const composite::BlitRectSet& set,
                                                      const std::vector<MeshUvInfo>& meshes);
 
-/// The block of `tex` the rect shows: its top-left (rect width/2) x (rect height/2)
-/// texels, transparent where `tex` is smaller.
-ImageRgba crop_piece(const ImageRgba& tex, const composite::BlitRect& rect);
+/// The block of `tex` the rect shows: its top-left (rect width / scale) x
+/// (rect height / scale) texels, transparent where `tex` is smaller. `scale` is
+/// atlas pixels per texel: 2 for the usual reduced texture, 1 for a
+/// full-resolution copy.
+ImageRgba crop_piece(const ImageRgba& tex, const composite::BlitRect& rect, float scale = 2.0f);
 
 /// Nearest-neighbour resize (dye masks that come at another resolution than
 /// the base texture are brought to its size rather than dropped).
 ImageRgba resize_nearest(const ImageRgba& src, int w, int h);
+
+/// Bilinear resize (bringing a base texture up to its sharper dye masks' size).
+ImageRgba resize_bilinear(const ImageRgba& src, int w, int h);
 
 /// Where one part's texture lands in the full character atlas: the rects its
 /// UV points fall in, and the anchor (their common top-left) the texture is
@@ -68,9 +73,10 @@ struct AtlasRegion {
 /// their top-left. Empty when no rect is hit.
 AtlasRegion region_for(const composite::BlitRectSet& set, const std::vector<std::pair<float, float>>& uvs);
 
-/// Draws `tex` into the atlas at 2x from the region's anchor, writing only
-/// pixels inside the region's rects (nearest texel; alpha copied).
-void blit(ImageRgba& atlas, const ImageRgba& tex, const AtlasRegion& region);
+/// Draws `tex` into the atlas from the region's anchor at `scale` atlas pixels
+/// per texel (2 = the usual reduced texture, 1 = a full-resolution copy),
+/// bilinearly filtered, writing only pixels inside the region's rects.
+void blit(ImageRgba& atlas, const ImageRgba& tex, const AtlasRegion& region, float scale = 2.0f);
 
 /// Atlas UV -> UV within the cropped block: u' = (u*1024 - x0) / (x1 - x0), same for v.
 void remap_uv(float& u, float& v, const composite::BlitRect& rect);

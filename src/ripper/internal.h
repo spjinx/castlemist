@@ -30,6 +30,8 @@ struct BakedTextures {
     ModelTextureCPU base;
     std::optional<ModelTextureCPU> normal;
     int dyed = 0, undyed = 0;
+    float scale = 2.0f;         // atlas pixels per base texel (2 = reduced copy, 1 = full-resolution copy)
+    float normal_scale = 2.0f;  // the same for the normal map
 };
 std::optional<BakedTextures> bake_part(Gw2Dat& dat, const composite::CompositeFileData& fd,
                                        const std::vector<character::ManifestDye>& dyes);

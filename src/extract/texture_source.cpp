@@ -167,6 +167,19 @@ bool decode_texture_exact(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out) {
     return true;
 }
 
+bool decode_texture_full_res(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out, int* exact_width) {
+    uint32_t base = get_by_base_id(dat, fileId);
+    if (base == 0 || base - 1 >= dat.mft_data_list.size()) return false;
+    if (exact_width) {
+        int w = 0, h = 0;
+        std::string fmt;
+        *exact_width = peek_mft_atex(dat, base - 1, w, h, fmt) ? w : 0;
+    }
+    if (!decode_mft_atex(dat, resolve_res_index(dat, base - 1, /*wantFull=*/true), out)) return false;
+    out.fileId = fileId;
+    return true;
+}
+
 bool decode_texture_by_fileid_res(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out, bool want_full) {
     uint32_t base = get_by_base_id(dat, fileId);
     if (base == 0 || base - 1 >= dat.mft_data_list.size()) {

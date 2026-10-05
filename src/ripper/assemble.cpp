@@ -172,8 +172,8 @@ AssemblyReport assemble_character(const CharacterManifest& manifest, const std::
         AtlasRegion region = set ? region_for(*set, uvs) : AtlasRegion{};
         const bool in_atlas = !region.rects.empty();
         if (in_atlas) {
-            blit(diffuse, detail::to_image(baked->base), region);
-            if (baked->normal) blit(normal, detail::to_image(*baked->normal), region);
+            blit(diffuse, detail::to_image(baked->base), region, baked->scale);
+            if (baked->normal) blit(normal, detail::to_image(*baked->normal), region, baked->normal_scale);
         }
 
         if (!part.keep_mesh) {

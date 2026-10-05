@@ -80,8 +80,9 @@ PieceExportResult export_armor(const PieceContext& ctx, const character::Manifes
     }
     if (!rect) return skipped("no mesh inside an atlas rect");
 
-    int diffuse_idx = add_texture(*model, crop_piece(to_image(base), *rect), fd.texture_base, false);
-    int normal_idx = normal ? add_texture(*model, crop_piece(to_image(*normal), *rect), fd.texture_normal, true) : -1;
+    int diffuse_idx = add_texture(*model, crop_piece(to_image(base), *rect, baked->scale), fd.texture_base, false);
+    int normal_idx =
+        normal ? add_texture(*model, crop_piece(to_image(*normal), *rect, baked->normal_scale), fd.texture_normal, true) : -1;
     for (size_t mi : armor_meshes) {
         ModelMeshCPU& mesh = model->meshes[mi];
         for (auto& v : mesh.vertices) {

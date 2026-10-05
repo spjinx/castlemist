@@ -116,6 +116,9 @@ bool decode_texture_by_fileid_res(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU&
 /// @brief The entry the fileId names, never its full/reduced sibling.
 bool decode_texture_exact(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out);
 
+/// @brief The full-resolution sibling when one exists; `exact_width` gets the named entry's width.
+bool decode_texture_full_res(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out, int* exact_width);
+
 // -------------------------------------------------------------- game shaders --
 // game_shader.cpp
 

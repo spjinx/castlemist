@@ -43,10 +43,10 @@ float wrap_uv(float u) {
     return u - std::floor(u);
 }
 
-ImageRgba crop_piece(const ImageRgba& tex, const composite::BlitRect& rect) {
+ImageRgba crop_piece(const ImageRgba& tex, const composite::BlitRect& rect, float scale) {
     ImageRgba out;
-    out.w = static_cast<int>(rect.x1 - rect.x0) / 2;
-    out.h = static_cast<int>(rect.y1 - rect.y0) / 2;
+    out.w = static_cast<int>(static_cast<float>(rect.x1 - rect.x0) / scale);
+    out.h = static_cast<int>(static_cast<float>(rect.y1 - rect.y0) / scale);
     out.px.assign(static_cast<size_t>(out.w) * out.h * 4, 0);
     const int cw = std::min(out.w, tex.w), ch = std::min(out.h, tex.h);
     for (int y = 0; y < ch; ++y)
@@ -97,19 +97,65 @@ AtlasRegion region_for(const composite::BlitRectSet& set, const std::vector<std:
     return out;
 }
 
-void blit(ImageRgba& atlas, const ImageRgba& tex, const AtlasRegion& region) {
+void blit(ImageRgba& atlas, const ImageRgba& tex, const AtlasRegion& region, float scale) {
+    if (tex.w <= 0 || tex.h <= 0 || scale <= 0) return;
+    auto texel = [&](int x, int y, int c) {
+        x = std::clamp(x, 0, tex.w - 1);
+        y = std::clamp(y, 0, tex.h - 1);
+        return static_cast<float>(tex.px[(static_cast<size_t>(y) * tex.w + x) * 4 + c]);
+    };
     for (const composite::BlitRect& r : region.rects) {
-        for (uint32_t y = r.y0; y < r.y1 && y < static_cast<uint32_t>(atlas.h); ++y) {
-            const int ty = static_cast<int>((y - region.ay) / 2);
-            if (y < region.ay || ty >= tex.h) continue;
-            for (uint32_t x = r.x0; x < r.x1 && x < static_cast<uint32_t>(atlas.w); ++x) {
-                const int tx = static_cast<int>((x - region.ax) / 2);
-                if (x < region.ax || tx >= tex.w) continue;
-                std::memcpy(atlas.px.data() + (static_cast<size_t>(y) * atlas.w + x) * 4,
-                            tex.px.data() + (static_cast<size_t>(ty) * tex.w + tx) * 4, 4);
+        for (uint32_t y = std::max(r.y0, region.ay); y < r.y1 && y < static_cast<uint32_t>(atlas.h); ++y) {
+            const float fy = (static_cast<float>(y - region.ay) + 0.5f) / scale - 0.5f;
+            if (fy > static_cast<float>(tex.h) - 0.5f) continue;  // past the texture: leave the atlas alone
+            const int y0 = static_cast<int>(std::floor(fy));
+            const float ty = fy - static_cast<float>(y0);
+            for (uint32_t x = std::max(r.x0, region.ax); x < r.x1 && x < static_cast<uint32_t>(atlas.w); ++x) {
+                const float fx = (static_cast<float>(x - region.ax) + 0.5f) / scale - 0.5f;
+                if (fx > static_cast<float>(tex.w) - 0.5f) continue;
+                const int x0 = static_cast<int>(std::floor(fx));
+                const float tx = fx - static_cast<float>(x0);
+                uint8_t* dst = atlas.px.data() + (static_cast<size_t>(y) * atlas.w + x) * 4;
+                for (int c = 0; c < 4; ++c) {
+                    const float top = texel(x0, y0, c) * (1 - tx) + texel(x0 + 1, y0, c) * tx;
+                    const float bottom = texel(x0, y0 + 1, c) * (1 - tx) + texel(x0 + 1, y0 + 1, c) * tx;
+                    dst[c] = static_cast<uint8_t>(std::clamp(top * (1 - ty) + bottom * ty + 0.5f, 0.0f, 255.0f));
+                }
             }
         }
     }
+}
+
+ImageRgba resize_bilinear(const ImageRgba& src, int w, int h) {
+    ImageRgba out{w, h, std::vector<uint8_t>(static_cast<size_t>(w) * h * 4, 0)};
+    if (src.w <= 0 || src.h <= 0) return out;
+
+    // Edge-aligned: the first/last texel centres land on the first/last pixels.
+    const float sx = w > 1 && src.w > 1 ? static_cast<float>(w - 1) / static_cast<float>(src.w - 1) : 1.0f;
+    const float sy = h > 1 && src.h > 1 ? static_cast<float>(h - 1) / static_cast<float>(src.h - 1) : 1.0f;
+    auto texel = [&](int x, int y, int c) {
+        x = std::clamp(x, 0, src.w - 1);
+        y = std::clamp(y, 0, src.h - 1);
+        return static_cast<float>(src.px[(static_cast<size_t>(y) * src.w + x) * 4 + c]);
+    };
+    for (int y = 0; y < h; ++y) {
+        const float fy = static_cast<float>(y) / sy;
+        const int y0 = static_cast<int>(std::floor(fy));
+        const float ty = fy - static_cast<float>(y0);
+        for (int x = 0; x < w; ++x) {
+            const float fx = static_cast<float>(x) / sx;
+            const int x0 = static_cast<int>(std::floor(fx));
+            const float tx = fx - static_cast<float>(x0);
+            for (int c = 0; c < 4; ++c) {
+                const float top = texel(x0, y0, c) * (1 - tx) + texel(x0 + 1, y0, c) * tx;
+                const float bottom = texel(x0, y0 + 1, c) * (1 - tx) + texel(x0 + 1, y0 + 1, c) * tx;
+                out.px[(static_cast<size_t>(y) * w + x) * 4 + c] =
+                    static_cast<uint8_t>(std::clamp(top * (1 - ty) + bottom * ty + 0.5f, 0.0f, 255.0f));
+            }
+        }
+    }
+
+    return out;
 }
 
 void remap_uv(float& u, float& v, const composite::BlitRect& rect) {

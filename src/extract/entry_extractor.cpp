@@ -569,3 +569,8 @@ bool decode_texture_rgba(Gw2Dat& dat, uint32_t file_id, ModelTextureCPU& out) {
     if (file_id == 0) return false;
     return decode_texture_exact(dat, file_id, out);
 }
+
+bool decode_texture_full(Gw2Dat& dat, uint32_t file_id, ModelTextureCPU& out, int* exact_width) {
+    if (file_id == 0) return false;
+    return decode_texture_full_res(dat, file_id, out, exact_width);
+}

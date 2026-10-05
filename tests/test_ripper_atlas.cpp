@@ -171,8 +171,52 @@ CM_TEST(atlas, blit_places_texture_at_2x_inside_its_rects_only) {
     AtlasRegion r{{BlitRect{0, 512, 384, 1024}}, 0, 512};
     blit(atlas, tex, r);
     auto at = [&](int x, int y) { return int(atlas.px[(static_cast<size_t>(y) * 1024 + x) * 4]); };
-    CHECK_EQ(at(40, 512 + 20), 222);  // texel (20,10) -> atlas (40,532)
-    CHECK_EQ(at(41, 512 + 21), 222);
+    CHECK(at(40, 512 + 20) > 150);    // texel (20,10) -> atlas (40..41, 532..533), smoothly
+    CHECK(at(41, 512 + 21) > 150);
     CHECK_EQ(at(100, 700), 90);
     CHECK_EQ(at(500, 700), 0);        // outside the rect: untouched, though the texture reaches it
+}
+
+CM_TEST(atlas, blit_full_resolution_texture_one_to_one) {
+    // A full-resolution copy covers the same atlas region at one texel per pixel.
+    ImageRgba atlas{1024, 1024, std::vector<uint8_t>(1024 * 1024 * 4, 0)};
+    ImageRgba tex = solid(1024, 512, 90);
+    tex.px[(10 * 1024 + 20) * 4] = 222;  // texel (20,10)
+    AtlasRegion r{{BlitRect{0, 512, 384, 1024}}, 0, 512};
+    blit(atlas, tex, r, 1.0f);
+    auto at = [&](int x, int y) { return int(atlas.px[(static_cast<size_t>(y) * 1024 + x) * 4]); };
+    CHECK_EQ(at(20, 522), 222);
+    CHECK_EQ(at(21, 522), 90);
+}
+
+CM_TEST(atlas, blit_upscales_smoothly) {
+    // Two texels 0 and 200 side by side, drawn at 2x: the pixel between them blends.
+    ImageRgba atlas{1024, 1024, std::vector<uint8_t>(1024 * 1024 * 4, 0)};
+    ImageRgba tex = solid(2, 1, 0);
+    tex.px[4] = 200;  // texel (1,0)
+    AtlasRegion r{{BlitRect{0, 0, 4, 2}}, 0, 0};
+    blit(atlas, tex, r, 2.0f);
+    const int mid = atlas.px[(0 * 1024 + 2) * 4];  // between the two texel centres
+    CHECK(mid > 40 && mid < 160);
+    CHECK_EQ(int(atlas.px[(0 * 1024 + 0) * 4]), 0);
+    CHECK_EQ(int(atlas.px[(0 * 1024 + 3) * 4]), 200);
+}
+
+CM_TEST(atlas, crop_full_resolution_takes_the_whole_rect) {
+    ImageRgba tex = solid(1024, 512, 10);
+    ImageRgba out = crop_piece(tex, BlitRect{0, 512, 384, 1024}, 1.0f);
+    CHECK_EQ(out.w, 384);
+    CHECK_EQ(out.h, 512);
+}
+
+CM_TEST(atlas, resize_bilinear_blends_between_texels) {
+    ImageRgba src = solid(2, 1, 0);
+    src.px[4] = 200;  // texel (1,0)
+    ImageRgba big = resize_bilinear(src, 4, 2);
+    CHECK_EQ(big.w, 4);
+    CHECK_EQ(big.h, 2);
+    CHECK_EQ(int(big.px[0]), 0);              // left edge keeps the left texel
+    CHECK_EQ(int(big.px[3 * 4]), 200);        // right edge keeps the right texel
+    const int mid = big.px[1 * 4];            // between them: a blend
+    CHECK(mid > 20 && mid < 120);
 }
