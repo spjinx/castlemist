@@ -9,7 +9,8 @@ What it does
   * applies the root rotation / scale, so the armature and meshes are at identity
   * joins each avatar piece into one object -- Body (bare body + head), Hair, and
     each armor piece / back item / weapon on its own, so they can be toggled;
-    shape keys -- face details, Blink, vrc.v_*, Hide Chest/Legs/... -- survive
+    shape keys -- face details, Blink, vrc.v_* -- survive; UV sets are named UVMap and
+    UVDiscard (Poiyomi UV Tile Discard) on every piece before joining
   * points the eye bones up with no roll (VRChat: Y up, Z forward)
   * names the armature "Armature"
   * exports .fbx for Unity (Y up, -Z forward, no leaf bones, textures embedded) and
@@ -43,6 +44,19 @@ def convert(src, out):
     # One object per avatar piece: castlemist names meshes "<piece>_<n>"
     # (Body, Hair, Coat, Gloves, ...); the parts of a piece join, pieces stay
     # apart so they can be toggled.
+    # The same UV sets, same names, on every mesh before joining (Blender joins
+    # UV layers by name): UVMap, and UVDiscard (UV1, Poiyomi UV Tile Discard).
+    for o in meshes:
+        layers = o.data.uv_layers
+        if len(layers) == 0:
+            layers.new(name="UVMap")
+        layers[0].name = "UVMap"
+        if len(layers) < 2:
+            layers.new(name="UVDiscard", do_init=True)
+        layers[1].name = "UVDiscard"
+        while len(layers) > 2:
+            layers.remove(layers[2])
+
     groups = {}
     for o in meshes:
         piece = o.name.rsplit("_", 1)[0] if "_" in o.name else o.name

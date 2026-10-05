@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <tuple>
 #include <filesystem>
 #include <fstream>
@@ -223,6 +224,16 @@ void prune_joints(ModelPreview& model) {
 } // namespace
 
 std::vector<std::string> make_vrchat_ready(ModelPreview& model) {
+    // The same two UV sets on every mesh -- UV0, and UV1 (tile 0 unless a body
+    // part already has its discard tile) -- so joined meshes keep them aligned.
+    for (ModelMeshCPU& m : model.meshes) {
+        if (m.exportUv1) continue;
+        m.exportUv1 = true;
+        for (GVertex& v : m.vertices) {
+            v.uv1[0][0] = std::clamp(v.u - std::floor(v.u), 1e-4f, 1 - 1e-4f);
+            v.uv1[0][1] = std::clamp(v.v - std::floor(v.v), 1e-4f, 1 - 1e-4f);
+        }
+    }
     add_vrchat_face_keys(model);
     merge_meshes_by_piece(model);
     fix_hierarchy(model);
@@ -392,7 +403,14 @@ VrchatReport export_vrchat(const character::CharacterManifest& manifest, const s
       << "  4. Add a VRC Phys Bone on each chain root below (hair, cloth, stems):\n";
     for (const std::string& c : r.physbone_chains) n << "       " << c << "\n";
     if (r.physbone_chains.empty()) n << "       (none found)\n";
-    n << "  5. Face details: the Body mesh carries <slider>+ / <slider>- blend shapes (Cheeks+, Jaw Width-, ...)\n"
+    n << "  5. Each armor piece is its own mesh (Coat, Gloves, Boots, Helm, ...) -- toggle them with\n"
+      << "     animations. The whole body is kept; hide skin under armor with Poiyomi's UV Tile Discard on\n"
+      << "     the BodyAtlas material, UV channel UVDiscard (UV1). Tiles count from the bottom-left,\n"
+      << "     (0,0) (1,0) (2,0) (3,0) then the row above: head = (0,0), chest = (1,0), legs = (2,0),\n"
+      << "     hands = (3,0), feet = (0,1).\n"
+      << "     Body and Hair use BodyAtlas (their textures before any armor is painted over them);\n"
+      << "     the armor uses CharacterAtlas.\n"
+      << "  6. Face details: the Body mesh carries <slider>+ / <slider>- blend shapes (Cheeks+, Jaw Width-, ...)\n"
       << "     already set to the saved look; adjust them in the SkinnedMeshRenderer if you like.\n"
       << "\nBones and blend shapes are generated from the game's own rig; visemes and blink are\n"
       << "approximations (GW2 has none) -- tweak in Blender if a mouth shape looks off.\n";

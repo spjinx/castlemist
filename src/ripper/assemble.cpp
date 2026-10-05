@@ -229,39 +229,25 @@ struct Selection {
     std::string file;                         // separate mode: recorded on the report's parts
 };
 
-// VRChat: a bare-body part stays (nothing is dropped under armor) but can be
-// hidden two ways -- a "Hide <part>" blend shape that pulls it 1.5 cm inside
-// itself (on by default under worn armor), and a UV1 tile for Poiyomi's UV
-// Tile Discard (chest 1, legs 2, hands 3, feet row 2 tile 0; everything else
-// tile 0). Applies to meshes [first, end).
-void vrchat_body_part(ModelPreview& out, size_t first, const std::string& part, const std::set<std::string>& worn) {
-    struct Info { const char* part; const char* key; const char* covered_by; float tu, tv; };
-    static const Info kParts[] = {{"body chest", "Hide Chest", "Coat", 1, 0},
-                                  {"body legs", "Hide Legs", "Leggings", 2, 0},
-                                  {"body hands", "Hide Hands", "Gloves", 3, 0},
-                                  {"body feet", "Hide Feet", "Boots", 0, 1}};
-    const Info* info = nullptr;
+// VRChat: a bare-body part stays (nothing is dropped under armor) and gets a
+// UV1 tile for Poiyomi's UV Tile Discard -- tiles count from the bottom-left,
+// (0,0) (1,0) (2,0) (3,0), then the row above: head and everything else (0,0),
+// chest (1,0), legs (2,0), hands (3,0), feet (0,1). glTF's V runs down (Blender
+// and Unity flip it on import), so a tile row up is a V step down here.
+void vrchat_body_part(ModelPreview& out, size_t first, const std::string& part, const std::set<std::string>&) {
+    struct Info { const char* part; float tu, tv; };
+    static const Info kParts[] = {{"body chest", 1, 0}, {"body legs", 2, 0}, {"body hands", 3, 0}, {"body feet", 0, 1}};
+    float tu = 0, tv = 0;
     for (const Info& i : kParts)
-        if (part == i.part) info = &i;
-    constexpr float kShrink = 0.6f;  // GW2 inches (~1.5 cm)
+        if (part == i.part) tu = i.tu, tv = i.tv;
     for (size_t mi = first; mi < out.meshes.size(); ++mi) {
         ModelMeshCPU& mesh = out.meshes[mi];
         mesh.exportUv1 = true;
         for (GVertex& v : mesh.vertices) {
-            v.uv1[0][0] = v.u - std::floor(v.u) + (info ? info->tu : 0);
-            v.uv1[0][1] = v.v - std::floor(v.v) + (info ? info->tv : 0);
+            // Kept just inside the tile, so an edge texel can't land in the next one.
+            v.uv1[0][0] = std::clamp(v.u - std::floor(v.u), 1e-4f, 1 - 1e-4f) + tu;
+            v.uv1[0][1] = std::clamp(v.v - std::floor(v.v), 1e-4f, 1 - 1e-4f) - tv;
         }
-        if (!info || !mesh.hasSkin) continue;
-        MorphTargetCPU t{info->key, std::vector<float>(mesh.vertices.size() * 3), worn.count(info->covered_by) ? 1.0f : 0.0f};
-        for (size_t vi = 0; vi < mesh.vertices.size(); ++vi) {
-            const GVertex& v = mesh.vertices[vi];
-            const float l = std::sqrt(v.nx * v.nx + v.ny * v.ny + v.nz * v.nz);
-            if (l < 1e-6f) continue;
-            t.delta[vi * 3] = -v.nx / l * kShrink;
-            t.delta[vi * 3 + 1] = -v.ny / l * kShrink;
-            t.delta[vi * 3 + 2] = -v.nz / l * kShrink;
-        }
-        mesh.morphs.push_back(std::move(t));
     }
 }
 
@@ -336,7 +322,15 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
     bool any_glow = false;
     const bool sylvari = ctx.race_key.rfind("Sylvari", 0) == 0;
 
+    // VRChat: the body and hair get the atlas as it is before any armor paints
+    // over it (a helm takes the hair's rect, gloves the hands'...), so with the
+    // armor toggled off they still show their own textures.
+    std::optional<ImageRgba> body_diffuse, body_normal;
     for (const Part& part : parts) {
+        if (opt.vrchat && part.piece && !body_diffuse) {
+            body_diffuse = diffuse;
+            body_normal = normal;
+        }
         std::optional<ModelPreview> model = ctx.model(part.fd->mesh_base);
         if (!model) {
             report(part.name, "dropped", "model failed to load", part.fd->mesh_base);
@@ -489,6 +483,21 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
         if (any_glow) mat.emissiveTex = detail::add_texture(out, emissive, 0, false);
         out.materials.push_back(mat);
         for (size_t mi : atlas_meshes) out.meshes[mi].materialIndex = mat.index;
+        if (opt.vrchat) {  // Body and Hair on the pre-armor atlas
+            if (!body_diffuse) {
+                body_diffuse = diffuse;
+                body_normal = normal;
+            }
+            ModelMaterialCPU body = mat;
+            body.index = static_cast<uint32_t>(out.materials.size());
+            body.materialName = "BodyAtlas";
+            body.diffuseTex = detail::add_texture(out, *body_diffuse, 0, false);
+            body.normalTex = sel.preview ? -1 : detail::add_texture(out, *body_normal, 0, true);
+            out.materials.push_back(body);
+            for (size_t mi : atlas_meshes)
+                if (out.meshes[mi].meshName == "Body" || out.meshes[mi].meshName == "Hair")
+                    out.meshes[mi].materialIndex = body.index;
+        }
     }
 
     // ---- back item: merges onto the skeleton by joint name ------------------------

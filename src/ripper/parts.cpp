@@ -54,8 +54,9 @@ void add_cloth_meshes(ModelPreview& m) {
                 v.bwt[k] = best->bwt[k];
             }
         }
-        // Cloth proxies are often wound opposite to their normals; engines that
-        // cull back faces (Unity) would hide them. Match the winding to the normals.
+        // Cloth proxies often carry normals opposite to their winding. The winding
+        // is right (it faces out, as in game); flip the normals to match it so
+        // they light correctly, and engines that cull back faces (Unity) show them.
         long agree = 0;
         for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
             const GVertex* t[3];
@@ -73,7 +74,10 @@ void add_cloth_meshes(ModelPreview& m) {
             agree += (gx * nx + gy * ny + gz * nz) >= 0 ? 1 : -1;
         }
         if (agree < 0)
-            for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) std::swap(mesh.indices[i + 1], mesh.indices[i + 2]);
+            for (GVertex& v : mesh.vertices) {
+                v.nx = -v.nx; v.ny = -v.ny; v.nz = -v.nz;
+                v.bx = -v.bx; v.by = -v.by; v.bz = -v.bz;  // keep the tangent frame right-handed
+            }
         m.totalVerts += static_cast<uint32_t>(mesh.vertices.size());
         m.totalTris += static_cast<uint32_t>(mesh.indices.size() / 3);
         m.meshes.push_back(std::move(mesh));
