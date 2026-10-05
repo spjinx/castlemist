@@ -48,7 +48,8 @@ int add_texture(ModelPreview& m, const ImageRgba& im, uint32_t file_id, bool is_
 }
 
 std::optional<BakedTextures> bake_part(Gw2Dat& dat, const composite::CompositeFileData& fd,
-                                       const std::vector<character::ManifestDye>& manifest_dyes) {
+                                       const std::vector<character::ManifestDye>& manifest_dyes,
+                                       const std::optional<ColorMatrix>& rest) {
     BakedTextures out;
     // The highest resolution GW2 ships: a texture's full-size copy when there is
     // one. The Composite names the reduced entry, which the atlas draws at 2x;
@@ -91,7 +92,7 @@ std::optional<BakedTextures> bake_part(Gw2Dat& dat, const composite::CompositeFi
         dyes[static_cast<size_t>(d.slot)] = dye_matrix(*d.shift);
         (mask_px[static_cast<size_t>(d.slot)] ? out.dyed : out.undyed)++;
     }
-    bake_dyes(out.base.rgba, out.base.width, out.base.height, mask_px, dyes);
+    bake_dyes(out.base.rgba, out.base.width, out.base.height, mask_px, dyes, rest);
     if (fd.texture_normal) {
         ModelTextureCPU n;
         int normal_exact_w = 0;

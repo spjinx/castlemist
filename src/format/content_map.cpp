@@ -1,6 +1,7 @@
 #include "castlemist/format/content_map.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <span>
@@ -76,6 +77,29 @@ struct Edge {
     uint32_t target_off;
 };
 std::unordered_map<uint64_t, ObjRef> g_obj_at;  // key(pack ordinal, offset)
+
+// Colour palettes (type 147) and the colours (type 9) they list. A palette's
+// entries are 24 bytes from the array its +48 field points at (an absolute
+// content offset, count at +56), each starting with a pointer to a colour
+// object -- in-pack (the u64 is the colour's offset) or through externalOffsets
+// like item->skin links. A colour's material shifts sit the same way: array at
+// +48, count at +56, entries of 5 floats then a u32 material index (24 bytes).
+// The palette's base colour is BGR at +40 and its id the uid at +20. Measured against a live Gw2.dat:
+// palette 70 = the sylvari skin colours (96), 7 = human/norn/asura hair (46);
+// their shifts applied to the base reproduce the wiki's swatches exactly.
+struct PaletteRef {
+    bool external;
+    uint32_t tfi;
+    uint32_t target_off;
+};
+struct PendingPalette {
+    uint32_t id, pack;
+    std::array<uint8_t, 3> base;
+    std::vector<PaletteRef> entries;
+};
+std::unordered_map<uint64_t, PaletteColor> g_colors_at;  // key(pack ordinal, offset), until finalize
+std::vector<PendingPalette> g_pending_palettes;
+std::unordered_map<uint32_t, Palette> g_palettes;  // palette dataId -> palette. Part of the disk cache.
 std::vector<Edge> g_edges;
 std::vector<uint32_t> g_pack_file_ids;     // by pack ordinal; 0 = unknown
 uint32_t g_anchor_pack = UINT32_MAX;       // ordinal of the pack carrying fileRefs
@@ -252,6 +276,34 @@ void parse_cntc(const std::vector<uint8_t>& d, uint32_t base_id, uint32_t file_i
             for (const auto& [reloc, edge] : out) g_edges.push_back(edge);
         }
 
+        auto u64_at = [&](size_t q) { return u32(q) | (static_cast<uint64_t>(u32(q + 4)) << 32); };
+        if (type == CONTENT_TYPE_COLOR && o + 64 <= nextOff) {
+            PaletteColor c;
+            c.id = id;
+            const uint64_t at = u64_at(cOff + o + 48);
+            const uint32_t cnt = u32(cOff + o + 56);
+            for (uint32_t i = 0; i < cnt && i < 8 && at >= o && at + 24 * (i + 1) <= nextOff && cOff + at + 24 * (i + 1) <= n;
+                 ++i) {
+                float f[5];
+                std::memcpy(f, d.data() + cOff + at + 24 * i, sizeof f);
+                c.materials.push_back({f[0] - 128.0f, f[1] / 128.0f, f[2], f[3] / 128.0f, f[4] / 128.0f});
+            }
+            g_colors_at[key(pack, o)] = std::move(c);
+        }
+        if (type == CONTENT_TYPE_PALETTE && o + 64 <= nextOff) {
+            // Keyed by its uid (+20): +40, a dataId elsewhere, holds the base colour here.
+            PendingPalette pal{u32(cOff + o + 20), pack, {d[cOff + o + 42], d[cOff + o + 41], d[cOff + o + 40]}, {}};
+            const uint64_t at = u64_at(cOff + o + 48);
+            const uint32_t cnt = u32(cOff + o + 56);
+            for (uint32_t i = 0; i < cnt && at >= o && at + 24 * (i + 1) <= nextOff && cOff + at + 24 * (i + 1) <= n; ++i) {
+                const uint32_t reloc = static_cast<uint32_t>(at + 24 * i);
+                auto e = std::lower_bound(eo.begin(), eo.end(), std::make_pair(reloc, 0u));
+                const bool external = e != eo.end() && e->first == reloc;
+                pal.entries.push_back({external, external ? e->second : 0, u32(cOff + reloc)});
+            }
+            g_pending_palettes.push_back(std::move(pal));
+        }
+
         if (type == CONTENT_TYPE_SKIN && o + 216 <= nextOff && cOff + o + 216 <= n) {
             uint64_t token = u32(cOff + o + 208) | (static_cast<uint64_t>(u32(cOff + o + 212)) << 32);
             if (token) g_skin_tokens[id] = token;
@@ -278,30 +330,41 @@ void parse_cntc(const std::vector<uint8_t>& d, uint32_t base_id, uint32_t file_i
     }
 }
 
+// Pack ordinals in fileId order, for external targets: externalOffsets count
+// from the pack carrying fileRefs. Needs the anchor's fileId; without fileIds
+// only in-pack pointers resolve.
+struct PackOrder {
+    std::vector<std::pair<uint32_t, uint32_t>> by_fid;  // {fileId, ordinal}
+    size_t anchor_rank = SIZE_MAX;
+
+    uint32_t target(uint32_t tfi) const {  // UINT32_MAX = unknown
+        if (anchor_rank == SIZE_MAX || anchor_rank + tfi >= by_fid.size()) return UINT32_MAX;
+        return by_fid[anchor_rank + tfi].second;
+    }
+};
+
+PackOrder pack_order() {
+    PackOrder o;
+    for (uint32_t p = 0; p < g_pack_file_ids.size(); ++p)
+        if (g_pack_file_ids[p]) o.by_fid.push_back({g_pack_file_ids[p], p});
+    std::sort(o.by_fid.begin(), o.by_fid.end());
+    if (g_anchor_pack != UINT32_MAX && g_pack_file_ids[g_anchor_pack])
+        o.anchor_rank = std::lower_bound(o.by_fid.begin(), o.by_fid.end(),
+                                         std::make_pair(g_pack_file_ids[g_anchor_pack], 0u)) - o.by_fid.begin();
+    return o;
+}
+
 // Resolve every queued pointer, then derive each item's links: appearance
 // objects it points at directly, then (one level) those of the items inside any
 // container it points at.
 void finalize_links() {
     if (g_edges.empty()) return;
 
-    // Pack ordinals in fileId order, for external targets. Needs the anchor's
-    // fileId; without fileIds only local pointers resolve.
-    std::vector<std::pair<uint32_t, uint32_t>> by_fid;  // {fileId, ordinal}
-    for (uint32_t p = 0; p < g_pack_file_ids.size(); ++p)
-        if (g_pack_file_ids[p]) by_fid.push_back({g_pack_file_ids[p], p});
-    std::sort(by_fid.begin(), by_fid.end());
-    size_t anchor_rank = SIZE_MAX;
-    if (g_anchor_pack != UINT32_MAX && g_pack_file_ids[g_anchor_pack])
-        anchor_rank = std::lower_bound(by_fid.begin(), by_fid.end(),
-                                       std::make_pair(g_pack_file_ids[g_anchor_pack], 0u)) - by_fid.begin();
-
+    const PackOrder order = pack_order();
     std::unordered_map<uint64_t, std::vector<uint64_t>> adj;  // source object -> targets, field order
     for (const Edge& e : g_edges) {
         uint32_t tpack = e.src_pack;
-        if (e.external) {
-            if (anchor_rank == SIZE_MAX || anchor_rank + e.tfi >= by_fid.size()) continue;
-            tpack = by_fid[anchor_rank + e.tfi].second;
-        }
+        if (e.external && (tpack = order.target(e.tfi)) == UINT32_MAX) continue;
         uint64_t t = key(tpack, e.target_off);
         if (g_obj_at.count(t)) adj[key(e.src_pack, e.src_off)].push_back(t);
     }
@@ -335,10 +398,30 @@ void finalize_links() {
     }
 }
 
+// Resolve every queued palette's entries to their colours. An entry whose
+// colour can't be found is left out.
+void finalize_palettes() {
+    if (g_pending_palettes.empty()) return;
+    const PackOrder order = pack_order();
+    for (const PendingPalette& p : g_pending_palettes) {
+        Palette pal{p.id, p.base, {}};
+        for (const PaletteRef& r : p.entries) {
+            const uint32_t tpack = r.external ? order.target(r.tfi) : p.pack;
+            if (tpack == UINT32_MAX) continue;
+            auto it = g_colors_at.find(key(tpack, r.target_off));
+            if (it != g_colors_at.end()) pal.colors.push_back(it->second);
+        }
+        g_palettes[p.id] = std::move(pal);
+    }
+    g_pending_palettes.clear();
+    g_colors_at.clear();
+}
+
 // Translate every queued object's fileRefs indices to fileIds and publish them.
 // Objects stay queued if the fileRefs pack hasn't been seen yet.
 void finalize() {
     finalize_links();
+    finalize_palettes();
     if (g_file_refs.empty()) return;
     for (PendingObject& p : g_pending) {
         std::vector<uint32_t> fids;
@@ -369,6 +452,9 @@ void clear() {
     g_edges.clear();
     g_pack_file_ids.clear();
     g_anchor_pack = UINT32_MAX;
+    g_colors_at.clear();
+    g_pending_palettes.clear();
+    g_palettes.clear();
 }
 
 size_t build(const std::string& dat_path, const std::vector<MftData>& cntc_entries,
@@ -423,6 +509,11 @@ uint64_t skin_token(uint32_t skin_id) {
     return it == g_skin_tokens.end() ? 0 : it->second;
 }
 
+const Palette* palette(uint32_t id) {
+    auto it = g_palettes.find(id);
+    return it == g_palettes.end() ? nullptr : &it->second;
+}
+
 const std::vector<ContentLink>& item_links(uint32_t item_id) {
     static const std::vector<ContentLink> none;
     auto it = g_item_links.find(item_id);
@@ -439,7 +530,10 @@ const std::string& name_for_fileid(uint32_t file_id) {
 // (GC2N caches were keyed by uid@+20 and stored raw fileRefs indices as fileIds;
 // GC3N/GC4N caches held only partial item->skin links. load() rejects them all,
 // so the map is rebuilt.)
-constexpr uint32_t kCacheMagic = 0x4E374347;  // 'GC7N' (adds skin tokens)
+// GC7N added skin tokens (u32 count3, count3 * {u32 skin, u64 token}); GC8N adds
+// palettes: u32 count4, count4 * {u32 id, u8 base[3], u32 n, n * {u32 colour id,
+// u8 m, m * 5 floats}}.
+constexpr uint32_t kCacheMagic = 0x4E384347;  // 'GC8N' 
 bool save(const std::wstring& path) {
     FILE* f = _wfopen(path.c_str(), L"wb");
     if (!f) return false;
@@ -469,6 +563,24 @@ bool save(const std::wstring& path) {
     for (const auto& [skin, token] : g_skin_tokens) {
         std::fwrite(&skin, 4, 1, f);
         std::fwrite(&token, 8, 1, f);
+    }
+    uint32_t count4 = static_cast<uint32_t>(g_palettes.size());
+    std::fwrite(&count4, 4, 1, f);
+    for (const auto& [id, pal] : g_palettes) {
+        std::fwrite(&id, 4, 1, f);
+        std::fwrite(pal.base.data(), 1, 3, f);
+        uint32_t nc = static_cast<uint32_t>(pal.colors.size());
+        std::fwrite(&nc, 4, 1, f);
+        for (const PaletteColor& c : pal.colors) {
+            uint8_t m = static_cast<uint8_t>(std::min<size_t>(c.materials.size(), 255));
+            std::fwrite(&c.id, 4, 1, f);
+            std::fwrite(&m, 1, 1, f);
+            for (size_t i = 0; i < m; ++i) {
+                const ColorShift& s = c.materials[i];
+                const float v[5] = {s.brightness, s.contrast, s.hue, s.saturation, s.lightness};
+                std::fwrite(v, 4, 5, f);
+            }
+        }
     }
     std::fclose(f);
     return true;
@@ -514,8 +626,32 @@ bool load(const std::wstring& path) {
             g_skin_tokens[skin] = token;
         }
     }
+    uint32_t count4 = 0;
+    if (std::fread(&count4, 4, 1, f) == 1) {
+        for (uint32_t i = 0; i < count4; ++i) {
+            Palette pal;
+            uint32_t nc = 0;
+            if (std::fread(&pal.id, 4, 1, f) != 1 || std::fread(pal.base.data(), 1, 3, f) != 3 ||
+                std::fread(&nc, 4, 1, f) != 1)
+                break;
+            bool ok = true;
+            for (uint32_t k = 0; k < nc && ok; ++k) {
+                PaletteColor c;
+                uint8_t m = 0;
+                ok = std::fread(&c.id, 4, 1, f) == 1 && std::fread(&m, 1, 1, f) == 1;
+                for (uint8_t j = 0; j < m && ok; ++j) {
+                    float v[5];
+                    ok = std::fread(v, 4, 5, f) == 5;
+                    c.materials.push_back({v[0], v[1], v[2], v[3], v[4]});
+                }
+                pal.colors.push_back(std::move(c));
+            }
+            if (!ok) break;
+            g_palettes[pal.id] = std::move(pal);
+        }
+    }
     std::fclose(f);
-    return !g_map.empty();
+    return !g_map.empty() || !g_palettes.empty();
 }
 
 } // namespace castlemist::cmap

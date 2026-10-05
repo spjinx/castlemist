@@ -16,6 +16,7 @@
 // table; resolve() answers lookups. The table can be cached to disk so it only
 // has to be built once per game version.
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -83,6 +84,38 @@ const std::vector<ContentLink>& item_links(uint32_t item_id);
 /// the key into the Composite file's per-race armor entries (composite.h).
 /// 0 when the skin is unknown or carries none. Part of the disk cache.
 uint64_t skin_token(uint32_t skin_id);
+
+/// A colour's shift for one material, in the units the GW2 API uses for dyes
+/// (/v2/colors cloth/leather/...): brightness -128..127, contrast/saturation/
+/// lightness as multipliers, hue in degrees. Stored as floats x128 (+128 for
+/// brightness) in the colour object.
+struct ColorShift {
+    float brightness = 0, contrast = 1, hue = 0, saturation = 1, lightness = 1;
+};
+
+/// A colour content object (cntc type 9; dye colours are the API /v2/colors
+/// ids): its per-material shifts in stored order (cloth, leather, metal, fur
+/// for a dye; one entry for most character-creator colours).
+struct PaletteColor {
+    uint32_t id = 0;
+    std::vector<ColorShift> materials;
+};
+
+/// A colour palette (cntc type 147), e.g. a race's skin or hair colours in the
+/// character creator. `base` is the RGB the palette's shifts are calibrated
+/// against -- the colour a texture tinted by it is authored in.
+struct Palette {
+    uint32_t id = 0;
+    std::array<uint8_t, 3> base{};
+    std::vector<PaletteColor> colors;
+};
+
+constexpr uint32_t CONTENT_TYPE_COLOR = 9;
+constexpr uint32_t CONTENT_TYPE_PALETTE = 147;
+
+/// The palette with uid `id` (+20; palettes carry no dataId), nullptr if
+/// unknown. Part of the disk cache.
+const Palette* palette(uint32_t id);
 
 /// The object's first asset fileId (item: icon; skin/outfit: model).
 uint32_t resolve(uint32_t content_type, uint32_t id);

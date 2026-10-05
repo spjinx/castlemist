@@ -78,6 +78,7 @@ venv/
 .mcp.json
 # GW2 API keys (plain text, see src/character/key_store.cpp).
 /api_keys.json
+/character_looks.json
 *.user
 *.swp
 *.swo

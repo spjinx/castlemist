@@ -26,9 +26,12 @@ std::array<uint8_t, 3> apply_dye(const ColorMatrix& m, std::array<uint8_t, 3> rg
 /// Bakes up to four dye channels into an RGBA8 image in place: for each texel
 /// and channel i with both a mask and a dye, `out = lerp(out, M_i(base), w)`
 /// where `w` is the mask texel's luminance (masks decode to gray RGB) and
-/// `base` is the undyed texel. Alpha is left untouched. Masks must be w*h RGBA8.
+/// `base` is the undyed texel. `out` starts as `rest(base)` when a `rest`
+/// matrix is given (what no mask covers: a character's skin colour), else as
+/// `base`. Alpha is left untouched. Masks must be w*h RGBA8.
 void bake_dyes(std::vector<uint8_t>& rgba, int w, int h, const std::array<const std::vector<uint8_t>*, 4>& masks,
-               const std::array<std::optional<ColorMatrix>, 4>& dyes);
+               const std::array<std::optional<ColorMatrix>, 4>& dyes,
+               const std::optional<ColorMatrix>& rest = std::nullopt);
 
 } // namespace castlemist::ripper
 

@@ -15,6 +15,7 @@
 #include "castlemist/format/content_schema.h"
 
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <vector>
 
@@ -496,4 +497,89 @@ CM_TEST(content_map, cmap_skin_token_recorded) {
     CHECK_EQ(cmap::skin_token(517), 0x00000348C28A32A3ull);
     cmap::clear();
     std::filesystem::remove(path);
+}
+
+namespace {
+
+// A colour object (type 9) at content offset `o` of a pack: dataId, one material
+// shift stored the game's way (floats x128, brightness +128) inline at +80.
+void put_color(PackBuilder& b, size_t c_off, uint32_t o, uint32_t data_id, float brightness, float hue) {
+    auto put_f = [&](size_t pos, float v) {
+        uint32_t u;
+        std::memcpy(&u, &v, 4);
+        b.put_u32(pos, u);
+    };
+    b.put_u32(c_off + o + 16, castlemist::cmap::CONTENT_TYPE_COLOR);
+    b.put_u32(c_off + o + 40, data_id);
+    b.put_i64(c_off + o + 48, o + 80);  // absolute content offset of the material array
+    b.put_u32(c_off + o + 56, 1);
+    put_f(c_off + o + 80, brightness + 128);
+    put_f(c_off + o + 84, 1.5f * 128);
+    put_f(c_off + o + 88, hue);
+    put_f(c_off + o + 92, 0.25f * 128);
+    put_f(c_off + o + 96, 2.0f * 128);
+}
+
+} // namespace
+
+CM_TEST(content_map, palettes_resolve_local_and_external_colours) {
+    namespace cmap = castlemist::cmap;
+    cmap::clear();
+    // Pack 902: palette (uid 70, base RGB 128,26,26) at 0 listing its own colour
+    // at 288 and an external one at offset 0 of file index 1 (fileId 901).
+    PackBuilder p;
+    size_t ie = kArrDescEnd;
+    p.put_u32(ie, cmap::CONTENT_TYPE_PALETTE);
+    p.put_u32(ie + 16, cmap::CONTENT_TYPE_COLOR);
+    p.put_u32(ie + 20, 288);
+    p.set_dynarray(3, 2, ie);
+    size_t eo = ie + 32;
+    p.put_u32(eo, 64 + 24);  // the second entry's pointer is external
+    p.put_u32(eo + 4, 1);
+    p.set_dynarray(5, 1, eo);
+    size_t c = 400;
+    p.put_u32(c + 16, cmap::CONTENT_TYPE_PALETTE);
+    p.put_u32(c + 20, 70);
+    p.put_bytes(c + 40, {26, 26, 128});  // BGR
+    p.put_i64(c + 48, 64);
+    p.put_u32(c + 56, 2);
+    p.put_i64(c + 64, 288);  // local colour
+    p.put_i64(c + 88, 0);    // external colour's offset in its pack
+    put_color(p, c, 288, 1234, 7, 100);
+    p.ensure(c + 576);
+    p.set_dynarray(10, 576, c);
+
+    PackBuilder q;  // fileId 901: the external colour
+    q.put_u32(kArrDescEnd, cmap::CONTENT_TYPE_COLOR);
+    q.set_dynarray(3, 1, kArrDescEnd);
+    put_color(q, 300, 0, 4321, -5, 30);
+    q.ensure(300 + 288);
+    q.set_dynarray(10, 288, 300);
+
+    cmap::build_from_packs({{3, 902, p.d}, {2, 901, q.d}, {1, 900, file_refs_pack()}});
+    const cmap::Palette* pal = cmap::palette(70);
+    CHECK(pal != nullptr);
+    if (!pal) return;
+    CHECK_EQ(pal->base[0], uint8_t{128});
+    CHECK_EQ(pal->base[2], uint8_t{26});
+    CHECK_EQ(pal->colors.size(), size_t{2});
+    CHECK_EQ(pal->colors[0].id, 1234u);
+    CHECK_EQ(pal->colors[1].id, 4321u);
+    CHECK_NEAR(pal->colors[0].materials[0].brightness, 7.0, 1e-5);
+    CHECK_NEAR(pal->colors[0].materials[0].contrast, 1.5, 1e-5);
+    CHECK_NEAR(pal->colors[0].materials[0].hue, 100.0, 1e-5);
+    CHECK_NEAR(pal->colors[0].materials[0].saturation, 0.25, 1e-5);
+    CHECK_NEAR(pal->colors[1].materials[0].brightness, -5.0, 1e-5);
+
+    // Survives the disk cache.
+    const auto path = std::filesystem::temp_directory_path() / "cm_test_palette_cache.bin";
+    CHECK(cmap::save(path.wstring()));
+    cmap::clear();
+    CHECK(cmap::palette(70) == nullptr);
+    CHECK(cmap::load(path.wstring()));
+    pal = cmap::palette(70);
+    CHECK(pal != nullptr);
+    if (pal) CHECK_NEAR(pal->colors[1].materials[0].hue, 30.0, 1e-5);
+    std::filesystem::remove(path);
+    cmap::clear();
 }

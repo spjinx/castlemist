@@ -76,8 +76,9 @@ AtlasRegion region_for(const composite::BlitRectSet& set, const std::vector<std:
 /// How a part's texture meets what is already in the atlas.
 enum class BlitMode {
     Replace,  // copy RGBA (armor and body: their alpha is a cut-out)
-    Over,     // blend RGB by the texture's alpha, keep the atlas alpha (hair and
-              // scalp layers painted over the face, as the game composites them)
+    Over,     // blend RGB by the texture's alpha, alpha = the larger of the two
+              // (hair and scalp layers painted over the face, as the game
+              // composites them; strands outside the face keep their coverage)
 };
 
 /// Draws `tex` into the atlas from the region's anchor at `scale` atlas pixels

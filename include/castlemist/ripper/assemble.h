@@ -8,6 +8,7 @@
 // docs/superpowers/specs/2026-10-04-character-assembly-design.md
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,11 @@ struct AssemblyOptions {
     /// Unity/VRChat. Off by default: the same GW2 units as castlemist's other
     /// exports, so pieces and characters line up in one Blender scene.
     bool metres = false;
+    /// Character-creator colours, as dye shifts (ripper/look.h resolves a saved
+    /// look to these). skin_tint colours the bare body, face, ears and the
+    /// scalp around the hair; hair_tint the hair's first dye channel,
+    /// hair_tint2 its second. None = as the texture is authored.
+    std::optional<character::DyeShift> skin_tint, hair_tint, hair_tint2;
 };
 
 struct AssemblyPart {

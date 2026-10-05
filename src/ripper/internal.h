@@ -14,6 +14,7 @@
 #include "castlemist/format/composite.h"
 #include "castlemist/native/gw2dat.h"
 #include "castlemist/ripper/atlas.h"
+#include "castlemist/ripper/dye.h"
 
 namespace castlemist::ripper::detail {
 
@@ -33,8 +34,11 @@ struct BakedTextures {
     float scale = 2.0f;         // atlas pixels per base texel (2 = reduced copy, 1 = full-resolution copy)
     float normal_scale = 2.0f;  // the same for the normal map
 };
+// `rest`: the colour for texels no dye mask covers (a character's skin colour
+// on the bare body, face, ears and scalp); none leaves them as authored.
 std::optional<BakedTextures> bake_part(Gw2Dat& dat, const composite::CompositeFileData& fd,
-                                       const std::vector<character::ManifestDye>& dyes);
+                                       const std::vector<character::ManifestDye>& dyes,
+                                       const std::optional<ColorMatrix>& rest = std::nullopt);
 
 /// The mesh's material is the body skin ("Skin", "SylvariSkin1", ...).
 bool is_skin_mesh(const ModelPreview& m, const ModelMeshCPU& mesh);

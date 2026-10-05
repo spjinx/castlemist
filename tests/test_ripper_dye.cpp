@@ -90,3 +90,15 @@ CM_TEST(dye, bake_keeps_alpha) {
               {dye_matrix(DyeShift{15, 1.25f, 38, 0.28125f, 1.44531f}), std::nullopt, std::nullopt, std::nullopt});
     CHECK_EQ(int(rgba[3]), 77);
 }
+
+CM_TEST(dye, rest_tints_what_no_mask_covers) {
+    // Texel 0 fully masked (hair), texel 1 unmasked (scalp): the dye wins on the
+    // first, the rest (skin) colour on the second -- both from the authored base.
+    std::vector<uint8_t> rgba = {128, 26, 26, 255, 128, 26, 26, 255};
+    std::vector<uint8_t> mask = {255, 255, 255, 255, 0, 0, 0, 255};
+    ColorMatrix hair = dye_matrix(DyeShift{15, 1.25f, 38, 0.28125f, 1.44531f});
+    ColorMatrix skin = dye_matrix(DyeShift{17, 1.2109375f, 85, 0.328125f, 1.25f});
+    bake_dyes(rgba, 2, 1, {&mask, nullptr, nullptr, nullptr}, {hair, std::nullopt, std::nullopt, std::nullopt}, skin);
+    CHECK_EQ(show_rgb({rgba[0], rgba[1], rgba[2]}), show_rgb(apply_dye(hair, {128, 26, 26})));
+    CHECK_EQ(show_rgb({rgba[4], rgba[5], rgba[6]}), show_rgb(apply_dye(skin, {128, 26, 26})));
+}

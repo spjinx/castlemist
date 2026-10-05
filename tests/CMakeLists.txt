@@ -65,6 +65,7 @@ castlemist_add_test(character
             test_character_api.cpp
             test_character_resolver.cpp
             test_character_manifest_json.cpp
+            test_character_look_store.cpp
     DEPS    castlemist::character ext::json)
 target_compile_definitions(cm_test_character PRIVATE
     CM_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")

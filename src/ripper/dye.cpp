@@ -60,13 +60,17 @@ std::array<uint8_t, 3> apply_dye(const ColorMatrix& m, std::array<uint8_t, 3> rg
 }
 
 void bake_dyes(std::vector<uint8_t>& rgba, int w, int h, const std::array<const std::vector<uint8_t>*, 4>& masks,
-               const std::array<std::optional<ColorMatrix>, 4>& dyes) {
+               const std::array<std::optional<ColorMatrix>, 4>& dyes, const std::optional<ColorMatrix>& rest) {
     const size_t n = static_cast<size_t>(w) * static_cast<size_t>(h);
     if (rgba.size() < n * 4) return;
     for (size_t p = 0; p < n; ++p) {
         uint8_t* px = rgba.data() + p * 4;
         const std::array<uint8_t, 3> base = {px[0], px[1], px[2]};
         double out[3] = {double(px[0]), double(px[1]), double(px[2])};
+        if (rest) {
+            const std::array<uint8_t, 3> tinted = apply_dye(*rest, base);
+            for (int c = 0; c < 3; ++c) out[c] = tinted[c];
+        }
         for (size_t i = 0; i < 4; ++i) {
             if (!masks[i] || !dyes[i] || masks[i]->size() < n * 4) continue;
             const uint8_t* mk = masks[i]->data() + p * 4;

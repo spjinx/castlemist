@@ -185,3 +185,61 @@ race skeleton's holster/hand points by name:
 Joint matrices are row-vector (`p' = p * M`) with `invWorld` = model -> bone,
 so a weapon vertex moves into the body by
 `p * invWorld_weapon(point) * inverse(invWorld_body(point))`.
+Self-rigged back items (Mawdrey) hang from the shared root with their own
+bones and an `actionpoint:CStowBack`, which goes on the race skeleton's
+`actionpoint:CHolsterBack`.
+
+## 6. Character looks: faces, hair, skin and hair colours (measured 2026-10-05)
+
+The GW2 API exposes no appearance (no face, hair, colours); neither does
+Mumble Link. The options are the character creator's, all in the dat:
+
+**Styles.** The Composite race lists `faces`, `hairStyles`, `ears` and
+`skinStyles` (sylvari female: 21 faces, 38 hair styles, 8 ears).
+
+**Palettes.** The race also names its palettes -- `skinColorPalette`,
+`hairColorPalette`, `eyeColorPalette`, `skinPatternPalette`, e.g.
+"Gw2.Common.Color.Female Skin Sylvari" -- but the content store (cntc) ships
+only obfuscated names (5-character base64 tokens per namespace segment; not
+CRC32/FNV/djb2/MD5/SHA*/Murmur3/xxHash of the segment). So palettes are found
+by type and identified by colour:
+
+- **Palette** = cntc type 147, in namespace Gw2.Common.Color (78 of them).
+  Id = the uid at +20 (no dataId: +40 holds the base colour). +40 base colour
+  BGR; +48 u64 absolute content offset of the entry array, +56 count. Entry =
+  24 bytes: u64 pointer to a colour object (in-pack: the u64 is the target's
+  content offset; or an externalOffsets fixup -> file index, as for
+  item->skin links), then 4 u32 (1,1,1,0 for creator palettes; other values in
+  dye-kit palettes).
+- **Colour** = cntc type 9 (dyes: dataId = API colour id). +48 u64 offset of
+  the material array, +56 count; entry = 5 floats + u32 material index:
+  brightness+128, contrast*128, hue (degrees), saturation*128, lightness*128 --
+  the API's /v2/colors units after the obvious scaling (colour 1272 matches its
+  API cloth/leather/metal/fur values exactly).
+
+A swatch = `dye_matrix(first material shift)` applied to the palette's base;
+every swatch on the wiki's Physical appearance pages reproduces exactly, which
+identifies the palettes (uid: size):
+
+| Palette | Uid (count) |
+|---|---|
+| sylvari skin | 70 (96) |
+| sylvari hair | 50 (148; the wiki lists 76) |
+| sylvari pattern / glow | 75 (64) / 52 (40) |
+| human and norn skin | 67 (36; 87 is identical) |
+| human / norn / asura hair | 7 (46; 78 is identical) |
+| norn tattoo | 66 (14) |
+| asura skin | 89 (34; 2 is near-identical) |
+| charr fur and hair | 20 (35) |
+| accessory (all races) | 84 (21) |
+| every dye | 82 (643) |
+
+Eye palettes have a zero base and did not match by colour; not identified.
+
+**Applying.** A race's skin textures are authored in its skin palette's base
+colour (sylvari red = the dye base (128,26,26); human skin ~ (149,110,88)), so
+the skin colour is its shift applied to the whole bare-body, face and ear
+texture -- the dye math. Body and face entries carry no dye masks. Hair
+entries carry 1-2 dye masks: channel 1 = hair colour, channel 2 = a second
+channel; texels no mask covers (scalp, sylvari vine stems) take the skin
+colour.

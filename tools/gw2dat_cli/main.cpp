@@ -20,8 +20,14 @@
 //            [--dat <path> [--index <db>]] rebuilds a missing content map first
 //   character-export --manifest <json> --dat <path> --out <dir> [--index <db>]
 //            -- one .glb per equipped piece (race model, dyes baked), plus a report
+//   palette  [--id N] [--dat <path>]   -- colour palettes (character creator colours)
+//   look-options --race R --gender G --dat <path>   -- faces, hair styles, skin/hair colours
+//   look-set --character NAME [--face N] [--hair N] [--skin-color ID] [--hair-color ID]
+//            [--hair-color2 ID] [--remove]   -- saves the look character-assemble applies
+//   cntc-dump --dat <path> --out-dir <dir>   -- research: every content pack, decompressed
 //   character-assemble --manifest <json> --dat <path> --out <dir | file.glb with --combined>
 //            [--combined] [--weapons stowed|hands|none] [--face N] [--hair N] [--metres] [--index <db>]
+//            [--skin-color ID] [--hair-color ID] [--hair-color2 ID] [--no-look]
 //            -- body.glb + one .glb per piece on one skeleton (default), or one combined .glb
 //
 // On success exit code is 0 and the JSON has "ok": true; on failure exit code
@@ -56,9 +62,11 @@
 #include "castlemist/format/content_map.h"
 #include "castlemist/character/fetch.h"
 #include "castlemist/character/key_store.h"
+#include "castlemist/character/look_store.h"
 #include "castlemist/character/manifest_json.h"
 #include "castlemist/db/index_db.h"
 #include "castlemist/ripper/assemble.h"
+#include "castlemist/ripper/look.h"
 #include "castlemist/ripper/character_export.h"
 
 #ifndef NOMINMAX
@@ -1776,6 +1784,55 @@ void ensure_cmap(const Args& a) {
     castlemist::cmap::save(cmap_file.wstring());
 }
 
+// Colour palettes from the content map: all of them (id, base, size), or one
+// palette's colours (--id N) with their first material's shift.
+void cmd_palette(const Args& a) {
+    ensure_cmap(a);
+    json out = json::array();
+    auto shift_json = [](const castlemist::cmap::ColorShift& s) {
+        return json{{"brightness", s.brightness}, {"contrast", s.contrast}, {"hue", s.hue},
+                    {"saturation", s.saturation}, {"lightness", s.lightness}};
+    };
+    for (uint32_t id = 0; id < 4096; ++id) {
+        if (has(a, "id") && id != static_cast<uint32_t>(std::stoul(a.at("id")))) continue;
+        const castlemist::cmap::Palette* p = castlemist::cmap::palette(id);
+        if (!p) continue;
+        json pj{{"id", id}, {"base", {p->base[0], p->base[1], p->base[2]}}, {"count", p->colors.size()}};
+        if (has(a, "id")) {
+            json colors = json::array();
+            for (const auto& c : p->colors)
+                colors.push_back({{"id", c.id}, {"shift", c.materials.empty() ? json() : shift_json(c.materials[0])}});
+            pj["colors"] = colors;
+        }
+        out.push_back(pj);
+    }
+    emit({{"ok", true}, {"palettes", out}});
+}
+
+// Research aid: every content pack (cntc), decompressed, as <out-dir>/cntc_<baseId>.bin.
+void cmd_cntc_dump(const Args& a) {
+    open_index(a);
+    if (!castlemist::db::is_open()) fail("no index DB (build it in castlemist, or pass --index)");
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    const std::filesystem::path dir = utf8_arg("--out-dir");
+    std::filesystem::create_directories(dir);
+    json packs = json::array();
+    for (uint32_t b : castlemist::db::query_base_ids("", "cntc", 0, false, false, 100000)) {
+        if (b == 0 || b - 1 >= dat.mft_data_list.size()) continue;
+        const MftData& e = dat.mft_data_list[b - 1];
+        std::vector<uint8_t> data = decompress_entry(read_entry_bytes(dat.file_info.file_path, e), e.compression_flag);
+        const std::filesystem::path out = dir / ("cntc_" + std::to_string(b) + ".bin");
+        std::ofstream of(out, std::ios::binary);
+        of.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+        std::vector<uint32_t> f = get_by_file_id(dat, b);
+        packs.push_back({{"baseId", b},
+                         {"fileId", f.empty() ? 0 : *std::min_element(f.begin(), f.end())},
+                         {"bytes", data.size()}});
+    }
+    emit({{"ok", true}, {"packs", packs}});
+}
+
 void cmd_character(const Args& a) {
     namespace ch = castlemist::character;
     std::string key;
@@ -1854,10 +1911,27 @@ void cmd_character_assemble(const Args& a) {
         else if (w == "none") opt.weapons = rp::WeaponPlacement::None;
         else fail("--weapons must be stowed, hands or none");
     }
-    if (has(a, "face")) opt.face = static_cast<int>(to_u64(a.at("face")));
-    if (has(a, "hair")) opt.hair = static_cast<int>(to_u64(a.at("hair")));
+    // The character's saved look (character_looks.json), then any overrides.
+    namespace ch = castlemist::character;
+    ch::CharacterLook look;
+    bool saved = false;
+    if (!has(a, "no-look")) {
+        ch::LookStore store;
+        std::string err;
+        if (store.load(ch::default_look_file(), &err))
+            if (auto l = store.get(m.name)) look = *l, saved = true;
+    }
+    if (has(a, "face")) look.face = static_cast<int>(to_u64(a.at("face")));
+    if (has(a, "hair")) look.hair = static_cast<int>(to_u64(a.at("hair")));
+    if (has(a, "skin-color")) look.skin_color = static_cast<uint32_t>(to_u64(a.at("skin-color")));
+    if (has(a, "hair-color")) look.hair_color = static_cast<uint32_t>(to_u64(a.at("hair-color")));
+    if (has(a, "hair-color2")) look.hair_color2 = static_cast<uint32_t>(to_u64(a.at("hair-color2")));
     opt.metres = has(a, "metres");
     open_index(a);
+    if (look.skin_color || look.hair_color || look.hair_color2) ensure_cmap(a);  // the palettes
+    rp::apply_look(opt, look, m.race, m.gender);
+    if (look.skin_color && !opt.skin_tint) fail("skin colour " + std::to_string(look.skin_color) + " is not in the " + m.race + " skin palette (or the content map is missing)");
+    if (look.hair_color && !opt.hair_tint) fail("hair colour " + std::to_string(look.hair_color) + " is not in the " + m.race + " hair palette (or the content map is missing)");
     // Default: a folder with body.glb + one file per piece; --combined: one file.
     const bool combined = has(a, "combined");
     rp::AssemblyReport rep = combined ? rp::assemble_character(m, need(a, "dat"), utf8_arg("--out"), opt)
@@ -1872,7 +1946,69 @@ void cmd_character_assemble(const Args& a) {
     j["joints"] = rep.joints;
     j["weapons"] = rp::to_string(opt.weapons);
     j["mode"] = combined ? "combined" : "separate";
+    j["look"] = {{"saved", saved}, {"face", look.face}, {"hair", look.hair}, {"skin_color", look.skin_color},
+                 {"hair_color", look.hair_color}, {"hair_color2", look.hair_color2}};
     j["parts"] = parts;
+    emit(j);
+}
+
+// What a race can look like: face / hair style counts and its skin and hair
+// palettes with swatch colours (needs the content map for the colours).
+void cmd_look_options(const Args& a) {
+    namespace rp = castlemist::ripper;
+    const std::string race = need(a, "race"), gender = need(a, "gender");
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    open_index(a);
+    ensure_cmap(a);
+    json j{{"ok", true}, {"race", race}, {"gender", gender}};
+    if (auto comp = rp::load_composite(dat))
+        if (const auto* r = comp->race(race + gender)) {
+            j["faces"] = r->faces.size();
+            j["hair_styles"] = r->hair_styles.size();
+        }
+    const rp::RacePalettes pal = rp::race_palettes(race, gender);
+    auto palette_json = [](uint32_t uid) {
+        json colors = json::array();
+        if (const castlemist::cmap::Palette* p = castlemist::cmap::palette(uid))
+            for (const auto& c : p->colors) {
+                auto rgb = rp::swatch_rgb(*p, c);
+                char hex[8];
+                std::snprintf(hex, sizeof hex, "%02X%02X%02X", rgb[0], rgb[1], rgb[2]);
+                colors.push_back({{"id", c.id}, {"rgb", hex}});
+            }
+        return json{{"palette", uid}, {"colors", colors}};
+    };
+    j["skin"] = palette_json(pal.skin);
+    j["hair_colors"] = palette_json(pal.hair);
+    emit(j);
+}
+
+// Saves a character's look: look-set --character NAME [--face N] [--hair N]
+// [--skin-color ID] [--hair-color ID] [--hair-color2 ID] (unset fields keep
+// their saved value); --remove forgets it.
+void cmd_look_set(const Args& a) {
+    namespace ch = castlemist::character;
+    const std::string name = need(a, "character");
+    ch::LookStore store;
+    std::string err;
+    if (!store.load(ch::default_look_file(), &err)) fail(err);
+    if (has(a, "remove")) {
+        store.remove(name);
+    } else {
+        ch::CharacterLook look = store.get(name).value_or(ch::CharacterLook{});
+        if (has(a, "face")) look.face = static_cast<int>(to_u64(a.at("face")));
+        if (has(a, "hair")) look.hair = static_cast<int>(to_u64(a.at("hair")));
+        if (has(a, "skin-color")) look.skin_color = static_cast<uint32_t>(to_u64(a.at("skin-color")));
+        if (has(a, "hair-color")) look.hair_color = static_cast<uint32_t>(to_u64(a.at("hair-color")));
+        if (has(a, "hair-color2")) look.hair_color2 = static_cast<uint32_t>(to_u64(a.at("hair-color2")));
+        store.set(name, look);
+    }
+    if (!store.save(ch::default_look_file(), &err)) fail(err);
+    json j{{"ok", true}, {"file", ch::default_look_file().string()}};
+    if (auto l = store.get(name))
+        j["look"] = {{"face", l->face}, {"hair", l->hair}, {"skin_color", l->skin_color},
+                     {"hair_color", l->hair_color}, {"hair_color2", l->hair_color2}};
     emit(j);
 }
 
@@ -1930,6 +2066,10 @@ int main(int argc, char** argv) {
         else if (cmd == "compress") cmd_compress(a);
         else if (cmd == "decompress") cmd_decompress(a);
         else if (cmd == "encode-texture") cmd_encode_texture(a);
+        else if (cmd == "cntc-dump") cmd_cntc_dump(a);
+        else if (cmd == "palette") cmd_palette(a);
+        else if (cmd == "look-options") cmd_look_options(a);
+        else if (cmd == "look-set") cmd_look_set(a);
         else if (cmd == "character") cmd_character(a);
         else if (cmd == "character-export") cmd_character_export(a);
         else if (cmd == "character-assemble") cmd_character_assemble(a);

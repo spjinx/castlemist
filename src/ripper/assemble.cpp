@@ -14,6 +14,7 @@
 
 #include "castlemist/exportgltf/gltf_export.h"
 #include "castlemist/ripper/character_export.h"
+#include "castlemist/ripper/dye.h"
 #include "castlemist/ripper/skeleton_merge.h"
 #include "internal.h"
 
@@ -277,9 +278,25 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
             report(part.name, "dropped", "model failed to load", part.fd->mesh_base);
             continue;
         }
-        std::vector<character::ManifestDye> no_dyes;
+        // Armor keeps its own dyes; bare-body parts, face, ears and the scalp
+        // take the skin colour, and hair its colours on its dye channels.
+        std::vector<character::ManifestDye> look_dyes;
+        std::optional<ColorMatrix> skin;
+        if (!part.piece) {
+            if (opt.skin_tint) skin = dye_matrix(*opt.skin_tint);
+            if (part.name == "hair") {
+                const std::optional<character::DyeShift> tints[2] = {opt.hair_tint, opt.hair_tint2};
+                for (int ch = 0; ch < 2; ++ch)
+                    if (tints[ch]) {
+                        character::ManifestDye d;
+                        d.slot = ch;
+                        d.shift = tints[ch];
+                        look_dyes.push_back(d);
+                    }
+            }
+        }
         std::optional<detail::BakedTextures> baked =
-            detail::bake_part(ctx.dat, *part.fd, part.piece ? part.piece->dyes : no_dyes);
+            detail::bake_part(ctx.dat, *part.fd, part.piece ? part.piece->dyes : look_dyes, skin);
         if (!baked) {
             report(part.name, "dropped", "texture failed to decode", part.fd->mesh_base);
             continue;
