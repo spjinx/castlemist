@@ -22,6 +22,16 @@ struct ThumbnailView {
     std::array<uint8_t, 4> background{118, 118, 128, 255};  // mid grey: dark hair stays visible
 };
 
+/// A camera looking along `forward` (model space), kept upright (GW2 up = -Z);
+/// right = up x forward, which keeps the default front view unmirrored.
+ThumbnailView view_along(std::array<float, 3> forward);
+
+/// Character views: head-on, from the side (the +X ear), and three-quarter
+/// from above (turned 45 degrees, looking 35 degrees down).
+ThumbnailView front_view();
+ThumbnailView side_view();
+ThumbnailView three_quarter_top_view();
+
 /// Renders every mesh of `model` into a `size` x `size` RGBA image.
 ImageRgba render_thumbnail(const ModelPreview& model, int size, const ThumbnailView& view = {});
 

@@ -66,3 +66,17 @@ CM_TEST(look, thumbnail_draws_a_textured_front_facing_triangle) {
     const uint8_t* corner = img.px.data();
     CHECK_EQ(int(corner[0]), 118);                           // background
 }
+
+CM_TEST(look, views_stay_upright_and_unmirrored) {
+    const ThumbnailView f = front_view();
+    CHECK_NEAR(f.right[0], 1.0, 1e-6);   // the default basis
+    CHECK_NEAR(f.up[2], -1.0, 1e-6);
+    const ThumbnailView s = side_view();
+    CHECK_NEAR(s.forward[0], -1.0, 1e-6);
+    CHECK_NEAR(s.up[2], -1.0, 1e-6);
+    const ThumbnailView t = three_quarter_top_view();
+    CHECK(t.forward[2] > 0.5);            // looking down (+Z is down)
+    CHECK(t.up[2] < -0.5);                // still upright
+    const float dot = t.up[0] * t.forward[0] + t.up[1] * t.forward[1] + t.up[2] * t.forward[2];
+    CHECK_NEAR(dot, 0.0, 1e-5);
+}

@@ -522,6 +522,7 @@ std::vector<ImageRgba> look_thumbnails(const CharacterManifest& manifest, const 
     }
     const std::vector<uint64_t>& list =
         part == LookPart::Face ? ctx->race->faces : part == LookPart::Hair ? ctx->race->hair_styles : ctx->race->ears;
+    if (part == LookPart::Ears) opt.hair = -1;  // the ears unhidden by hair
     Selection sel;
     sel.body_parts = false;
     sel.preview = true;
@@ -531,7 +532,10 @@ std::vector<ImageRgba> look_thumbnails(const CharacterManifest& manifest, const 
         (part == LookPart::Face ? opt.face : part == LookPart::Hair ? opt.hair : opt.ears) = static_cast<int>(i);
         AssemblyReport r;
         ModelPreview head = build(*ctx, manifest, opt, sel, r);
-        out.push_back(render_thumbnail(head, size));
+        // Faces head-on, ears from the side, hair three-quarter from above.
+        out.push_back(render_thumbnail(head, size, part == LookPart::Face   ? front_view()
+                                                   : part == LookPart::Ears ? side_view()
+                                                                            : three_quarter_top_view()));
     }
     return out;
 }

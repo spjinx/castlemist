@@ -12,7 +12,37 @@ float dot(const std::array<float, 3>& a, float x, float y, float z) { return a[0
 
 float wrap01(float t) { return t - std::floor(t); }
 
+std::array<float, 3> normalized(std::array<float, 3> v) {
+    const float l = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (l > 1e-12f)
+        for (float& c : v) c /= l;
+    return v;
+}
+
+std::array<float, 3> cross(const std::array<float, 3>& a, const std::array<float, 3>& b) {
+    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+}
+
 } // namespace
+
+ThumbnailView view_along(std::array<float, 3> forward) {
+    ThumbnailView v;
+    v.forward = normalized(forward);
+    const std::array<float, 3> world_up{0, 0, -1};
+    const float d = world_up[0] * v.forward[0] + world_up[1] * v.forward[1] + world_up[2] * v.forward[2];
+    v.up = normalized({world_up[0] - d * v.forward[0], world_up[1] - d * v.forward[1], world_up[2] - d * v.forward[2]});
+    v.right = cross(v.up, v.forward);
+    return v;
+}
+
+ThumbnailView front_view() { return view_along({0, 1, 0}); }
+
+ThumbnailView side_view() { return view_along({-1, 0, 0}); }
+
+ThumbnailView three_quarter_top_view() {
+    const float yaw = 0.785398f, pitch = 0.610865f;  // 45 degrees around, 35 down
+    return view_along({std::cos(pitch) * std::sin(yaw), std::cos(pitch) * std::cos(yaw), std::sin(pitch)});
+}
 
 ImageRgba render_thumbnail(const ModelPreview& model, int size, const ThumbnailView& view) {
     ImageRgba img{size, size, std::vector<uint8_t>(static_cast<size_t>(size) * size * 4)};
