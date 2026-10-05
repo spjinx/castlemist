@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <exception>
 
 #include "castlemist/extract/entry_extractor.h"
@@ -174,6 +175,74 @@ std::optional<BakedTextures> bake_part(Gw2Dat& dat, const composite::CompositeFi
         }
     }
     return out;
+}
+
+// Marks (value 1) every atlas pixel the meshes' UV triangles cover, wrapped
+// UVs; skin meshes (sampling the body's region) are skipped unless asked for.
+std::vector<uint8_t> uv_coverage(const ModelPreview& m, int w, int h, bool skin_meshes) {
+    std::vector<uint8_t> cov(static_cast<size_t>(w) * static_cast<size_t>(h), 0);
+    for (const ModelMeshCPU& mesh : m.meshes) {
+        if (!skin_meshes && is_skin_mesh(m, mesh)) continue;
+        for (size_t t = 0; t + 2 < mesh.indices.size(); t += 3) {
+            float px[3], py[3];
+            bool ok = true;
+            for (int k = 0; k < 3; ++k) {
+                const uint32_t vi = mesh.indices[t + k];
+                if (vi >= mesh.vertices.size()) { ok = false; break; }
+                px[k] = wrap_uv(mesh.vertices[vi].u) * static_cast<float>(w);
+                py[k] = wrap_uv(mesh.vertices[vi].v) * static_cast<float>(h);
+            }
+            if (!ok) continue;
+            const float area = (px[1] - px[0]) * (py[2] - py[0]) - (px[2] - px[0]) * (py[1] - py[0]);
+            if (std::fabs(area) < 1e-6f) continue;
+            const int x0 = std::max(0, static_cast<int>(std::floor(std::min({px[0], px[1], px[2]}))));
+            const int x1 = std::min(w - 1, static_cast<int>(std::ceil(std::max({px[0], px[1], px[2]}))));
+            const int y0 = std::max(0, static_cast<int>(std::floor(std::min({py[0], py[1], py[2]}))));
+            const int y1 = std::min(h - 1, static_cast<int>(std::ceil(std::max({py[0], py[1], py[2]}))));
+            for (int y = y0; y <= y1; ++y)
+                for (int x = x0; x <= x1; ++x) {
+                    const float cx = static_cast<float>(x) + 0.5f, cy = static_cast<float>(y) + 0.5f;
+                    const float a = ((px[1] - cx) * (py[2] - cy) - (px[2] - cx) * (py[1] - cy)) / area;
+                    const float b = ((px[2] - cx) * (py[0] - cy) - (px[0] - cx) * (py[2] - cy)) / area;
+                    const float c = 1.0f - a - b;
+                    if (a >= -0.01f && b >= -0.01f && c >= -0.01f) cov[static_cast<size_t>(y) * w + x] = 1;
+                }
+        }
+    }
+    return cov;
+}
+
+void place_texture(AtlasRegion& region, const ImageRgba& tex, float scale, const std::vector<uint8_t>& coverage) {
+    const float w = scale * static_cast<float>(tex.w), h = scale * static_cast<float>(tex.h);
+    const uint32_t cx = region.ax, cy = region.ay;
+    uint32_t fx = cx, fy = cy;
+    fit_anchor(fx, fy, w, h);
+    const std::pair<uint32_t, uint32_t> candidates[] = {{cx, cy}, {fx, fy}, {fx, cy}, {cx, fy}, {0, 0}};
+    const int n = static_cast<int>(kAtlasSize);
+    // Score: of the atlas pixels the piece samples, how many land on painted texels.
+    auto score = [&](uint32_t ax, uint32_t ay) {
+        size_t hit = 0;
+        for (const composite::BlitRect& r : region.rects)
+            for (uint32_t y = r.y0; y < r.y1 && y < static_cast<uint32_t>(n); y += 2)
+                for (uint32_t x = r.x0; x < r.x1 && x < static_cast<uint32_t>(n); x += 2) {
+                    if (!coverage[static_cast<size_t>(y) * n + x] || x < ax || y < ay) continue;
+                    const int tx = static_cast<int>(static_cast<float>(x - ax) / scale);
+                    const int ty = static_cast<int>(static_cast<float>(y - ay) / scale);
+                    if (tx >= tex.w || ty >= tex.h) continue;
+                    const uint8_t* p = tex.px.data() + (static_cast<size_t>(ty) * tex.w + tx) * 4;
+                    if (p[3] > 8 && (p[0] > 4 || p[1] > 4 || p[2] > 4)) ++hit;
+                }
+        return hit;
+    };
+    size_t best = score(cx, cy);  // the rects' corner wins ties
+    for (const auto& [ax, ay] : candidates) {
+        const size_t s = score(ax, ay);
+        if (s > best + best / 20) {  // clearly better
+            best = s;
+            region.ax = ax;
+            region.ay = ay;
+        }
+    }
 }
 
 void mirror_x(ModelPreview& model) {

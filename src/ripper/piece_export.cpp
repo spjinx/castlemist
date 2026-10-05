@@ -28,6 +28,20 @@ PieceExportResult skipped(std::string reason) {
     return r;
 }
 
+// The rect's block of a texture that starts at atlas (ax, ay) (see
+// detail::place_texture: not always the rect's corner).
+ImageRgba crop_at(const ImageRgba& tex, const composite::BlitRect& rect, float scale, uint32_t ax, uint32_t ay) {
+    const int ox = std::min(tex.w, static_cast<int>(static_cast<float>(rect.x0 - std::min(ax, rect.x0)) / scale));
+    const int oy = std::min(tex.h, static_cast<int>(static_cast<float>(rect.y0 - std::min(ay, rect.y0)) / scale));
+    if (ox == 0 && oy == 0) return crop_piece(tex, rect, scale);
+    ImageRgba shifted{tex.w - ox, tex.h - oy, {}};
+    shifted.px.resize(static_cast<size_t>(shifted.w) * shifted.h * 4);
+    for (int y = 0; y < shifted.h; ++y)
+        std::copy_n(tex.px.data() + (static_cast<size_t>(y + oy) * tex.w + ox) * 4, static_cast<size_t>(shifted.w) * 4,
+                    shifted.px.data() + static_cast<size_t>(y) * shifted.w * 4);
+    return crop_piece(shifted, rect, scale);
+}
+
 PieceExportResult write(ModelPreview model, const std::string& glb_path, PieceExportResult r) {
     detail::mirror_x(model);  // GW2 is left-handed: un-mirror for glTF
     exportgltf::GltfExportResult g = exportgltf::export_model_gltf(model, glb_path);
@@ -79,11 +93,41 @@ PieceExportResult export_armor(const PieceContext& ctx, const character::Manifes
                 armor_meshes.push_back(mi);
         }
     }
+    if (!rect) {
+        // A piece spread over several rects (Baggy Cargo Pants, Carapace
+        // Vestments): the block covering every rect its meshes touch, its
+        // texture anchored at their top-left as when it is composited.
+        std::vector<std::pair<float, float>> uvs;
+        for (size_t mi = 0; mi < infos.size(); ++mi) {
+            if (infos[mi].skin || infos[mi].verts == 0) continue;
+            for (const auto& v : model->meshes[mi].vertices) uvs.emplace_back(wrap_uv(v.u), wrap_uv(v.v));
+        }
+        const AtlasRegion region = region_for(set, uvs);
+        if (!region.rects.empty()) {
+            composite::BlitRect box = region.rects.front();
+            box.x0 = region.ax;
+            box.y0 = region.ay;
+            for (const composite::BlitRect& r : region.rects) {
+                box.x1 = std::max(box.x1, r.x1);
+                box.y1 = std::max(box.y1, r.y1);
+            }
+            rect = box;
+            for (size_t mi = 0; mi < infos.size(); ++mi)
+                if (!infos[mi].skin && infos[mi].verts != 0) armor_meshes.push_back(mi);
+        }
+    }
     if (!rect) return skipped("no mesh inside an atlas rect");
 
-    int diffuse_idx = add_texture(*model, crop_piece(to_image(base), *rect, baked->scale), fd.texture_base, false);
-    int normal_idx =
-        normal ? add_texture(*model, crop_piece(to_image(*normal), *rect, baked->normal_scale), fd.texture_normal, true) : -1;
+    // Where the texture starts, the way the atlas places it; the normal map,
+    // the same block at its own resolution.
+    AtlasRegion placed{{*rect}, rect->x0, rect->y0};
+    detail::place_texture(placed, to_image(base), baked->scale,
+                          detail::uv_coverage(*model, static_cast<int>(kAtlasSize), static_cast<int>(kAtlasSize), false));
+    int diffuse_idx =
+        add_texture(*model, crop_at(to_image(base), *rect, baked->scale, placed.ax, placed.ay), fd.texture_base, false);
+    int normal_idx = normal ? add_texture(*model, crop_at(to_image(*normal), *rect, baked->normal_scale, placed.ax, placed.ay),
+                                          fd.texture_normal, true)
+                            : -1;
     for (size_t mi : armor_meshes) {
         ModelMeshCPU& mesh = model->meshes[mi];
         for (auto& v : mesh.vertices) {

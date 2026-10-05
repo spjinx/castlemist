@@ -73,6 +73,13 @@ struct AtlasRegion {
 /// their top-left. Empty when no rect is hit.
 AtlasRegion region_for(const composite::BlitRectSet& set, const std::vector<std::pair<float, float>>& uvs);
 
+/// Where a texture `w` x `h` atlas pixels big starts for rects anchored at
+/// (x, y): there, moved back as far as it takes to stay inside the atlas -- a
+/// texture bigger than its rects is laid out for a larger block (Baggy Cargo
+/// Pants: 512 wide for rects from x 640; Devout Gloves: the whole atlas for a
+/// 128 px rect).
+void fit_anchor(uint32_t& x, uint32_t& y, float w, float h);
+
 /// How a part's texture meets what is already in the atlas.
 enum class BlitMode {
     Replace,  // copy RGBA (armor and body: their alpha is a cut-out)

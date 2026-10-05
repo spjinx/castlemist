@@ -51,6 +51,18 @@ void mirror_x(ModelPreview& model);
 
 bool is_skin_mesh(const ModelPreview& m, const ModelMeshCPU& mesh);
 
+/// Marks (value 1) every atlas pixel (w x h) the meshes' UV triangles cover,
+/// UVs wrapped; skin meshes (sampling the body's region) skipped unless asked for.
+std::vector<uint8_t> uv_coverage(const ModelPreview& m, int w, int h, bool skin_meshes);
+
+/// Where a part's texture starts in the atlas. Usually at its rects' corner;
+/// a texture laid out for a larger block (Baggy Cargo Pants: 512 wide for rects
+/// from x 640) starts further back. Picks, among the corner, the corner moved
+/// back inside the atlas, and the atlas origin, the placement whose painted
+/// texels cover clearly more of what the piece samples (`coverage`, from
+/// uv_coverage); the corner when none does.
+void place_texture(AtlasRegion& region, const ImageRgba& tex, float scale, const std::vector<uint8_t>& coverage);
+
 /// The mesh's UVs wrapped into [0,1] (mirrored halves sit at u-1).
 std::vector<std::pair<float, float>> wrapped_uvs(const ModelMeshCPU& mesh);
 

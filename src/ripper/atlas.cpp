@@ -97,6 +97,15 @@ AtlasRegion region_for(const composite::BlitRectSet& set, const std::vector<std:
     return out;
 }
 
+void fit_anchor(uint32_t& x, uint32_t& y, float w, float h) {
+    auto fit = [](uint32_t& a, float size) {
+        const float room = kAtlasSize - size;
+        if (static_cast<float>(a) > room) a = room > 0 ? static_cast<uint32_t>(room) : 0;
+    };
+    fit(x, w);
+    fit(y, h);
+}
+
 void blit(ImageRgba& atlas, const ImageRgba& tex, const AtlasRegion& region, float scale, BlitMode mode) {
     if (tex.w <= 0 || tex.h <= 0 || scale <= 0) return;
     auto texel = [&](int x, int y, int c) {
