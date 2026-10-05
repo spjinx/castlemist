@@ -16,6 +16,7 @@
 #include "castlemist/extract/entry_extractor.h"
 #include "castlemist/ripper/character_export.h"
 #include "castlemist/ripper/dye.h"
+#include "castlemist/ripper/face_morphs.h"
 #include "castlemist/ripper/skeleton_merge.h"
 #include "castlemist/ripper/thumbnail.h"
 #include "internal.h"
@@ -477,6 +478,9 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
             report(slot, "dropped", "no matching attach point", file);
         }
     }
+    // Face-detail blend shapes on whatever the face rig moves (face, ears,
+    // hair, a helm); thumbnails skip them.
+    if (opt.face_morphs && !sel.preview) add_face_morphs(out, opt.face_sliders);
     return out;
 }
 

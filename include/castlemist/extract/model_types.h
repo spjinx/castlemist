@@ -247,6 +247,13 @@ struct GameMaterial {
 };
 /// @}
 
+/// @brief A morph target (blend shape / shape key): per-vertex position deltas.
+struct MorphTargetCPU {
+    std::string name;          ///< Shape key name ("Jaw Width+").
+    std::vector<float> delta;  ///< 3 floats per vertex, model space.
+    float weight = 0;          ///< Default weight (0..1).
+};
+
 /// @brief One drawable submesh: vertices, LOD index sets and its material slot.
 struct ModelMeshCPU {
     std::vector<GVertex> vertices;                 ///< Shared vertex buffer for every LOD.
@@ -265,6 +272,9 @@ struct ModelMeshCPU {
     ///        itself, not of the decoder). Empty when the file didn't name
     ///        this mesh, which is common.
     std::string meshName;
+    /// @brief Blend shapes (exported as glTF morph targets; Blender shape keys,
+    ///        Unity blendshapes). Each delta has 3 floats per vertex.
+    std::vector<MorphTargetCPU> morphs;
 };
 
 /// @brief One rig joint in bind pose.

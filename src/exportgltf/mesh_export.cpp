@@ -136,7 +136,37 @@ std::vector<MeshExportInfo> write_meshes(GltfWriter& w, const ModelPreview& mode
             primitive["material"] = materialIndices[mesh.materialIndex];
         }
 
-        int meshIdx = w.add_mesh(json{{"primitives", json::array({primitive})}});
+        json meshJson{{"primitives", json::array()}};
+        // Blend shapes: one POSITION-delta target each; Blender names its shape
+        // keys from extras.targetNames, and mesh.weights are their defaults.
+        if (!mesh.morphs.empty()) {
+            json targets = json::array(), names = json::array(), weightsJson = json::array();
+            for (const MorphTargetCPU& mt : mesh.morphs) {
+                if (mt.delta.size() != n * 3) continue;
+                float lo[3] = {std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+                               std::numeric_limits<float>::max()};
+                float hi[3] = {std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
+                               std::numeric_limits<float>::lowest()};
+                for (size_t i = 0; i < n; ++i)
+                    for (int c = 0; c < 3; ++c) {
+                        lo[c] = std::min(lo[c], mt.delta[i * 3 + c]);
+                        hi[c] = std::max(hi[c], mt.delta[i * 3 + c]);
+                    }
+                json mn = {lo[0], lo[1], lo[2]}, mx = {hi[0], hi[1], hi[2]};
+                int acc = w.add_accessor(mt.delta.data(), mt.delta.size() * sizeof(float), kFloat, "VEC3", n,
+                                         kArrayBuffer, &mn, &mx);
+                targets.push_back({{"POSITION", acc}});
+                names.push_back(mt.name);
+                weightsJson.push_back(mt.weight);
+            }
+            if (!targets.empty()) {
+                primitive["targets"] = targets;
+                meshJson["weights"] = weightsJson;
+                meshJson["extras"] = {{"targetNames", names}};
+            }
+        }
+        meshJson["primitives"].push_back(primitive);
+        int meshIdx = w.add_mesh(meshJson);
 
         MeshExportInfo info;
         info.meshIndex = meshIdx;

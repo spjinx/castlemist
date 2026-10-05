@@ -46,6 +46,7 @@
 #include <map>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -1953,8 +1954,20 @@ void cmd_character_assemble(const Args& a) {
     if (has(a, "pattern-color")) look.pattern_color = static_cast<uint32_t>(to_u64(a.at("pattern-color")));
     if (has(a, "glow-color")) look.glow_color = static_cast<uint32_t>(to_u64(a.at("glow-color")));
     if (has(a, "glow-intensity")) look.glow_intensity = std::stof(a.at("glow-intensity"));
+    if (has(a, "sliders")) {  // "Cheeks=1,Jaw Width=0.86,..."
+        std::stringstream ss(a.at("sliders"));
+        std::string item;
+        while (std::getline(ss, item, ',')) {
+            const size_t eq = item.find('=');
+            if (eq == std::string::npos) fail("--sliders wants Name=value,...: " + item);
+            std::string name = item.substr(0, eq);
+            while (!name.empty() && name.front() == ' ') name.erase(name.begin());
+            look.sliders[name] = std::stof(item.substr(eq + 1));
+        }
+    }
     opt.metres = has(a, "metres");
     open_index(a);
+    opt.face_morphs = !has(a, "no-morphs");
     if (look.skin_color || look.hair_color || look.hair_color2 || look.eye_color || look.pattern_color ||
         look.glow_color)
         ensure_cmap(a);  // the palettes
@@ -1978,7 +1991,7 @@ void cmd_character_assemble(const Args& a) {
     j["look"] = {{"saved", saved}, {"face", look.face}, {"hair", look.hair}, {"skin_color", look.skin_color},
                  {"hair_color", look.hair_color}, {"hair_color2", look.hair_color2}, {"ears", look.ears},
                  {"eye_color", look.eye_color}, {"pattern", look.pattern}, {"pattern_color", look.pattern_color},
-                 {"glow_color", look.glow_color}, {"glow_intensity", look.glow_intensity}};
+                 {"glow_color", look.glow_color}, {"glow_intensity", look.glow_intensity}, {"sliders", look.sliders}};
     j["parts"] = parts;
     emit(j);
 }
@@ -2095,6 +2108,17 @@ void cmd_look_set(const Args& a) {
         if (has(a, "pattern-color")) look.pattern_color = static_cast<uint32_t>(to_u64(a.at("pattern-color")));
         if (has(a, "glow-color")) look.glow_color = static_cast<uint32_t>(to_u64(a.at("glow-color")));
         if (has(a, "glow-intensity")) look.glow_intensity = std::stof(a.at("glow-intensity"));
+        if (has(a, "sliders")) {  // "Cheeks=1,Jaw Width=0.86,..."
+            std::stringstream ss(a.at("sliders"));
+            std::string item;
+            while (std::getline(ss, item, ',')) {
+                const size_t eq = item.find('=');
+                if (eq == std::string::npos) fail("--sliders wants Name=value,...: " + item);
+                std::string name = item.substr(0, eq);
+                while (!name.empty() && name.front() == ' ') name.erase(name.begin());
+                look.sliders[name] = std::stof(item.substr(eq + 1));
+            }
+        }
         store.set(name, look);
     }
     if (!store.save(ch::default_look_file(), &err)) fail(err);
@@ -2103,7 +2127,7 @@ void cmd_look_set(const Args& a) {
         j["look"] = {{"face", (*l).face}, {"hair", (*l).hair}, {"skin_color", (*l).skin_color},
                  {"hair_color", (*l).hair_color}, {"hair_color2", (*l).hair_color2}, {"ears", (*l).ears},
                  {"eye_color", (*l).eye_color}, {"pattern", (*l).pattern}, {"pattern_color", (*l).pattern_color},
-                 {"glow_color", (*l).glow_color}, {"glow_intensity", (*l).glow_intensity}};
+                 {"glow_color", (*l).glow_color}, {"glow_intensity", (*l).glow_intensity}, {"sliders", (*l).sliders}};
     emit(j);
 }
 

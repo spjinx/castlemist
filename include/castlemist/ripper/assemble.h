@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -41,6 +42,10 @@ struct AssemblyOptions {
     /// Glow (sylvari): the pattern lit in this colour, as an emissive texture.
     std::optional<std::array<uint8_t, 3>> glow_rgb;
     float glow_intensity = 1;
+    /// Face-detail blend shapes (ripper/face_morphs.h) on every mesh the face
+    /// rig moves; `face_sliders` (name -> 0..1) sets their default weights.
+    bool face_morphs = true;
+    std::map<std::string, float> face_sliders;
 };
 
 struct AssemblyPart {

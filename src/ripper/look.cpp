@@ -76,6 +76,7 @@ void apply_look(AssemblyOptions& options, const character::CharacterLook& look, 
     options.pattern_tint = palette_shift(pal.pattern, look.pattern_color);
     options.glow_rgb.reset();
     options.glow_intensity = look.glow_intensity;
+    options.face_sliders = look.sliders;
     if (look.glow_color && pal.glow)
         if (const cmap::Palette* p = cmap::palette(pal.glow))
             for (const cmap::PaletteColor& c : p->colors)
