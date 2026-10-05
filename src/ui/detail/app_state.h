@@ -26,6 +26,7 @@
 #include "castlemist/native/gw2dat.h"
 #include "castlemist/ui/theme.h"
 
+#include "castlemist/character/manifest.h"
 #include "castlemist/db/index_db.h"
 #include "castlemist/extract/entry_extractor.h"
 #include "castlemist/format/chat_link.h"
@@ -121,6 +122,7 @@ constexpr UINT_PTR ID_CH_SKIN_COLOR = 2173;
 constexpr UINT_PTR ID_CH_HAIR_COLOR = 2174;
 constexpr UINT_PTR ID_CH_HAIR_COLOR2 = 2175;
 constexpr UINT_PTR ID_CH_SAVE_LOOK = 2176;
+constexpr UINT_PTR ID_CH_EDIT_LOOK = 2177;  // opens the Look dialog
 constexpr int ID_LISTVIEW = 2001;
 constexpr int ID_HEX_BEFORE = 2002;
 constexpr int ID_HEX_AFTER = 2003;
@@ -713,6 +715,8 @@ void navigate_to_file_id(uint32_t fid);
 // ---- character_dialog.cpp / character_keys_dialog.cpp -- Character Ripper
 void open_character_dialog(HWND owner);
 void open_character_keys_dialog(HWND owner, std::function<void()> on_changed);
+// look_dialog.cpp -- Character Ripper > Edit look...
+void open_look_dialog(HWND owner, const castlemist::character::CharacterManifest& manifest);
 std::wstring utf8_to_wide(const std::string& s);
 std::string wide_to_utf8(const std::wstring& w);
 

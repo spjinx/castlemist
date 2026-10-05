@@ -251,14 +251,29 @@ captured from a live client), so `src/ripper/color_names.inc` carries the wiki
 names matched to colour ids (1302 names; 57 sylvari exclusive hair names are
 nearest-colour guesses).
 
-**Patterns.** Race `skinPatterns` is an array of 8-byte filerefs (sylvari
-female: 41497, 41487, 41491, 41493, 41495, 41489, 41473, 41463 -- textures).
+**Patterns.** Race `skinPatterns` (offset 148) is an array of 48-byte
+records, one per pattern: six filerefs, one greyscale mask per bare part in
+that part's own texture space -- {chest, face, feet, hands, legs, ears}
+(sylvari female pattern 4: 41461, 41451, 41455, 41457, 41459, 41453). The mask
+is where the pattern colour replaces the skin colour; the sylvari glow lights
+the same mask. Glow swatches are stored dim (Banana = 5A3D00) -- rendered at
+full brightness.
 
-**Physique and face sliders.** `bodyBoneScales` (sylvari female: 6 =
-physiques) and `faceBoneScales` (25 = the face-detail sliders) are 24-byte
-records {array of 24-byte entries, array}: entry = {u64 bone token
-(tokenizeBoneName of the joint's leaf name: bone:Jaw, bone:Chin, ...), f32,
-array of packed sub-records}. Sub-records not decoded yet.
+**Eyes.** A sylvari face's `maskCut` is a white disc exactly on the iris (face
+6: texels 156-183 x 98-125, the red iris of the face texture) -- the eye colour
+mask. Other races' cut masks also cover lips and eyeballs: not used for eyes.
+
+**Physique and face presets.** `bodyBoneScales` (offset 36; sylvari female 6
+= the physiques) and `faceBoneScales` (offset 80; 25 entries, one per face --
+21 populated, all identical for sylvari female) are 24-byte records
+{array<entry>, array}. Entry (24 B) = {u64 token, f32 weight, array<sub>};
+sub-records are 56 B {8 B ?, u8, f32 max (1.0), f32 min (-1.0), 9 floats --
+deltas, e.g. headsize = 0.08 on three axes}. The tokens are not joints but
+*scale groups* (5-bit packed names): chest, hips, shoulders, legs, ankle,
+hands, skirt, headsize, headwidth, plus bone:Jaw / bone:Chin / bone:Breasts.
+Which bones a group scales is not in the Composite (client-side), and the
+makeover kit's face-detail sliders (nose, mouth, eyes, ...) were not found in
+it at all.
 
 **Applying.** A race's skin textures are authored in its skin palette's base
 colour (sylvari red = the dye base (128,26,26); human skin ~ (149,110,88)), so
