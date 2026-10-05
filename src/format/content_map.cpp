@@ -305,8 +305,19 @@ void parse_cntc(const std::vector<uint8_t>& d, uint32_t base_id, uint32_t file_i
         }
 
         if (type == CONTENT_TYPE_SKIN && o + 216 <= nextOff && cOff + o + 216 <= n) {
-            uint64_t token = u32(cOff + o + 208) | (static_cast<uint64_t>(u32(cOff + o + 212)) << 32);
-            if (token) g_skin_tokens[id] = token;
+            // The appearance token heads a block {token, four pointers} at +208
+            // -- after the skin's per-race variants when it has any: an array
+            // (pointer +56, count +64) of 32-byte entries {u32 race, u32 sex,
+            // dataId, 0, 3} laid out from +208, which pushes the block back by
+            // 32 per entry (Baggy Cargo Pants, skin 12037: two variants, so its
+            // token is at +272). A skin whose looks all come from its variants
+            // has a placeholder (0 / 1 / 2) there instead of a token.
+            uint32_t at = 208;
+            if (std::binary_search(lo.begin(), lo.end(), o + 56)) at += 32 * u32(cOff + o + 64);
+            if (o + at + 8 <= nextOff && cOff + o + at + 8 <= n) {
+                const uint64_t token = u64_at(cOff + o + at);
+                if (token > 0xffff) g_skin_tokens[id] = token;
+            }
         }
 
         // Collect every fileIndices reloc inside this object [o, nextOff), in
@@ -532,8 +543,9 @@ const std::string& name_for_fileid(uint32_t file_id) {
 // so the map is rebuilt.)
 // GC7N added skin tokens (u32 count3, count3 * {u32 skin, u64 token}); GC8N adds
 // palettes: u32 count4, count4 * {u32 id, u8 base[3], u32 n, n * {u32 colour id,
-// u8 m, m * 5 floats}}.
-constexpr uint32_t kCacheMagic = 0x4E384347;  // 'GC8N' 
+// u8 m, m * 5 floats}}. GC9N: same layout, skin tokens read past a skin's inline
+// array (GC8N had the array's first entry for those skins).
+constexpr uint32_t kCacheMagic = 0x4E394347;  // 'GC9N' 
 bool save(const std::wstring& path) {
     FILE* f = _wfopen(path.c_str(), L"wb");
     if (!f) return false;
