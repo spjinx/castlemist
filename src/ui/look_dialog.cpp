@@ -21,6 +21,7 @@
 #include "castlemist/character/look_store.h"
 #include "castlemist/character/manifest.h"
 #include "castlemist/ripper/assemble.h"
+#include "castlemist/ripper/face_morphs.h"
 #include "castlemist/ripper/look.h"
 
 #include <windowsx.h>
@@ -32,7 +33,8 @@ namespace ch = castlemist::character;
 namespace rp = castlemist::ripper;
 
 constexpr UINT WM_APP_LOOK_THUMBS = WM_APP + 10;
-constexpr UINT_PTR ID_LK_TAB0 = 2300;  // .. +3: Face, Hair, Ears, Pattern
+constexpr UINT_PTR ID_LK_TAB0 = 2300;  // .. +4: Face, Hair, Ears, Pattern, Face details
+constexpr UINT_PTR ID_LK_SLIDER0 = 2340;  // .. one per face slider
 constexpr UINT_PTR ID_LK_GRID = 2310;
 constexpr UINT_PTR ID_LK_SWATCH0 = 2320;  // .. +5: skin, hair, hair 2, eyes, pattern, glow
 constexpr UINT_PTR ID_LK_GLOW = 2330;
@@ -40,7 +42,7 @@ constexpr UINT_PTR ID_LK_SAVE = 2331;
 constexpr UINT_PTR ID_LK_CLOSE = 2332;
 constexpr int kThumb = 112;
 constexpr int kColours = 6;
-const wchar_t* const kTabNames[4] = {L"Face", L"Hair", L"Ears", L"Pattern"};
+const wchar_t* const kTabNames[5] = {L"Face", L"Hair", L"Ears", L"Pattern", L"Face details"};
 const wchar_t* const kColourNames[kColours] = {L"Skin", L"Hair", L"Hair 2", L"Eyes", L"Pattern", L"Glow"};
 
 struct Thumbs {
@@ -53,7 +55,9 @@ struct Thumbs {
 
 struct LookUi {
     HWND wnd = nullptr, grid = nullptr, status = nullptr, glow = nullptr, palette = nullptr;
-    HWND tabs[4]{}, swatches[kColours]{}, names[kColours]{};
+    HWND tabs[5]{}, swatches[kColours]{}, names[kColours]{};
+    HWND sliders_panel = nullptr;  // the Face details tab
+    std::vector<HWND> sliders;
     ch::CharacterManifest manifest;
     std::string dat_path;
     ch::CharacterLook look;
@@ -466,6 +470,23 @@ void draw_swatch(const DRAWITEMSTRUCT* di) {
     }
 }
 
+// ---- face details ---------------------------------------------------------------------
+
+LRESULT CALLBACK SlidersProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+    if (msg == WM_HSCROLL && g_lk) {
+        HWND t = reinterpret_cast<HWND>(lparam);
+        const auto& names = rp::face_slider_names();
+        for (size_t i = 0; i < g_lk->sliders.size() && i < names.size(); ++i)
+            if (g_lk->sliders[i] == t) {
+                const int pos = static_cast<int>(SendMessageW(t, TBM_GETPOS, 0, 0));
+                g_lk->look.sliders[names[i]] = pos / 100.0f;
+                set_status(utf8_to_wide(names[i]) + L": " + std::to_wstring(pos) + L"% (50 = middle) - Save look to keep it.");
+            }
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
 // ---- the dialog --------------------------------------------------------------------
 
 void save_look() {
@@ -484,9 +505,15 @@ void save_look() {
 }
 
 void select_tab(int tab) {
+    for (int i = 0; i < 5; ++i) SendMessageW(g_lk->tabs[i], BM_SETCHECK, i == tab ? BST_CHECKED : BST_UNCHECKED, 0);
+    ShowWindow(g_lk->sliders_panel, tab == 4 ? SW_SHOW : SW_HIDE);
+    ShowWindow(g_lk->grid, tab == 4 ? SW_HIDE : SW_SHOW);
+    if (tab == 4) {
+        set_status(L"Face details become blend shapes (shape keys) on the export; these set their starting values.");
+        return;
+    }
     g_lk->tab = tab;
     g_lk->scroll = 0;
-    for (int i = 0; i < 4; ++i) SendMessageW(g_lk->tabs[i], BM_SETCHECK, i == tab ? BST_CHECKED : BST_UNCHECKED, 0);
     g_lk->shown_key.clear();
     InvalidateRect(g_lk->grid, nullptr, TRUE);
     start_thumbs();
@@ -497,7 +524,7 @@ LRESULT CALLBACK LookWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     switch (msg) {
     case WM_COMMAND: {
         const UINT_PTR id = LOWORD(wparam);
-        if (id >= ID_LK_TAB0 && id < ID_LK_TAB0 + 4) select_tab(static_cast<int>(id - ID_LK_TAB0));
+        if (id >= ID_LK_TAB0 && id < ID_LK_TAB0 + 5) select_tab(static_cast<int>(id - ID_LK_TAB0));
         else if (id >= ID_LK_SWATCH0 && id < ID_LK_SWATCH0 + kColours) open_palette(static_cast<int>(id - ID_LK_SWATCH0));
         else if (id == ID_LK_SAVE) save_look();
         else if (id == ID_LK_CLOSE) DestroyWindow(hwnd);
@@ -550,6 +577,10 @@ void open_look_dialog(HWND owner, const castlemist::character::CharacterManifest
         wc.lpszClassName = L"Gw2LookGridWnd";
         wc.hbrBackground = nullptr;
         RegisterClassW(&wc);
+        wc.lpfnWndProc = SlidersProc;
+        wc.lpszClassName = L"Gw2LookSlidersWnd";
+        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+        RegisterClassW(&wc);
         wc.lpfnWndProc = PaletteProc;
         wc.lpszClassName = L"Gw2LookPaletteWnd";
         wc.hCursor = LoadCursorW(nullptr, IDC_HAND);
@@ -583,10 +614,32 @@ void open_look_dialog(HWND owner, const castlemist::character::CharacterManifest
         SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         return c;
     };
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < 5; ++i)
         g_lk->tabs[i] = mk(L"BUTTON", kTabNames[i], BS_AUTORADIOBUTTON | BS_PUSHLIKE | (i == 0 ? WS_GROUP : 0),
                            10 + i * 92, 10, 88, 28, ID_LK_TAB0 + static_cast<UINT_PTR>(i));
     g_lk->grid = mk(L"Gw2LookGridWnd", L"", WS_VSCROLL | WS_BORDER | WS_TABSTOP, 10, 46, 690, H - 150, ID_LK_GRID);
+    // Face details: one slider per makeover-kit slider (0..100, 50 = the middle tick).
+    g_lk->sliders_panel = CreateWindowExW(0, L"Gw2LookSlidersWnd", L"", WS_CHILD | WS_BORDER, 10, 46, 690, H - 150,
+                                          g_lk->wnd, nullptr, g_hinstance, nullptr);
+    {
+        const auto& names = rp::face_slider_names();
+        const int rows = (static_cast<int>(names.size()) + 1) / 2;
+        for (size_t i = 0; i < names.size(); ++i) {
+            const int col = static_cast<int>(i) / rows, row = static_cast<int>(i) % rows;
+            const int x = 10 + col * 340, y = 10 + row * 44;
+            HWND l = CreateWindowExW(0, L"STATIC", utf8_to_wide(names[i]).c_str(), WS_CHILD | WS_VISIBLE | SS_LEFT, x, y,
+                                     320, 16, g_lk->sliders_panel, nullptr, g_hinstance, nullptr);
+            SendMessageW(l, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+            HWND t = CreateWindowExW(0, TRACKBAR_CLASSW, L"", WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS, x, y + 16,
+                                     320, 26, g_lk->sliders_panel,
+                                     reinterpret_cast<HMENU>(ID_LK_SLIDER0 + i), g_hinstance, nullptr);
+            SendMessageW(t, TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
+            SendMessageW(t, TBM_SETTICFREQ, 50, 0);
+            auto it = g_lk->look.sliders.find(names[i]);
+            SendMessageW(t, TBM_SETPOS, TRUE, static_cast<LPARAM>((it == g_lk->look.sliders.end() ? 0.5f : it->second) * 100 + 0.5f));
+            g_lk->sliders.push_back(t);
+        }
+    }
 
     const int cx = 716;
     mk(L"STATIC", L"Colours", SS_LEFT, cx, 16, 120, 18, 0);

@@ -514,3 +514,22 @@ CM_TEST(exportgltf, generated_textures_are_never_merged) {
     CHECK(mat["pbrMetallicRoughness"]["baseColorTexture"]["index"].get<int>() !=
           mat["normalTexture"]["index"].get<int>());
 }
+
+CM_TEST(exportgltf, morph_targets_export_as_named_shape_keys) {
+    ModelPreview model = make_static_quad();
+    MorphTargetCPU t;
+    t.name = "Jaw Width+";
+    t.delta.assign(model.meshes[0].vertices.size() * 3, 0.0f);
+    t.delta[0] = 0.5f;
+    t.weight = 0.25f;
+    model.meshes[0].morphs.push_back(t);
+    fs::path dir = make_temp_dir("morphs");
+    fs::path glbPath = dir / "quad.glb";
+    CHECK(export_model_gltf(model, glbPath.string()).ok);
+    ParsedGlb g = parse_glb(read_bytes(glbPath));
+    const json& mesh = g.doc["meshes"][0];
+    CHECK_EQ(mesh["primitives"][0]["targets"].size(), size_t{1});
+    CHECK(mesh["primitives"][0]["targets"][0].contains("POSITION"));
+    CHECK_EQ(mesh["extras"]["targetNames"][0].get<std::string>(), std::string("Jaw Width+"));
+    CHECK_NEAR(mesh["weights"][0].get<double>(), 0.25, 1e-6);
+}
