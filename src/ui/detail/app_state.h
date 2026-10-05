@@ -113,6 +113,7 @@ constexpr UINT_PTR ID_CK_REMOVE = 2166;
 constexpr UINT_PTR ID_CK_CLOSE = 2167;
 constexpr UINT_PTR ID_CH_EXPORT = 2168;
 constexpr UINT_PTR ID_CH_ASSEMBLE = 2169;
+constexpr UINT_PTR ID_CH_COMBINE = 2170;  // "Combine into one file" checkbox
 constexpr int ID_LISTVIEW = 2001;
 constexpr int ID_HEX_BEFORE = 2002;
 constexpr int ID_HEX_AFTER = 2003;

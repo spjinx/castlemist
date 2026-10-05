@@ -6,6 +6,7 @@
 // joint numbering differs), and weapons are moved onto a holster/hand joint.
 // Joint matrices follow ModelJoint: row vectors, invWorld = model -> bone.
 
+#include <array>
 #include <cstddef>
 #include <string>
 
@@ -26,6 +27,18 @@ size_t merge_into(ModelPreview& dst, const ModelPreview& src);
 /// joint is missing.
 bool attach_rigid(ModelPreview& dst, const ModelPreview& weapon, const std::string& weapon_joint,
                   const std::string& body_joint);
+
+/// Places a self-rigged attachment (a back item with its own bones, hung from
+/// the shared root) so its `src_joint` sits on `dst`'s `body_joint`: geometry
+/// and src's own joints move there, src's root-level joints are re-parented to
+/// `body_joint`, and joints `dst` already has (the root) collapse onto it. Its
+/// bones stay animatable. False (nothing appended) if either joint is missing.
+bool attach_skinned(ModelPreview& dst, const ModelPreview& src, const std::string& src_joint,
+                    const std::string& body_joint);
+
+/// A joint's bind local transform (x y z, quat x y z w) recomputed from the
+/// invWorld matrices -- what attach_skinned writes for re-parented joints.
+std::array<float, 7> local_from_bind(const ModelPreview& m, size_t joint);
 
 } // namespace castlemist::ripper
 

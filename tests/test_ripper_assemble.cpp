@@ -154,3 +154,62 @@ CM_TEST(assemble, helm_keeps_the_scalp_and_metres_option_scales) {
             metres = node.contains("scale") && std::abs(node["scale"][1].get<double>() - 0.0254) < 1e-9;
     CHECK(metres);
 }
+
+namespace {
+
+json glb_json(const fs::path& p) {
+    std::ifstream f(p, std::ios::binary);
+    std::vector<uint8_t> b((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    uint32_t jlen;
+    std::memcpy(&jlen, b.data() + 12, 4);
+    return json::parse(std::string(b.begin() + 20, b.begin() + 20 + jlen));
+}
+
+std::vector<std::string> joint_names(const json& j) {
+    std::vector<std::string> out;
+    for (const auto& i : j["skins"][0]["joints"]) out.push_back(j["nodes"][i.get<size_t>()].value("name", std::string()));
+    return out;
+}
+
+} // namespace
+
+CM_TEST(assemble, separate_mode_writes_a_body_and_pieces_on_one_skeleton) {
+    const char* dat = std::getenv("GW2_TEST_DAT");
+    if (!dat || !*dat) SKIP("set GW2_TEST_DAT to run against a real Gw2.dat");
+    ch::CharacterManifest m;
+    m.name = "Test Character";
+    m.race = "Sylvari";
+    m.gender = "Female";
+    m.pieces.push_back(armor("Coat", "Angler Vest", 0x0000694226933823ull));
+    m.pieces.push_back(armor("Helm", "Holographic Dragon Helm", 0x0425089844F38644ull));
+    ch::ManifestPiece sword;
+    sword.slot = "WeaponA1";
+    sword.skin_id = 8813;
+    sword.skin_name = "Holographic Dawn";
+    sword.skin_type = "Weapon";
+    sword.file_ids = {2163020};
+    sword.status = ch::PieceStatus::Ok;
+    m.pieces.push_back(sword);
+
+    fs::path dir = fs::temp_directory_path() / "cm_test_assemble_separate";
+    fs::remove_all(dir);
+    AssemblyReport r = assemble_character_separate(m, dat, dir.string());
+    CHECK(r.ok);
+    CHECK(r.error.empty());
+
+    CHECK(fs::exists(dir / "body.glb"));
+    CHECK(fs::exists(dir / "01_Coat_Angler_Vest.glb"));
+    CHECK(fs::exists(dir / "02_Helm_Holographic_Dragon_Helm.glb"));
+    CHECK(fs::exists(dir / "03_WeaponA1_Holographic_Dawn.glb"));
+
+    // The body keeps everything: the chest under the vest and the hair under the helm.
+    CHECK(part(r, "body chest") && part(r, "body chest")->status == "used");
+    CHECK(part(r, "hair") && part(r, "hair")->status == "used" && part(r, "hair")->reason.empty());
+    CHECK_EQ(part(r, "Coat")->file, std::string("01_Coat_Angler_Vest.glb"));
+
+    // Every file on the same full skeleton, in the same order.
+    std::vector<std::string> body = joint_names(glb_json(dir / "body.glb"));
+    CHECK(body.size() >= 153);
+    CHECK(joint_names(glb_json(dir / "01_Coat_Angler_Vest.glb")) == body);
+    CHECK(joint_names(glb_json(dir / "03_WeaponA1_Holographic_Dawn.glb")) == body);
+}

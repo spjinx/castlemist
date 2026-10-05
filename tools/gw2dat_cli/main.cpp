@@ -20,9 +20,9 @@
 //            [--dat <path> [--index <db>]] rebuilds a missing content map first
 //   character-export --manifest <json> --dat <path> --out <dir> [--index <db>]
 //            -- one .glb per equipped piece (race model, dyes baked), plus a report
-//   character-assemble --manifest <json> --dat <path> --out <file.glb>
-//            [--weapons stowed|hands|none] [--face N] [--hair N] [--metres] [--index <db>]
-//            -- the whole character as one rigged, upright .glb
+//   character-assemble --manifest <json> --dat <path> --out <dir | file.glb with --combined>
+//            [--combined] [--weapons stowed|hands|none] [--face N] [--hair N] [--metres] [--index <db>]
+//            -- body.glb + one .glb per piece on one skeleton (default), or one combined .glb
 //
 // On success exit code is 0 and the JSON has "ok": true; on failure exit code
 // is 1 and the JSON is {"ok": false, "error": "..."}.
@@ -1858,15 +1858,20 @@ void cmd_character_assemble(const Args& a) {
     if (has(a, "hair")) opt.hair = static_cast<int>(to_u64(a.at("hair")));
     opt.metres = has(a, "metres");
     open_index(a);
-    rp::AssemblyReport rep = rp::assemble_character(m, need(a, "dat"), utf8_arg("--out"), opt);
+    // Default: a folder with body.glb + one file per piece; --combined: one file.
+    const bool combined = has(a, "combined");
+    rp::AssemblyReport rep = combined ? rp::assemble_character(m, need(a, "dat"), utf8_arg("--out"), opt)
+                                      : rp::assemble_character_separate(m, need(a, "dat"), utf8_arg("--out"), opt);
     if (!rep.ok) fail(rep.error);
     json parts = json::array();
     for (const rp::AssemblyPart& p : rep.parts)
-        parts.push_back({{"part", p.name}, {"status", p.status}, {"reason", p.reason}, {"mesh", p.mesh}});
+        parts.push_back({{"part", p.name}, {"status", p.status}, {"reason", p.reason}, {"mesh", p.mesh},
+                         {"file", p.file}});
     json j;
     j["ok"] = true;
     j["joints"] = rep.joints;
     j["weapons"] = rp::to_string(opt.weapons);
+    j["mode"] = combined ? "combined" : "separate";
     j["parts"] = parts;
     emit(j);
 }

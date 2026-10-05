@@ -77,3 +77,27 @@ attach joint is dropped (reported).
 - Live (GW2_TEST_DAT): assemble Musa (SylvariFemale, current manifest) →
   one glb, one skin with >= 153 joints, an atlas image of 1024x1024, body
   chest dropped (Coat worn), face present; Blender render inspected.
+
+## Addendum 2026-10-05: separate mode (the default)
+
+User direction: "just the body mesh separate ... and then put the objects
+ONTO it, unless I say I want it combined."
+
+- **Separate (default)** writes a folder: `body.glb` (all four bare-body
+  parts -- nothing hidden, armor is removable -- plus face, ears and full
+  hair), one `NN_<Slot>_<skin>.glb` per armor piece, one for the back item,
+  one per weapon. Every file carries the full race skeleton (same joint names
+  and bind pose), the same upright root and units, so each piece sits
+  exactly on the body; in Blender, parent the pieces to the body's armature.
+  An armor piece's own atlas also holds the bare-body textures, so its skin
+  patches show skin. Weapons sit at their holster/hand pose.
+- **Combined** (opt-in) is the single file described above.
+- Hair layers blend over the face (alpha-over) instead of replacing it.
+- **Back items with their own rig** (Mawdrey: its bones hang from the shared
+  root, none weighted to body bones) are placed like weapons --
+  `actionpoint:CStowBack` onto the body's `actionpoint:CHolsterBack` -- but
+  keep their bones (`attach_skinned`), re-parented under the holster so they
+  stay animatable. Back items skinned to body bones (capes) still merge by name.
+- **Dark face / black skin fix:** the glTF writer de-duplicated textures by dat
+  fileId, and both baked atlases carried fileId 0, so the normal map slot got
+  the diffuse atlas. Generated (fileId 0) textures are never shared now.

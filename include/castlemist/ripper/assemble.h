@@ -33,6 +33,7 @@ struct AssemblyPart {
     std::string status;  // "used", "hidden" (texture only), "dropped"
     std::string reason;  // why it was hidden/dropped
     uint32_t mesh = 0;
+    std::string file;    // separate mode: the .glb it went into (file name only)
 };
 
 struct AssemblyReport {
@@ -42,9 +43,19 @@ struct AssemblyReport {
     size_t joints = 0;
 };
 
-/// Opens its own handle on the dat (safe on a worker thread). `glb_path` is UTF-8.
+/// Combined: the whole character as ONE rigged .glb. Bare-body parts under
+/// armor and hair strands under a helm are left out. Opens its own handle on
+/// the dat (safe on a worker thread). `glb_path` is UTF-8.
 AssemblyReport assemble_character(const character::CharacterManifest& manifest, const std::string& dat_path,
                                   const std::string& glb_path, const AssemblyOptions& options = {});
+
+/// Separate: a folder holding `body.glb` (the full bare body + head, nothing
+/// hidden) and one .glb per armor piece, back item and weapon, every file on
+/// the same full race skeleton with the same root, so each piece fits onto the
+/// body. `out_dir` is UTF-8; files are named NN_<Slot>_<skin name>.glb.
+AssemblyReport assemble_character_separate(const character::CharacterManifest& manifest,
+                                           const std::string& dat_path, const std::string& out_dir,
+                                           const AssemblyOptions& options = {});
 
 const char* to_string(WeaponPlacement w);
 

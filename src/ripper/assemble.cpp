@@ -2,7 +2,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
+#include <cstdio>
 #include <exception>
+#include <filesystem>
+#include <memory>
 #include <optional>
 #include <set>
 
@@ -14,6 +18,7 @@
 namespace castlemist::ripper {
 namespace {
 
+namespace fs = std::filesystem;
 using character::CharacterManifest;
 using character::ManifestPiece;
 
@@ -51,6 +56,7 @@ constexpr AttachPair kStow[] = {{"actionpoint:RStowBack", "actionpoint:RHolsterB
                                 {"actionpoint:LStowBack", "actionpoint:LHolsterBack"},
                                 {"actionpoint:RStowHip", "actionpoint:RHolsterHip"},
                                 {"actionpoint:LStowHip", "actionpoint:LHolsterHip"}};
+constexpr AttachPair kBackStow{"actionpoint:CStowBack", "actionpoint:CHolsterBack"};
 constexpr AttachPair kRightHand{"actionpoint:RGripHand", "actionpoint:RightHand"};
 constexpr AttachPair kLeftHand{"actionpoint:LGripHand", "actionpoint:LeftHand"};
 
@@ -58,85 +64,151 @@ bool has_joint(const ModelPreview& m, const char* name) {
     return std::any_of(m.joints.begin(), m.joints.end(), [&](const ModelJoint& j) { return j.name == name; });
 }
 
-} // namespace
-
-const char* to_string(WeaponPlacement w) {
-    switch (w) {
-    case WeaponPlacement::Stowed: return "stowed";
-    case WeaponPlacement::Hands: return "hands";
-    case WeaponPlacement::None: return "none";
-    }
-    return "stowed";
+// A back item rigged on its own: it has the back stow point and shares no
+// weighted bone with the body skeleton except the root.
+bool back_is_self_rigged(const ModelPreview& back, const ModelPreview& body) {
+    if (!has_joint(back, kBackStow.weapon)) return false;
+    std::vector<bool> weighted(back.joints.size(), false);
+    for (const ModelMeshCPU& mesh : back.meshes)
+        for (const GVertex& v : mesh.vertices)
+            for (int k = 0; k < 4; ++k)
+                if (v.bwt[k] > 0 && v.bidx[k] < weighted.size()) weighted[v.bidx[k]] = true;
+    for (size_t i = 0; i < back.joints.size(); ++i)
+        if (weighted[i] && back.joints[i].parent >= 0 && has_joint(body, back.joints[i].name.c_str())) return false;
+    return true;
 }
 
-AssemblyReport assemble_character(const CharacterManifest& manifest, const std::string& dat_path,
-                                  const std::string& glb_path, const AssemblyOptions& opt) {
-    AssemblyReport rep;
+std::string sanitize(std::string s) {
+    for (char& c : s)
+        if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_')) c = '_';
+    return s.empty() ? "piece" : s;
+}
+
+fs::path from_utf8(const std::string& s) { return fs::path(std::u8string(s.begin(), s.end())); }
+
+std::string to_utf8(const fs::path& p) {
+    std::u8string s = p.u8string();
+    return std::string(s.begin(), s.end());
+}
+
+// The open dat, the Composite and the character's race, shared by every output.
+struct Context {
     Gw2Dat dat;
-    try {
-        load_dat_file(dat, dat_path);
-    } catch (const std::exception& e) {
-        rep.error = std::string("cannot open the dat: ") + e.what();
-        return rep;
-    }
-    std::optional<composite::Composite> comp = load_composite(dat);
-    if (!comp) {
-        rep.error = "Composite file not found in this dat (open the index DB, or rebuild it)";
-        return rep;
-    }
-    const std::string race_key = manifest.race + manifest.gender;
-    const composite::CompositeRace* race = comp->race(race_key);
-    if (!race) {
-        rep.error = "unknown race/gender '" + race_key + "'";
-        return rep;
-    }
-    auto entry = [&](uint64_t token) -> const composite::CompositeFileData* {
+    composite::Composite comp;
+    const composite::CompositeRace* race = nullptr;
+    std::string race_key;
+    ModelPreview skeleton;  // the race skeleton alone (no meshes), seeding every output
+
+    const composite::CompositeFileData* entry(uint64_t token) const {
         auto it = race->file_data.find(token);
         return it == race->file_data.end() ? nullptr : &it->second;
+    }
+};
+
+std::unique_ptr<Context> open_context(const CharacterManifest& manifest, const std::string& dat_path,
+                                      const AssemblyOptions& opt, AssemblyReport& rep) {
+    auto ctx = std::make_unique<Context>();
+    try {
+        load_dat_file(ctx->dat, dat_path);
+    } catch (const std::exception& e) {
+        rep.error = std::string("cannot open the dat: ") + e.what();
+        return nullptr;
+    }
+    std::optional<composite::Composite> comp = load_composite(ctx->dat);
+    if (!comp) {
+        rep.error = "Composite file not found in this dat (open the index DB, or rebuild it)";
+        return nullptr;
+    }
+    ctx->comp = std::move(*comp);
+    ctx->race_key = manifest.race + manifest.gender;
+    ctx->race = ctx->comp.race(ctx->race_key);
+    if (!ctx->race) {
+        rep.error = "unknown race/gender '" + ctx->race_key + "'";
+        return nullptr;
+    }
+    // The race skeleton, taken from the bare chest (every body part and armor
+    // piece of the race shares it).
+    if (opt.skin_style >= 0 && static_cast<size_t>(opt.skin_style) < ctx->race->skin_styles.size()) {
+        if (const auto* chest = ctx->entry(ctx->race->skin_styles[static_cast<size_t>(opt.skin_style)][0]))
+            if (auto m = detail::load_model(ctx->dat, chest->mesh_base)) {
+                ctx->skeleton.joints = m->joints;
+                ctx->skeleton.skeletonVersion = m->skeletonVersion;
+                ctx->skeleton.skeletonType = m->skeletonType;
+                ctx->skeleton.externalSkeletonRef = m->externalSkeletonRef;
+            }
+    }
+    if (ctx->skeleton.joints.empty()) {
+        rep.error = "the race skeleton could not be loaded";
+        return nullptr;
+    }
+    return ctx;
+}
+
+// What goes into one output file.
+struct Selection {
+    bool body_meshes = true;            // false: bare-body textures only (armor skin patches need them)
+    bool hide_body_under_armor = true;  // combined: drop the bare part an armor piece covers
+    bool head = true;
+    bool hair_under_helm_scalp_only = true;
+    std::vector<const ManifestPiece*> armor;  // pieces whose meshes go in
+    std::set<std::string> worn;               // every armor slot the character wears
+    bool back = false;
+    std::vector<std::string> weapons;         // slots
+    std::string file;                         // separate mode: recorded on the report's parts
+};
+
+// Builds one output model on the race skeleton; appends to the report.
+ModelPreview build(Context& ctx, const CharacterManifest& manifest, const AssemblyOptions& opt, const Selection& sel,
+                   AssemblyReport& rep) {
+    const composite::CompositeRace* race = ctx.race;
+    auto report = [&](std::string name, std::string status, std::string reason, uint32_t mesh) {
+        rep.parts.push_back({std::move(name), std::move(status), std::move(reason), mesh, sel.file});
     };
 
     // ---- the part list: body, head, armor ---------------------------------------
     std::vector<Part> parts;
-    std::set<std::string> worn;  // armor slots that resolved to a composite entry
-    std::vector<Part> armor_parts;
-    for (const ManifestPiece& p : manifest.pieces) {
-        if (!is_armor(p) || aquatic(p.slot) || p.status == character::PieceStatus::NoSkin) continue;
-        const composite::CompositeFileData* fd = p.skin_token ? entry(p.skin_token) : nullptr;
-        if (!fd) {
-            rep.parts.push_back({p.slot, "dropped", "no appearance for " + race_key, 0});
-            continue;
-        }
-        armor_parts.push_back({p.slot, fd, &p, true, false, {}});
-        worn.insert(p.slot);
-    }
-
     if (opt.skin_style >= 0 && static_cast<size_t>(opt.skin_style) < race->skin_styles.size()) {
         const auto& style = race->skin_styles[static_cast<size_t>(opt.skin_style)];
         const char* names[4] = {"body chest", "body feet", "body hands", "body legs"};
         const char* covered_by[4] = {"Coat", "Boots", "Gloves", "Leggings"};
         for (int k = 0; k < 4; ++k) {
-            Part body{names[k], entry(style[k]), nullptr, !worn.count(covered_by[k]), true, {}};
-            if (!body.keep_mesh) body.hidden_reason = std::string("under the ") + covered_by[k];
-            if (body.fd) parts.push_back(body);
-            else rep.parts.push_back({names[k], "dropped", "no body part for " + race_key, 0});
+            const composite::CompositeFileData* fd = ctx.entry(style[k]);
+            if (!fd) {
+                if (sel.body_meshes) report(names[k], "dropped", "no body part for " + ctx.race_key, 0);
+                continue;
+            }
+            Part body{names[k], fd, nullptr, sel.body_meshes, true, {}};
+            if (sel.body_meshes && sel.hide_body_under_armor && sel.worn.count(covered_by[k])) {
+                body.keep_mesh = false;
+                body.hidden_reason = std::string("under the ") + covered_by[k];
+            }
+            if (!sel.body_meshes) body.hidden_reason = "texture only";
+            parts.push_back(body);
         }
     }
-    auto head_part = [&](const char* name, const std::vector<uint64_t>& list, int index, bool keep,
-                         const char* why_hidden) {
-        if (index < 0 || static_cast<size_t>(index) >= list.size()) return;
-        const composite::CompositeFileData* fd = entry(list[static_cast<size_t>(index)]);
-        if (!fd) return;
-        Part p{name, fd, nullptr, keep, false, keep ? std::string() : std::string(why_hidden)};
-        parts.push_back(p);
-    };
-    head_part("face", race->faces, opt.face, true, "");
-    head_part("ears", race->ears, 0, true, "");
-    head_part("hair", race->hair_styles, opt.hair, true, "");
-    if (worn.count("Helm") && !parts.empty() && parts.back().name == "hair") parts.back().scalp_only = true;
-    parts.insert(parts.end(), armor_parts.begin(), armor_parts.end());  // armor paints over the body
+    if (sel.head) {
+        auto head_part = [&](const char* name, const std::vector<uint64_t>& list, int index) {
+            if (index < 0 || static_cast<size_t>(index) >= list.size()) return;
+            if (const composite::CompositeFileData* fd = ctx.entry(list[static_cast<size_t>(index)]))
+                parts.push_back(Part{name, fd, nullptr, true, false, {}});
+        };
+        head_part("face", race->faces, opt.face);
+        head_part("ears", race->ears, 0);
+        head_part("hair", race->hair_styles, opt.hair);
+        if (sel.hair_under_helm_scalp_only && sel.worn.count("Helm") && !parts.empty() && parts.back().name == "hair")
+            parts.back().scalp_only = true;
+    }
+    for (const ManifestPiece* p : sel.armor) {
+        const composite::CompositeFileData* fd = p->skin_token ? ctx.entry(p->skin_token) : nullptr;
+        if (!fd) {
+            report(p->slot, "dropped", "no appearance for " + ctx.race_key, 0);
+            continue;
+        }
+        parts.push_back(Part{p->slot, fd, p, true, false, {}});  // armor paints over the body
+    }
 
     // ---- textures into the atlas, meshes onto the skeleton -------------------------
-    ModelPreview character;
+    ModelPreview out = ctx.skeleton;
     ImageRgba diffuse{kAtlas, kAtlas, std::vector<uint8_t>(static_cast<size_t>(kAtlas) * kAtlas * 4, 0)};
     ImageRgba normal{kAtlas, kAtlas, std::vector<uint8_t>(static_cast<size_t>(kAtlas) * kAtlas * 4, 0)};
     for (size_t i = 0; i < normal.px.size(); i += 4) {
@@ -145,23 +217,23 @@ AssemblyReport assemble_character(const CharacterManifest& manifest, const std::
         normal.px[i + 2] = 255;
         normal.px[i + 3] = 255;
     }
-    std::vector<size_t> atlas_meshes;  // indices into character.meshes that sample the atlas
+    std::vector<size_t> atlas_meshes;  // indices into out.meshes that sample the atlas
 
     for (const Part& part : parts) {
-        std::optional<ModelPreview> model = detail::load_model(dat, part.fd->mesh_base);
+        std::optional<ModelPreview> model = detail::load_model(ctx.dat, part.fd->mesh_base);
         if (!model) {
-            rep.parts.push_back({part.name, "dropped", "model failed to load", part.fd->mesh_base});
+            report(part.name, "dropped", "model failed to load", part.fd->mesh_base);
             continue;
         }
         std::vector<character::ManifestDye> no_dyes;
         std::optional<detail::BakedTextures> baked =
-            detail::bake_part(dat, *part.fd, part.piece ? part.piece->dyes : no_dyes);
+            detail::bake_part(ctx.dat, *part.fd, part.piece ? part.piece->dyes : no_dyes);
         if (!baked) {
-            rep.parts.push_back({part.name, "dropped", "texture failed to decode", part.fd->mesh_base});
+            report(part.name, "dropped", "texture failed to decode", part.fd->mesh_base);
             continue;
         }
         const composite::BlitRectSet* set =
-            part.fd->blit_set < comp->blit_sets.size() ? &comp->blit_sets[part.fd->blit_set] : nullptr;
+            part.fd->blit_set < ctx.comp.blit_sets.size() ? &ctx.comp.blit_sets[part.fd->blit_set] : nullptr;
 
         // The part's own meshes decide where its texture goes; a garment's
         // "skin" meshes sample the body's region instead.
@@ -183,7 +255,7 @@ AssemblyReport assemble_character(const CharacterManifest& manifest, const std::
         }
 
         if (!part.keep_mesh) {
-            rep.parts.push_back({part.name, "hidden", part.hidden_reason, part.fd->mesh_base});
+            if (sel.body_meshes) report(part.name, "hidden", part.hidden_reason, part.fd->mesh_base);
             continue;
         }
         if (!in_atlas) {
@@ -208,81 +280,192 @@ AssemblyReport assemble_character(const CharacterManifest& manifest, const std::
                 if (detail::is_skin_mesh(*model, mesh)) scalp.push_back(std::move(mesh));
             model->meshes = std::move(scalp);
         }
-        const size_t first = merge_into(character, *model);
+        const size_t first = merge_into(out, *model);
         if (in_atlas)
-            for (size_t mi = first; mi < character.meshes.size(); ++mi) atlas_meshes.push_back(mi);
-        rep.parts.push_back({part.name, "used", part.scalp_only ? "scalp only, strands under the Helm" : "",
-                             part.fd->mesh_base});
-    }
-    if (character.joints.empty()) {
-        rep.error = "no part of the character could be loaded";
-        return rep;
+            for (size_t mi = first; mi < out.meshes.size(); ++mi) atlas_meshes.push_back(mi);
+        report(part.name, "used", part.scalp_only ? "scalp only, strands under the Helm" : "", part.fd->mesh_base);
     }
 
     // One material for everything that samples the atlas.
-    {
-        int d = detail::add_texture(character, diffuse, 0, false);
-        int n = detail::add_texture(character, normal, 0, true);
+    if (!atlas_meshes.empty()) {
+        int d = detail::add_texture(out, diffuse, 0, false);
+        int n = detail::add_texture(out, normal, 0, true);
         ModelMaterialCPU mat;
-        mat.index = static_cast<uint32_t>(character.materials.size());
+        mat.index = static_cast<uint32_t>(out.materials.size());
         mat.materialName = "CharacterAtlas";
         mat.diffuseTex = d;
         mat.normalTex = n;
-        character.materials.push_back(mat);
-        for (size_t mi : atlas_meshes) character.meshes[mi].materialIndex = mat.index;
+        out.materials.push_back(mat);
+        for (size_t mi : atlas_meshes) out.meshes[mi].materialIndex = mat.index;
     }
 
     // ---- back item: merges onto the skeleton by joint name ------------------------
-    if (const ManifestPiece* back = find_slot(manifest, "Backpack"); back && !back->file_ids.empty()) {
-        std::optional<ModelPreview> m = detail::load_model(dat, back->file_ids[0]);
-        if (m && !m->joints.empty()) {
-            merge_into(character, *m);
-            rep.parts.push_back({"Backpack", "used", "", back->file_ids[0]});
-        } else {
-            rep.parts.push_back({"Backpack", "dropped", "model failed to load", back->file_ids[0]});
+    if (sel.back) {
+        if (const ManifestPiece* back = find_slot(manifest, "Backpack"); back && !back->file_ids.empty()) {
+            std::optional<ModelPreview> m = detail::load_model(ctx.dat, back->file_ids[0]);
+            if (m && !m->joints.empty()) {
+                // Its own rig hung from the shared root (Mawdrey, wings, ...) goes
+                // onto the back holster; one skinned to body bones (capes) merges
+                // by name.
+                if (back_is_self_rigged(*m, out) && attach_skinned(out, *m, kBackStow.weapon, kBackStow.body)) {
+                    report("Backpack", "used", std::string("on ") + kBackStow.body, back->file_ids[0]);
+                } else {
+                    merge_into(out, *m);
+                    report("Backpack", "used", "", back->file_ids[0]);
+                }
+            } else {
+                report("Backpack", "dropped", "model failed to load", back->file_ids[0]);
+            }
         }
     }
 
-    // ---- weapons (set A) ------------------------------------------------------------
-    for (const char* slot : {"WeaponA1", "WeaponA2"}) {
+    // ---- weapons ----------------------------------------------------------------------
+    for (const std::string& slot : sel.weapons) {
         const ManifestPiece* w = find_slot(manifest, slot);
         if (!w || w->file_ids.empty()) continue;
         if (opt.weapons == WeaponPlacement::None) {
-            rep.parts.push_back({slot, "dropped", "weapons: none", w->file_ids[0]});
+            report(slot, "dropped", "weapons: none", w->file_ids[0]);
             continue;
         }
-        std::optional<ModelPreview> m = detail::load_model(dat, w->file_ids[0]);
+        std::optional<ModelPreview> m = detail::load_model(ctx.dat, w->file_ids[0]);
         if (!m) {
-            rep.parts.push_back({slot, "dropped", "model failed to load", w->file_ids[0]});
+            report(slot, "dropped", "model failed to load", w->file_ids[0]);
             continue;
         }
         std::optional<AttachPair> at;
         if (opt.weapons == WeaponPlacement::Hands) {
-            const AttachPair hand = std::string(slot) == "WeaponA2" ? kLeftHand : kRightHand;
+            const AttachPair hand = slot == "WeaponA2" ? kLeftHand : kRightHand;
             if (has_joint(*m, hand.weapon)) at = hand;
             else if (has_joint(*m, kRightHand.weapon)) at = kRightHand;  // off-hands often only carry RGripHand
         }
         if (!at)
             for (const AttachPair& p : kStow)
                 if (has_joint(*m, p.weapon)) { at = p; break; }
-        if (at && attach_rigid(character, *m, at->weapon, at->body))
-            rep.parts.push_back({slot, "used", std::string("on ") + at->body, w->file_ids[0]});
+        if (at && attach_rigid(out, *m, at->weapon, at->body))
+            report(slot, "used", std::string("on ") + at->body, w->file_ids[0]);
         else
-            rep.parts.push_back({slot, "dropped", "no matching attach point", w->file_ids[0]});
+            report(slot, "dropped", "no matching attach point", w->file_ids[0]);
     }
+    return out;
+}
 
+bool write_glb(const ModelPreview& model, const std::string& path, const AssemblyOptions& opt, AssemblyReport& rep) {
     // GW2 characters stand along -Z; the avatar should stand along glTF +Y,
     // still facing +Z: -90 about X, then 180 about the forward axis. Units stay
     // GW2's (inches) unless asked for metres.
     exportgltf::GltfExportOptions gopts;
     gopts.rootRotation = {0.0, -0.70710678, 0.70710678, 0.0};
     gopts.rootScale = opt.metres ? 0.0254 : 1.0;
-    exportgltf::GltfExportResult g = exportgltf::export_model_gltf(character, glb_path, gopts);
-    if (!g.ok) {
-        rep.error = "glTF export failed: " + g.error;
+    exportgltf::GltfExportResult g = exportgltf::export_model_gltf(model, path, gopts);
+    if (!g.ok) rep.error = "glTF export failed: " + g.error;
+    return g.ok;
+}
+
+std::set<std::string> worn_slots(Context& ctx, const CharacterManifest& m) {
+    std::set<std::string> worn;
+    for (const ManifestPiece& p : m.pieces)
+        if (is_armor(p) && !aquatic(p.slot) && p.status != character::PieceStatus::NoSkin && p.skin_token &&
+            ctx.entry(p.skin_token))
+            worn.insert(p.slot);
+    return worn;
+}
+
+std::vector<const ManifestPiece*> armor_pieces(const CharacterManifest& m) {
+    std::vector<const ManifestPiece*> out;
+    for (const ManifestPiece& p : m.pieces)
+        if (is_armor(p) && !aquatic(p.slot) && p.status != character::PieceStatus::NoSkin) out.push_back(&p);
+    return out;
+}
+
+} // namespace
+
+const char* to_string(WeaponPlacement w) {
+    switch (w) {
+    case WeaponPlacement::Stowed: return "stowed";
+    case WeaponPlacement::Hands: return "hands";
+    case WeaponPlacement::None: return "none";
+    }
+    return "stowed";
+}
+
+AssemblyReport assemble_character(const CharacterManifest& manifest, const std::string& dat_path,
+                                  const std::string& glb_path, const AssemblyOptions& opt) {
+    AssemblyReport rep;
+    std::unique_ptr<Context> ctx = open_context(manifest, dat_path, opt, rep);
+    if (!ctx) return rep;
+    Selection sel;
+    sel.armor = armor_pieces(manifest);
+    sel.worn = worn_slots(*ctx, manifest);
+    sel.back = true;
+    sel.weapons = {"WeaponA1", "WeaponA2"};
+    ModelPreview model = build(*ctx, manifest, opt, sel, rep);
+    if (!write_glb(model, glb_path, opt, rep)) return rep;
+    rep.joints = model.joints.size();
+    rep.ok = true;
+    return rep;
+}
+
+AssemblyReport assemble_character_separate(const CharacterManifest& manifest, const std::string& dat_path,
+                                           const std::string& out_dir, const AssemblyOptions& opt) {
+    AssemblyReport rep;
+    std::unique_ptr<Context> ctx = open_context(manifest, dat_path, opt, rep);
+    if (!ctx) return rep;
+    std::error_code ec;
+    fs::create_directories(from_utf8(out_dir), ec);
+    if (ec) {
+        rep.error = "cannot create " + out_dir + ": " + ec.message();
         return rep;
     }
-    rep.joints = character.joints.size();
+    auto write = [&](const ModelPreview& m, const std::string& file) {
+        return write_glb(m, to_utf8(from_utf8(out_dir) / from_utf8(file)), opt, rep);
+    };
+
+    // The body: everything bare, the head with its full hair.
+    Selection body;
+    body.hide_body_under_armor = false;
+    body.hair_under_helm_scalp_only = false;
+    body.file = "body.glb";
+    ModelPreview body_model = build(*ctx, manifest, opt, body, rep);
+    if (!write(body_model, body.file)) return rep;
+    rep.joints = body_model.joints.size();
+
+    // Each piece on its own, on the same skeleton.
+    int n = 0;
+    auto piece_file = [&](const std::string& slot, const std::string& skin) {
+        char prefix[8];
+        std::snprintf(prefix, sizeof prefix, "%02d_", ++n);
+        return prefix + sanitize(slot) + "_" + sanitize(skin) + ".glb";
+    };
+    for (const ManifestPiece* p : armor_pieces(manifest)) {
+        Selection s;
+        s.body_meshes = false;  // bare-body textures still go in: the piece's skin patches sample them
+        s.head = false;
+        s.armor = {p};
+        s.file = piece_file(p->slot, p->skin_name);
+        ModelPreview m = build(*ctx, manifest, opt, s, rep);
+        if (m.meshes.empty()) continue;  // dropped (reported)
+        if (!write(m, s.file)) return rep;
+    }
+    if (const ManifestPiece* back = find_slot(manifest, "Backpack"); back && !back->file_ids.empty()) {
+        Selection s;
+        s.body_meshes = false;
+        s.head = false;
+        s.back = true;
+        s.file = piece_file("Backpack", back->skin_name);
+        ModelPreview m = build(*ctx, manifest, opt, s, rep);
+        if (!m.meshes.empty() && !write(m, s.file)) return rep;
+    }
+    for (const char* slot : {"WeaponA1", "WeaponA2"}) {
+        const ManifestPiece* w = find_slot(manifest, slot);
+        if (!w || w->file_ids.empty()) continue;
+        Selection s;
+        s.body_meshes = false;
+        s.head = false;
+        s.weapons = {slot};
+        s.file = piece_file(slot, w->skin_name);
+        ModelPreview m = build(*ctx, manifest, opt, s, rep);
+        if (!m.meshes.empty() && !write(m, s.file)) return rep;
+    }
     rep.ok = true;
     return rep;
 }

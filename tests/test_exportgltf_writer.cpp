@@ -495,3 +495,22 @@ CM_TEST(exportgltf, default_root_has_no_scale) {
             CHECK_NEAR(node["rotation"][0].get<double>(), -0.70710678, 1e-6);
         }
 }
+
+CM_TEST(exportgltf, generated_textures_are_never_merged) {
+    // Two in-memory textures (fileId 0, e.g. a baked diffuse and normal atlas)
+    // must stay two textures -- the normal map is not the diffuse.
+    ModelPreview model = make_static_quad();
+    model.textures[0].fileId = 0;
+    ModelTextureCPU normal = model.textures[0];
+    normal.rgba.assign(2 * 2 * 4, 128);
+    normal.isNormal = true;
+    model.textures.push_back(normal);
+    model.materials[0].normalTex = 1;
+    fs::path dir = make_temp_dir("gentex");
+    fs::path glbPath = dir / "quad.glb";
+    CHECK(export_model_gltf(model, glbPath.string()).ok);
+    ParsedGlb g = parse_glb(read_bytes(glbPath));
+    const json& mat = g.doc["materials"][0];
+    CHECK(mat["pbrMetallicRoughness"]["baseColorTexture"]["index"].get<int>() !=
+          mat["normalTexture"]["index"].get<int>());
+}

@@ -15,6 +15,7 @@
 #include <fstream>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -60,6 +61,7 @@ HWND g_ch_fetch_btn = nullptr;
 HWND g_ch_build_btn = nullptr;
 HWND g_ch_export_btn = nullptr;
 HWND g_ch_assemble_btn = nullptr;
+HWND g_ch_combine_chk = nullptr;
 
 ch::KeyStore g_ch_keys;
 RipperState g_ch;                             // names / shown character / their key
@@ -369,6 +371,8 @@ struct AssembleDone {
 };
 
 // The whole character as one rigged .glb, saved where the user picks.
+// The character as body.glb + one file per piece (default), or as one combined
+// .glb when "Combine into one file" is ticked.
 void assemble_character_glb() {
     if (!g_ch.current) {
         set_status(L"Fetch a character first.");
@@ -378,31 +382,49 @@ void assemble_character_glb() {
         set_status(L"Open Gw2.dat first (File > Open) - the models and textures come from it.");
         return;
     }
+    const bool combined = SendMessageW(g_ch_combine_chk, BM_GETCHECK, 0, 0) == BST_CHECKED;
     std::wstring name = utf8_to_wide(g_ch.current->manifest.name);
     for (wchar_t& c : name)
         if (wcschr(L"\\/:*?\"<>|", c)) c = L'_';
-    wchar_t path[MAX_PATH] = L"";
-    swprintf(path, MAX_PATH, L"%ls.glb", name.c_str());
-    OPENFILENAMEW ofn{};
-    ofn.lStructSize = sizeof ofn;
-    ofn.hwndOwner = g_ch_wnd;
-    ofn.lpstrFilter = L"glTF binary (*.glb)\0*.glb\0All files\0*.*\0";
-    ofn.lpstrFile = path;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.lpstrDefExt = L"glb";
-    ofn.lpstrTitle = L"Export the whole character (rigged .glb)";
-    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
-    if (!GetSaveFileNameW(&ofn)) return;
-    std::string out = wide_to_utf8(path);
+    std::wstring target;
+    if (combined) {
+        wchar_t path[MAX_PATH] = L"";
+        swprintf(path, MAX_PATH, L"%ls.glb", name.c_str());
+        OPENFILENAMEW ofn{};
+        ofn.lStructSize = sizeof ofn;
+        ofn.hwndOwner = g_ch_wnd;
+        ofn.lpstrFilter = L"glTF binary (*.glb)\0*.glb\0All files\0*.*\0";
+        ofn.lpstrFile = path;
+        ofn.nMaxFile = MAX_PATH;
+        ofn.lpstrDefExt = L"glb";
+        ofn.lpstrTitle = L"Export the whole character as one rigged .glb";
+        ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+        if (!GetSaveFileNameW(&ofn)) return;
+        target = path;
+    } else {
+        BROWSEINFOW bi{};
+        bi.hwndOwner = g_ch_wnd;
+        bi.lpszTitle = L"Export the body and each piece (.glb, one skeleton) into:";
+        bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+        PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
+        if (!pidl) return;
+        wchar_t folder[MAX_PATH] = L"";
+        bool ok = SHGetPathFromIDListW(pidl, folder);
+        CoTaskMemFree(pidl);
+        if (!ok) return;
+        target = std::wstring(folder) + L"\\" + name;  // its own subfolder: body.glb, 01_Coat_...
+    }
+    std::string out = wide_to_utf8(target);
     std::string dat_path = g_app->data_gw2.file_info.file_path;
     ch::CharacterManifest manifest = g_ch.current->manifest;
     ++g_ch_request;
     set_busy(true);
     set_status(L"Assembling " + name + L"...");
-    std::thread([manifest, dat_path, out]() {
+    std::thread([manifest, dat_path, out, combined]() {
         auto* r = new AssembleDone{out, {}};
         try {
-            r->report = castlemist::ripper::assemble_character(manifest, dat_path, out);
+            r->report = combined ? castlemist::ripper::assemble_character(manifest, dat_path, out)
+                                 : castlemist::ripper::assemble_character_separate(manifest, dat_path, out);
         } catch (const std::exception& e) {
             r->report.error = std::string("Assembly failed: ") + e.what();
         }
@@ -418,7 +440,11 @@ void on_assemble_done(std::unique_ptr<AssembleDone> r) {
     }
     size_t used = 0;
     for (const auto& p : r->report.parts) used += p.status == "used";
-    set_status(L"Saved " + utf8_to_wide(r->path) + L" (" + std::to_wstring(used) + L" parts, " +
+    std::set<std::string> files;
+    for (const auto& p : r->report.parts)
+        if (!p.file.empty()) files.insert(p.file);
+    set_status(L"Saved " + utf8_to_wide(r->path) + L" (" + std::to_wstring(used) + L" parts" +
+               (files.empty() ? std::wstring() : L" in " + std::to_wstring(files.size()) + L" files") + L", " +
                std::to_wstring(r->report.joints) + L" joints).");
 }
 
@@ -520,7 +546,7 @@ LRESULT CALLBACK CharacterWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
     case WM_DESTROY:
         ++g_ch_request;  // drop any in-flight result
         g_ch_wnd = g_ch_key_combo = g_ch_char_combo = g_ch_tab_combo = g_ch_table = g_ch_status = g_ch_fetch_btn =
-            g_ch_build_btn = g_ch_export_btn = g_ch_assemble_btn = nullptr;
+            g_ch_build_btn = g_ch_export_btn = g_ch_assemble_btn = g_ch_combine_chk = nullptr;
         g_ch = RipperState{};
         return 0;
     }
@@ -584,6 +610,7 @@ void open_character_dialog(HWND owner) {
     g_ch_build_btn = mk(L"BUTTON", L"Build map", BS_PUSHBUTTON, 235, H - 84, 90, 28, ID_CH_BUILD_MAP);
     g_ch_export_btn = mk(L"BUTTON", L"Export pieces...", BS_PUSHBUTTON, 330, H - 84, 115, 28, ID_CH_EXPORT);
     g_ch_assemble_btn = mk(L"BUTTON", L"Export character...", BS_PUSHBUTTON, 450, H - 84, 130, 28, ID_CH_ASSEMBLE);
+    g_ch_combine_chk = mk(L"BUTTON", L"Combine into one file", BS_AUTOCHECKBOX, 588, H - 80, 140, 20, ID_CH_COMBINE);
     mk(L"BUTTON", L"Close", BS_PUSHBUTTON, W - 106, H - 84, 80, 28, ID_CH_CLOSE);
 
     refill_keys();
