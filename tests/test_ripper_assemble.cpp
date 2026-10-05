@@ -88,11 +88,43 @@ CM_TEST(assemble, sylvari_female_with_vest_leggings_and_greatsword) {
     for (const auto& mat : j["materials"]) atlas_material |= mat.value("name", std::string()) == "CharacterAtlas";
     CHECK(atlas_material);
 
-    // Upright and in metres for Blender -> Unity -> VRChat.
-    bool upright = false;
+    // Upright, and in the same GW2 units as castlemist's other exports.
+    bool upright_unscaled = false;
     for (const auto& node : j["nodes"])
         if (node.value("name", std::string()) == "GW2_ZupToYup")
-            upright = node.contains("scale") && std::abs(node["scale"][1].get<double>() - 0.0254) < 1e-9 &&
-                      std::abs(node["rotation"][2].get<double>() - 0.70710678) < 1e-6;
-    CHECK(upright);
+            upright_unscaled = !node.contains("scale") && std::abs(node["rotation"][2].get<double>() - 0.70710678) < 1e-6;
+    CHECK(upright_unscaled);
+}
+
+CM_TEST(assemble, helm_keeps_the_scalp_and_metres_option_scales) {
+    const char* dat = std::getenv("GW2_TEST_DAT");
+    if (!dat || !*dat) SKIP("set GW2_TEST_DAT to run against a real Gw2.dat");
+    ch::CharacterManifest m;
+    m.name = "Test Character";
+    m.race = "Sylvari";
+    m.gender = "Female";
+    m.pieces.push_back(armor("Helm", "Holographic Dragon Helm", 0x0425089844F38644ull));
+    fs::path dir = fs::temp_directory_path() / "cm_test_assemble_helm";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    fs::path out = dir / "character.glb";
+    AssemblyOptions opt;
+    opt.metres = true;
+    AssemblyReport r = assemble_character(m, dat, out.string(), opt);
+    CHECK(r.ok);
+    const AssemblyPart* hair = part(r, "hair");
+    CHECK(hair != nullptr);
+    CHECK_EQ(hair->status, std::string("used"));
+    CHECK(hair->reason.rfind("scalp only", 0) == 0);  // strands hidden under the Helm, scalp kept
+
+    std::ifstream f(out, std::ios::binary);
+    std::vector<uint8_t> b((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    uint32_t jlen;
+    std::memcpy(&jlen, b.data() + 12, 4);
+    json j = json::parse(std::string(b.begin() + 20, b.begin() + 20 + jlen));
+    bool metres = false;
+    for (const auto& node : j["nodes"])
+        if (node.value("name", std::string()) == "GW2_ZupToYup")
+            metres = node.contains("scale") && std::abs(node["scale"][1].get<double>() - 0.0254) < 1e-9;
+    CHECK(metres);
 }

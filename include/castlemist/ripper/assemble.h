@@ -22,6 +22,10 @@ struct AssemblyOptions {
     int face = 0;        // index into the race's faces
     int hair = 0;        // index into the race's hair styles
     int skin_style = 0;  // index into the race's bare-body styles
+    /// Real-world metres (GW2 inches x 0.0254) for going straight to
+    /// Unity/VRChat. Off by default: the same GW2 units as castlemist's other
+    /// exports, so pieces and characters line up in one Blender scene.
+    bool metres = false;
 };
 
 struct AssemblyPart {

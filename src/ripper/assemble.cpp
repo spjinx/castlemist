@@ -27,6 +27,7 @@ struct Part {
     bool keep_mesh = true;                 // false: texture into the atlas only
     bool skin_meshes_are_part = false;     // body parts: their "skin" meshes ARE the part
     std::string hidden_reason;
+    bool scalp_only = false;               // hair under a helm: keep its skin (scalp) meshes, drop the strands
 };
 
 bool is_armor(const ManifestPiece& p) {
@@ -130,7 +131,8 @@ AssemblyReport assemble_character(const CharacterManifest& manifest, const std::
     };
     head_part("face", race->faces, opt.face, true, "");
     head_part("ears", race->ears, 0, true, "");
-    head_part("hair", race->hair_styles, opt.hair, !worn.count("Helm"), "under the Helm");
+    head_part("hair", race->hair_styles, opt.hair, true, "");
+    if (worn.count("Helm") && !parts.empty() && parts.back().name == "hair") parts.back().scalp_only = true;
     parts.insert(parts.end(), armor_parts.begin(), armor_parts.end());  // armor paints over the body
 
     // ---- textures into the atlas, meshes onto the skeleton -------------------------
@@ -196,10 +198,17 @@ AssemblyReport assemble_character(const CharacterManifest& manifest, const std::
                     v.v = wrap_uv(v.v);
                 }
         }
+        if (part.scalp_only) {
+            std::vector<ModelMeshCPU> scalp;
+            for (ModelMeshCPU& mesh : model->meshes)
+                if (detail::is_skin_mesh(*model, mesh)) scalp.push_back(std::move(mesh));
+            model->meshes = std::move(scalp);
+        }
         const size_t first = merge_into(character, *model);
         if (in_atlas)
             for (size_t mi = first; mi < character.meshes.size(); ++mi) atlas_meshes.push_back(mi);
-        rep.parts.push_back({part.name, "used", "", part.fd->mesh_base});
+        rep.parts.push_back({part.name, "used", part.scalp_only ? "scalp only, strands under the Helm" : "",
+                             part.fd->mesh_base});
     }
     if (character.joints.empty()) {
         rep.error = "no part of the character could be loaded";
@@ -258,12 +267,12 @@ AssemblyReport assemble_character(const CharacterManifest& manifest, const std::
             rep.parts.push_back({slot, "dropped", "no matching attach point", w->file_ids[0]});
     }
 
-    // GW2 characters stand along -Z in inches; the avatar should stand along
-    // glTF +Y in metres, still facing +Z: -90 about X, then 180 about the
-    // forward axis, and inches -> metres.
+    // GW2 characters stand along -Z; the avatar should stand along glTF +Y,
+    // still facing +Z: -90 about X, then 180 about the forward axis. Units stay
+    // GW2's (inches) unless asked for metres.
     exportgltf::GltfExportOptions gopts;
     gopts.rootRotation = {0.0, -0.70710678, 0.70710678, 0.0};
-    gopts.rootScale = 0.0254;
+    gopts.rootScale = opt.metres ? 0.0254 : 1.0;
     exportgltf::GltfExportResult g = exportgltf::export_model_gltf(character, glb_path, gopts);
     if (!g.ok) {
         rep.error = "glTF export failed: " + g.error;
