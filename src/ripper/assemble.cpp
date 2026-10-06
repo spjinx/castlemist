@@ -513,6 +513,16 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
         // take the skin colour, and hair its colours on its dye channels.
         std::vector<character::ManifestDye> look_dyes;
         std::optional<ColorMatrix> skin;
+        if (part.undergarment && sylvari) {
+            // Sylvari undergarments are leaves, not cloth: the hair colour on
+            // channel 1, the skin colour on channel 2 and white petals (channel
+            // 3, Dye Remover) -- as in game. Texels no mask covers keep their
+            // authored colour.
+            look_dyes = detail::undergarment_dyes();
+            const std::optional<character::DyeShift> tints[2] = {opt.hair_tint, opt.skin_tint};
+            for (int ch = 0; ch < 2; ++ch)
+                if (tints[ch]) look_dyes[static_cast<size_t>(ch)].shift = tints[ch];
+        }
         if (!part.piece && !part.undergarment) {
             // Hair texels outside its dye masks are authored accents, not skin.
             if (opt.skin_tint && part.name != "hair") skin = dye_matrix(*opt.skin_tint);
@@ -564,7 +574,7 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
         } else {
             baked = detail::bake_part(ctx.dat, fd,
                                       part.piece          ? part.piece->dyes
-                                      : part.undergarment ? detail::undergarment_dyes()
+                                      : part.undergarment && !sylvari ? detail::undergarment_dyes()
                                                           : look_dyes,
                                       skin);
         }
