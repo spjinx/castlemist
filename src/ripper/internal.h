@@ -63,6 +63,10 @@ std::vector<uint8_t> uv_coverage(const ModelPreview& m, int w, int h, bool skin_
 /// uv_coverage); the corner when none does.
 void place_texture(AtlasRegion& region, const ImageRgba& tex, float scale, const std::vector<uint8_t>& coverage);
 
+/// The undergarments' dyes: every channel Dye Remover (colour 1) on cloth,
+/// the colour the game shows on a channel nobody dyed.
+std::vector<character::ManifestDye> undergarment_dyes();
+
 /// The mesh's UVs wrapped into [0,1] (mirrored halves sit at u-1).
 std::vector<std::pair<float, float>> wrapped_uvs(const ModelMeshCPU& mesh);
 

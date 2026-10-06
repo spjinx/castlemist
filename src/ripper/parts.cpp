@@ -212,6 +212,21 @@ std::vector<uint8_t> uv_coverage(const ModelPreview& m, int w, int h, bool skin_
     return cov;
 }
 
+std::vector<character::ManifestDye> undergarment_dyes() {
+    std::vector<character::ManifestDye> dyes;
+    for (int slot = 0; slot < 4; ++slot) {
+        character::ManifestDye d;
+        d.slot = slot;
+        d.color_id = 1;
+        d.color_name = "Dye Remover";
+        d.material = "cloth";
+        d.shift = character::DyeShift{15.0f, 1.25f, 38.0f, 0.28125f, 1.4453125f};  // the API's cloth shift
+        d.known = true;
+        dyes.push_back(d);
+    }
+    return dyes;
+}
+
 void place_texture(AtlasRegion& region, const ImageRgba& tex, float scale, const std::vector<uint8_t>& coverage) {
     const float w = scale * static_cast<float>(tex.w), h = scale * static_cast<float>(tex.h);
     const uint32_t cx = region.ax, cy = region.ay;

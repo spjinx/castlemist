@@ -182,11 +182,13 @@ CM_TEST(export, export_character_writes_report) {
     fs::path dir = scratch("character");
     CharacterExportReport rep = export_character(m, dat_env(), dir.string());
     CHECK(rep.error.empty());
-    CHECK_EQ(rep.pieces.size(), size_t{2});
-    CHECK_EQ(rep.exported(), size_t{1});
+    CHECK_EQ(rep.pieces.size(), size_t{4});  // + the undergarment top and bottom (female)
+    CHECK_EQ(rep.exported(), size_t{3});
     CHECK(fs::exists(dir / "export_report.json"));
     CHECK(fs::exists(dir / "manifest.json"));
     CHECK(fs::exists(dir / "01_Coat_Warden_Coat.glb"));
+    CHECK(fs::exists(dir / "00_UndergarmentTop.glb"));
+    CHECK(fs::exists(dir / "00_UndergarmentBottom.glb"));
 }
 
 CM_TEST(export, weapon_with_stray_token_exports_model) {
@@ -230,9 +232,9 @@ CM_TEST(export, export_character_into_a_non_ascii_folder) {
     std::u8string u8 = dir.u8string();
     CharacterExportReport rep = export_character(m, dat_env(), std::string(u8.begin(), u8.end()));
     CHECK(rep.error.empty());
-    CHECK_EQ(rep.pieces.size(), size_t{1});
+    CHECK_EQ(rep.pieces.size(), size_t{3});  // the coat + the undergarment top and bottom
     if (!rep.pieces.empty()) CHECK_EQ(rep.pieces[0].second.reason, std::string());
-    CHECK_EQ(rep.exported(), size_t{1});
+    CHECK_EQ(rep.exported(), size_t{3});
     CHECK(fs::exists(dir / "01_Coat_Warden_Coat.glb"));
     fs::remove_all(dir);
 }

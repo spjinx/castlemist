@@ -59,6 +59,14 @@ struct CompositeRace {
     std::vector<std::array<uint32_t, 6>> skin_patterns;
 };
 
+/// The undergarments every race wears where it has no armor: FileData named
+/// "underwearic" (coat slot, type 9: the top -- females only) and "underwearil"
+/// (leggings slot, type 12: the bottom), the same tokens in every race. A
+/// FileData token is its name 5-bit packed (a = 1 ... z = 26, first letter in
+/// the low bits): bare-body parts are "skinbc" / "skinbf" / "skinbh" / "skinbl".
+constexpr uint64_t kUndergarmentTopToken = 0x000D32096F2291D5ull;
+constexpr uint64_t kUndergarmentBottomToken = 0x003132096F2291D5ull;
+
 struct Composite {
     std::vector<BlitRectSet> blit_sets;
     std::vector<CompositeRace> races;

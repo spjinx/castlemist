@@ -2047,6 +2047,35 @@ void cmd_character_vrchat(const Args& a) {
           {"joints", r.joints}, {"physbone_chains", r.physbone_chains}});
 }
 
+// A race's Composite appearance entries by piece type (0-3 bare body, 5 face,
+// 6 hair, 7 ears, 8-14 armor, others listed as found): token, meshes, textures.
+void cmd_composite_types(const Args& a) {
+    namespace rp = castlemist::ripper;
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    auto comp = rp::load_composite(dat);
+    if (!comp) fail("no Composite in the dat");
+    const auto* r = comp->race(need(a, "race") + need(a, "gender"));
+    if (!r) fail("no such race");
+    const int only = has(a, "type") ? static_cast<int>(to_u64(a.at("type"))) : -1;
+    std::map<int, json> by_type;
+    for (const auto& [token, f] : r->file_data) {
+        json& t = by_type[f.type];
+        if (t.is_null()) t = json{{"count", 0}, {"entries", json::array()}};
+        t["count"] = t["count"].get<int>() + 1;
+        if (only < 0 ? t["entries"].size() < 3 : f.type == only)
+            t["entries"].push_back({{"token", token}, {"mesh", f.mesh_base}, {"overlap", f.mesh_overlap},
+                                    {"texture", f.texture_base}, {"normal", f.texture_normal},
+                                    {"masks", f.mask_dye}, {"cut", f.mask_cut}, {"hide", f.hide_flags},
+                                    {"skin_flags", f.skin_flags}, {"blit_set", f.blit_set}});
+    }
+    json types = json::object();
+    for (auto& [type, t] : by_type) types[std::to_string(type)] = std::move(t);
+    json styles = json::array();
+    for (const auto& s : r->skin_styles) styles.push_back(s);
+    emit({{"ok", true}, {"types", types}, {"skin_styles", styles}});
+}
+
 // What a race can look like: face / hair style counts and its skin and hair
 // palettes with swatch colours (needs the content map for the colours).
 void cmd_look_options(const Args& a) {
@@ -2239,6 +2268,7 @@ int main(int argc, char** argv) {
         else if (cmd == "cntc-dump") cmd_cntc_dump(a);
         else if (cmd == "palette") cmd_palette(a);
         else if (cmd == "look-options") cmd_look_options(a);
+        else if (cmd == "composite-types") cmd_composite_types(a);
         else if (cmd == "look-set") cmd_look_set(a);
         else if (cmd == "look-thumbs") cmd_look_thumbs(a);
         else if (cmd == "character-vrchat") cmd_character_vrchat(a);

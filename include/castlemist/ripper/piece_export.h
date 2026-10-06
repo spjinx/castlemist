@@ -35,6 +35,11 @@ struct PieceExportResult {
 /// Skip reasons: "no skin", "no appearance token (rebuild the content map)",
 /// "no appearance for <race_key>", "model failed to load",
 /// "texture failed to decode", "no mesh inside an atlas rect", "glTF export failed: ...".
+/// One of the race's undergarments (composite::kUndergarmentTopToken /
+/// kUndergarmentBottomToken) as its own .glb, in Dye Remover. "skipped" when the race
+/// has none (male races have no top).
+PieceExportResult export_undergarment(const PieceContext& ctx, uint64_t token, const std::string& glb_path);
+
 PieceExportResult export_piece(const PieceContext& ctx, const character::ManifestPiece& piece,
                                const std::string& glb_path);
 

@@ -42,6 +42,7 @@ struct Part {
     std::string hidden_reason;
     bool scalp_only = false;               // hair under a helm: keep its skin (scalp) meshes, drop the strands
     int pattern_slot = -1;                 // which mask of a skin pattern is this part's (chest 0, face 1, ...)
+    bool undergarment = false;             // the race's underwear: own colours, no skin tint
 };
 
 bool is_armor(const ManifestPiece& p) {
@@ -232,11 +233,12 @@ struct Selection {
 // VRChat: a bare-body part stays (nothing is dropped under armor) and gets a
 // UV1 tile for Poiyomi's UV Tile Discard -- tiles count from the bottom-left,
 // (0,0) (1,0) (2,0) (3,0), then the row above: head and everything else (0,0),
-// chest (1,0), legs (2,0), hands (3,0), feet (0,1). glTF's V runs down (Blender
+// chest (1,0), legs (2,0), hands (3,0), feet (0,1), undergarments (1,1). glTF's V runs down (Blender
 // and Unity flip it on import), so a tile row up is a V step down here.
 void vrchat_body_part(ModelPreview& out, size_t first, const std::string& part, const std::set<std::string>&) {
     struct Info { const char* part; float tu, tv; };
-    static const Info kParts[] = {{"body chest", 1, 0}, {"body legs", 2, 0}, {"body hands", 3, 0}, {"body feet", 0, 1}};
+    static const Info kParts[] = {{"body chest", 1, 0},      {"body legs", 2, 0},           {"body hands", 3, 0},
+                                  {"body feet", 0, 1},       {"undergarment top", 1, 1},    {"undergarment bottom", 1, 1}};
     float tu = 0, tv = 0;
     for (const Info& i : kParts)
         if (part == i.part) tu = i.tu, tv = i.tv;
@@ -321,6 +323,22 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
         head_part("hair", race->hair_styles, opt.hair, -1);
         if (sel.hair_under_helm_scalp_only && sel.worn.count("Helm") && !parts.empty() && parts.back().name == "hair")
             parts.back().scalp_only = true;
+    }
+    // The undergarments (a top for female races, a bottom for all): where no
+    // coat / leggings covers them, as in game -- and always when nothing is
+    // hidden under armor (VRChat, the separate body), so the avatar is dressed
+    // with its armor toggled off. Painted before the armor, like the body.
+    if (sel.body_parts && sel.body_meshes && sel.head) {
+        const std::pair<const char*, std::pair<uint64_t, const char*>> under[] = {
+            {"undergarment top", {composite::kUndergarmentTopToken, "Coat"}},
+            {"undergarment bottom", {composite::kUndergarmentBottomToken, "Leggings"}}};
+        for (const auto& [name, what] : under) {
+            const composite::CompositeFileData* fd = ctx.entry(what.first);
+            if (!fd || (sel.hide_body_under_armor && sel.worn.count(what.second))) continue;
+            Part u{name, fd, nullptr, true, false, {}};
+            u.undergarment = true;
+            parts.push_back(u);
+        }
     }
     for (const ManifestPiece* p : sel.armor) {
         const composite::CompositeFileData* fd = p->skin_token ? ctx.entry(p->skin_token) : nullptr;
@@ -495,7 +513,7 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
         // take the skin colour, and hair its colours on its dye channels.
         std::vector<character::ManifestDye> look_dyes;
         std::optional<ColorMatrix> skin;
-        if (!part.piece) {
+        if (!part.piece && !part.undergarment) {
             // Hair texels outside its dye masks are authored accents, not skin.
             if (opt.skin_tint && part.name != "hair") skin = dye_matrix(*opt.skin_tint);
             if (part.name == "hair") {
@@ -544,7 +562,11 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
                 it = ctx.preview_bakes.emplace(part.fd->token, detail::bake_part(ctx.dat, fd, look_dyes, skin, true)).first;
             baked = it->second;
         } else {
-            baked = detail::bake_part(ctx.dat, fd, part.piece ? part.piece->dyes : look_dyes, skin);
+            baked = detail::bake_part(ctx.dat, fd,
+                                      part.piece          ? part.piece->dyes
+                                      : part.undergarment ? detail::undergarment_dyes()
+                                                          : look_dyes,
+                                      skin);
         }
         if (!baked) {
             report(part.name, "dropped", "texture failed to decode", part.fd->mesh_base);
@@ -568,8 +590,9 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
         const bool in_atlas = !region.rects.empty();
         if (in_atlas) {
             // Hair and bald-scalp layers paint over the face's region the way the
-            // game composites them (by their alpha); everything else replaces.
-            const BlitMode mode = part.name == "hair" ? BlitMode::Over : BlitMode::Replace;
+            // game composites them (by their alpha), and so do the undergarments
+            // over the bare body where their rects share it; everything else replaces.
+            const BlitMode mode = part.name == "hair" || part.undergarment ? BlitMode::Over : BlitMode::Replace;
             blit(diffuse, detail::to_image(baked->base), region, baked->scale, mode);
             if (baked->normal && mode == BlitMode::Replace)
                 blit(normal, detail::to_image(*baked->normal), region, baked->normal_scale);
@@ -603,8 +626,9 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
                 workflow = armor_surface(*model, *baked, region, part.skin_meshes_are_part);
             }
             if (pattern_glowing && pattern_mask) blit_glow(pattern_mask, BlitMode::Replace, false);
-            if (glowing && sylvari && !part.piece) blit_glow(own_glow_mask(*model), BlitMode::Add, true);
-        } else if (glowing && sylvari && !part.piece && part.keep_mesh) {
+            if (glowing && sylvari && !part.piece && !part.undergarment)
+                blit_glow(own_glow_mask(*model), BlitMode::Add, true);
+        } else if (glowing && sylvari && !part.piece && !part.undergarment && part.keep_mesh) {
             // Self-textured hair: its glow on its own UVs.
             ModelTextureCPU mask;
             if (uint32_t f = own_glow_mask(*model); f && decode_texture_full(ctx.dat, f, mask) && mask.width > 0) {
@@ -644,7 +668,10 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
             for (size_t mi = first; mi < out.meshes.size(); ++mi) atlas_meshes.push_back(mi);
         // Which avatar piece these meshes belong to: the bare body and head,
         // the hair, or the armor slot (vrchat merges per piece).
-        const std::string group = part.piece ? part.piece->slot : part.name == "hair" ? "Hair" : "Body";
+        const std::string group = part.piece          ? part.piece->slot
+                                  : part.undergarment ? "Undergarments"
+                                  : part.name == "hair" ? "Hair"
+                                                        : "Body";
         for (size_t mi = first; mi < out.meshes.size(); ++mi) out.meshes[mi].meshName = group;
         if (opt.vrchat) vrchat_body_part(out, first, part.name, sel.worn);
         report(part.name, "used", part.scalp_only ? "scalp only, strands under the Helm" : workflow, part.fd->mesh_base);
@@ -681,7 +708,8 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
             else if (!body_glow && body_emissive) body.emissiveTex = -1;
             out.materials.push_back(body);
             for (size_t mi : atlas_meshes)
-                if (out.meshes[mi].meshName == "Body" || out.meshes[mi].meshName == "Hair")
+                if (out.meshes[mi].meshName == "Body" || out.meshes[mi].meshName == "Hair" ||
+                    out.meshes[mi].meshName == "Undergarments")
                     out.meshes[mi].materialIndex = body.index;
         }
     }

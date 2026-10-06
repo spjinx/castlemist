@@ -155,6 +155,18 @@ PieceExportResult export_armor(const PieceContext& ctx, const character::Manifes
 
 } // namespace
 
+PieceExportResult export_undergarment(const PieceContext& ctx, uint64_t token, const std::string& glb_path) {
+    const composite::CompositeRace* race = ctx.comp ? ctx.comp->race(ctx.race_key) : nullptr;
+    if (!race) return skipped("no appearance for " + ctx.race_key);
+    auto it = race->file_data.find(token);
+    if (it == race->file_data.end()) return skipped("none for " + ctx.race_key);
+    character::ManifestPiece undergarment;
+    undergarment.dyes = detail::undergarment_dyes();
+    PieceExportResult r = export_armor(ctx, undergarment, it->second, glb_path);
+    if (r.ok) r.status = "undergarment";
+    return r;
+}
+
 PieceExportResult export_piece(const PieceContext& ctx, const character::ManifestPiece& piece,
                                const std::string& glb_path) {
     if (piece.status == character::PieceStatus::NoSkin || piece.skin_id == 0) return skipped("no skin");

@@ -94,6 +94,20 @@ CharacterExportReport export_character(const character::CharacterManifest& manif
         rep.pieces.emplace_back(p.slot, std::move(r));
     }
 
+    // The undergarments the character wears under its armor (shown in game
+    // wherever no armor covers them): top (female races) and bottom.
+    const std::pair<const char*, uint64_t> undergarments[] = {{"UndergarmentTop", composite::kUndergarmentTopToken},
+                                                               {"UndergarmentBottom", composite::kUndergarmentBottomToken}};
+    for (const auto& [slot, token] : undergarments) {
+        fs::path file = from_utf8(out_dir) / from_utf8(std::string("00_") + slot + ".glb");
+        PieceExportResult r = export_undergarment(ctx, token, to_utf8(file));
+        if (!r.ok && r.reason.rfind("none for", 0) == 0) continue;  // e.g. no top for male races
+        report.push_back({{"slot", slot}, {"status", r.status}, {"file", r.ok ? to_utf8(file.filename()) : std::string()},
+                          {"mesh", r.mesh}, {"texture_base", r.texture_base}, {"dyed_channels", 0},
+                          {"undyed_channels", r.undyed_channels}, {"reason", r.reason}});
+        rep.pieces.emplace_back(slot, std::move(r));
+    }
+
     std::ofstream(from_utf8(out_dir) / "manifest.json") << character::manifest_to_json(manifest).dump(2) << '\n';
     std::ofstream(from_utf8(out_dir) / "export_report.json")
         << json{{"character", manifest.name}, {"race_key", ctx.race_key}, {"pieces", report}}.dump(2) << '\n';
