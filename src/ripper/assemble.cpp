@@ -515,12 +515,11 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
         std::optional<ColorMatrix> skin;
         if (part.undergarment && sylvari) {
             // Sylvari undergarments are leaves, not cloth: the hair colour on
-            // channel 1, the skin colour on channel 2 and white petals (channel
-            // 3, Dye Remover) -- as in game. Texels no mask covers keep their
-            // authored colour.
+            // channel 1, the skin (body) colour on channels 2 and 3 -- as in
+            // game. Texels no mask covers keep their authored colour.
             look_dyes = detail::undergarment_dyes();
-            const std::optional<character::DyeShift> tints[2] = {opt.hair_tint, opt.skin_tint};
-            for (int ch = 0; ch < 2; ++ch)
+            const std::optional<character::DyeShift> tints[3] = {opt.hair_tint, opt.skin_tint, opt.skin_tint};
+            for (int ch = 0; ch < 3; ++ch)
                 if (tints[ch]) look_dyes[static_cast<size_t>(ch)].shift = tints[ch];
         }
         if (!part.piece && !part.undergarment) {
