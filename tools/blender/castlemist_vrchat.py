@@ -95,6 +95,30 @@ def convert(src, out):
         if o.type == 'EMPTY' and not o.children:
             bpy.data.objects.remove(o)
 
+    # Every material's images as their own files: the glTF importer leaves them
+    # packed with no path, and the FBX exporter tells textures apart by path --
+    # unsaved ones collapse onto one image (the body showed the armor atlas).
+    tex_dir = os.path.join(os.path.dirname(out), os.path.splitext(os.path.basename(out))[0] + " Textures", "fbx")
+    os.makedirs(tex_dir, exist_ok=True)
+    saved = {}
+    for mat in bpy.data.materials:
+        if not mat.use_nodes:
+            continue
+        for node in mat.node_tree.nodes:
+            if node.type != 'TEX_IMAGE' or not node.image:
+                continue
+            img = node.image
+            if img.name not in saved:
+                safe = "".join(c if c.isalnum() or c in " -_" else "_" for c in mat.name + " " + node.label + " " + img.name)
+                path = os.path.join(tex_dir, safe.strip() + ".png")
+                img.file_format = 'PNG'
+                img.save(filepath=path)
+                loaded = bpy.data.images.load(path, check_existing=False)
+                loaded.colorspace_settings.name = img.colorspace_settings.name
+                loaded.alpha_mode = img.alpha_mode
+                saved[img.name] = loaded
+            node.image = saved[img.name]
+
     bpy.ops.wm.save_as_mainfile(filepath=os.path.splitext(out)[0] + ".blend")
     bpy.ops.export_scene.fbx(
         filepath=out,

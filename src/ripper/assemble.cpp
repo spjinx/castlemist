@@ -642,6 +642,16 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
                 for (size_t t = 3; t < dark.px.size(); t += 4) dark.px[t] = 255;
                 blit(emissive, dark, region, baked->scale);
                 workflow = armor_surface(*model, *baked, region, part.skin_meshes_are_part);
+            } else {
+                // Bare skin's alpha (body, face, ears) carries shine, not
+                // coverage, like armor's; hair and undergarments are cut out at
+                // the same 0.25 the glTF uses: opaque from there up, a hole below
+                // -- so formats without an alpha mode (FBX) and blended shaders
+                // don't show them see-through.
+                for_region(region, kAtlas, kAtlas, [&](size_t i) {
+                    uint8_t& a = diffuse.px[i + 3];
+                    a = a < 64 ? 0 : 255;
+                });
             }
             if (pattern_glowing && pattern_mask) blit_glow(pattern_mask, BlitMode::Replace, false);
             if (glowing && sylvari && !part.piece && !part.undergarment)
