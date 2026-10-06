@@ -26,8 +26,11 @@
 //   look-options --race R --gender G --dat <path>   -- faces, hair styles, skin/hair colours
 //   look-set --character NAME [--face N] [--hair N] [--skin-color ID] [--hair-color ID]
 //            [--hair-color2 ID] [--ears N] [--eye-color ID] [--pattern N] [--pattern-color ID]
-//            [--glow-color ID] [--glow-intensity 0..1] [--remove]   -- saves the look character-assemble applies
+//            [--glow-color ID] [--glow-intensity 0..1] [--physique N] [--remove]
+//            -- saves the look character-assemble applies
 //   cntc-dump --dat <path> --out-dir <dir>   -- research: every content pack, decompressed
+//   composite-types --race R --gender G --dat <path> [--type N]
+//            -- research: a race's Composite entries by piece type, physiques, face presets
 //   character-assemble --manifest <json> --dat <path> --out <dir | file.glb with --combined>
 //            [--combined] [--weapons stowed|hands|none] [--face N] [--hair N] [--metres] [--index <db>]
 //            [--skin-color ID] [--hair-color ID] [--hair-color2 ID] [--no-look]
@@ -1975,6 +1978,7 @@ void cmd_character_assemble(const Args& a) {
     if (has(a, "pattern-color")) look.pattern_color = static_cast<uint32_t>(to_u64(a.at("pattern-color")));
     if (has(a, "glow-color")) look.glow_color = static_cast<uint32_t>(to_u64(a.at("glow-color")));
     if (has(a, "glow-intensity")) look.glow_intensity = std::stof(a.at("glow-intensity"));
+    if (has(a, "physique")) look.physique = std::stoi(a.at("physique"));
     if (has(a, "sliders")) {  // "Cheeks=1,Jaw Width=0.86,..."
         std::stringstream ss(a.at("sliders"));
         std::string item;
@@ -2012,7 +2016,7 @@ void cmd_character_assemble(const Args& a) {
     j["look"] = {{"saved", saved}, {"face", look.face}, {"hair", look.hair}, {"skin_color", look.skin_color},
                  {"hair_color", look.hair_color}, {"hair_color2", look.hair_color2}, {"ears", look.ears},
                  {"eye_color", look.eye_color}, {"pattern", look.pattern}, {"pattern_color", look.pattern_color},
-                 {"glow_color", look.glow_color}, {"glow_intensity", look.glow_intensity}, {"sliders", look.sliders}};
+                 {"glow_color", look.glow_color}, {"glow_intensity", look.glow_intensity}, {"physique", look.physique}, {"sliders", look.sliders}};
     j["parts"] = parts;
     emit(j);
 }
@@ -2073,7 +2077,22 @@ void cmd_composite_types(const Args& a) {
     for (auto& [type, t] : by_type) types[std::to_string(type)] = std::move(t);
     json styles = json::array();
     for (const auto& s : r->skin_styles) styles.push_back(s);
-    emit({{"ok", true}, {"types", types}, {"skin_styles", styles}});
+    auto presets_json = [](const std::vector<castlemist::composite::BoneScalePreset>& ps) {
+        json out = json::array();
+        for (const auto& p : ps) {
+            json groups = json::array();
+            for (const auto& g : p.groups) {
+                json subs = json::array();
+                for (const auto& s : g.subs)
+                    subs.push_back({{"bone", s.bone}, {"flag", s.flag}, {"max", s.max}, {"min", s.min}, {"values", s.values}});
+                groups.push_back({{"token", g.token}, {"weight", g.weight}, {"subs", subs}});
+            }
+            out.push_back({{"groups", groups}, {"second", p.second_count}});
+        }
+        return out;
+    };
+    emit({{"ok", true}, {"types", types}, {"skin_styles", styles}, {"physiques", presets_json(r->body_bone_scales)},
+          {"face_presets", presets_json(r->face_bone_scales)}});
 }
 
 // What a race can look like: face / hair style counts and its skin and hair
@@ -2188,6 +2207,7 @@ void cmd_look_set(const Args& a) {
         if (has(a, "pattern-color")) look.pattern_color = static_cast<uint32_t>(to_u64(a.at("pattern-color")));
         if (has(a, "glow-color")) look.glow_color = static_cast<uint32_t>(to_u64(a.at("glow-color")));
         if (has(a, "glow-intensity")) look.glow_intensity = std::stof(a.at("glow-intensity"));
+        if (has(a, "physique")) look.physique = std::stoi(a.at("physique"));
         if (has(a, "sliders")) {  // "Cheeks=1,Jaw Width=0.86,..."
             std::stringstream ss(a.at("sliders"));
             std::string item;
@@ -2207,7 +2227,7 @@ void cmd_look_set(const Args& a) {
         j["look"] = {{"face", (*l).face}, {"hair", (*l).hair}, {"skin_color", (*l).skin_color},
                  {"hair_color", (*l).hair_color}, {"hair_color2", (*l).hair_color2}, {"ears", (*l).ears},
                  {"eye_color", (*l).eye_color}, {"pattern", (*l).pattern}, {"pattern_color", (*l).pattern_color},
-                 {"glow_color", (*l).glow_color}, {"glow_intensity", (*l).glow_intensity}, {"sliders", (*l).sliders}};
+                 {"glow_color", (*l).glow_color}, {"glow_intensity", (*l).glow_intensity}, {"physique", (*l).physique}, {"sliders", (*l).sliders}};
     emit(j);
 }
 

@@ -21,6 +21,9 @@ constexpr size_t kRaceHairStyles = 120;
 constexpr size_t kRaceSkinPatterns = 148;  // 48-byte records: 6 filerefs
 constexpr size_t kRaceSkinStyles = 176;  // {chest, feet, hands, legs} u64 each
 constexpr size_t kFileDataSize = 103;
+constexpr size_t kRaceBodyBoneScales = 36;
+constexpr size_t kRaceFaceBoneScales = 80;
+constexpr size_t kBoneScaleSubSize = 53;  // packed: u64 bone, u8 flag, f32 max, f32 min, 9 x f32
 
 struct Reader {
     std::span<const uint8_t> d;
@@ -151,6 +154,44 @@ std::optional<Composite> parse_composite(std::span<const uint8_t> d) {
         for (uint32_t k = 0; k < ns && r.ok; ++k)
             race.skin_styles.push_back({r.u64(ps + 32 * k), r.u64(ps + 32 * k + 8), r.u64(ps + 32 * k + 16),
                                         r.u64(ps + 32 * k + 24)});
+        auto presets = [&](size_t field) {
+            std::vector<BoneScalePreset> out;
+            auto [n, p] = r.arr(q + field, 24);
+            for (uint32_t k = 0; k < n && r.ok; ++k) {
+                BoneScalePreset pre;
+                const size_t rec = p + 24 * k;
+                auto [ng, pg] = r.arr(rec, 24);
+                pre.second_count = r.u32(rec + 12);
+                for (uint32_t g = 0; g < ng && r.ok; ++g) {
+                    BoneScaleGroup grp;
+                    const size_t e = pg + 24 * g;
+                    grp.token = r.u64(e);
+                    const uint32_t w = r.u32(e + 8);
+                    std::memcpy(&grp.weight, &w, 4);
+                    auto [ns, psub] = r.arr(e + 12, kBoneScaleSubSize);
+                    for (uint32_t s2 = 0; s2 < ns && r.ok; ++s2) {
+                        BoneScaleSub sub;
+                        const size_t b = psub + kBoneScaleSubSize * s2;
+                        sub.bone = r.u64(b);
+                        sub.flag = r.u8(b + 8);
+                        uint32_t v = r.u32(b + 9);
+                        std::memcpy(&sub.max, &v, 4);
+                        v = r.u32(b + 13);
+                        std::memcpy(&sub.min, &v, 4);
+                        for (size_t f = 0; f < 9; ++f) {
+                            v = r.u32(b + 17 + 4 * f);
+                            std::memcpy(&sub.values[f], &v, 4);
+                        }
+                        grp.subs.push_back(sub);
+                    }
+                    pre.groups.push_back(std::move(grp));
+                }
+                out.push_back(std::move(pre));
+            }
+            return out;
+        };
+        race.body_bone_scales = presets(kRaceBodyBoneScales);
+        race.face_bone_scales = presets(kRaceFaceBoneScales);
         auto [nfd, pfd] = r.arr(q + kRaceFileData, kFileDataSize);
         race.file_data.reserve(nfd);
         for (uint32_t k = 0; k < nfd && r.ok; ++k) {

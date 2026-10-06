@@ -26,6 +26,10 @@ struct AssemblyOptions {
     int face = 0;        // index into the race's faces
     int hair = 0;        // index into the race's hair styles
     int skin_style = 0;  // index into the race's bare-body styles
+    /// The character creator's physique (body type): index into the race's
+    /// bodyBoneScales presets (ripper/physique.h), baked into the meshes and
+    /// the bind pose; -1 = the models as they come.
+    int physique = -1;
     /// Real-world metres (GW2 inches x 0.0254) for going straight to
     /// Unity/VRChat. Off by default: the same GW2 units as castlemist's other
     /// exports, so pieces and characters line up in one Blender scene.
@@ -86,6 +90,11 @@ AssemblyReport assemble_character_separate(const character::CharacterManifest& m
 const char* to_string(WeaponPlacement w);
 
 enum class LookPart { Face, Hair, Ears };
+
+/// How many physiques (character-creator body types) the manifest's race has;
+/// 0 + `*error` when the dat or its race can't be read. Opens the dat: run it
+/// off the UI thread.
+int physique_count(const character::CharacterManifest& manifest, const std::string& dat_path, std::string* error = nullptr);
 
 /// Front-view thumbnails of every face / hair style / ear option of the
 /// manifest's race: the head (face, ears, hair) in `options`' look with that

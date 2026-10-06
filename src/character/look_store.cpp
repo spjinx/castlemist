@@ -46,6 +46,7 @@ bool LookStore::load(const fs::path& file, std::string* error) {
         look.pattern_color = l.value("pattern_color", 0u);
         look.glow_color = l.value("glow_color", 0u);
         look.glow_intensity = l.value("glow_intensity", 1.0f);
+        look.physique = l.value("physique", -1);
         if (l.contains("sliders") && l["sliders"].is_object())
             for (const auto& [k, v] : l["sliders"].items())
                 if (v.is_number()) look.sliders[k] = v.get<float>();
@@ -69,6 +70,7 @@ bool LookStore::save(const fs::path& file, std::string* error) const {
                        {"pattern_color", l.pattern_color},
                        {"glow_color", l.glow_color},
                        {"glow_intensity", l.glow_intensity},
+                       {"physique", l.physique},
                        {"sliders", l.sliders}};
     std::ofstream f(file, std::ios::binary | std::ios::trunc);
     if (!f) {

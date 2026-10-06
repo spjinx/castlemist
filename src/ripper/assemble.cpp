@@ -18,6 +18,7 @@
 #include "castlemist/ripper/character_export.h"
 #include "castlemist/ripper/dye.h"
 #include "castlemist/ripper/face_morphs.h"
+#include "castlemist/ripper/physique.h"
 #include "castlemist/ripper/skeleton_merge.h"
 #include "castlemist/ripper/thumbnail.h"
 #include "castlemist/ripper/vrchat.h"
@@ -514,11 +515,19 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
         std::vector<character::ManifestDye> look_dyes;
         std::optional<ColorMatrix> skin;
         if (part.undergarment && sylvari) {
-            // Sylvari undergarments are leaves, not cloth: the hair colour on
-            // channel 1, the skin (body) colour on channels 2 and 3 -- as in
-            // game. Texels no mask covers keep their authored colour.
+            // Sylvari undergarments are leaves and petals, not cloth, in the
+            // character's own colours (matched to in-game screenshots):
+            // females -- skin colour on the edges (channel 1), the pattern
+            // colour on the leaves (channel 2: the back leaf), white petals
+            // (channel 3); males -- the hair colour on channel 1, the body
+            // colour on the rest. Texels no mask covers keep their authored colour.
             look_dyes = detail::undergarment_dyes();
-            const std::optional<character::DyeShift> tints[3] = {opt.hair_tint, opt.skin_tint, opt.skin_tint};
+            const bool female = ctx.race_key.find("Female") != std::string::npos;
+            const character::DyeShift white{40.0f, 1.0f, 0.0f, 0.05f, 1.8f};  // reads white on the dark petals
+            const std::optional<character::DyeShift> tints[3] = {
+                female ? opt.skin_tint : opt.hair_tint,
+                female ? (opt.pattern_tint ? opt.pattern_tint : opt.skin_tint) : opt.skin_tint,
+                female ? std::optional<character::DyeShift>(white) : opt.skin_tint};
             for (int ch = 0; ch < 3; ++ch)
                 if (tints[ch]) look_dyes[static_cast<size_t>(ch)].shift = tints[ch];
         }
@@ -767,6 +776,9 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
             report(slot, "dropped", "no matching attach point", file);
         }
     }
+    // The physique (body type), before the face keys are taken off the mesh.
+    if (opt.physique >= 0 && static_cast<size_t>(opt.physique) < race->body_bone_scales.size() && !sel.preview)
+        apply_physique(out, race->body_bone_scales[static_cast<size_t>(opt.physique)]);
     // Face-detail blend shapes on whatever the face rig moves (face, ears,
     // hair, a helm); thumbnails skip them.
     if (opt.face_morphs && !sel.preview) add_face_morphs(out, opt.face_sliders);
@@ -803,6 +815,16 @@ std::vector<const ManifestPiece*> armor_pieces(const CharacterManifest& m) {
 }
 
 } // namespace
+
+int physique_count(const CharacterManifest& manifest, const std::string& dat_path, std::string* error) {
+    AssemblyReport rep;
+    std::unique_ptr<Context> ctx = open_context(manifest, dat_path, AssemblyOptions{}, rep);
+    if (!ctx) {
+        if (error) *error = rep.error;
+        return 0;
+    }
+    return static_cast<int>(ctx->race->body_bone_scales.size());
+}
 
 std::vector<ImageRgba> look_thumbnails(const CharacterManifest& manifest, const std::string& dat_path, LookPart part,
                                        const AssemblyOptions& options, int size, std::string* error) {

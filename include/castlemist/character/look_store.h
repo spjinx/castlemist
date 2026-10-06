@@ -28,6 +28,7 @@ struct CharacterLook {
     uint32_t pattern_color = 0; // colour id in the race's pattern palette
     uint32_t glow_color = 0;    // sylvari: colour id in the glow palette; 0 = no glow
     float glow_intensity = 1;   // 0..1
+    int physique = -1;          // index into the race's physiques (body types); -1 = not set
     /// Face-detail sliders (ripper/face_morphs.h names, e.g. "Jaw Width") ->
     /// 0..1, 0.5 = the middle tick; missing = 0.5.
     std::map<std::string, float> sliders;

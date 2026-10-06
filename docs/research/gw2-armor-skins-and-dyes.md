@@ -264,16 +264,28 @@ full brightness.
 mask. Other races' cut masks also cover lips and eyeballs: not used for eyes.
 
 **Physique and face presets.** `bodyBoneScales` (offset 36; sylvari female 6
-= the physiques) and `faceBoneScales` (offset 80; 25 entries, one per face --
-21 populated, all identical for sylvari female) are 24-byte records
-{array<entry>, array}. Entry (24 B) = {u64 token, f32 weight, array<sub>};
-sub-records are 56 B {8 B ?, u8, f32 max (1.0), f32 min (-1.0), 9 floats --
-deltas, e.g. headsize = 0.08 on three axes}. The tokens are not joints but
-*scale groups* (5-bit packed names): chest, hips, shoulders, legs, ankle,
-hands, skirt, headsize, headwidth, plus bone:Jaw / bone:Chin / bone:Breasts.
-Which bones a group scales is not in the Composite (client-side), and the
-makeover kit's face-detail sliders (nose, mouth, eyes, ...) were not found in
-it at all.
+= the character creator's physiques, in its order) and `faceBoneScales`
+(offset 80; 25 entries, one per face) are 24-byte records {array<group>,
+array}. Group (24 B) = {u64 token, f32 weight, array<record>}: the token is a
+5-bit packed group name (breasts, chest, hips, shoulders, hands, legs, ankle,
+skirt), the weight the preset's slider value. Record = **53 bytes, packed**:
+{u64 bone, u8 flag, f32 max, f32 min, 9 x f32}. `bone` is the joint's name
+packed exactly like `tokenizeBoneName` ("claviclel" = bone:ClavicleL,
+"spine2" = bone:Spine02, "kneel", "anklel", "bccloth1", ...); the 9 floats are
+the deltas at full weight in the bone's own frame -- rotation in degrees
+(x y z), scale (x y z, added to 1), offset (x y z) -- applied at
+clamp(weight, min, max); flag bit 2 applies a left bone's deltas to its right
+twin too. Sylvari female physique 4 (index 3) = broad shoulders and arms,
+fuller hips (`ripper/physique.cpp` bakes it into the meshes and bind pose).
+
+**Undergarments.** What a character wears where no armor covers it is armor
+FileData by name: "underwearic" (coat slot, type 9 -- female races only) and
+"underwearil" (leggings slot, type 12), the same tokens in every race
+(FileData tokens are 5-bit packed names; the bare-body parts are "skinbc",
+"skinbf", "skinbh", "skinbl", town clothes "towna..."). Most races: one dye
+mask, shown in Dye Remover. Sylvari: three masks -- females: skin colour on the
+petal edges, the pattern colour on the back leaf, white petals; males: hair
+colour, then the body colour (matched to in-game screenshots).
 
 **Applying.** A race's skin textures are authored in its skin palette's base
 colour (sylvari red = the dye base (128,26,26); human skin ~ (149,110,88)), so

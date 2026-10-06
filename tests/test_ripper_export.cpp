@@ -7,9 +7,12 @@
 
 #include "castlemist/native/gw2dat.h"
 #include "castlemist/ripper/character_export.h"
+#include "castlemist/native/gw2model.hpp"
+#include "castlemist/ripper/physique.h"
 #include "castlemist/ripper/piece_export.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -268,4 +271,58 @@ CM_TEST(export, mirrored_uv_angler_vest_textures_its_big_meshes) {
     }
     CHECK(textured_verts > 15000);   // both big vest meshes (5999 + 10130 vertices)
     CHECK(untextured_verts < 1000);  // only the small skin patch stays bare
+}
+
+CM_TEST(export, sylvari_female_physiques_name_skeleton_bones) {
+    if (!dat_env()) SKIP("set GW2_TEST_DAT to run against a real Gw2.dat");
+    const castlemist::composite::CompositeRace* race = live().comp->race("SylvariFemale");
+    CHECK(race != nullptr);
+    if (!race) return;
+    CHECK_EQ(race->body_bone_scales.size(), size_t{6});  // the creator's six body types
+    // Every record is a bone of the race skeleton, by 5-bit packed name.
+    bool clavicle = false;
+    for (const auto& g : race->body_bone_scales[3].groups)
+        for (const auto& s : g.subs)
+            if (s.bone == castlemist::model::tokenizeBoneName("bone:ClavicleL")) clavicle = true;
+    CHECK(clavicle);
+    CHECK(race->file_data.count(castlemist::composite::kUndergarmentTopToken) == 1);
+    CHECK(race->file_data.count(castlemist::composite::kUndergarmentBottomToken) == 1);
+}
+
+CM_TEST(export, physique_scales_a_bones_vertices_and_mirrors_its_twin) {
+    // Two side bones at x = +-1, each skinning one vertex 1 unit above it.
+    ModelPreview m;
+    for (float x : {1.0f, -1.0f}) {
+        ModelJoint j;
+        j.name = x > 0 ? "bone:ClavicleL" : "bone:ClavicleR";
+        j.pos[0] = x;
+        j.invWorld[12] = -x;  // model -> bone: translate by -x
+        m.joints.push_back(j);
+    }
+    ModelMeshCPU mesh;
+    mesh.hasSkin = true;
+    for (uint32_t b = 0; b < 2; ++b) {
+        GVertex v{};
+        v.px = b == 0 ? 1.0f : -1.0f;
+        v.py = 1.0f;
+        v.ny = 1.0f;
+        v.bidx[0] = b;
+        v.bwt[0] = 1.0f;
+        mesh.vertices.push_back(v);
+    }
+    m.meshes.push_back(mesh);
+    castlemist::composite::BoneScalePreset preset;
+    castlemist::composite::BoneScaleGroup g;
+    g.weight = 0.5f;
+    castlemist::composite::BoneScaleSub sub;
+    sub.bone = castlemist::model::tokenizeBoneName("bone:ClavicleL");
+    sub.flag = 3;  // and its twin
+    sub.max = 1;
+    sub.min = -1;
+    sub.values[4] = 1.0f;  // y scale +100% at full weight
+    g.subs.push_back(sub);
+    preset.groups.push_back(g);
+    CHECK_EQ(apply_physique(m, preset), size_t{2});
+    for (const GVertex& v : m.meshes[0].vertices) CHECK(std::fabs(v.py - 1.5f) < 1e-4f);  // 1 + 0.5 * 1
+    CHECK(std::fabs(m.meshes[0].vertices[0].px - 1.0f) < 1e-4f);
 }

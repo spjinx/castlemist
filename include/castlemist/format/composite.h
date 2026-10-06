@@ -44,6 +44,28 @@ struct CompositeFileData {
     uint8_t blit_set = 0;  // index into Composite::blit_sets
 };
 
+/// One record of a physique / face preset group (53 bytes, packed): the bone
+/// it moves (5-bit packed name, e.g. "claviclel", "spine2", "kneel"), a flag
+/// byte, the slider range and 9 floats of deltas.
+struct BoneScaleSub {
+    uint64_t bone = 0;
+    uint8_t flag = 0;
+    float max = 0, min = 0;
+    std::array<float, 9> values{};
+};
+/// A scale group of a preset (chest, hips, shoulders, legs, ... -- 5-bit packed
+/// names), its weight and its records.
+struct BoneScaleGroup {
+    uint64_t token = 0;
+    float weight = 0;
+    std::vector<BoneScaleSub> subs;
+};
+/// A physique (bodyBoneScales) or face (faceBoneScales) preset.
+struct BoneScalePreset {
+    std::vector<BoneScaleGroup> groups;
+    uint32_t second_count = 0;  // the record's second array (unknown), its length
+};
+
 struct CompositeRace {
     std::string name;  // "SylvariFemale" = API race + gender; also NPC variants ("CreatureCM", ...)
     uint32_t skeleton_file = 0;
@@ -57,6 +79,8 @@ struct CompositeRace {
     /// greyscale mask fileId per bare part, each in that part's own texture
     /// space -- {chest, face, feet, hands, legs, ears}.
     std::vector<std::array<uint32_t, 6>> skin_patterns;
+    /// Physiques (the character creator's body types) and face presets.
+    std::vector<BoneScalePreset> body_bone_scales, face_bone_scales;
 };
 
 /// The undergarments every race wears where it has no armor: FileData named

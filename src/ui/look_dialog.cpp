@@ -33,6 +33,7 @@ namespace ch = castlemist::character;
 namespace rp = castlemist::ripper;
 
 constexpr UINT WM_APP_LOOK_THUMBS = WM_APP + 10;
+constexpr UINT WM_APP_LOOK_PHYSIQUES = WM_APP + 12;  // wparam: the race's physique count
 constexpr UINT_PTR ID_LK_TAB0 = 2300;  // .. +4: Face, Hair, Ears, Pattern, Face details
 constexpr UINT_PTR ID_LK_SLIDER0 = 2340;  // .. one per face slider
 constexpr UINT_PTR ID_LK_GRID = 2310;
@@ -40,6 +41,7 @@ constexpr UINT_PTR ID_LK_SWATCH0 = 2320;  // .. +5: skin, hair, hair 2, eyes, pa
 constexpr UINT_PTR ID_LK_GLOW = 2330;
 constexpr UINT_PTR ID_LK_SAVE = 2331;
 constexpr UINT_PTR ID_LK_CLOSE = 2332;
+constexpr UINT_PTR ID_LK_PHYSIQUE = 2333;
 constexpr int kThumb = 112;
 constexpr int kColours = 6;
 const wchar_t* const kTabNames[5] = {L"Face", L"Hair", L"Ears", L"Pattern", L"Face details"};
@@ -54,7 +56,7 @@ struct Thumbs {
 };
 
 struct LookUi {
-    HWND wnd = nullptr, grid = nullptr, status = nullptr, glow = nullptr, palette = nullptr;
+    HWND wnd = nullptr, grid = nullptr, status = nullptr, glow = nullptr, palette = nullptr, physique = nullptr;
     HWND tabs[5]{}, swatches[kColours]{}, names[kColours]{};
     HWND sliders_panel = nullptr;  // the Face details tab
     std::vector<HWND> sliders;
@@ -526,6 +528,15 @@ LRESULT CALLBACK LookWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         const UINT_PTR id = LOWORD(wparam);
         if (id >= ID_LK_TAB0 && id < ID_LK_TAB0 + 5) select_tab(static_cast<int>(id - ID_LK_TAB0));
         else if (id >= ID_LK_SWATCH0 && id < ID_LK_SWATCH0 + kColours) open_palette(static_cast<int>(id - ID_LK_SWATCH0));
+        else if (id == ID_LK_PHYSIQUE && HIWORD(wparam) == CBN_SELCHANGE) {
+            // Item 0 = not set (the models as they come), then Physique 1..N.
+            const LRESULT sel = SendMessageW(g_lk->physique, CB_GETCURSEL, 0, 0);
+            if (sel != CB_ERR) {
+                g_lk->look.physique = static_cast<int>(sel) - 1;
+                set_status((sel == 0 ? std::wstring(L"Physique not set") : L"Physique " + std::to_wstring(sel)) +
+                           L" - Save look to keep it.");
+            }
+        }
         else if (id == ID_LK_SAVE) save_look();
         else if (id == ID_LK_CLOSE) DestroyWindow(hwnd);
         return 0;
@@ -546,6 +557,16 @@ LRESULT CALLBACK LookWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         break;
     }
     case WM_APP_LOOK_THUMBS: on_thumbs(std::unique_ptr<Thumbs>(reinterpret_cast<Thumbs*>(lparam))); return 0;
+    case WM_APP_LOOK_PHYSIQUES: {
+        const int n = std::max(static_cast<int>(wparam), g_lk->look.physique + 1);
+        SendMessageW(g_lk->physique, CB_RESETCONTENT, 0, 0);
+        SendMessageW(g_lk->physique, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Not set"));
+        for (int i = 1; i <= n; ++i)
+            SendMessageW(g_lk->physique, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>((L"Physique " + std::to_wstring(i)).c_str()));
+        SendMessageW(g_lk->physique, CB_SETCURSEL, static_cast<WPARAM>(g_lk->look.physique + 1), 0);
+        EnableWindow(g_lk->physique, n > 0);
+        return 0;
+    }
     case WM_CLOSE: DestroyWindow(hwnd); return 0;
     case WM_DESTROY: {
         if (g_lk->palette) DestroyWindow(g_lk->palette);
@@ -655,10 +676,30 @@ void open_look_dialog(HWND owner, const castlemist::character::CharacterManifest
     SendMessageW(g_lk->glow, TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
     SendMessageW(g_lk->glow, TBM_SETPOS, TRUE, static_cast<LPARAM>(g_lk->look.glow_intensity * 100 + 0.5f));
     if (rp::race_palettes(manifest.race, manifest.gender).glow == 0) EnableWindow(g_lk->glow, FALSE);
+    // Physique: the character creator's body types, in its order; the count
+    // comes off the dat on a worker.
+    mk(L"STATIC", L"Physique", SS_LEFT, cx, gy + 40, 90, 18, 0);
+    g_lk->physique = mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, cx + 92, gy + 36, 170, 200, ID_LK_PHYSIQUE);
+    SendMessageW(g_lk->physique, CB_ADDSTRING, 0,
+                 reinterpret_cast<LPARAM>(g_lk->look.physique < 0 ? L"Not set"
+                                                                   : (L"Physique " + std::to_wstring(g_lk->look.physique + 1)).c_str()));
+    SendMessageW(g_lk->physique, CB_SETCURSEL, 0, 0);
+    EnableWindow(g_lk->physique, FALSE);
+    {
+        HWND wnd = g_lk->wnd;
+        std::thread([wnd, manifest, dat = g_lk->dat_path]() {
+            int n = 0;
+            try {
+                n = rp::physique_count(manifest, dat);
+            } catch (const std::exception&) {
+            }
+            if (IsWindow(wnd)) PostMessageW(wnd, WM_APP_LOOK_PHYSIQUES, static_cast<WPARAM>(n), 0);
+        }).detach();
+    }
     mk(L"STATIC",
        L"Styles are the game's character-creator options, drawn from the dat in this look's colours. "
        L"Colour names: the GW2 API (dyes) and the GW2 wiki.",
-       SS_LEFT, cx, gy + 44, 260, 80, 0);
+       SS_LEFT, cx, gy + 80, 260, 80, 0);
 
     g_lk->status = mk(L"STATIC", L"", SS_LEFT | SS_ENDELLIPSIS, 10, H - 96, W - 36, 18, 0);
     mk(L"BUTTON", L"Save look", BS_DEFPUSHBUTTON, W - 220, H - 70, 100, 28, ID_LK_SAVE);
