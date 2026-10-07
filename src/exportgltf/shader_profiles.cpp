@@ -203,6 +203,19 @@ std::vector<Entry> build_table() {
         p.cutoutChannels = CutoutChannels::R;
         t.push_back({{53858}, p});
     }
+    // fx-parallax-layer (note section 8.2, 842652, Astralaria): colour = the `parallax`
+    // layer (UV0) at a UV offset by the castlemist "diffuse" (UV3, x paraper) and
+    // the view parallax (pardist); opacity = parallax.A x mask.R (UV1, offset by
+    // mskptrb x cutptrb) x diffade; SrcA/InvSrcA, AlphaRef fade only; unlit.
+    {
+        ShaderProfile p = make("fx-parallax-layer", AlphaUse::Opacity, false);
+        p.baseColorRole = "parallax";
+        p.diffuseUse = "uv-offset";
+        p.opacityRole = "mask";
+        p.opacityChannel = Channel::R;
+        p.unlit = true;
+        t.push_back({{842652}, p});
+    }
     // Unsupported: need their own pass.
     t.push_back({{157432, 3718974, 15206},
                  unsupported(make("fx-multiply", AlphaUse::Unused, false))});

@@ -116,6 +116,7 @@ const char* extra_use(const std::string& role, const ShaderProfile& profile) {
     if (role == "decal") return "lerp-by-decal-alpha";
     if (role == "height") return "parallax";
     if (role == "specular") return "specular-color";
+    if (role == "mskptrb") return "uv-offset";  // 842652: offsets the mask's UV
     if (role == profile.maskRole && profile.maskSheen != Channel::None) return "sheen-in-B";
     return "";
 }
@@ -153,6 +154,10 @@ public:
             return std::move(out_);
         }
 
+        if (profile_.unlit)
+            out_.warnings.push_back("profile '" + profile_.name +
+                                    "' is unlit (the game applies no lighting, fog only): "
+                                    "not mapped, use an unlit Poiyomi lighting mode");
         build_base_color();
         build_alpha_mask();
         build_normal();
@@ -205,7 +210,7 @@ private:
     void collect_layers() {
         if (mat_.diffuseTex >= 0)
             diffuse_ = resolve("diffuse", mat_.diffuseTex, mat_.diffuseUv, 0);
-        else if (profile_.supported)
+        else if (profile_.supported && profile_.baseColorRole.empty())
             out_.warnings.push_back("no diffuse texture: BaseColor left out");
         if (mat_.normalTex >= 0) normal_ = resolve("normal", mat_.normalTex, mat_.normalUv, 0);
         for (const auto& x : mat_.extraTextures) {
@@ -292,6 +297,7 @@ private:
 
     bool diffuse_has_shine() const {
         if (alphaIsOpacity_ || alphaUnused_) return false;
+        if (!profile_.baseColorRole.empty()) return false;  // the diffuse is not colour
         return diffuse_.usable() && (profile_.diffuseAlpha == AlphaUse::HolesAndShine ||
                                      profile_.diffuseAlpha == AlphaUse::Shine);
     }
@@ -304,9 +310,51 @@ private:
 
     // ------------------------------------------------------------- outputs --
 
+    /// The layer the BaseColor comes from: the diffuse, or the profile's
+    /// baseColorRole layer (nullptr, with a warning, when that is missing or a
+    /// placeholder). With a baseColorRole the diffuse is not colour: say so.
+    const Layer* base_color_layer() {
+        if (profile_.baseColorRole.empty()) return diffuse_.real() ? &diffuse_ : nullptr;
+        const std::string& role = profile_.baseColorRole;
+        if (diffuse_.usable()) {
+            std::string w = "the diffuse layer (fileId " + std::to_string(diffuse_.fileId) +
+                            ", UV" + std::to_string(diffuse_.uv) + ") is not colour here (" +
+                            (profile_.diffuseUse.empty() ? std::string("unknown use")
+                                                         : profile_.diffuseUse) +
+                            "): exported raw as an extra; BaseColor is the " + role + " layer";
+            if (profile_.diffuseUse == "uv-offset") {
+                w += ", sampled at its plain UV: the offset";
+                if (const auto k = constant("paraper")) w += " (paraper " + std::to_string(*k) + ")";
+                w += " and the view parallax";
+                if (const auto k = constant("pardist")) w += " (pardist " + std::to_string(*k) + ")";
+                else w += " (pardist)";
+                w += " are not mapped";
+            }
+            out_.warnings.push_back(std::move(w));
+        }
+        const Layer* l = find({role.c_str()});
+        if (!l) {
+            // A failed decode already warned in resolve(); say what is lost either way.
+            out_.warnings.push_back((failed(role.c_str()) ? role + " layer failed to decode"
+                                                          : "no " + role + " layer") +
+                                    ": BaseColor left out (the diffuse is not colour)");
+            return nullptr;
+        }
+        mapped_.push_back(l);
+        if (l->placeholder) {
+            out_.warnings.push_back(
+                "BaseColor is the " + role + " constant (" + std::to_string(l->constant[0]) +
+                ", " + std::to_string(l->constant[1]) + ", " + std::to_string(l->constant[2]) +
+                ", " + std::to_string(l->constant[3]) + "): no BaseColor map");
+            return nullptr;
+        }
+        return l;
+    }
+
     void build_base_color() {
-        if (!diffuse_.real()) return;
-        const ModelTextureCPU& d = *diffuse_.tex;
+        const Layer* src = base_color_layer();
+        if (!src) return;
+        const ModelTextureCPU& d = *src->tex;
         const int w = d.width, h = d.height;
 
         Layer opacity;
@@ -318,7 +366,7 @@ private:
             for (size_t i = 0; fid != 0 && i < model_.textures.size(); ++i)
                 if (model_.textures[i].fileId == fid) { texIndex = static_cast<int>(i); break; }
             // resolve warns when it is missing; the alpha then stays 255.
-            opacity = resolve(what, texIndex, diffuse_.uv, fid);
+            opacity = resolve(what, texIndex, src->uv, fid);
         }
 
         ModelTextureCPU t = blank(w, h, d.fileId);
@@ -344,13 +392,23 @@ private:
                 }
                 t.rgba[i + 3] = outA;
             }
-        out_.baseColor = slot_of(std::move(t), diffuse_.uv, d.fileId, "diffuse");
+        out_.baseColor = slot_of(std::move(t), src->uv, src->fileId, src->role);
     }
 
     /// The profile's cutout layer (511663, 53858) on its own UV: the clip value
     /// as a greyscale alphaMask, cutoff 0.5. A placeholder is a constant: it
     /// either never cuts (no map) or cuts the whole material (BaseColor A = 0).
     void build_alpha_mask() {
+        const bool opacity =
+            !profile_.opacityRole.empty() && profile_.opacityChannel != Channel::None;
+        if (opacity && !profile_.cutoutRole.empty())
+            // Review Focus 3: the cutout (a discard) outranks an opacity factor.
+            out_.warnings.push_back("opacity (" + profile_.opacityRole + "." +
+                                    channel_name(profile_.opacityChannel) +
+                                    ") not mapped: the alphaMask slot is taken by the cutout "
+                                    "layer (" + profile_.cutoutRole + ")");
+        else if (opacity)
+            build_opacity_mask();
         if (profile_.cutoutRole.empty()) return;
         const std::string& role = profile_.cutoutRole;
         const bool rxa = profile_.cutoutChannels == CutoutChannels::RxA;
@@ -411,6 +469,49 @@ private:
                 "BaseColor holes (saturate(2a) < 0.5) and the alphaMask (" + source +
                 " < 0.5) tested apart, so texels where both are >= 0.5 but the product "
                 "is < 0.5 are kept");
+    }
+
+    /// The profile's opacity layer (842652 mask.R) on its own UV: one channel as a
+    /// greyscale alphaMask, cutoff -1 (the shader multiplies the BaseColor alpha
+    /// by it). A placeholder is a constant: multiplied into the BaseColor alpha.
+    void build_opacity_mask() {
+        const std::string& role = profile_.opacityRole;
+        const Channel c = profile_.opacityChannel;
+        const std::string source = role + "." + channel_name(c);
+        const Layer* l = find({role.c_str()});
+        if (!l) {
+            // A failed decode already warned in resolve(); say what is lost either way.
+            out_.warnings.push_back((failed(role.c_str()) ? role + " layer failed to decode"
+                                                          : "no " + role + " layer") +
+                                    ": opacity (" + source + ") not built");
+            return;
+        }
+        mapped_.push_back(l);
+        if (l->placeholder) {
+            const uint8_t v = l->constant[static_cast<size_t>(c)];
+            if (v == 255) return;  // opacity x 1: nothing to map
+            if (out_.baseColor.present)
+                for (size_t i = 3; i < out_.baseColor.tex.rgba.size(); i += 4)
+                    out_.baseColor.tex.rgba[i] =
+                        static_cast<uint8_t>((out_.baseColor.tex.rgba[i] * v + 127) / 255);
+            out_.warnings.push_back(role + " layer is a placeholder with " + source + " = " +
+                                    std::to_string(v) +
+                                    "/255: the opacity is multiplied into the BaseColor alpha");
+            return;
+        }
+        out_.alphaMask = grey_slot(*l, c);
+        out_.alphaMaskCutoff = -1.0f;
+        const auto p = constant("cutptrb");
+        const Layer* ptrb = find({"mskptrb"});
+        if ((p && *p != 0.0f) || ptrb)
+            out_.warnings.push_back(
+                "opacity UV perturbation (" +
+                (ptrb ? "mskptrb layer UV" + std::to_string(ptrb->uv) : std::string("mskptrb")) +
+                (p ? " x cutptrb " + std::to_string(*p) : std::string()) +
+                ") not mapped: the alphaMask is sampled unperturbed");
+        if (const auto f = constant("diffade"); f && *f != 1.0f)
+            out_.warnings.push_back("diffade (" + std::to_string(*f) +
+                                    ") not baked into the opacity");
     }
 
     void build_normal() {
@@ -785,6 +886,9 @@ private:
     }
 
     void build_extras() {
+        // With a baseColorRole the diffuse is not colour (842652: a UV-offset map).
+        if (!profile_.baseColorRole.empty() && diffuse_.real())
+            out_.extras.push_back({"diffuse", profile_.diffuseUse, raw_slot(diffuse_, "diffuse")});
         for (const Layer& l : layers_) {
             if (std::find(mapped_.begin(), mapped_.end(), &l) != mapped_.end()) continue;
             const bool used = std::find(consumed_.begin(), consumed_.end(), &l) != consumed_.end();

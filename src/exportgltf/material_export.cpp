@@ -67,8 +67,25 @@ std::vector<int> write_materials(GltfWriter& w, const ModelPreview& model, const
             // real (if approximate) roughness of its own.
             {"roughnessFactor", mat.roughness >= 0.0f ? mat.roughness : (mat.kind == 2 ? 0.1 : 1.0)},
         };
-        if (mat.diffuseTex >= 0 && mat.diffuseTex < static_cast<int>(texIndices.size()) &&
-            texIndices[static_cast<size_t>(mat.diffuseTex)] >= 0) {
+        const MaterialShading shading = material_shading(mat);
+        // A profile whose colour is another layer (842652: "parallax"; the diffuse
+        // there is a UV-offset map) points baseColorTexture at that layer instead.
+        const std::string& colourRole = shading.profile->baseColorRole;
+        const ModelMaterialCPU::ExtraTexture* colourLayer = nullptr;
+        if (!colourRole.empty())
+            for (const auto& ex : mat.extraTextures)
+                if (ex.role == colourRole) { colourLayer = &ex; break; }
+        if (colourLayer) {
+            if (colourLayer->texIndex >= 0 &&
+                colourLayer->texIndex < static_cast<int>(texIndices.size()) &&
+                texIndices[static_cast<size_t>(colourLayer->texIndex)] >= 0) {
+                json baseColorTex{{"index", texIndices[static_cast<size_t>(colourLayer->texIndex)]}};
+                if (colourLayer->uvIndex != 0) baseColorTex["texCoord"] = colourLayer->uvIndex;
+                pbr["baseColorTexture"] = std::move(baseColorTex);
+            }
+        } else if (colourRole.empty() && mat.diffuseTex >= 0 &&
+                   mat.diffuseTex < static_cast<int>(texIndices.size()) &&
+                   texIndices[static_cast<size_t>(mat.diffuseTex)] >= 0) {
             json baseColorTex{{"index", texIndices[static_cast<size_t>(mat.diffuseTex)]}};
             // texCoord defaults to 0 in the glTF spec, so it's only worth
             // writing when this texture actually samples a different UV set
@@ -85,7 +102,6 @@ std::vector<int> write_materials(GltfWriter& w, const ModelPreview& model, const
         }
 
         const std::string name = material_name(mat);
-        const MaterialShading shading = material_shading(mat);
         json material{{"name", name}, {"pbrMetallicRoughness", pbr}};
 
         if (mat.normalTex >= 0 && mat.normalTex < static_cast<int>(texIndices.size()) &&

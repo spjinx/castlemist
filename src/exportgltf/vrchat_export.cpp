@@ -211,7 +211,9 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
         if (!decalMask.is_null()) decalMask["channel"] = maps.decalMaskChannel;
         jm["decalMask"] = std::move(decalMask);
         json alphaMask = mw.write(maps.alphaMask, "AlphaMask");
-        if (!alphaMask.is_null()) alphaMask["cutoff"] = maps.alphaMaskCutoff;  // -1: opacity
+        // An opacity mask has no cutoff: null (not -1), the schema's "not applicable".
+        if (!alphaMask.is_null())
+            alphaMask["cutoff"] = maps.alphaMaskCutoff >= 0.0f ? json(maps.alphaMaskCutoff) : json();
         jm["alphaMask"] = std::move(alphaMask);
         json extras = json::array();
         for (const MaterialMaps::Extra& x : maps.extras) {

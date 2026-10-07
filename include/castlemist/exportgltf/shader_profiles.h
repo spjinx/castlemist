@@ -96,6 +96,19 @@ struct ShaderProfile {
     /// MaterialMaps::alphaMask; the material is alpha-tested (alpha_tested).
     std::string cutoutRole;
     CutoutChannels cutoutChannels = CutoutChannels::R;
+    /// The layer role whose RGBA is the base colour; empty = the diffuse (842652:
+    /// "parallax"). `diffuseAlpha` then describes that layer's alpha, and the
+    /// castlemist diffuse ships raw as an extra with the hint `diffuseUse`.
+    std::string baseColorRole;
+    /// With baseColorRole: what the castlemist diffuse really is (842652: "uv-offset").
+    std::string diffuseUse;
+    /// A layer, on its own UV, whose channel multiplies the opacity (842652:
+    /// "mask" R); empty when none. Ships as MaterialMaps::alphaMask with cutoff
+    /// -1 (opacity). A cutout layer takes the alphaMask first.
+    std::string opacityRole;
+    Channel opacityChannel = Channel::None;
+    /// The colour pass applies no lighting (fog only): not mapped, warned.
+    bool unlit = false;
 };
 
 /// True when the material discards: on its diffuse alpha (`clips`) or on a cutout layer.

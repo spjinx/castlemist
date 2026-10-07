@@ -1761,3 +1761,219 @@ CM_TEST(vrchat, materials_json_alpha_mask_entry) {
     json g = glb_json(dir / "Hammer.glb");
     CHECK(g["materials"][1]["alphaMode"] == "MASK");
 }
+
+// ------------------------------------------------- base colour / opacity layers --
+// docs/research/gw2-material-channels.md 8.2 (842652, Astralaria): the colour is the
+// `parallax` layer (UV0); castlemist's "diffuse" (UV3) is a UV-offset map; opacity =
+// parallax.A x mask.R (mask on UV1) x diffade; unlit.
+
+namespace {
+
+const MaterialMaps::Extra* extra_named(const MaterialMaps& m, const char* role) {
+    for (const auto& x : m.extras)
+        if (x.role == role) return &x;
+    return nullptr;
+}
+
+/// An 842652 material: diffuse (UV-offset map) on UV3, parallax colour on UV0,
+/// mask on UV1, mskptrb (the diffuse file again) on UV2.
+ModelMaterialCPU parallax_mat(ModelPreview& model, bool withParallax = true,
+                              bool withMask = true) {
+    ModelMaterialCPU mat = mat_with_file(842652);
+    mat.diffuseTex = add_tex(model, solid(2, 2, {128, 128, 0, 255}, 57890));
+    mat.diffuseUv = 3;
+    if (withParallax)
+        add_layer(model, mat, "parallax",
+                  add_tex(model, tex_from(2, 2, {{10, 20, 30, 255}, {40, 50, 60, 128},
+                                                 {70, 80, 90, 0}, {200, 210, 220, 255}},
+                                          842653)),
+                  0);
+    if (withMask)
+        add_layer(model, mat, "mask",
+                  add_tex(model, tex_from(2, 1, {{0, 9, 9, 9}, {200, 9, 9, 9}}, 9001)), 1);
+    add_layer(model, mat, "mskptrb", mat.diffuseTex, 2);
+    return mat;
+}
+
+}  // namespace
+
+CM_TEST(vrchat, base_color_from_named_role) {
+    const ShaderProfile& p = profile_for(mat_with_file(842652), 0);
+    CHECK(p.name == "fx-parallax-layer");
+    CHECK(p.supported);
+    CHECK_FALSE(alpha_tested(p));
+    CHECK(p.diffuseAlpha == AlphaUse::Opacity);
+    CHECK(p.baseColorRole == "parallax");
+    CHECK(p.diffuseUse == "uv-offset");
+    CHECK(p.opacityRole == "mask");
+    CHECK(p.opacityChannel == Channel::R);
+    CHECK(p.unlit);
+    // Every other profile keeps the diffuse as colour and has no opacity layer.
+    CHECK(profile_for(mat_with_file(561567), 0).baseColorRole.empty());
+    CHECK(profile_for(mat_with_file(561567), 0).opacityRole.empty());
+    CHECK_FALSE(profile_for(mat_with_file(561567), 0).unlit);
+
+    ModelPreview model;
+    ModelMaterialCPU mat = parallax_mat(model);
+    MaterialMaps m = build(model, mat, BlendPreset::Fade);
+    CHECK(m.baseColor.present);
+    CHECK_EQ(m.baseColor.uv, 0);
+    CHECK_EQ(m.baseColor.fileId, 842653u);
+    CHECK(m.baseColor.source == "parallax");
+    CHECK_EQ(m.baseColor.tex.width, 2);
+    CHECK_EQ(px(m.baseColor.tex, 1, 0), 40);
+    CHECK_EQ(px(m.baseColor.tex, 3, 2), 220);
+    CHECK_FALSE(has_extra(m, "parallax"));
+    // The castlemist "diffuse" goes out raw as a UV-offset extra on its own UV.
+    const MaterialMaps::Extra* d = extra_named(m, "diffuse");
+    CHECK(d != nullptr);
+    if (d) {
+        CHECK(d->use == "uv-offset");
+        CHECK_EQ(d->slot.uv, 3);
+        CHECK_EQ(d->slot.fileId, 57890u);
+    }
+    CHECK_FALSE(m.packed.present);  // no shine: the diffuse alpha is not read
+    CHECK(any_warning(m, "uv-offset"));
+    CHECK(any_warning(m, "pardist"));
+    CHECK(any_warning(m, "unlit"));
+    CHECK_FALSE(any_warning(m, "no diffuse texture"));
+}
+
+CM_TEST(vrchat, opacity_layer_becomes_alpha_mask) {
+    ModelPreview model;
+    ModelMaterialCPU mat = parallax_mat(model);
+    mat.namedConstants = {{"cutptrb", 0.05f}, {"diffade", 1.0f}};
+    MaterialMaps m = build(model, mat, BlendPreset::Fade);
+    CHECK(m.alphaMask.present);
+    CHECK_EQ(m.alphaMask.uv, 1);
+    CHECK_EQ(m.alphaMask.fileId, 9001u);
+    CHECK(m.alphaMask.source == "mask.R");
+    CHECK(m.alphaMaskCutoff < 0.0f);  // opacity, not a cutoff
+    CHECK_EQ(px(m.alphaMask.tex, 0, 0), 0);
+    CHECK_EQ(px(m.alphaMask.tex, 1, 0), 200);
+    CHECK_EQ(px(m.alphaMask.tex, 1, 1), 200);
+    CHECK_EQ(px(m.alphaMask.tex, 1, 3), 255);
+    CHECK_FALSE(has_extra(m, "mask"));
+    // BaseColor A = parallax.A (the mask multiplies it in the shader).
+    const int wantA[4] = {255, 128, 0, 255};
+    for (int i = 0; i < 4; ++i) CHECK_EQ(px(m.baseColor.tex, i, 3), wantA[i]);
+    CHECK(any_warning(m, "cutptrb"));
+    CHECK_FALSE(any_warning(m, "diffade"));  // 1.0: nothing lost
+
+    ModelMaterialCPU fade = parallax_mat(model);
+    fade.namedConstants = {{"diffade", 0.5f}};
+    CHECK(any_warning(build(model, fade, BlendPreset::Fade), "diffade"));
+}
+
+CM_TEST(vrchat, cutout_and_opacity_both_warn) {
+    ShaderProfile p;
+    p.name = "test-both";
+    p.diffuseAlpha = AlphaUse::Opacity;
+    p.cutoutRole = "cutout";
+    p.cutoutChannels = CutoutChannels::R;
+    p.opacityRole = "mask";
+    p.opacityChannel = Channel::R;
+
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(1);
+    mat.diffuseTex = add_tex(model, solid(2, 2, {100, 100, 100, 255}, 1000));
+    add_layer(model, mat, "cutout",
+              add_tex(model, tex_from(2, 1, {{255, 0, 0, 255}, {0, 0, 0, 255}}, 8001)), 1);
+    add_layer(model, mat, "mask",
+              add_tex(model, tex_from(2, 1, {{50, 0, 0, 255}, {90, 0, 0, 255}}, 9001)), 2);
+    MaterialMaps m = build_material_maps(model, mat, blend_of(BlendPreset::Cutout), p);
+    CHECK(m.alphaMask.present);
+    CHECK(m.alphaMask.source == "cutout.R");
+    CHECK_NEAR(m.alphaMaskCutoff, 0.5f, 1e-6);
+    CHECK_EQ(count_warnings(m, "opacity (mask.R) not mapped"), size_t{1});
+    CHECK(any_warning(m, "taken by the cutout layer"));
+    CHECK(has_extra(m, "mask"));  // the loser still ships raw
+    CHECK_FALSE(has_extra(m, "cutout"));
+}
+
+CM_TEST(vrchat, parallax_and_opacity_layers_missing_or_placeholder) {
+    ModelPreview model;
+    // No parallax layer: no BaseColor (the diffuse is not colour), the rest exports.
+    ModelMaterialCPU noColour = parallax_mat(model, false, true);
+    MaterialMaps a = build(model, noColour, BlendPreset::Fade);
+    CHECK_FALSE(a.baseColor.present);
+    CHECK_EQ(count_warnings(a, "no parallax layer: BaseColor left out"), size_t{1});
+    CHECK(a.alphaMask.present);
+    CHECK(has_extra(a, "diffuse"));
+
+    // Parallax failed to decode: said by resolve, plus what is lost.
+    ModelMaterialCPU badColour = parallax_mat(model, false, true);
+    add_layer(model, badColour, "parallax", -1, 0);
+    MaterialMaps b = build(model, badColour, BlendPreset::Fade);
+    CHECK_FALSE(b.baseColor.present);
+    CHECK(any_warning(b, "parallax layer (fileId 4242) failed to decode"));
+    CHECK(any_warning(b, "BaseColor left out"));
+    CHECK(b.alphaMask.present);
+
+    // No mask layer: no alphaMask, said once; BaseColor stays.
+    ModelMaterialCPU noMask = parallax_mat(model, true, false);
+    MaterialMaps c = build(model, noMask, BlendPreset::Fade);
+    CHECK(c.baseColor.present);
+    CHECK_FALSE(c.alphaMask.present);
+    CHECK_EQ(count_warnings(c, "no mask layer: opacity (mask.R) not built"), size_t{1});
+
+    // A placeholder mask is a constant: multiplied into BaseColor A, no map.
+    ModelMaterialCPU flatMask = parallax_mat(model, true, false);
+    add_layer(model, flatMask, "mask", add_tex(model, solid(4, 4, {128, 0, 0, 255}, 9002)), 1);
+    MaterialMaps d = build(model, flatMask, BlendPreset::Fade);
+    CHECK_FALSE(d.alphaMask.present);
+    CHECK_FALSE(has_extra(d, "mask"));
+    const int wantA[4] = {128, 64, 0, 128};
+    for (int i = 0; i < 4; ++i) CHECK_NEAR(px(d.baseColor.tex, i, 3), wantA[i], 1);
+    CHECK(any_warning(d, "multiplied into the BaseColor alpha"));
+
+    // A placeholder parallax is a constant: no BaseColor map, the value is named.
+    ModelMaterialCPU flatColour = parallax_mat(model, false, true);
+    add_layer(model, flatColour, "parallax",
+              add_tex(model, solid(4, 4, {10, 20, 30, 255}, 842654)), 0);
+    MaterialMaps e = build(model, flatColour, BlendPreset::Fade);
+    CHECK_FALSE(e.baseColor.present);
+    CHECK_FALSE(has_extra(e, "parallax"));
+    CHECK(any_warning(e, "BaseColor is the parallax constant (10, 20, 30, 255)"));
+    CHECK(e.alphaMask.present);
+}
+
+CM_TEST(vrchat, materials_json_opacity_mask_and_glb_base_color) {
+    ModelPreview model = glow_quad();
+    ModelMaterialCPU axe = parallax_mat(model);
+    axe.index = 1;
+    axe.materialName = "Axe";
+    axe.hasRenderState = true;
+    axe.renderState = 0x6565000;  // SrcA/InvSrcA
+    model.materials.push_back(axe);
+    model.meshes.push_back(quad_mesh(1));
+
+    fs::path dir = fresh_dir("opacitymask");
+    VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Axe", 1);
+    CHECK(r.ok);
+    json doc = read_json(dir / "materials.json");
+    const json& a = *material_named(doc, "Axe");
+    CHECK(a["profile"] == "fx-parallax-layer");
+    CHECK(a["preset"] == "Fade");
+    json bc = a["maps"].value("baseColor", json());
+    if (!bc.is_object()) bc = json::object();
+    CHECK(bc.value("source", json()) == "parallax");
+    CHECK(bc.value("uv", json()) == 0);
+    json am = a["maps"].value("alphaMask", json());
+    if (!am.is_object()) am = json::object();
+    CHECK(am.value("source", json()) == "mask.R");
+    CHECK(am.value("uv", json()) == 1);
+    CHECK(am.contains("cutoff"));
+    CHECK(am.value("cutoff", json(1)).is_null());  // opacity: no cutoff
+    bool offset = false;
+    for (const json& x : a["maps"]["extras"])
+        if (x["role"] == "diffuse" && x["use"] == "uv-offset" && x["uv"] == 3) offset = true;
+    CHECK(offset);
+
+    // The .glb's baseColorTexture is the parallax layer on UV0, not the UV3 diffuse.
+    json g = glb_json(dir / "Axe.glb");
+    const json& pbr = g["materials"][1]["pbrMetallicRoughness"];
+    CHECK(pbr.contains("baseColorTexture"));
+    CHECK(pbr.value("baseColorTexture", json::object()).value("index", -1) >= 0);
+    CHECK_FALSE(pbr.value("baseColorTexture", json::object()).contains("texCoord"));
+}
