@@ -16,6 +16,10 @@ exception, because castlemist owns them rather than merely using them:
 `cmake/Externals.cmake` turns each entry below into a real CMake target and
 fails at configure time, by name, if one is missing.
 
+**To fetch them all:** `powershell -ExecutionPolicy Bypass -File tools\setup\fetch_externals.ps1`
+(add `-WithBgfx` for the bgfx / bx / bimg trio). It puts each library in the
+folder named below, at the pinned version, and skips anything already present.
+
 ## Required to build castlemist
 
 | directory                | version | used by            | source                                            |

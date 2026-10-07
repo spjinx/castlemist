@@ -63,8 +63,10 @@ script says otherwise.
 
 | directory  | script | what it does |
 | ---------- | ------ | ------------ |
+| `setup/`   | `fetch_externals.ps1` | downloads every library `external/` needs (PowerShell) |
 | `structs/` | `dump_gw2_structs.py` | pulls the packfile chunk struct definitions out of the client via IDA |
-| `structs/` | `gen_gw2_json.py`     | turns that dump into `dumps/packfile/gw2_packfile.json` |
+| `structs/` | `gen_gw2_json.py`     | writes `gw2_packfile.json` from the client's reflection tables, in IDA |
+| `structs/` | `gen_gw2_json_ghidra.py` | the same in Ghidra via PyGhidra (free); see [docs/struct-template.md](../docs/struct-template.md) |
 | `shaders/` | `extract_exe_shaders.py` | carves the ~2275 bgfx shader blobs embedded in `Gw2-64.exe` |
 | `shaders/` | `parse_bgfx_shaders.py`  | decodes those blobs into DXBC plus their uniform tables |
 | `strs/`    | `gw2_capture_textkeys.py` | captures per-stringId RC4 keys from a running client |
