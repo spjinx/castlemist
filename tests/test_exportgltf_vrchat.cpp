@@ -294,6 +294,55 @@ CM_TEST(vrchat, profile_by_amat_second_survey) {
     CHECK_FALSE(profile_for(mat_with_file(1171331), 0).supported);
 }
 
+CM_TEST(vrchat, profile_decal_modes) {
+    // docs/research/gw2-material-channels.md section 8: prop-decal, 57806, 57131; section 4: 54632.
+    for (uint32_t id : {56533u, 60027u, 62212u, 44479u, 60145u, 19910u, 525886u, 69887u, 69913u,
+                        79884u, 60530u, 69713u, 2597095u}) {
+        const ShaderProfile& p = profile_for(mat_with_file(id), 0);
+        CHECK(p.name == "prop-decal");
+        CHECK(p.supported);
+        CHECK_FALSE(p.clips);
+        CHECK(p.diffuseAlpha == AlphaUse::Shine);
+        CHECK(p.decalMode == DecalMode::DecalOverDiffuse);
+        CHECK(p.decalGlow == DecalGlow::None);
+    }
+    for (uint32_t id : {19910u, 525886u}) {
+        const ShaderProfile& p = profile_for(mat_with_file(id), 0);
+        CHECK(p.decalMaskRole == "decalmask");
+        CHECK(p.decalMaskChannel == Channel::R);
+    }
+    CHECK(profile_for(mat_with_file(69887), 0).decalMaskRole == "mask");
+    CHECK(profile_for(mat_with_file(69887), 0).decalMaskChannel == Channel::R);
+    CHECK(profile_for(mat_with_file(60530), 0).decalMaskRole == "blend");
+    CHECK(profile_for(mat_with_file(60530), 0).decalMaskChannel == Channel::G);
+    CHECK(profile_for(mat_with_file(60027), 0).decalMaskRole.empty());
+    CHECK(profile_for(mat_with_file(60027), 0).decalMaskChannel == Channel::None);
+
+    const ShaderProfile& g = profile_for(mat_with_file(57806), 0);
+    CHECK(g.name == "prop-decal");
+    CHECK(g.decalMode == DecalMode::DecalOverDiffuse);
+    CHECK(g.decalGlow == DecalGlow::AboveHalf);
+    CHECK(g.diffuseAlpha == AlphaUse::Shine);
+
+    const ShaderProfile& dg = profile_for(mat_with_file(57131), 0);
+    CHECK(dg.name == "decal-glow");
+    CHECK(dg.supported);
+    CHECK_FALSE(dg.clips);
+    CHECK(dg.diffuseAlpha == AlphaUse::Shine);
+    CHECK(dg.decalMode == DecalMode::DiffuseOverDecal);
+    CHECK(dg.decalGlow == DecalGlow::BelowHalf);
+
+    const ShaderProfile& sd = profile_for(mat_with_file(54632), 0);
+    CHECK(sd.name == "subsurface-decal");
+    CHECK(sd.decalMode == DecalMode::DiffuseOverDecal);
+    CHECK(sd.decalGlow == DecalGlow::None);
+
+    // Signature-only ids stay out of the table.
+    for (uint32_t id : {76643u, 81309u, 62170u, 69623u})
+        CHECK(&profile_for(mat_with_file(id), 0) == &default_profile());
+    CHECK(default_profile().decalMode == DecalMode::None);
+}
+
 CM_TEST(vrchat, profile_table_has_no_duplicate_amat) {
     std::vector<uint32_t> ids = all_profile_amats();
     CHECK(ids.size() > 100);
@@ -811,6 +860,192 @@ CM_TEST(vrchat, missing_diffuse_warns) {
     CHECK_FALSE(any_warning(build(model, silk, BlendPreset::Cutout), "no diffuse texture"));
 }
 
+// --------------------------------------------------------------------- decals --
+
+namespace {
+
+/// One texel per alpha in `alphas`, colour {200, 100, 50}.
+ModelTextureCPU decal_strip(std::initializer_list<uint8_t> alphas, uint32_t fileId) {
+    std::vector<std::array<uint8_t, 4>> t;
+    for (uint8_t a : alphas) t.push_back({200, 100, 50, a});
+    return tex_from(static_cast<int>(t.size()), 1, t, fileId);
+}
+
+bool has_extra(const MaterialMaps& m, const char* role) {
+    for (const auto& x : m.extras)
+        if (x.role == role) return true;
+    return false;
+}
+
+size_t count_warnings(const MaterialMaps& m, const char* needle) {
+    size_t n = 0;
+    for (const std::string& w : m.warnings)
+        if (w.find(needle) != std::string::npos) ++n;
+    return n;
+}
+
+}  // namespace
+
+CM_TEST(vrchat, decal_over_diffuse_coverage) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(60027);  // prop-decal
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "decal", add_tex(model, decal_strip({0, 64, 128, 255}, 7001)), 1);
+    MaterialMaps m = build(model, mat, BlendPreset::Opaque);
+    CHECK(m.decal.present);
+    CHECK_EQ(m.decal.uv, 1);
+    CHECK_EQ(m.decal.fileId, 7001u);
+    CHECK(m.decalMode == "decal-over-diffuse");
+    CHECK(m.decal.source == "decal saturate(2a)");
+    const int wantA[4] = {0, 128, 255, 255};
+    for (int i = 0; i < 4; ++i) {
+        CHECK_NEAR(px(m.decal.tex, i, 3), wantA[i], 1);
+        CHECK_EQ(px(m.decal.tex, i, 0), 200);
+        CHECK_EQ(px(m.decal.tex, i, 1), 100);
+        CHECK_EQ(px(m.decal.tex, i, 2), 50);
+    }
+    CHECK_FALSE(has_extra(m, "decal"));
+    CHECK_EQ(count_warnings(m, "decal shine not mapped (decal is on UV1)"), size_t{1});
+    // The decal is not baked into BaseColor and Packed keeps the diffuse shine.
+    CHECK_EQ(px(m.baseColor.tex, 0, 0), 100);
+    CHECK(m.smoothSource == "diffuseAlpha");
+    CHECK_FALSE(m.emissionMap.present);
+}
+
+CM_TEST(vrchat, decal_mask_on_same_uv_multiplies) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(19910);  // prop-decal, decalmask.R
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "decal", add_tex(model, decal_strip({255, 255, 255, 64}, 7001)), 1);
+    add_layer(model, mat, "decalmask",
+              add_tex(model, tex_from(4, 1, {{255, 0, 0, 255}, {128, 0, 0, 255}, {0, 0, 0, 255},
+                                             {255, 0, 0, 255}}, 7002)),
+              1);
+    MaterialMaps m = build(model, mat, BlendPreset::Opaque);
+    CHECK(m.decal.present);
+    CHECK(m.decal.source == "decal saturate(2a) x decalmask.R");
+    const int wantA[4] = {255, 128, 0, 128};
+    for (int i = 0; i < 4; ++i) CHECK_NEAR(px(m.decal.tex, i, 3), wantA[i], 1);
+    CHECK_FALSE(has_extra(m, "decal"));
+    CHECK_FALSE(has_extra(m, "decalmask"));
+
+    // 60530 reads blend.G.
+    ModelMaterialCPU b = mat_with_file(60530);
+    b.diffuseTex = mat.diffuseTex;
+    add_layer(model, b, "decal", add_tex(model, decal_strip({255, 255}, 7003)), 1);
+    add_layer(model, b, "blend",
+              add_tex(model, tex_from(2, 1, {{0, 255, 0, 255}, {255, 0, 0, 255}}, 7004)), 1);
+    MaterialMaps mb = build(model, b, BlendPreset::Opaque);
+    CHECK(mb.decal.source == "decal saturate(2a) x blend.G");
+    CHECK_NEAR(px(mb.decal.tex, 0, 3), 255, 1);
+    CHECK_NEAR(px(mb.decal.tex, 1, 3), 0, 1);
+}
+
+CM_TEST(vrchat, decal_mask_on_other_uv_warns) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(19910);
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "decal", add_tex(model, decal_strip({255, 255}, 7001)), 1);
+    add_layer(model, mat, "decalmask",
+              add_tex(model, tex_from(2, 1, {{0, 0, 0, 255}, {0, 0, 0, 255}}, 7002)), 2);
+    MaterialMaps m = build(model, mat, BlendPreset::Opaque);
+    CHECK(m.decal.present);
+    CHECK(m.decal.source == "decal saturate(2a)");
+    CHECK_NEAR(px(m.decal.tex, 0, 3), 255, 1);  // mask not applied
+    CHECK(any_warning(m, "decalmask layer uses UV2, the decal UV1"));
+    CHECK(has_extra(m, "decalmask"));  // still exported raw
+}
+
+CM_TEST(vrchat, diffuse_over_decal_inverts_alpha) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(54632);  // subsurface-decal
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "decal", add_tex(model, decal_strip({0, 128, 255}, 7001)), 1);
+    MaterialMaps m = build(model, mat, BlendPreset::Opaque);
+    CHECK(m.decal.present);
+    CHECK_EQ(m.decal.uv, 1);
+    CHECK(m.decalMode == "diffuse-over-decal");
+    CHECK(m.decal.source == "decal 1-a");
+    const int wantA[3] = {255, 127, 0};
+    for (int i = 0; i < 3; ++i) CHECK_NEAR(px(m.decal.tex, i, 3), wantA[i], 1);
+    CHECK_FALSE(has_extra(m, "decal"));
+    CHECK_FALSE(any_warning(m, "decal shine not mapped"));
+    CHECK_FALSE(m.emissionMap.present);
+}
+
+CM_TEST(vrchat, decal_missing_layer_warns_without_slot) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(60027);
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "decal", -1, 1);  // failed to decode
+    MaterialMaps m = build(model, mat, BlendPreset::Opaque);
+    CHECK_FALSE(m.decal.present);
+    CHECK(m.decalMode.empty());
+    CHECK(any_warning(m, "decal layer (fileId 4242) failed to decode"));
+}
+
+CM_TEST(vrchat, decal_glow_below_half) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(57131);  // decal-glow
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "decal", add_tex(model, decal_strip({0, 128, 255}, 7001)), 1);
+    mat.namedConstantVectors = {{"glowcol", {1.0f, 0.5f, 0.0f, 1.0f}}};
+    MaterialMaps m = build(model, mat, BlendPreset::Opaque);
+    CHECK(m.decal.present);
+    CHECK(m.emissionMap.present);
+    CHECK_EQ(m.emissionMap.uv, 1);
+    CHECK(m.emissionMap.source == "decal");
+    CHECK_EQ(px(m.emissionMap.tex, 0, 0), 200);
+    CHECK(m.emissionMask.present);
+    CHECK_EQ(m.emissionMask.uv, 1);
+    CHECK(m.emissionMask.source == "decal 1-a");
+    const int wantMask[3] = {255, 127, 0};
+    for (int i = 0; i < 3; ++i) CHECK_NEAR(px(m.emissionMask.tex, i, 0), wantMask[i], 1);
+    // glowcol x 2 = (2, 1, 0): colour at peak 1, the peak as strength.
+    CHECK_NEAR(m.emissionColor[0], 1.0f, 0.001f);
+    CHECK_NEAR(m.emissionColor[1], 0.5f, 0.001f);
+    CHECK_NEAR(m.emissionColor[2], 0.0f, 0.001f);
+    CHECK_NEAR(m.emissionStrength, 2.0f, 0.001f);
+    CHECK(m.emissionBaked.present);
+    CHECK_EQ(m.emissionBaked.uv, 1);
+
+    // No glowcol: white, with a warning.
+    mat.namedConstantVectors.clear();
+    MaterialMaps w = build(model, mat, BlendPreset::Opaque);
+    CHECK(w.emissionMask.present);
+    CHECK_NEAR(w.emissionColor[1], 1.0f, 0.001f);
+    CHECK(any_warning(w, "glowcol"));
+}
+
+CM_TEST(vrchat, decal_glow_above_half) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(57806);  // prop-decal + AboveHalf glow
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "decal", add_tex(model, decal_strip({0, 128, 192, 255}, 7001)), 1);
+    MaterialMaps m = build(model, mat, BlendPreset::Opaque);
+    CHECK(m.decalMode == "decal-over-diffuse");
+    CHECK(m.emissionMask.present);
+    CHECK(m.emissionMask.source == "decal saturate(2a-1)");
+    const int wantMask[4] = {0, 1, 129, 255};
+    for (int i = 0; i < 4; ++i) CHECK_NEAR(px(m.emissionMask.tex, i, 0), wantMask[i], 1);
+    CHECK_NEAR(m.emissionColor[0], 1.0f, 0.001f);
+    CHECK_NEAR(m.emissionStrength, 1.0f, 0.001f);
+}
+
+CM_TEST(vrchat, decal_glow_slot_in_use_warns) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(57131);
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "decal", add_tex(model, decal_strip({0, 255}, 7001)), 1);
+    add_layer(model, mat, "glow", add_tex(model, solid(2, 2, {255, 64, 0, 255}, 2001)), 0);
+    MaterialMaps m = build(model, mat, BlendPreset::Opaque);
+    CHECK(m.emissionMap.present);
+    CHECK_EQ(m.emissionMap.fileId, 2001u);
+    CHECK(m.emissionMap.source == "glow");
+    CHECK(any_warning(m, "decal glow not mapped: emission slot in use"));
+    CHECK(m.decal.present);  // the decal map itself is still built
+}
+
 // ------------------------------------------------------------- export folder --
 
 namespace {
@@ -1173,4 +1408,38 @@ CM_TEST(vrchat, gltf_alpha_mask_kept_for_baked_textures_without_game_shader) {
     model.textures[static_cast<size_t>(model.materials[0].diffuseTex)].hasCutout = false;
     CHECK(export_model_gltf(model, (dir / "d.glb").string()).ok);
     CHECK(glb_json(dir / "d.glb")["materials"][0]["alphaMode"] == "BLEND");
+}
+
+CM_TEST(vrchat, materials_json_decal_entry) {
+    ModelPreview model = glow_quad();
+    ModelMaterialCPU prop = mat_with_file(60027);  // prop-decal
+    prop.index = 1;
+    prop.materialName = "Wall";
+    prop.hasRenderState = true;
+    prop.renderState = 0;
+    prop.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, prop, "decal", add_tex(model, decal_strip({0, 64, 128, 255}, 7001)), 1);
+    model.materials.push_back(prop);
+    model.meshes.push_back(quad_mesh(1));
+
+    fs::path dir = fresh_dir("decal");
+    VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Prop", 1);
+    CHECK(r.ok);
+    CHECK(fs::exists(dir / "Textures" / "Wall - Decal.png"));
+    json doc = read_json(dir / "materials.json");
+    const json& wall = *material_named(doc, "Wall");
+    CHECK(wall["maps"].contains("decal"));
+    json decal = wall["maps"].value("decal", json());
+    if (!decal.is_object()) decal = json::object();
+    CHECK_FALSE(decal.empty());
+    CHECK(decal.value("file", json()) == "Textures/Wall - Decal.png");
+    CHECK(decal.value("uv", json()) == 1);
+    CHECK(decal.value("fileId", json()) == 7001);
+    CHECK(decal.value("source", json()) == "decal saturate(2a)");
+    CHECK(decal.value("mode", json()) == "decal-over-diffuse");
+    for (const json& x : wall["maps"]["extras"]) CHECK(x["role"] != "decal");
+    const json& blade = *material_named(doc, "Blade");
+    CHECK(blade["maps"].contains("decal"));
+    CHECK(blade["maps"].value("decal", json(1)).is_null());
+    CHECK_NEAR(blade["emission"]["strength"].get<double>(), 1.0, 1e-9);
 }

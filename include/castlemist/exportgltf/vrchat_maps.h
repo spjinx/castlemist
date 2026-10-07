@@ -35,6 +35,11 @@ struct MapSlot {
 /// Every map and recorded value of one material.
 struct MaterialMaps {
     MapSlot baseColor, normal, packed, emissionMap, emissionMask, emissionBaked, distortion;
+    /// The decal layer on its own UV: RGB = decal.rgb, A = how much decal covers
+    /// the diffuse (DecalOverDiffuse: saturate(2a) [x mask]; DiffuseOverDecal: 1 - a).
+    MapSlot decal;
+    /// "decal-over-diffuse" / "diffuse-over-decal" when `decal` is present, else empty.
+    std::string decalMode;
     /// A layer kept raw, by role, with a hint of how the game uses it ("detail-multiply2x", ...).
     struct Extra { std::string role, use; MapSlot slot; };
     std::vector<Extra> extras;
@@ -42,6 +47,9 @@ struct MaterialMaps {
     /// "specular.A", "conduct", "mtlness", "specstr", "envcr", "none".
     std::string metalSource, smoothSource, reflectionSource, specularSource;
     std::array<float, 3> emissionColor = {1, 1, 1};  ///< EmissionMap's average colour, peak 1.
+    /// Multiplier over emissionColor: 1, except a decal glow's `glowcol x 2`,
+    /// whose peak lands here so the colour keeps its hue at peak 1.
+    float emissionStrength = 1.0f;
     std::optional<std::array<float, 3>> specularTint, reflectionTint;  ///< speccp / envcr|envcp RGB
     std::vector<std::string> warnings;
 };

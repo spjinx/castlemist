@@ -225,11 +225,35 @@ Rules:
 | EmissionMap / EmissionMask | per profile: `glow` / `glowmask` on their own UV sets (weapon-glow; weapon-spec has glow on UV2, glowmask on UV0); `maskGlow` → EmissionMask with the base colour as map (armor-mask); `maskGlowGate` → EmissionMask (legacy-spec). Additive-style presets with no glow layer → base colour as EmissionMap. Some models use one file for both glow and glowmask; that is fine. |
 | Emission (baked) | EmissionMask × EmissionMap's average colour — the .glb's `emissiveTexture`, as `material_export.cpp` does today. |
 | Distortion | `glowperturb` / `perturb` layer: an **RG UV-offset map** (not a normal), recorded with its strength constant (`gloptrb`). |
-| extras | every other layer raw, by role, with a `"use"` hint where the profile knows it (`mod` → `"detail-multiply2x"`, `decal` → `"lerp-by-decal-alpha"`, `height` → `"parallax"`, `specular` → `"specular-color"`). |
+| Decal | see "Decal" below. |
+| extras | every other layer raw, by role, with a `"use"` hint where the profile knows it (`mod` → `"detail-multiply2x"`, `decal` → `"lerp-by-decal-alpha"` on profiles without a `decalMode`, `height` → `"parallax"`, `specular` → `"specular-color"`). |
 | `specularTint` / `reflectionTint` | `speccp` / `envcr` (or `envcp`) RGB. |
 
 4×4 placeholder textures (e.g. 13368 white, 529633 flat normal) stand for
 constants: the map is skipped and the value recorded.
+
+**Decal.** GW2 decal shaders blend a `decal` layer (usually on UV1) over the
+diffuse in one of two opposite ways, set by the profile's `decalMode`
+(research note sections 4 and 8): `DecalOverDiffuse` (the map-prop family,
+`lerp(diffuse, decal, saturate(2·decal.a))`, × a `decalMaskRole` channel on
+19910/525886 `decalmask.R`, 69887 `mask.R`, 60530 `blend.G`) and
+`DiffuseOverDecal` (54632, 57131: `lerp(decal, diffuse, decal.a)`). The Decal
+map is the decal on **its own UV**: RGB = decal.rgb, A = the decal's coverage
+of the diffuse — `saturate(2a)` [× the mask channel] or `1 − a` — and its
+`source` names the formula (`"decal saturate(2a) x decalmask.R"`). A mask on
+another UV than the decal is skipped with a warning naming both. The decal is
+not baked into BaseColor (another UV) and its shine (`saturate(2a−1)`, prop
+family) is not folded into Packed: one warning, "decal shine not mapped". The
+decal is then no longer an extra; a missing or failed decal layer only warns.
+`decalGlow` adds emission from the decal when no glow/glowmask/mask-glow source
+owns it (else the warning "decal glow not mapped: emission slot in use"):
+`BelowHalf` (57131) EmissionMap = decal.rgb, EmissionMask = `1 − a`, colour
+`glowcol × 2` (stored at peak 1, the peak as `emission.strength`; white with a
+warning when `glowcol` is absent); `AboveHalf` (57806) EmissionMask =
+`saturate(2a − 1)`, colour white. Both sit on the decal's UV. The .glb keeps
+the decal as it was (the occlusion slot); materials.json gets
+`maps.decal {file, uv, fileId, source, mode: "decal-over-diffuse" |
+"diffuse-over-decal"}`, `null` when absent.
 
 Each rule records which source it used, so `materials.json` can say
 "smoothness from diffuse alpha" or "metal from conduct".
@@ -249,7 +273,9 @@ Each rule records which source it used, so `materials.json` can say
       "normal":       {...}, "packed": {..., "sources": {"metal":"none","smooth":"diffuseAlpha", ...}},
       "emissionMap":  {..., "uv": 0, "panning": null},
       "emissionMask": {..., "uv": 2},
-      "distortion":   {...}, "extras": [{"role": "detail", ...}]
+      "distortion":   {...},
+      "decal":        {..., "uv": 1, "source": "decal saturate(2a)", "mode": "decal-over-diffuse"} | null,
+      "extras": [{"role": "detail", ...}]
     },
     "emission": {"color": [1, 0.27, 0.05], "strength": 1.0},
     "specularTint": [0.78, 0.91, 0.62] | null, "reflectionTint": [..] | null,

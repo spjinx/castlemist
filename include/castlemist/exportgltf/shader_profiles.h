@@ -35,6 +35,28 @@ enum class Channel : int8_t { None = -1, R = 0, G = 1, B = 2, A = 3 };
 /// A specular layer whose alpha carries gloss or exponent (weapon-spec / legacy-spec).
 enum class SpecLayer { None, GlossInAlpha, ExponentInAlpha };
 
+/// How a shader blends its `decal` layer (usually on UV1) with the diffuse (UV0).
+/// docs/research/gw2-material-channels.md sections 4 (54632) and 8 (prop-decal, 57131).
+enum class DecalMode {
+    None,
+    /// map props: `albedo = lerp(diffuse, decal, coverage)`, coverage =
+    /// `saturate(2 * decal.a)` [x the decal mask channel]; the shine lerps
+    /// toward `saturate(2 * decal.a - 1)` by the same coverage.
+    DecalOverDiffuse,
+    /// 54632 / 57131: `albedo = lerp(decal, diffuse, decal.a)`, so the decal's
+    /// coverage is `1 - decal.a` (alpha 1 shows the diffuse).
+    DiffuseOverDecal
+};
+
+/// Where a decal also glows.
+enum class DecalGlow {
+    None,
+    /// 57131: emission = `decal.rgb * glowcol * 2 * (1 - decal.a)`.
+    BelowHalf,
+    /// 57806: adds `decal.rgb * saturate(2 * decal.a - 1)` unlit.
+    AboveHalf
+};
+
 /// How one shader family uses its textures.
 struct ShaderProfile {
     std::string name;
@@ -48,6 +70,12 @@ struct ShaderProfile {
     bool premultiplyRgbByAlpha = false;
     bool glowOnUv2MaskOnUv0 = false;       ///< weapon-spec swaps them
     bool animatedGlowLayers = false;       ///< legendary: animated glow layers, not mapped
+    DecalMode decalMode = DecalMode::None;
+    /// DecalOverDiffuse only: a layer whose channel multiplies the decal coverage
+    /// (19910 "decalmask".R, 69887 "mask".R, 60530 "blend".G); empty when none.
+    std::string decalMaskRole;
+    Channel decalMaskChannel = Channel::None;
+    DecalGlow decalGlow = DecalGlow::None;
 };
 
 /// Profile for a material: by AMAT fileId, else the legacy-untagged trait

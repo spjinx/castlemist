@@ -73,7 +73,45 @@ std::vector<Entry> build_table() {
                   14084, 23508, 73205, 73655, 84923, 27305, 76858, 23672, 54889, 231183, 57701,
                   75778},
                  make("prop-lit-noclip", AlphaUse::Shine, false)});
-    t.push_back({{54632}, make("subsurface-decal", AlphaUse::Shine, false)});
+    // subsurface-decal: albedo = lerp(decal, diffuse, decal.a) (note section 4).
+    {
+        ShaderProfile p = make("subsurface-decal", AlphaUse::Shine, false);
+        p.decalMode = DecalMode::DiffuseOverDecal;
+        t.push_back({{54632}, p});
+    }
+
+    // prop-decal (note section 8.4): albedo = lerp(diffuse, decal, saturate(2*decal.a)
+    // [x mask]), shine lerped toward saturate(2*decal.a-1); no texture discard. Hand-read
+    // ids only (signature-only 76643, 81309, 62170, 69623 are left out).
+    {
+        ShaderProfile p = make("prop-decal", AlphaUse::Shine, false);
+        p.decalMode = DecalMode::DecalOverDiffuse;
+        t.push_back({{56533, 60027, 62212, 44479, 60145, 69913, 79884, 69713, 2597095}, p});
+
+        ShaderProfile m = p;
+        m.decalMaskRole = "decalmask";
+        m.decalMaskChannel = Channel::R;
+        t.push_back({{19910, 525886}, m});
+        m.decalMaskRole = "mask";
+        t.push_back({{69887}, m});
+        m.decalMaskRole = "blend";
+        m.decalMaskChannel = Channel::G;
+        t.push_back({{60530}, m});
+
+        // 57806 also adds decal.rgb * saturate(2*decal.a-1) unlit.
+        ShaderProfile g = p;
+        g.decalGlow = DecalGlow::AboveHalf;
+        t.push_back({{57806}, g});
+    }
+
+    // decal-glow (note section 8, 57131): albedo = lerp(decal, diffuse, decal.a);
+    // emission = decal.rgb * glowcol * 2 * (1 - decal.a).
+    {
+        ShaderProfile p = make("decal-glow", AlphaUse::Shine, false);
+        p.decalMode = DecalMode::DiffuseOverDecal;
+        p.decalGlow = DecalGlow::BelowHalf;
+        t.push_back({{57131}, p});
+    }
 
     // Second survey (docs/research/gw2-material-channels.md section 8.4): new profiles
     // that fit the existing fields.

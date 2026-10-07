@@ -1,6 +1,6 @@
 /// @file
 /// @brief build_material_maps: GW2 material layers -> Poiyomi maps (BaseColor,
-///        Normal, Packed, emission, distortion, raw extras), per shader profile.
+///        Normal, Packed, emission, distortion, decal, raw extras), per shader profile.
 
 #include "castlemist/exportgltf/vrchat_maps.h"
 
@@ -156,7 +156,10 @@ public:
         build_base_color();
         build_normal();
         build_packed();
+        build_decal();
         build_emission();
+        build_decal_glow();
+        bake_emission();
         build_distortion();
         build_extras();
         warn_animated_glow();
@@ -494,8 +497,12 @@ private:
                                     std::to_string(glow->uv) + " and glowmask UV" +
                                     std::to_string(glowmask->uv) + ": kept the material's own");
 
+        // Any glow source (even a failed or placeholder one) owns the emission:
+        // a decal glow never replaces it.
+        emissionTaken_ = glow || glowFailed || glowmask || failed("glowmask");
+
         // A uniform glowmask scales the whole emission; a black one switches it off.
-        std::array<float, 3> scale = {1, 1, 1};
+        std::array<float, 3>& scale = emissionScale_;
         if (glowmask && glowmask->placeholder) {
             consumed_.push_back(glowmask);
             if (glowmask->constant[0] == 0 && glowmask->constant[1] == 0 &&
@@ -537,7 +544,103 @@ private:
             out_.emissionColor = average_rgb(out_.emissionMap.tex);
         }
         for (size_t c = 0; c < 3; ++c) out_.emissionColor[c] *= scale[c];
+        if (out_.emissionMap.present || out_.emissionMask.present) emissionTaken_ = true;
+    }
 
+    /// The decal on its own UV: RGB = decal.rgb, A = its coverage of the diffuse.
+    /// Not baked into BaseColor (another UV) and its shine not into Packed.
+    void build_decal() {
+        if (profile_.decalMode == DecalMode::None) return;
+        const Layer* decal = find({"decal"});
+        // Missing or failed: resolve already warned. A placeholder: no map either.
+        if (!decal || !decal->real()) return;
+        const bool over = profile_.decalMode == DecalMode::DecalOverDiffuse;
+
+        const Layer* mask = nullptr;
+        if (over && !profile_.decalMaskRole.empty() &&
+            profile_.decalMaskChannel != Channel::None) {
+            const std::string& role = profile_.decalMaskRole;
+            mask = find({role.c_str()});
+            if (mask && mask->uv != decal->uv) {
+                out_.warnings.push_back(role + " layer uses UV" + std::to_string(mask->uv) +
+                                        ", the decal UV" + std::to_string(decal->uv) +
+                                        ": decal coverage not masked by " + role + "." +
+                                        channel_name(profile_.decalMaskChannel));
+                mask = nullptr;
+            } else if (!mask && !failed(role.c_str())) {
+                out_.warnings.push_back("no " + role + " layer: decal coverage not masked");
+            }
+        }
+
+        const ModelTextureCPU& d = *decal->tex;
+        const int w = d.width, h = d.height;
+        ModelTextureCPU t = blank(w, h, d.fileId);
+        const int mc = static_cast<int>(profile_.decalMaskChannel);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const size_t i = (static_cast<size_t>(y) * static_cast<size_t>(w) +
+                                  static_cast<size_t>(x)) * 4;
+                for (size_t c = 0; c < 3; ++c) t.rgba[i + c] = d.rgba[i + c];
+                const uint8_t a = d.rgba[i + 3];
+                uint8_t cov = over ? to_byte(2.0 * a / 255.0) : static_cast<uint8_t>(255 - a);
+                if (mask) cov = static_cast<uint8_t>((cov * mask->at(x, y, w, h, mc) + 127) / 255);
+                t.rgba[i + 3] = cov;
+            }
+        std::string source = over ? "decal saturate(2a)" : "decal 1-a";
+        if (mask) source += " x " + mask->role + "." + channel_name(profile_.decalMaskChannel);
+        out_.decal = slot_of(std::move(t), decal->uv, decal->fileId, std::move(source));
+        out_.decalMode = over ? "decal-over-diffuse" : "diffuse-over-decal";
+        mapped_.push_back(decal);
+        if (mask) mapped_.push_back(mask);
+        if (over)
+            out_.warnings.push_back("decal shine not mapped (decal is on UV" +
+                                    std::to_string(decal->uv) + ")");
+    }
+
+    /// A decal that glows (57131 below half its alpha, 57806 above), when no
+    /// other source owns the emission.
+    void build_decal_glow() {
+        if (profile_.decalGlow == DecalGlow::None) return;
+        const Layer* decal = find({"decal"});
+        if (!decal || !decal->real()) return;
+        if (emissionTaken_) {
+            out_.warnings.push_back("decal glow not mapped: emission slot in use");
+            return;
+        }
+        const bool below = profile_.decalGlow == DecalGlow::BelowHalf;
+        out_.emissionMap = raw_slot(*decal, "decal");
+        const ModelTextureCPU& d = *decal->tex;
+        ModelTextureCPU m = blank(d.width, d.height, d.fileId);
+        for (size_t i = 0; i + 3 < m.rgba.size(); i += 4) {
+            const uint8_t a = d.rgba[i + 3];
+            m.rgba[i] = m.rgba[i + 1] = m.rgba[i + 2] =
+                below ? static_cast<uint8_t>(255 - a) : shine(a);
+            m.rgba[i + 3] = 255;
+        }
+        out_.emissionMask = slot_of(std::move(m), decal->uv, decal->fileId,
+                                    below ? "decal 1-a" : "decal saturate(2a-1)");
+        out_.emissionColor = {1, 1, 1};
+        out_.emissionStrength = 1.0f;
+        if (below) {
+            // decal.rgb * glowcol * 2: the colour at peak 1, the peak as strength.
+            std::array<float, 3> c = {2, 2, 2};
+            if (const auto g = vec("glowcol"))
+                c = {2 * (*g)[0], 2 * (*g)[1], 2 * (*g)[2]};
+            else
+                out_.warnings.push_back("decal glow: no glowcol constant, white used");
+            const float peak = std::max({c[0], c[1], c[2]});
+            if (peak > 0) {
+                out_.emissionColor = {c[0] / peak, c[1] / peak, c[2] / peak};
+                out_.emissionStrength = peak;
+            } else {
+                out_.emissionColor = {0, 0, 0};
+            }
+        }
+        emissionTaken_ = true;
+    }
+
+    void bake_emission() {
+        const std::array<float, 3>& scale = emissionScale_;
         // The .glb's emissiveTexture: mask x emissionColor, else the map x the
         // uniform glowmask's scale.
         const MapSlot* src = out_.emissionMask.present  ? &out_.emissionMask
@@ -565,6 +668,7 @@ private:
 
     void build_extras() {
         for (const Layer& l : layers_) {
+            if (std::find(mapped_.begin(), mapped_.end(), &l) != mapped_.end()) continue;
             const bool used = std::find(consumed_.begin(), consumed_.end(), &l) != consumed_.end();
             const std::string use = extra_use(l.role, profile_);
             if (!l.real() || (used && use.empty())) continue;
@@ -599,6 +703,7 @@ private:
         check("emissionMap", out_.emissionMap);
         check("emissionMask", out_.emissionMask);
         check("distortion", out_.distortion);
+        check("decal", out_.decal);
         for (const auto& x : out_.extras) check("extra", x.slot);
     }
 
@@ -610,6 +715,9 @@ private:
     Layer diffuse_, normal_;
     std::vector<Layer> layers_;
     std::vector<const Layer*> consumed_;
+    std::vector<const Layer*> mapped_;      ///< fully mapped layers: never an extra
+    std::array<float, 3> emissionScale_ = {1, 1, 1};  ///< a uniform glowmask's scale
+    bool emissionTaken_ = false;            ///< a glow source owns the emission slots
     std::vector<std::string> failedRoles_;  ///< roles of layers that failed to decode
     const bool isDefault_ = &profile_ == &default_profile();
     bool alphaIsOpacity_ = false;  ///< default profile, blended preset: alpha is opacity (I4)

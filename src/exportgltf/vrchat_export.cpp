@@ -204,6 +204,9 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
         json distortion = mw.write(maps.distortion, "Distortion");
         if (!distortion.is_null()) distortion["strength"] = opt_json(named_constant(mat, "gloptrb"));
         jm["distortion"] = std::move(distortion);
+        json decal = mw.write(maps.decal, "Decal");
+        if (!decal.is_null()) decal["mode"] = maps.decalMode;
+        jm["decal"] = std::move(decal);
         json extras = json::array();
         for (const MaterialMaps::Extra& x : maps.extras) {
             json e = mw.write(x.slot, safe_file_name(x.role.empty() ? "extra" : x.role));
@@ -237,7 +240,8 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
             {"sortOrder", mat.sortOrder},           // raw
             {"cull", mat.isEffect ? "Off" : "Back"},
             {"maps", std::move(jm)},
-            {"emission", hasEmission ? json{{"color", rgb_json(maps.emissionColor)}, {"strength", 1.0}}
+            {"emission", hasEmission ? json{{"color", rgb_json(maps.emissionColor)},
+                                                  {"strength", maps.emissionStrength}}
                                      : json()},
             {"specularTint", maps.specularTint ? rgb_json(*maps.specularTint) : json()},
             {"reflectionTint", maps.reflectionTint ? rgb_json(*maps.reflectionTint) : json()},
