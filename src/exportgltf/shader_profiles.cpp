@@ -41,6 +41,15 @@ std::vector<Entry> build_table() {
         t.push_back({{2083141, 2140066}, p});
     }
 
+    // weapon-rim-ramp (1465623, Astral Ribbons): the 561567 lit core plus a view-angle
+    // rim, ramp(N.V, mask.R + voffset) x mask.R (note 8.2); described, not mapped.
+    {
+        ShaderProfile p = make("weapon-rim-ramp", AlphaUse::HolesAndShine, true);
+        p.rimRampRole = "ramp";
+        p.rimMaskChannel = Channel::R;
+        t.push_back({{1465623}, p});
+    }
+
     {
         ShaderProfile p = make("weapon-spec", AlphaUse::HolesAndShine, true);
         p.specLayer = SpecLayer::GlossInAlpha;

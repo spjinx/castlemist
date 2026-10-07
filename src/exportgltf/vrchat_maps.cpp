@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace castlemist::exportgltf {
 
@@ -118,6 +119,7 @@ const char* extra_use(const std::string& role, const ShaderProfile& profile) {
     if (role == "specular") return "specular-color";
     // 842652: offsets the opacity mask's UV. Only where an opacity layer is read.
     if (role == "mskptrb" && !profile.opacityRole.empty()) return "uv-offset";
+    if (!profile.rimRampRole.empty() && role == profile.rimRampRole) return "rim-ramp";
     if (role == profile.maskRole && profile.maskSheen != Channel::None) return "sheen-in-B";
     return "";
 }
@@ -169,6 +171,7 @@ public:
         build_decal_glow();
         bake_emission();
         build_distortion();
+        build_rim();
         build_extras();
         warn_animated_glow();
         warn_uvs();
@@ -891,6 +894,66 @@ private:
         if (!p) return;
         consumed_.push_back(p);
         if (p->real()) out_.distortion = raw_slot(*p, p->role);
+    }
+
+    /// 1465623: ramp(N.V, mask.R + voffset) x mask.R x sun colour. A view-angle
+    /// lookup, so it is recorded (colour, gate, scroll) and the ramp ships raw as an
+    /// extra; it is not emission. A missing/failed ramp skips the rim only.
+    void build_rim() {
+        const std::string& role = profile_.rimRampRole;
+        if (role.empty()) return;
+        const Layer* ramp = find({role.c_str()});
+        if (!ramp) {
+            out_.warnings.push_back((failed(role.c_str()) ? role + " layer failed to decode"
+                                                          : "no " + role + " layer") +
+                                    ": rim not built");
+            return;
+        }
+        if (ramp->placeholder) {
+            out_.rim.color = {ramp->constant[0] / 255.0f, ramp->constant[1] / 255.0f,
+                              ramp->constant[2] / 255.0f};
+        } else {
+            // Average of the brighter half of the texels (by channel sum).
+            const ModelTextureCPU& t = *ramp->tex;
+            const size_t n = static_cast<size_t>(t.width) * static_cast<size_t>(t.height);
+            std::vector<std::pair<int, size_t>> order;
+            for (size_t i = 0; i < n; ++i)
+                order.push_back({t.rgba[i * 4] + t.rgba[i * 4 + 1] + t.rgba[i * 4 + 2], i});
+            std::stable_sort(order.begin(), order.end(),
+                             [](const auto& a, const auto& b) { return a.first > b.first; });
+            const size_t keep = std::max<size_t>(1, n / 2);
+            double sum[3] = {0, 0, 0};
+            for (size_t k = 0; k < keep; ++k)
+                for (size_t c = 0; c < 3; ++c) sum[c] += t.rgba[order[k].second * 4 + c];
+            for (size_t c = 0; c < 3; ++c)
+                out_.rim.color[c] = static_cast<float>(sum[c] / static_cast<double>(keep) / 255.0);
+        }
+        out_.rim.present = true;
+        out_.rim.scroll = constant("voffset");
+
+        const Channel ch = profile_.rimMaskChannel;
+        if (ch != Channel::None) {
+            out_.rim.maskSource = profile_.maskRole + "." + channel_name(ch);
+            const Layer* mask = find({profile_.maskRole.c_str()});
+            if (!mask) {
+                out_.warnings.push_back((failed(profile_.maskRole.c_str())
+                                             ? profile_.maskRole + " layer failed to decode"
+                                             : "no " + profile_.maskRole + " layer") +
+                                        ": rim gate (" + out_.rim.maskSource +
+                                        ") unknown, the rim is ungated");
+            } else if (mask->placeholder) {
+                out_.rim.maskConstant = mask->constant[static_cast<size_t>(ch)] / 255.0f;
+                mapped_.push_back(mask);
+            } else {
+                out_.rim.mask = grey_slot(*mask, ch);
+                mapped_.push_back(mask);
+            }
+        }
+        std::string w = "rim ramp is a view-angle lookup, ramp(N.V, " + out_.rim.maskSource +
+                        " + voffset) x " + out_.rim.maskSource +
+                        ": described in materials.json (rim), not mapped as emission";
+        if (out_.rim.scroll) w += " (voffset " + std::to_string(*out_.rim.scroll) + ")";
+        out_.warnings.push_back(std::move(w));
     }
 
     void build_extras() {

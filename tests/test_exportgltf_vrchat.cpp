@@ -2039,3 +2039,132 @@ CM_TEST(vrchat, parallax_placeholder_wording) {
     CHECK_FALSE(any_warning(b, "multiplied into the BaseColor alpha"));
     CHECK(any_warning(b, "no BaseColor to multiply it into"));
 }
+
+// ------------------------------------------------------------------ rim ramp --
+// Note 8.2 "1465623" (Astral Ribbons): glow = ramp(N.V, mask.R + voffset) x mask.R, a
+// view-angle lookup. Described for the importer, never faked as emission.
+
+namespace {
+
+ModelMaterialCPU rim_mat(ModelPreview& model, bool withRamp = true) {
+    ModelMaterialCPU mat = mat_with_file(1465623);
+    mat.diffuseTex = add_tex(model, tex_from(2, 2, {{100, 100, 100, 200}, {100, 100, 100, 200},
+                                                    {100, 100, 100, 200}, {100, 100, 100, 200}},
+                                             1000));
+    if (withRamp)
+        add_layer(model, mat, "ramp",
+                  add_tex(model, tex_from(4, 1, {{0, 0, 0, 255}, {40, 40, 80, 255},
+                                                 {100, 100, 200, 255}, {200, 200, 254, 255}},
+                                          80599)),
+                  0);
+    add_layer(model, mat, "mask", add_tex(model, solid(4, 4, {255, 0, 0, 255}, 1459277)), 0);
+    return mat;
+}
+
+}  // namespace
+
+CM_TEST(vrchat, rim_ramp_records_colour_and_mask) {
+    const ShaderProfile& p = profile_for(mat_with_file(1465623), 0);
+    CHECK(p.name == "weapon-rim-ramp");
+    CHECK(p.clips);
+    CHECK(p.rimRampRole == "ramp");
+    CHECK(p.rimMaskChannel == Channel::R);
+    CHECK(profile_for(mat_with_file(561567), 0).rimRampRole.empty());
+
+    ModelPreview model;
+    ModelMaterialCPU mat = rim_mat(model);
+    mat.namedConstantVectors = {{"voffset", {0.25f, 0, 0, 0}}};
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK(m.rim.present);
+    CHECK_NEAR(m.rim.color[0], 150.0f / 255.0f, 1e-3);
+    CHECK_NEAR(m.rim.color[1], 150.0f / 255.0f, 1e-3);
+    CHECK_NEAR(m.rim.color[2], 227.0f / 255.0f, 1e-3);
+    CHECK_FALSE(m.rim.mask.present);
+    CHECK(m.rim.maskConstant.has_value());
+    if (m.rim.maskConstant) CHECK_NEAR(*m.rim.maskConstant, 1.0f, 1e-6);
+    CHECK(m.rim.maskSource == "mask.R");
+    CHECK(m.rim.scroll.has_value());
+    if (m.rim.scroll) CHECK_NEAR(*m.rim.scroll, 0.25f, 1e-6);
+    CHECK(any_warning(m, "rim ramp is a view-angle lookup"));
+    // The ramp ships raw with its use; it is not emission.
+    const MaterialMaps::Extra* r = extra_named(m, "ramp");
+    CHECK(r != nullptr);
+    if (r) CHECK(r->use == "rim-ramp");
+    CHECK_FALSE(m.emissionMap.present);
+    CHECK_FALSE(m.emissionMask.present);
+    CHECK_FALSE(m.emissionBaked.present);
+
+    // No voffset: scroll null. A real mask: greyscale R map, not a constant.
+    ModelMaterialCPU real = rim_mat(model);
+    add_layer(model, real, "mask",
+              add_tex(model, tex_from(2, 1, {{10, 0, 0, 255}, {200, 0, 0, 255}}, 1459278)), 0);
+    real.extraTextures.erase(real.extraTextures.begin() + 1);  // drop the placeholder mask
+    MaterialMaps n = build(model, real, BlendPreset::Cutout);
+    CHECK(n.rim.present);
+    CHECK_FALSE(n.rim.scroll.has_value());
+    CHECK(n.rim.mask.present);
+    CHECK_FALSE(n.rim.maskConstant.has_value());
+    if (n.rim.mask.present) CHECK_EQ(px(n.rim.mask.tex, 1, 0), 200);
+    CHECK_FALSE(n.emissionMask.present);
+
+    // Other profiles never get a rim or the hint.
+    ModelMaterialCPU other = mat_with_file(561567);
+    other.diffuseTex = mat.diffuseTex;
+    add_layer(model, other, "ramp", mat.extraTextures[0].texIndex, 0);
+    MaterialMaps o = build(model, other, BlendPreset::Cutout);
+    CHECK_FALSE(o.rim.present);
+    const MaterialMaps::Extra* ox = extra_named(o, "ramp");
+    CHECK(ox != nullptr);
+    if (ox) CHECK(ox->use.empty());
+}
+
+CM_TEST(vrchat, rim_ramp_missing_warns) {
+    ModelPreview model;
+    ModelMaterialCPU none = rim_mat(model, false);
+    MaterialMaps a = build(model, none, BlendPreset::Cutout);
+    CHECK_FALSE(a.rim.present);
+    CHECK(any_warning(a, "no ramp layer: rim not built"));
+    CHECK(a.baseColor.present);
+
+    ModelMaterialCPU bad = rim_mat(model, false);
+    add_layer(model, bad, "ramp", -1, 0);
+    MaterialMaps b = build(model, bad, BlendPreset::Cutout);
+    CHECK_FALSE(b.rim.present);
+    CHECK(any_warning(b, "ramp layer (fileId 4242) failed to decode"));
+    CHECK(any_warning(b, "ramp layer failed to decode: rim not built"));
+    CHECK(b.baseColor.present);
+}
+
+CM_TEST(vrchat, rim_ramp_in_materials_json) {
+    ModelPreview model = glow_quad();
+    ModelMaterialCPU rib = rim_mat(model);
+    rib.index = 1;
+    rib.materialName = "Ribbons";
+    rib.namedConstantVectors = {{"voffset", {0.5f, 0, 0, 0}}};
+    model.materials.push_back(rib);
+    model.meshes.push_back(quad_mesh(1));
+
+    fs::path dir = fresh_dir("rimramp");
+    VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Ribbons", 1);
+    CHECK(r.ok);
+    json doc = read_json(dir / "materials.json");
+    const json& m = *material_named(doc, "Ribbons");
+    CHECK(m["profile"] == "weapon-rim-ramp");
+    CHECK(m.contains("rim"));
+    const json& rim = m["rim"];
+    CHECK(rim.is_object());
+    if (rim.is_object()) {
+        CHECK(rim["color"].size() == 3);
+        CHECK_NEAR(rim["scroll"].get<double>(), 0.5, 1e-6);
+        CHECK(rim["mask"]["constant"].get<double>() == 1.0);
+        CHECK(rim["mask"]["channel"] == "R");
+        CHECK(rim["mask"]["file"].is_null());
+    }
+    bool ramp = false;
+    for (const json& x : m["maps"]["extras"])
+        if (x["role"] == "ramp" && x["use"] == "rim-ramp") ramp = true;
+    CHECK(ramp);
+    // Materials without a rim ramp carry rim: null.
+    CHECK(material_named(doc, "Blade")->contains("rim"));
+    CHECK((*material_named(doc, "Blade"))["rim"].is_null());
+}

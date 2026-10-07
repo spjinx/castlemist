@@ -225,6 +225,23 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
         }
         jm["extras"] = std::move(extras);
 
+        json rim;
+        if (maps.rim.present) {
+            const std::string ch = maps.rim.maskSource.substr(maps.rim.maskSource.find('.') + 1);
+            json mask;
+            if (maps.rim.mask.present) {
+                json f = mw.write(maps.rim.mask, "RimMask");
+                if (!f.is_null())
+                    mask = json{{"file", f["file"]}, {"constant", json()}, {"uv", f["uv"]},
+                                {"channel", ch}};
+            } else if (maps.rim.maskConstant) {
+                mask = json{{"file", json()}, {"constant", *maps.rim.maskConstant},
+                            {"uv", json()}, {"channel", ch}};
+            }
+            rim = json{{"color", rgb_json(maps.rim.color)},
+                       {"mask", std::move(mask)},
+                       {"scroll", maps.rim.scroll ? json(*maps.rim.scroll) : json()}};
+        }
         const bool hasEmission = maps.emissionMap.present || maps.emissionMask.present ||
                                  maps.emissionBaked.present;
         json gw2 = json::object();
@@ -251,6 +268,7 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
             {"emission", hasEmission ? json{{"color", rgb_json(maps.emissionColor)},
                                                   {"strength", maps.emissionStrength}}
                                      : json()},
+            {"rim", std::move(rim)},
             {"specularTint", maps.specularTint ? rgb_json(*maps.specularTint) : json()},
             {"reflectionTint", maps.reflectionTint ? rgb_json(*maps.reflectionTint) : json()},
             {"gw2", std::move(gw2)},

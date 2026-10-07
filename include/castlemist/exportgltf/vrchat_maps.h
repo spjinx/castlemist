@@ -51,6 +51,18 @@ struct MaterialMaps {
     /// `cutout.R`). Its `source` names the formula.
     MapSlot alphaMask;
     float alphaMaskCutoff = -1.0f;  ///< -1 = opacity, not a cutoff
+    /// A view-angle rim glow (1465623): described, not mapped. `color` is the average
+    /// of the ramp's brighter half (texel bytes / 255, no sRGB decode); the gate is a
+    /// greyscale `mask` map or, for a placeholder, `maskConstant` (0-1). `scroll` is
+    /// the raw `voffset`. The ramp itself ships as the extra "ramp" (use "rim-ramp").
+    struct Rim {
+        bool present = false;
+        std::array<float, 3> color = {1, 1, 1};
+        MapSlot mask;
+        std::optional<float> maskConstant;
+        std::string maskSource;  ///< "mask.R"
+        std::optional<float> scroll;
+    } rim;
     /// A layer kept raw, by role, with a hint of how the game uses it ("detail-multiply2x", ...).
     struct Extra { std::string role, use; MapSlot slot; };
     std::vector<Extra> extras;

@@ -107,6 +107,11 @@ struct ShaderProfile {
     /// -1 (opacity). A cutout layer takes the alphaMask first.
     std::string opacityRole;
     Channel opacityChannel = Channel::None;
+    /// A lookup layer sampled by view angle (1465623: "ramp" at (N.V, mask.R + voffset)),
+    /// gated by `rimMaskChannel` of the maskRole layer; empty when none. Described as
+    /// MaterialMaps::rim for a rim-lighting importer, never mapped as emission.
+    std::string rimRampRole;
+    Channel rimMaskChannel = Channel::None;
     /// The colour pass applies no lighting (fog only): not mapped, warned.
     bool unlit = false;
 };
