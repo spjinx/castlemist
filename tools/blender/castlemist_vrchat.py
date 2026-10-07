@@ -40,6 +40,11 @@ def is_animated(ob):
 
 
 def apply_transforms(objs):
+    # transform_apply refuses shared data, and the glTF importer shares one mesh
+    # between nodes that instance the same glTF mesh: each object its own copy.
+    for o in objs:
+        if o.type == 'MESH' and o.data.users > 1:
+            o.data = o.data.copy()
     bpy.ops.object.select_all(action='DESELECT')
     for o in objs:
         o.select_set(True)
