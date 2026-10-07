@@ -981,7 +981,7 @@ private:
         if (fall) out_.projectorFalloff = std::array<float, 2>{(*fall)[0], (*fall)[1]};
         out_.warnings.push_back(
             "projector blends by world-up facing: not baked (described in materials.json "
-            "(projector): weight = smoothstep(prjfall) x saturate(2a) of the projector layer)");
+            "(projector): weight = falloff constant (prjfall/prkfall) x saturate(2a) of the projector layer)");
     }
 
     void build_extras() {

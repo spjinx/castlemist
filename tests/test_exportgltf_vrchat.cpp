@@ -1335,6 +1335,7 @@ CM_TEST(vrchat, materials_json_fields) {
     CHECK(blade["maps"]["emissionMap"]["panning"].is_null());
     CHECK(blade["maps"]["distortion"].is_null());
     CHECK(blade["emission"]["color"].size() == 3);
+    CHECK(blade["emission"]["colorSpace"] == "sRGB");
 
     const json& p = *material_named(doc, "Plain");
     CHECK(p["profile"] == "default");
@@ -2155,6 +2156,7 @@ CM_TEST(vrchat, rim_ramp_in_materials_json) {
     CHECK(rim.is_object());
     if (rim.is_object()) {
         CHECK(rim["color"].size() == 3);
+        CHECK(rim["colorSpace"] == "sRGB");
         CHECK_NEAR(rim["scroll"].get<double>(), 0.5, 1e-6);
         CHECK(rim["mask"]["constant"].get<double>() == 1.0);
         CHECK(rim["mask"]["channel"] == "R");
@@ -2295,6 +2297,33 @@ CM_TEST(vrchat, projector_in_materials_json) {
     }
     CHECK(material_named(doc, "Blade")->contains("projector"));
     CHECK((*material_named(doc, "Blade"))["projector"].is_null());
+}
+
+CM_TEST(vrchat, projector_placeholder_constant_in_materials_json) {
+    ModelPreview model = glow_quad();
+    ModelMaterialCPU rock = projector_mat(model, false);
+    rock.index = 1;
+    rock.materialName = "Rock";
+    add_layer(model, rock, "projector", add_tex(model, solid(4, 4, {10, 200, 30, 255}, 77302)), 1);
+    rock.namedConstantVectors = {{"prkfall", {0.33f, 0.66f, 0, 0}}};
+    model.materials.push_back(rock);
+    model.meshes.push_back(quad_mesh(1));
+
+    fs::path dir = fresh_dir("projector_const");
+    VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Rock", 1);
+    CHECK(r.ok);
+    json doc = read_json(dir / "materials.json");
+    const json& p = (*material_named(doc, "Rock"))["projector"];
+    CHECK(p.is_object());
+    if (p.is_object()) {
+        CHECK(p["file"].is_null());
+        CHECK(p["uv"].is_null());
+        CHECK(p["fileId"].is_null());
+        CHECK(p["constant"].size() == 4);
+        CHECK(p["constant"][1] == 200);
+        CHECK_NEAR(p["falloff"][1].get<double>(), 0.66, 1e-6);
+        CHECK(p["coverage"] == "saturate(2a)");
+    }
 }
 
 CM_TEST(vrchat, projector_falloff_reads_prkfall_spelling) {

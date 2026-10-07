@@ -239,6 +239,7 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
                             {"uv", json()}, {"channel", ch}};
             }
             rim = json{{"color", rgb_json(maps.rim.color)},
+                       {"colorSpace", "sRGB"},
                        {"mask", std::move(mask)},
                        {"scroll", maps.rim.scroll ? json(*maps.rim.scroll) : json()}};
         }
@@ -282,6 +283,7 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
             {"cull", mat.isEffect ? "Off" : "Back"},
             {"maps", std::move(jm)},
             {"emission", hasEmission ? json{{"color", rgb_json(maps.emissionColor)},
+                                                  {"colorSpace", "sRGB"},
                                                   {"strength", maps.emissionStrength}}
                                      : json()},
             {"rim", std::move(rim)},

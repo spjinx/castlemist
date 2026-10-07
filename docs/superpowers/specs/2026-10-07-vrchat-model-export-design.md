@@ -173,6 +173,13 @@ Profiles shipped (AMATs and channel details as in the research note, sec. 4):
 | jade-interior | 2472137 | diffuse alpha = interior weight; exported raw + warning |
 | legacy-untagged | 185120, 187842 (+ the untagged trait group) | supported: tex2.R = opacity |
 | fx-soft-additive, fx-premultiplied | as the note | supported (intensity, premultiplied) |
+| weapon-cutout-glow | 511663 | supported: the discard is on a `cutout` layer (R*A, own UV), shipped as `alphaMask`; diffuse alpha = shine |
+| prop-cutout | 53858 | supported: `cutout.R x saturate(2a)` discard, cutout on UV2 as `alphaMask`; mod is an extra |
+| fx-alpha-glow | 44709 | supported: diffuse alpha = opacity below half, self-illumination above (`OpacityAndGlow`) |
+| prop-metalmask | 3121953 | supported: metal/reflection tint from the `metalmask` layer (G) |
+| fx-parallax-layer | 842652 | supported: colour from the `parallax` layer, opacity = mask.R (`opacityRole`), the castlemist "diffuse" is a UV-offset extra; unlit |
+| weapon-rim-ramp | 1465623 | supported: the view-angle rim ramp described as `rim` (ramp colour, mask, scroll), not mapped as emission |
+| prop-projector | 77238, 835499, 69856, 69792; clipping: 512093, 512112 | supported: the world-normal overlay layer ships raw and is described as `projector` (falloff, coverage); not baked |
 | armor-silk, fx-fire, fx-distort | as the note | **not supported**: raw maps + warning |
 
 Choice order: AMAT fileId → a trait the note proves reliable (the
@@ -300,9 +307,15 @@ Each rule records which source it used, so `materials.json` can say
       "emissionMask": {..., "uv": 2},
       "distortion":   {...},
       "decal":        {..., "uv": 1, "source": "decal saturate(2a)", "mode": "decal-over-diffuse"} | null,
+      "alphaMask":    {"file": "...", "uv": 2, "fileId": 123, "source": "cutout R", "cutoff": 0.5 | null} | null,   // null cutoff = opacity mask
       "extras": [{"role": "detail", ...}]
     },
-    "emission": {"color": [1, 0.27, 0.05], "strength": 1.0},
+    "emission": {"color": [1, 0.27, 0.05], "colorSpace": "sRGB", "strength": 1.0},
+    "rim": {"color": [..], "colorSpace": "sRGB",
+            "mask": {"file": ".." | null, "constant": 1.0 | null, "uv": 0, "channel": "R"},
+            "scroll": 0.3 | null} | null,           // view-angle ramp, not mapped as emission
+    "projector": {"file": ".." | null, "constant": [r,g,b,a] (placeholder layer only), "uv": 0, "fileId": 1,
+                  "falloff": [0.33, 0.66] | null, "coverage": "saturate(2a)"} | null,
     "specularTint": [0.78, 0.91, 0.62] | null, "reflectionTint": [..] | null,
     "gw2": {"specstr": .., "glofade": 0.7, "gloptrb": 0.4, ...},   // every named constant, raw
     "warnings": ["emissionMask uses UV2: check Poiyomi's UV choice"]
@@ -316,6 +329,11 @@ Each rule records which source it used, so `materials.json` can say
   (`{"u":..,"v":..,"unit":"gw2-raw"}`), else `null`. Not converted: GW2's
   unit is unknown, and Poiyomi's pan is UV per `_Time.x` (seconds / 20), so
   the conversion is the importer's job once the unit is confirmed.
+- Colours (`emission.color`, `rim.color`) are texel bytes/255, sRGB-encoded
+  (`colorSpace: "sRGB"`), not linearised. `alphaMask.cutoff` is `null` for an
+  opacity mask (no cutoff). A layer named by one of these fields that fails to
+  decode is skipped with a warning; a 4x4 placeholder layer is written as its
+  `constant`, never as a missing map.
 - `cull`: `"Off"` for two-sided materials (`isEffect` as the glTF export
   does today, or a profile override), else `"Back"`.
 - `gw2`: every `namedConstants` entry, untouched.

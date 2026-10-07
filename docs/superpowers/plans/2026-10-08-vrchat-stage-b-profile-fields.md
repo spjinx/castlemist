@@ -72,7 +72,7 @@
 
 ### Task 5: `rimRampRole` (1465623)
 
-**Produces:** `ShaderProfile::rimRampRole`, `Channel rimMaskChannel` (+ mask role from Task 3); `MaterialMaps::rim` {present, color (ramp's average of its brightest half, linear 0–1), maskSlot (greyscale of the mask channel, may be a constant), scroll (voffset raw or null)}; materials.json `rim {color, mask: {file|constant, uv, channel}, scroll}` or null; the ramp itself exported as an extra with use "rim-ramp".
+**Produces:** `ShaderProfile::rimRampRole`, `Channel rimMaskChannel` (+ mask role from Task 3); `MaterialMaps::rim` {present, color (ramp's average of its brightest half, bytes/255, sRGB-encoded), maskSlot (greyscale of the mask channel, may be a constant), scroll (voffset raw or null)}; materials.json `rim {color, mask: {file|constant, uv, channel}, scroll}` or null; the ramp itself exported as an extra with use "rim-ramp".
 
 - [ ] Tests first: `rim_ramp_records_colour_and_mask` (ramp 4×1 gradient, mask placeholder red → rim.color from the ramp, mask constant 1.0, warning "rim ramp is a view-angle lookup"); `rim_ramp_missing_warns`. Row: 1465623 → new `weapon-rim-ramp` = 561567 lit core (clip, shine, conduct) + rimRampRole "ramp", rim mask = mask.R.
 - [ ] Implement.

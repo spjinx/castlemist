@@ -206,7 +206,7 @@ Sampled = stats over the texels the material's own UV0 triangles cover.
 | Frostfang 217979 | core axe 4674 | 1 -> 54632 | opaque, no clip | 93-189 | decal UV1, subsurface (alpha 0/255 binary: not read as coverage) |
 | Wings of Dwayna 61974 | core back 4766 | 1 -> 15999 | opaque, no clip | 120-230 | diffuse+normal only |
 | Storm Wizard's Sword 631433 | gem store 5342 | 3 -> 511755 | opaque, clips | 170-255 | glowperturb file = the 21471 effect diffuse |
-| Astralaria 1200313 | HoT axe 6506 | 5 -> 510615 | opaque, clips | 61-255, no holes | 3 -> 842652 parallax/mask, SrcA/InvSrcA, UV3 |
+| Astralaria 1200313 | HoT axe 6506 | 5 -> 510615 | opaque, clips | 61-255, no holes | 3 -> 842652 parallax/mask, SrcA/InvSrcA, UV3 (4 -> 1195172, 0 tris, unread) |
 | Nevermore 1206542 | HoT staff 6466 | 0 -> 511755, 1/9 -> 14213 | opaque, clip | 14213 mat 9: 7% holes, 84% matte band | spec A = 255 const |
 | Chuka and Champawat 1423754 | HoT bow 6717 | 4 -> 510615, 5 -> 511755 | opaque, clips | 44-255 / 100-255 | 3 -> 965703 fire (0 tris, particle) |
 | Wings of Ascension 1313053 | HoT back 6556 | 1 -> 510615, 0 -> 54632 | opaque | 119-255, 30% matte | same texture drives both |
@@ -445,7 +445,7 @@ Diffuse A: 163-165 (3123167), 224-255 (1823422) = shine. -> works today as
 `clips=false, Shine` with the existing glow/perturb handling; a faithful clip
 needs a `cutoutLayer` field.
 
-**842652** (Astralaria 1200313 mat 3/4; SrcA/InvSrcA + ALPHA_REF, unlit).
+**842652** (Astralaria 1200313 mat 3 only; its mat 4 is AMAT 1195172, 0 triangles, unread; SrcA/InvSrcA + ALPHA_REF, unlit).
 Slots: t0 57890 UV3 (castlemist calls it **diffuse**: token ...144), t1 `mask` UV1,
 t2 `mskptrb` UV2 (same file 57890), t3 `parallax` 842653 UV0.
 ```
@@ -544,11 +544,11 @@ f = saturate(N.z-ish * -0.5 + 0.5)^2 ; w = smoothstep(prjfall.x, prjfall.y, f)  
 w *= saturate(2*projector.a)
 albedo = lerp(diffuse*mod*2, projector.rgb, w) ; shine = lerp(shineD, shineP, w)
 ```
-A world-normal-driven overlay (snow/moss). Clips on the diffuse alpha only in
+A world-normal-driven overlay (snow/moss). The falloff constant decodes as `prkfall` on real models (2141433 mat 7: 0.33, 0.66), not `prjfall`. Clips on the diffuse alpha only in
 512093/512112. Stats: 77238 (2141433 mat 7) projector A 128-255 (full coverage +
 shine). Not bakeable as a UV map without the geometry.
 
-**prop-metalmask** (3121953; 3576632, 3576633 by uniforms/roles): the 561567 lit core
+**prop-metalmask** (3121953, real model 3695880 mat 0; 3576632, 3576633 by uniforms/roles): the 561567 lit core
 (clip, shine, envcr, reflection mip), spec/reflection tint
 `lerp(envcr.x, 0.6*albedo+0.2, metalmask.G)` (metalmask t2.G), mod x2 UV1.
 
@@ -613,8 +613,8 @@ Values are `ShaderProfile` fields. Unlisted fields keep their defaults
 `opacityTexture=-1`, the bools false). "(sig)" ids were assigned by an identical
 opcode stream or by uniform/role signature. They were not read line by line.
 
-| AMATs | profile | fields | evidence |
-|---|---|---|---|
+| AMATs | profile | fields | evidence | status |
+|---|---|---|---|---|
 | 20041, 62080 (same opcodes), 56795, 69668 (same), 57606, 75035 (same), 57714, 57752, 53237, 16104, 27303, 57685, 60319, 58654 (same); (sig) 44627, 44558, 50686, 72532, 44200 | **existing `prop-lit`** | HolesAndShine, clips | t0 `saturate(2a)<0.5` discard in the colour PS and the prepasses; 20041: 36.5% of used texels < 16 |
 | 14084, 23508, 73205, 73655, 84923 (same as 23508), 27305, 76858 (same), 23672, 54889, 231183 (same), 57701, 75778; (sig) 75623, 48835 | **existing `prop-lit-noclip`** | Shine | no texture discard in any pass; 14084 A 127-152; 27305 9.6% < 64 = matte |
 | 13361 | **existing `legacy-spec` clip row** (with 1891783) | ReflectionOnly, clips, ExponentInAlpha | spec A x128 exponent, shine x envcp.w only, t0 discard |
@@ -636,15 +636,15 @@ opcode stream or by uniform/role signature. They were not read line by line.
 | 69623 (sig) | `prop-decal` with clips | HolesAndShine, clips, decalMode | t0 discard (signature) |
 | 57806 | `prop-decal` + **new `decalGlow=AboveHalf`** | Shine, decalMode=DecalOverDiffuse | `+ decal.rgb * saturate(2*decal.a-1)` unlit |
 | 57131 | **`decal-glow`** | Shine + **`decalMode=DiffuseOverDecal`, `decalGlow=BelowHalf`** (x `glowcol` x2) | `lerp(decal, diffuse, decal.a)`; emission `decal*glowcol*2*(1-decal.a)`; decal A 61% < 16 |
-| 44709 | **`fx-alpha-glow`** | **new `AlphaUse::OpacityAndGlow`** | opacity `saturate(2a)*ramp*diffade`, unlit `rgb*saturate(2a-1)*2`; 69% of texels >= 128 |
-| 1465623 | **`weapon-rim-ramp`** | HolesAndShine, clips, maskGlowGate=R + **new `rimRampRole="ramp"`** | glow = `ramp(N.V, mask.R + voffset)`; the ramp is a lookup, not UV art |
-| 511663, 53858 | (faithful version) | + **new `cutoutLayer`** {role "cutout", value R*A (511663) or R x `saturate(2a)` (53858), threshold 0.5, own UV} | `discard` on the t2 cutout; 53858's cutout is on UV2 |
-| 842652 | **`fx-parallax-layer`** | Opacity + **new `baseColorRole="parallax"`, `opacityLayer`={role "mask", channel R}** | colour comes from t3 `parallax`; castlemist's "diffuse" t0 is a UV-offset map |
-| 77238, 835499 (same), 69856, 69792; (sig) 69634 | **`prop-projector`** | Shine + **new `projectorRole="projector"`** (weight `smoothstep(prjfall.x, prjfall.y, f(N))*saturate(2*proj.a)`) | world-normal overlay; not a UV bake |
-| 512093, 512112 (same) | `prop-projector` with clips | HolesAndShine, clips | t0 discard |
-| 3121953; 3576632, 3576633, 3121869 (uniforms/roles only) | **`prop-metalmask`** | HolesAndShine, clips, maskMetal=G + **new `maskRole="metalmask"`** | tint `lerp(envcr.x, 0.6*albedo+0.2, metalmask.G)`; the builder only reads role `mask` today |
+| 44709 | **`fx-alpha-glow`** | **new `AlphaUse::OpacityAndGlow`** | opacity `saturate(2a)*ramp*diffade`, unlit `rgb*saturate(2a-1)*2`; 69% of texels >= 128 | **implemented: `fx-alpha-glow`** |
+| 1465623 | **`weapon-rim-ramp`** | HolesAndShine, clips, maskGlowGate=R + **new `rimRampRole="ramp"`** | glow = `ramp(N.V, mask.R + voffset)`; the ramp is a lookup, not UV art | **implemented: `weapon-rim-ramp`** |
+| 511663, 53858 | (faithful version) | + **new `cutoutLayer`** {role "cutout", value R*A (511663) or R x `saturate(2a)` (53858), threshold 0.5, own UV} | `discard` on the t2 cutout; 53858's cutout is on UV2 | **implemented: `weapon-cutout-glow` (511663), `prop-cutout` (53858)** |
+| 842652 | **`fx-parallax-layer`** | Opacity + **new `baseColorRole="parallax"`, `opacityLayer`={role "mask", channel R}** | colour comes from t3 `parallax`; castlemist's "diffuse" t0 is a UV-offset map | **implemented: `fx-parallax-layer`** |
+| 77238, 835499 (same), 69856, 69792; (sig) 69634 | **`prop-projector`** | Shine + **new `projectorRole="projector"`** (weight `smoothstep(prjfall.x, prjfall.y, f(N))*saturate(2*proj.a)`) | world-normal overlay; not a UV bake | **implemented: `prop-projector`** |
+| 512093, 512112 (same) | `prop-projector` with clips | HolesAndShine, clips | t0 discard | **implemented: `prop-projector`** |
+| 3121953; 3576632, 3576633, 3121869 (uniforms/roles only) | **`prop-metalmask`** | HolesAndShine, clips, maskMetal=G + **new `maskRole="metalmask"`** | tint `lerp(envcr.x, 0.6*albedo+0.2, metalmask.G)`; the builder only reads role `mask` today | **implemented: `prop-metalmask` (3121953 only)** |
 
-**New fields, in order of payoff:**
+**New fields, in order of payoff** (Stage B implemented: 2 `cutoutLayer` as `cutoutRole`/`alphaMask`, 3 `projectorRole`, 4 `maskRole`, 5 `OpacityAndGlow`, 6 `baseColorRole` + `opacityRole`, 7 `rimRampRole`; item 1 `decalMode` was an earlier stage):
 
 1. `decalMode` {None, DiffuseOverDecal, DecalOverDiffuse} (+ optional
    `decalMask` role/channel, `decalGlow` {None, BelowHalf, AboveHalf}). The
