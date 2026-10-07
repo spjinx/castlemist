@@ -129,6 +129,10 @@ struct ModelMaterialCPU {
     uint32_t materialId = 0;
     /// @brief Material::materialFlags (gw2model.hpp), verbatim.
     uint32_t materialFlags = 0;
+    /// @brief Material::sortLayer / sortOrder (gw2model.hpp), verbatim: the
+    ///        material's draw-order hints (0 when the file has no such field).
+    uint32_t sortLayer = 0;
+    uint32_t sortOrder = 0;
     /// @brief ModelMeshDataV66.materialName -- an artist-authored label (e.g.
     ///        "MetalBladeMat"), read straight off whichever mesh uses this
     ///        material (model_preview.cpp; the field lives per-mesh in the

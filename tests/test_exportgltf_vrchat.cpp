@@ -721,6 +721,9 @@ CM_TEST(vrchat, materials_json_fields) {
     model.materials.push_back(plain);
     model.meshes.push_back(quad_mesh(1));
 
+    model.materials[0].sortLayer = 3;
+    model.materials[0].sortOrder = 7;
+
     fs::path dir = fresh_dir("fields");
     VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Dagger", 1766522);
     CHECK(r.ok);
@@ -743,7 +746,8 @@ CM_TEST(vrchat, materials_json_fields) {
     CHECK(blade["cull"] == "Back");
     CHECK_NEAR(blade["alphaCutoff"].get<double>(), 0.25, 1e-9);
     CHECK(blade["alphaCutoffIsDefault"] == false);  // the clipping shader's own threshold
-    CHECK(blade["renderQueueOffset"].is_null());    // castlemist can't read sortLayer
+    CHECK(blade["renderQueueOffset"] == 3);  // the fixture's sortLayer
+    CHECK(blade["sortOrder"] == 7);
     CHECK(blade["gw2"].size() == 3);
     CHECK_NEAR(blade["gw2"]["glofade"].get<double>(), 0.7, 1e-6);
     CHECK_NEAR(blade["gw2"]["gloptrb"].get<double>(), 0.4, 1e-6);
@@ -936,4 +940,16 @@ CM_TEST(vrchat, gltf_alpha_mask_kept_for_baked_textures_without_game_shader) {
     model.textures[static_cast<size_t>(model.materials[0].diffuseTex)].hasCutout = false;
     CHECK(export_model_gltf(model, (dir / "b.glb").string()).ok);
     CHECK(glb_json(dir / "b.glb")["materials"][0]["alphaMode"] == "OPAQUE");
+
+    // An effect with a cutout (e.g. a map-path DXT1a flagged as effect): MASK
+    // still wins over BLEND, as before the profiles.
+    model.materials[0].isEffect = true;
+    model.textures[static_cast<size_t>(model.materials[0].diffuseTex)].hasCutout = true;
+    CHECK(export_model_gltf(model, (dir / "c.glb").string()).ok);
+    json c = glb_json(dir / "c.glb");
+    CHECK(c["materials"][0]["alphaMode"] == "MASK");
+    CHECK_NEAR(c["materials"][0]["alphaCutoff"].get<double>(), 0.25, 1e-9);
+    model.textures[static_cast<size_t>(model.materials[0].diffuseTex)].hasCutout = false;
+    CHECK(export_model_gltf(model, (dir / "d.glb").string()).ok);
+    CHECK(glb_json(dir / "d.glb")["materials"][0]["alphaMode"] == "BLEND");
 }

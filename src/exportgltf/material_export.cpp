@@ -148,8 +148,10 @@ std::vector<int> write_materials(GltfWriter& w, const ModelPreview& model, const
         const bool hasCutout = mat.diffuseTex >= 0 &&
                                mat.diffuseTex < static_cast<int>(model.textures.size()) &&
                                model.textures[static_cast<size_t>(mat.diffuseTex)].hasCutout;
-        if (!mat.hasRenderState && hasCutout && alphaMode == GltfAlphaMode::Opaque)
-            alphaMode = GltfAlphaMode::Mask;
+        if (!mat.hasRenderState)  // the previous order exactly: cutout first, then effect
+            alphaMode = hasCutout     ? GltfAlphaMode::Mask
+                        : mat.isEffect ? GltfAlphaMode::Blend
+                                       : GltfAlphaMode::Opaque;
         switch (alphaMode) {
             case GltfAlphaMode::Opaque: material["alphaMode"] = "OPAQUE"; break;
             case GltfAlphaMode::Mask:

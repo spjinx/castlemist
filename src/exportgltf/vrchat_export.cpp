@@ -235,7 +235,8 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
             {"alphaCutoff", kAlphaCutoff},
             // Only clipping shaders were disassembled to this threshold.
             {"alphaCutoffIsDefault", !profile.clips},
-            {"renderQueueOffset", json()},  // sortLayer is not carried on ModelMaterialCPU
+            {"renderQueueOffset", mat.sortLayer},  // draw order from the material's sort layer
+            {"sortOrder", mat.sortOrder},           // raw
             {"cull", mat.isEffect ? "Off" : "Back"},
             {"maps", std::move(jm)},
             {"emission", hasEmission ? json{{"color", rgb_json(maps.emissionColor)}, {"strength", 1.0}}

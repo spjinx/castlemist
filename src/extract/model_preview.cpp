@@ -106,6 +106,8 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
         mat.materialFile = m.materialFile;
         mat.materialId = m.materialId;
         mat.materialFlags = m.materialFlags;
+        mat.sortLayer = m.sortLayer;
+        mat.sortOrder = m.sortOrder;
         {
             auto it = materialNameByIndex.find(m.index);
             if (it != materialNameByIndex.end()) mat.materialName = it->second;
