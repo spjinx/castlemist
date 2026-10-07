@@ -322,7 +322,7 @@ constexpr UINT WM_APP_CONTENT_NAMES_DONE = WM_APP + 13;
 /// Download all game names: wparam = done, lparam = total; then done (wparam = ok).
 constexpr UINT WM_APP_NAMES_PROGRESS = WM_APP + 14;
 constexpr UINT WM_APP_NAMES_BULK_DONE = WM_APP + 15;
-/// "Export for VRChat (Model)" finished (result in file_ops.cpp's g_vrchat_model_result).
+/// "Export for VRChat (Model)" finished (lparam = heap VrchatModelReport*, owned by the handler).
 constexpr UINT WM_APP_VRCHAT_MODEL_DONE = WM_APP + 16;
 
 enum class MiddleTab { Compressed = 0, Decompressed = 1, Structure = 2, Preview = 3 };
@@ -678,7 +678,7 @@ void do_export_gltf_model_atlas(HWND hwnd);
 void do_export_gltf_map(HWND hwnd);
 void on_gltf_export_done(HWND hwnd);
 void do_export_vrchat_model(HWND hwnd);
-void on_vrchat_model_done(HWND hwnd);
+void on_vrchat_model_done(HWND hwnd, LPARAM lparam);
 void do_save_model_texture(HWND hwnd, uint32_t fileId);
 std::string combo_sel(HWND combo);
 void apply_filters();

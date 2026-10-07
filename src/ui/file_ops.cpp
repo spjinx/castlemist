@@ -519,8 +519,8 @@ void on_gltf_export_done(HWND hwnd) {
     MessageBoxW(hwnd, utf8_to_wide(msg).c_str(), L"glTF export finished", MB_ICONINFORMATION);
 }
 
-// Set by the background thread just before it posts WM_APP_VRCHAT_MODEL_DONE.
-castlemist::ripper::VrchatModelReport g_vrchat_model_result;
+// Only one VRChat export at a time (Blender can run for a while).
+std::atomic<bool> g_vrchat_export_running{false};
 
 // "Export for VRChat (Model)...": the save dialog picks the folder's parent and name
 // (the chosen file's directory and stem); the export itself runs on a thread.
@@ -528,6 +528,12 @@ void do_export_vrchat_model(HWND hwnd) {
     if (!g_app->has_loaded_entry || g_app->current_entry.kind != PreviewKind::Model ||
         !g_app->current_entry.model) {
         MessageBoxW(hwnd, L"Select a model entry first.", L"castlemist", MB_ICONINFORMATION);
+        return;
+    }
+    if (g_vrchat_export_running.load()) {
+        SetWindowTextW(g_app->hwnd_status_label, L"A VRChat export is already running.");
+        MessageBoxW(hwnd, L"A VRChat export is already running; wait for it to finish.", L"castlemist",
+                    MB_ICONINFORMATION);
         return;
     }
     wchar_t path[MAX_PATH] = L"model";
@@ -561,14 +567,19 @@ void do_export_vrchat_model(HWND hwnd) {
     const std::string parentUtf8 = wide_to_utf8(parent), nameUtf8 = wide_to_utf8(stem);
     SetWindowTextW(g_app->hwnd_status_label, L"Exporting for VRChat (Blender runs after the textures)...");
 
+    g_vrchat_export_running = true;
     std::thread([hwnd, model, parentUtf8, nameUtf8, fileId]() {
-        g_vrchat_model_result = castlemist::ripper::export_vrchat_model(*model, parentUtf8, nameUtf8, fileId);
-        PostMessageW(hwnd, WM_APP_VRCHAT_MODEL_DONE, 0, 0);
+        auto* result = new castlemist::ripper::VrchatModelReport(
+            castlemist::ripper::export_vrchat_model(*model, parentUtf8, nameUtf8, fileId));
+        if (!PostMessageW(hwnd, WM_APP_VRCHAT_MODEL_DONE, 0, reinterpret_cast<LPARAM>(result))) delete result;
+        g_vrchat_export_running = false;
     }).detach();
 }
 
-void on_vrchat_model_done(HWND hwnd) {
-    const auto& r = g_vrchat_model_result;
+void on_vrchat_model_done(HWND hwnd, LPARAM lparam) {
+    std::unique_ptr<castlemist::ripper::VrchatModelReport> owned(
+        reinterpret_cast<castlemist::ripper::VrchatModelReport*>(lparam));
+    const auto& r = *owned;
     if (!r.ok) {
         SetWindowTextW(g_app->hwnd_status_label, L"VRChat export failed.");
         MessageBoxW(hwnd, utf8_to_wide(r.error).c_str(), L"VRChat export failed", MB_ICONERROR);

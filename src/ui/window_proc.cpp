@@ -1168,7 +1168,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         on_gltf_export_done(hwnd);
         return 0;
     case WM_APP_VRCHAT_MODEL_DONE:
-        on_vrchat_model_done(hwnd);
+        on_vrchat_model_done(hwnd, lparam);
         return 0;
     case WM_APP_CMAP_DONE:
         on_main_cmap_done(hwnd);
@@ -1256,7 +1256,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             return 0;
         case ID_FILE_EXPORT_VRCHAT_MODEL:
             do_export_vrchat_model(hwnd);
-            break;
+            return 0;
         case ID_FILE_EXPORT_GLTF_MODEL_ATLAS:
             do_export_gltf_model_atlas(hwnd);
             return 0;
