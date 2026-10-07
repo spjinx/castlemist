@@ -122,6 +122,12 @@ struct ModelMaterialCPU {
     ///        from). Used to name exported glTF materials when materialName
     ///        below is empty.
     uint32_t materialFile = 0;
+    /// @brief Material::materialId (gw2model.hpp): the built-in shader selector
+    ///        (0..57, 58 = custom). 0 together with materialFlags == 0 is one of
+    ///        the traits of the legacy "untagged" shaders (shader_profiles.h).
+    uint32_t materialId = 0;
+    /// @brief Material::materialFlags (gw2model.hpp), verbatim.
+    uint32_t materialFlags = 0;
     /// @brief ModelMeshDataV66.materialName -- an artist-authored label (e.g.
     ///        "MetalBladeMat"), read straight off whichever mesh uses this
     ///        material (model_preview.cpp; the field lives per-mesh in the

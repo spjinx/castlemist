@@ -4,6 +4,8 @@
 #include "test_framework.h"
 
 #include "castlemist/exportgltf/blend_mode.h"
+#include "castlemist/exportgltf/shader_profiles.h"
+#include "castlemist/extract/model_types.h"
 
 #include <cstdint>
 #include <cstring>
@@ -133,4 +135,85 @@ CM_TEST(vrchat, gltf_alpha_modes) {
     CHECK(mode(BlendPreset::Additive, BlendPreset::Additive) == GltfAlphaMode::Blend);
     CHECK(mode(BlendPreset::Custom, BlendPreset::Additive) == GltfAlphaMode::Blend);
     CHECK(mode(BlendPreset::Custom, BlendPreset::Opaque) == GltfAlphaMode::Opaque);
+}
+
+namespace {
+ModelMaterialCPU mat_with_file(uint32_t file) {
+    ModelMaterialCPU m;
+    m.materialFile = file;
+    return m;
+}
+}  // namespace
+
+CM_TEST(vrchat, profile_by_amat) {
+    const ShaderProfile& wg = profile_for(mat_with_file(561567), 0);
+    CHECK(wg.name == "weapon-glow");
+    CHECK(wg.clips);
+    CHECK(wg.diffuseAlpha == AlphaUse::HolesAndShine);
+
+    const ShaderProfile& ws = profile_for(mat_with_file(2348484), 0);
+    CHECK(ws.name == "weapon-spec");
+    CHECK(ws.specLayer == SpecLayer::GlossInAlpha);
+    CHECK(ws.glowOnUv2MaskOnUv0);
+
+    const ShaderProfile& ls = profile_for(mat_with_file(13822), 0);
+    CHECK(ls.name == "legacy-spec");
+    CHECK_FALSE(ls.clips);
+    CHECK(ls.diffuseAlpha == AlphaUse::ReflectionOnly);
+    CHECK(ls.specLayer == SpecLayer::ExponentInAlpha);
+
+    const ShaderProfile& lc = profile_for(mat_with_file(14149), 0);
+    CHECK(lc.name == "legacy-spec");
+    CHECK(lc.clips);
+    CHECK(lc.maskGlowGate == Channel::R);
+
+    const ShaderProfile& am = profile_for(mat_with_file(2449347), 0);
+    CHECK(am.name == "armor-mask");
+    CHECK(am.maskMetal == Channel::R);
+    CHECK(am.maskGloss == Channel::G);
+    CHECK(am.maskSheen == Channel::B);
+    CHECK(am.maskGlow == Channel::A);
+
+    const ShaderProfile& an = profile_for(mat_with_file(1171332), 0);
+    CHECK(an.name == "armor-mask-noglowA");
+    CHECK(an.maskGlow == Channel::None);
+
+    const ShaderProfile& pn = profile_for(mat_with_file(15999), 0);
+    CHECK(pn.name == "prop-lit-noclip");
+    CHECK_FALSE(pn.clips);
+
+    const ShaderProfile& jd = profile_for(mat_with_file(2472137), 0);
+    CHECK(jd.name == "jade-interior");
+    CHECK_FALSE(jd.supported);
+    CHECK(jd.diffuseAlpha == AlphaUse::InteriorWeight);
+
+    const ShaderProfile& as = profile_for(mat_with_file(2507831), 0);
+    CHECK(as.name == "armor-silk");
+    CHECK_FALSE(as.supported);
+}
+
+CM_TEST(vrchat, profile_by_untagged_trait) {
+    ModelMaterialCPU m = mat_with_file(123456789);
+    m.materialId = 0;
+    m.materialFlags = 0;
+    m.extraTextures.resize(2);  // roles left empty
+    const ShaderProfile& p = profile_for(m, 0x6565000);
+    CHECK(p.name == "legacy-untagged");
+    CHECK_EQ(p.opacityTexture, 2);
+}
+
+CM_TEST(vrchat, profile_default_for_unknown) {
+    ModelMaterialCPU m = mat_with_file(999999999);
+    m.extraTextures.resize(1);
+    m.extraTextures[0].role = "mask";
+    const ShaderProfile& p = profile_for(m, 0x6565000);
+    CHECK(&p == &default_profile());
+    CHECK(p.name == "default");
+    CHECK_FALSE(p.clips);
+    CHECK(p.diffuseAlpha == AlphaUse::Shine);
+    CHECK(p.maskMetal == Channel::None);
+    CHECK(p.maskGloss == Channel::None);
+    CHECK(p.maskSheen == Channel::None);
+    CHECK(p.maskGlow == Channel::None);
+    CHECK(p.maskGlowGate == Channel::None);
 }
