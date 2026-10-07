@@ -74,6 +74,7 @@
 #include "castlemist/character/manifest_json.h"
 #include "castlemist/db/index_db.h"
 #include "castlemist/extract/entry_extractor.h"
+#include "castlemist/exportgltf/gltf_export.h"
 #include "castlemist/ripper/assemble.h"
 #include "castlemist/ripper/look.h"
 #include "castlemist/ripper/vrchat.h"
@@ -949,6 +950,10 @@ void cmd_model(const Args& a) {
             roles.push_back(json{{"index", m.index}, {"extras", r}, {"diffuse", m.diffuseTex}, {"normal", m.normalTex}});
         }
         j["materialRoles"] = roles;
+        if (has(a, "glb")) {  // the same .glb the app's "Export glTF (Model)..." writes
+            auto r = castlemist::exportgltf::export_model_gltf(*pv, a.at("glb"));
+            j["glb"] = r.ok ? json(r.glbPath) : json{{"error", r.error}};
+        }
     }
     // particle clouds + effect lights
     const auto& fx = model.effects;
@@ -1838,6 +1843,14 @@ void cmd_users(const Args& a) {  // --sample-type T: the first few files of type
     namespace cmap = castlemist::cmap;
     ensure_cmap(a);
     if (!cmap::built()) fail("no content map: pass --cmap, or --dat with an index DB");
+    if (has(a, "content-type")) {  // the reverse: the files one content object uses
+        json files = json::array();
+        for (uint32_t f : cmap::resolve_all(static_cast<uint32_t>(to_u64(a.at("content-type"))),
+                                            static_cast<uint32_t>(to_u64(need(a, "content-id")))))
+            files.push_back(f);
+        emit({{"ok", true}, {"fileIds", files}});
+        return;
+    }
     std::vector<uint32_t> fids;
     if (has(a, "file-id")) fids.push_back(static_cast<uint32_t>(to_u64(a.at("file-id"))));
     if (has(a, "base-id")) {

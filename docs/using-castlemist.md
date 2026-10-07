@@ -134,9 +134,11 @@ gw2dat_cli sniff   --dat $dat --base-id 477426
 # Save it
 gw2dat_cli extract --dat $dat --base-id 477426 --out model.bin       # decompressed bytes
 gw2dat_cli texture --dat $dat --base-id 46403  --out icon.png        # decoded texture
+gw2dat_cli model   --dat $dat --file-id 1766522 --template dumps\packfile\gw2_packfile.json --glb dagger.glb
 
 # What uses a file, with names and chat links (needs the content map; --names goes online)
 gw2dat_cli users --file-id 1200313 --names
+gw2dat_cli users --content-type 66 --content-id 7562                 # the reverse: a skin's files
 
 # Characters (API key saved in the Character Ripper)
 gw2dat_cli character --key-name main                                  # list characters
