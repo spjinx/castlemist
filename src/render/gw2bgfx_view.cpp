@@ -1939,7 +1939,18 @@ bool bake_model_atlas(ModelPreview& model, uint32_t resolution, const std::set<u
         // them again via occlusionTexture (material_export.cpp) would be
         // stale, redundant data pointing at UV0-relative channels that no
         // longer apply once this material's geometry has a brand new UV.
-        mat->extraTextures.clear();
+        // Except the glow: the bake leaves it out of the diffuse, and it is
+        // the export's emissive (material_export.cpp). A glowmask on another
+        // UV set still lines up -- only UV0 is replaced -- and the "glow"
+        // beside it then only lends its colour, wherever it samples.
+        bool keptMask = std::any_of(mat->extraTextures.begin(), mat->extraTextures.end(), [](const auto& ex) {
+            return ex.role == "glowmask" && ex.uvIndex != 0;
+        });
+        std::erase_if(mat->extraTextures, [&](const auto& ex) {
+            if (ex.role == "glowmask") return ex.uvIndex == 0;
+            if (ex.role == "glow") return ex.uvIndex == 0 && !keptMask;
+            return true;
+        });
 
         // Carry the original normal map along too, remapped into this SAME
         // new UV layout -- the real shader already consumed it to light the

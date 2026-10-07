@@ -23,6 +23,16 @@ void append_to_vector(void* context, void* data, int size) {
     out->insert(out->end(), bytes, bytes + size);
 }
 
+// The image's name in the .glb: the texture's own fileId (as castlemist's
+// texture panel lists it), or the material a bake made it for. Without one,
+// Blender names embedded images Image_0, Image_1, ... and unpacks them so.
+std::string texture_name(const ModelTextureCPU& tex, size_t i) {
+    if (tex.fileId & 0x80000000u) return "baked_diffuse_mat" + std::to_string(tex.fileId & 0xFFFFu);
+    if (tex.fileId & 0x40000000u) return "baked_normal_mat" + std::to_string(tex.fileId & 0xFFFFu);
+    if (tex.fileId) return std::to_string(tex.fileId);
+    return "texture_" + std::to_string(i);
+}
+
 float smoothstep(float edge0, float edge1, float x) {
     float t = std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
     return t * t * (3.0f - 2.0f * t);
@@ -61,7 +71,7 @@ int bake_effect_emissive_texture(GltfWriter& w, const ModelTextureCPU& diffuse) 
     // A distinct dedup key from the diffuse texture's own fileId, so the two
     // don't collide in GltfWriter's shared texture cache.
     uint32_t emissiveKey = diffuse.fileId ^ 0x454D4953u; // "EMIS"
-    return w.add_or_reuse_texture(emissiveKey, png);
+    return w.add_or_reuse_texture(emissiveKey, png, std::to_string(diffuse.fileId) + "_emissive");
 }
 
 TextureSaveResult save_texture_png(const ModelTextureCPU& tex, const std::string& pngPath) {
@@ -95,7 +105,7 @@ bool write_model_textures(GltfWriter& w, const std::vector<ModelTextureCPU>& tex
                                         tex.width * 4);
         if (!ok || png.empty()) continue;
 
-        texIndices[i] = w.add_or_reuse_texture(tex.fileId, png);
+        texIndices[i] = w.add_or_reuse_texture(tex.fileId, png, texture_name(tex, i));
     }
     return true;
 }

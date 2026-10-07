@@ -99,8 +99,10 @@ public:
     /// @brief Embeds a PNG (already-encoded bytes) as an image + texture,
     ///        deduped by fileId so a shared map export never re-embeds the
     ///        same texture twice. Returns the *texture* index (what a
-    ///        material's textureInfo references).
-    int add_or_reuse_texture(uint32_t fileId, const std::vector<uint8_t>& pngBytes);
+    ///        material's textureInfo references). `name` becomes the image's
+    ///        glTF name -- what Blender calls the image, and the file name
+    ///        "Unpack Resources" writes it out as.
+    int add_or_reuse_texture(uint32_t fileId, const std::vector<uint8_t>& pngBytes, const std::string& name = {});
 
     int add_node(nlohmann::json node);           ///< Pushes to `nodes`, returns its index.
     /// @brief Appends `childIndex` to an already-added node's `children` list

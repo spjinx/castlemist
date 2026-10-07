@@ -174,7 +174,8 @@ struct ModelMaterialCPU {
     /// @brief Every other texture this material references. Cleared by a
     ///        successful atlas bake (gw2bgfx_view.cpp) -- baking already folds
     ///        whatever these contribute into the one output texture, so
-    ///        exporting them again afterward would be redundant, stale data.
+    ///        exporting them again afterward would be redundant, stale data --
+    ///        except the glow layers, which the export makes its emissive.
     std::vector<ExtraTexture> extraTextures;
 
     /// @brief Real bgfx blend-state word, carried over from game-shader extraction.
