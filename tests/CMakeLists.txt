@@ -96,7 +96,7 @@ castlemist_add_test(sim
     DEPS    castlemist::sim)
 
 castlemist_add_test(exportgltf
-    SOURCES test_exportgltf_writer.cpp
+    SOURCES test_exportgltf_writer.cpp test_exportgltf_vrchat.cpp
     DEPS    castlemist::exportgltf ext::json
     PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/exportgltf")
 
