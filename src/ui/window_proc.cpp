@@ -575,6 +575,13 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             CreateWindowExW(0, L"BUTTON", L"Alpha", WS_CHILD | BS_AUTOCHECKBOX | BS_PUSHLIKE, 0, 0, 0, 0, hwnd,
                              reinterpret_cast<HMENU>(ID_ALPHA_TOGGLE), g_hinstance, nullptr);
         SendMessageW(g_app->hwnd_alpha, BM_SETCHECK, castlemist::gfx::alpha_aware() ? BST_CHECKED : BST_UNCHECKED, 0);
+        // Channel view: one radio group of push buttons -- RGB, or one channel as greyscale.
+        static const wchar_t* const kChannelLabels[5] = {L"RGB", L"R", L"G", L"B", L"A"};
+        for (int c = 0; c < 5; ++c)
+            g_app->hwnd_channel[c] = CreateWindowExW(
+                0, L"BUTTON", kChannelLabels[c], WS_CHILD | BS_AUTORADIOBUTTON | BS_PUSHLIKE | (c == 0 ? WS_GROUP : 0),
+                0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(ID_CHANNEL_RGB + c), g_hinstance, nullptr);
+        SendMessageW(g_app->hwnd_channel[castlemist::gfx::channel()], BM_SETCHECK, BST_CHECKED, 0);
 
         // Model preview surface (its own D3D device/swapchain) + mode buttons.
         g_app->hwnd_model = CreateWindowExW(WS_EX_CLIENTEDGE, kModelClassName, L"",
@@ -1271,6 +1278,14 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             return 0;
         case ID_ALPHA_TOGGLE:
             castlemist::gfx::set_alpha_aware(SendMessageW(g_app->hwnd_alpha, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            castlemist::gfx::render();
+            return 0;
+        case ID_CHANNEL_RGB:
+        case ID_CHANNEL_RGB + 1:
+        case ID_CHANNEL_RGB + 2:
+        case ID_CHANNEL_RGB + 3:
+        case ID_CHANNEL_A:
+            castlemist::gfx::set_channel(static_cast<int>(LOWORD(wparam) - ID_CHANNEL_RGB));
             castlemist::gfx::render();
             return 0;
         case ID_SUBMESH_COMBO:

@@ -244,6 +244,9 @@ constexpr UINT_PTR ID_CONTENT_LIST = 2059;   // master: content types
 constexpr UINT_PTR ID_CONTENT_CHILD = 2079;  // child: entries of the selected type
 constexpr UINT_PTR ID_LIGHT_PREPASS = 2060;
 constexpr UINT_PTR ID_ALPHA_TOGGLE = 2061;
+// Texture channel view: RGB, R, G, B, A (consecutive; castlemist::gfx::set_channel order).
+constexpr UINT_PTR ID_CHANNEL_RGB = 2180;
+constexpr UINT_PTR ID_CHANNEL_A = ID_CHANNEL_RGB + 4;
 constexpr UINT_PTR ID_SUBMESH_COMBO = 2062;
 constexpr UINT_PTR ID_LOD_COMBO = 2063;
 constexpr UINT_PTR ID_TEX_REDUCED = 2064;
@@ -435,6 +438,7 @@ struct AppState {
     HWND hwnd_rotate = nullptr;
     HWND hwnd_fit = nullptr;
     HWND hwnd_alpha = nullptr;
+    HWND hwnd_channel[5] = {};  // RGB, R, G, B, A
     /// The "Game 1:1" bgfx surface and its toolbar toggle. Both stay null when
     /// the build has no bgfx (castlemist::gw2bgfxview::available() == false).
     HWND hwnd_model_bgfx = nullptr;

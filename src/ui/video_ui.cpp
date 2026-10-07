@@ -218,6 +218,8 @@ std::wstring start_video(const ExtractedEntry& e) {
     castlemist::gfx::begin_video(vi.width, vi.height);
     // Video frames are opaque; the checkerboard alpha composite is for textures.
     castlemist::gfx::set_alpha_aware(false);
+    castlemist::gfx::set_channel(0);  // and in colour, whatever channel a texture was viewed in
+    CheckRadioButton(GetParent(g_app->hwnd_channel[0]), ID_CHANNEL_RGB, ID_CHANNEL_A, ID_CHANNEL_RGB);
     populate_video_tracks();
     layout_video_subtitle();
     present_video_frame();
@@ -304,6 +306,8 @@ std::wstring start_cinp_video(int index) {
     const castlemist::vid::Info& vi = castlemist::vid::info();
     castlemist::gfx::begin_video(vi.width, vi.height);
     castlemist::gfx::set_alpha_aware(false);
+    castlemist::gfx::set_channel(0);  // and in colour, whatever channel a texture was viewed in
+    CheckRadioButton(GetParent(g_app->hwnd_channel[0]), ID_CHANNEL_RGB, ID_CHANNEL_A, ID_CHANNEL_RGB);
     populate_video_tracks();
     layout_video_subtitle();
     present_video_frame();
