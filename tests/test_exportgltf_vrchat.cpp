@@ -941,19 +941,74 @@ CM_TEST(vrchat, decal_mask_on_same_uv_multiplies) {
     CHECK_NEAR(px(mb.decal.tex, 1, 3), 0, 1);
 }
 
-CM_TEST(vrchat, decal_mask_on_other_uv_warns) {
+CM_TEST(vrchat, decal_mask_on_other_uv_is_its_own_map) {
+    // 19910's PS samples the decalmask at TEXCOORD2 and the decal at TEXCOORD1:
+    // the mask cannot be folded into the decal's alpha, so it ships as its own map.
     ModelPreview model;
     ModelMaterialCPU mat = mat_with_file(19910);
     mat.diffuseTex = add_tex(model, banded_diffuse());
     add_layer(model, mat, "decal", add_tex(model, decal_strip({255, 255}, 7001)), 1);
     add_layer(model, mat, "decalmask",
-              add_tex(model, tex_from(2, 1, {{0, 0, 0, 255}, {0, 0, 0, 255}}, 7002)), 2);
+              add_tex(model, tex_from(2, 1, {{40, 90, 0, 255}, {200, 10, 0, 255}}, 7002)), 2);
     MaterialMaps m = build(model, mat, BlendPreset::Opaque);
     CHECK(m.decal.present);
-    CHECK(m.decal.source == "decal saturate(2a)");
-    CHECK_NEAR(px(m.decal.tex, 0, 3), 255, 1);  // mask not applied
-    CHECK(any_warning(m, "decalmask layer uses UV2, the decal UV1"));
-    CHECK(has_extra(m, "decalmask"));  // still exported raw
+    CHECK(m.decal.source == "decal saturate(2a) (x decalMask on UV2)");
+    CHECK_NEAR(px(m.decal.tex, 0, 3), 255, 1);  // not multiplied in
+    CHECK(m.decalMask.present);
+    CHECK_EQ(m.decalMask.uv, 2);
+    CHECK_EQ(m.decalMask.fileId, 7002u);
+    CHECK(m.decalMask.source == "decalmask.R");
+    CHECK(m.decalMaskChannel == "R");
+    CHECK_EQ(px(m.decalMask.tex, 0, 0), 40);
+    CHECK_EQ(px(m.decalMask.tex, 1, 0), 200);
+    CHECK_EQ(px(m.decalMask.tex, 1, 1), 200);  // greyscale
+    CHECK(any_warning(m, "decal coverage must be multiplied by maps.decalMask (UV2)"));
+    CHECK_FALSE(has_extra(m, "decalmask"));
+}
+
+CM_TEST(vrchat, decal_placeholder_mask_multiplies_on_any_uv) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(19910);
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "decal", add_tex(model, decal_strip({255, 64}, 7001)), 1);
+    add_layer(model, mat, "decalmask", add_tex(model, solid(4, 4, {128, 0, 0, 255}, 7002)), 2);
+    MaterialMaps m = build(model, mat, BlendPreset::Opaque);
+    CHECK(m.decal.source == "decal saturate(2a) x decalmask.R");
+    CHECK_NEAR(px(m.decal.tex, 0, 3), 128, 1);
+    CHECK_NEAR(px(m.decal.tex, 1, 3), 64, 1);
+    CHECK_FALSE(m.decalMask.present);
+    CHECK_FALSE(any_warning(m, "maps.decalMask"));
+}
+
+CM_TEST(vrchat, decal_mask_specular_b_warns) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(69887);  // prop-decal, mask.R; specular x mask.B
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "decal", add_tex(model, decal_strip({255, 255}, 7001)), 1);
+    add_layer(model, mat, "mask", add_tex(model, decal_strip({255, 255}, 7002)), 1);
+    MaterialMaps m = build(model, mat, BlendPreset::Opaque);
+    CHECK(m.decal.source == "decal saturate(2a) x mask.R");
+    CHECK_EQ(count_warnings(m, "specular x mask.B not mapped"), size_t{1});
+    ModelMaterialCPU plain = mat_with_file(60027);
+    plain.diffuseTex = mat.diffuseTex;
+    add_layer(model, plain, "decal", add_tex(model, decal_strip({255, 255}, 7003)), 1);
+    CHECK_FALSE(any_warning(build(model, plain, BlendPreset::Opaque), "mask.B"));
+}
+
+CM_TEST(vrchat, decal_parallax_warns) {
+    for (uint32_t id : {54632u, 57131u}) {
+        ModelPreview model;
+        ModelMaterialCPU mat = mat_with_file(id);
+        mat.diffuseTex = add_tex(model, banded_diffuse());
+        add_layer(model, mat, "decal", add_tex(model, decal_strip({0, 255}, 7001)), 1);
+        CHECK_EQ(count_warnings(build(model, mat, BlendPreset::Opaque), "decal parallax not mapped"),
+                 size_t{1});
+    }
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(60027);
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "decal", add_tex(model, decal_strip({0, 255}, 7001)), 1);
+    CHECK_FALSE(any_warning(build(model, mat, BlendPreset::Opaque), "parallax"));
 }
 
 CM_TEST(vrchat, diffuse_over_decal_inverts_alpha) {
@@ -1008,6 +1063,11 @@ CM_TEST(vrchat, decal_glow_below_half) {
     CHECK_NEAR(m.emissionStrength, 2.0f, 0.001f);
     CHECK(m.emissionBaked.present);
     CHECK_EQ(m.emissionBaked.uv, 1);
+    // Baked = decal.rgb x mask x colour: texel 0 has a = 0 (mask 255), rgb {200, 100, 50}.
+    CHECK_NEAR(px(m.emissionBaked.tex, 0, 0), 200, 1);
+    CHECK_NEAR(px(m.emissionBaked.tex, 0, 1), 50, 1);
+    CHECK_NEAR(px(m.emissionBaked.tex, 0, 2), 0, 1);
+    CHECK_NEAR(px(m.emissionBaked.tex, 2, 0), 0, 1);  // a = 255: no glow
 
     // No glowcol: white, with a warning.
     mat.namedConstantVectors.clear();
@@ -1421,6 +1481,16 @@ CM_TEST(vrchat, materials_json_decal_entry) {
     add_layer(model, prop, "decal", add_tex(model, decal_strip({0, 64, 128, 255}, 7001)), 1);
     model.materials.push_back(prop);
     model.meshes.push_back(quad_mesh(1));
+    ModelMaterialCPU metal = mat_with_file(19910);  // decalmask on another UV
+    metal.index = 2;
+    metal.materialName = "Metal";
+    metal.hasRenderState = true;
+    metal.diffuseTex = prop.diffuseTex;
+    add_layer(model, metal, "decal", add_tex(model, decal_strip({255, 255}, 7005)), 1);
+    add_layer(model, metal, "decalmask",
+              add_tex(model, tex_from(2, 1, {{40, 0, 0, 255}, {200, 0, 0, 255}}, 7006)), 2);
+    model.materials.push_back(metal);
+    model.meshes.push_back(quad_mesh(2));
 
     fs::path dir = fresh_dir("decal");
     VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Prop", 1);
@@ -1438,8 +1508,20 @@ CM_TEST(vrchat, materials_json_decal_entry) {
     CHECK(decal.value("source", json()) == "decal saturate(2a)");
     CHECK(decal.value("mode", json()) == "decal-over-diffuse");
     for (const json& x : wall["maps"]["extras"]) CHECK(x["role"] != "decal");
+    CHECK(wall["maps"].value("decalMask", json(1)).is_null());
     const json& blade = *material_named(doc, "Blade");
     CHECK(blade["maps"].contains("decal"));
     CHECK(blade["maps"].value("decal", json(1)).is_null());
     CHECK_NEAR(blade["emission"]["strength"].get<double>(), 1.0, 1e-9);
+
+    CHECK(fs::exists(dir / "Textures" / "Metal - DecalMask.png"));
+    const json& mt = *material_named(doc, "Metal");
+    json dm = mt["maps"].value("decalMask", json());
+    if (!dm.is_object()) dm = json::object();
+    CHECK(dm.value("file", json()) == "Textures/Metal - DecalMask.png");
+    CHECK(dm.value("uv", json()) == 2);
+    CHECK(dm.value("fileId", json()) == 7006);
+    CHECK(dm.value("channel", json()) == "R");
+    CHECK(dm.value("source", json()) == "decalmask.R");
+    for (const json& x : mt["maps"]["extras"]) CHECK(x["role"] != "decalmask");
 }

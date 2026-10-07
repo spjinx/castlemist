@@ -241,7 +241,13 @@ diffuse in one of two opposite ways, set by the profile's `decalMode`
 map is the decal on **its own UV**: RGB = decal.rgb, A = the decal's coverage
 of the diffuse — `saturate(2a)` [× the mask channel] or `1 − a` — and its
 `source` names the formula (`"decal saturate(2a) x decalmask.R"`). A mask on
-another UV than the decal is skipped with a warning naming both. The decal is
+another UV than the decal (19910: the PS samples it at TEXCOORD2) cannot go
+into that alpha: it is written as its own greyscale **DecalMask** map
+(`maps.decalMask {file, uv, fileId, channel, source}`) on its own UV, the
+decal's source says `(x decalMask on UV2)`, and a warning says the coverage
+must be multiplied by it. A 4×4 placeholder mask is a constant and is always
+multiplied in. Not mapped, one warning each: the decal parallax (`pardist`,
+54632/57131) and 69887's specular × `mask.B`. The decal is
 not baked into BaseColor (another UV) and its shine (`saturate(2a−1)`, prop
 family) is not folded into Packed: one warning, "decal shine not mapped". The
 decal is then no longer an extra; a missing or failed decal layer only warns.
@@ -250,7 +256,8 @@ owns it (else the warning "decal glow not mapped: emission slot in use"):
 `BelowHalf` (57131) EmissionMap = decal.rgb, EmissionMask = `1 − a`, colour
 `glowcol × 2` (stored at peak 1, the peak as `emission.strength`; white with a
 warning when `glowcol` is absent); `AboveHalf` (57806) EmissionMask =
-`saturate(2a − 1)`, colour white. Both sit on the decal's UV. The .glb keeps
+`saturate(2a − 1)`, colour white. Both sit on the decal's UV; the baked
+emission is map × mask × colour. The .glb keeps
 the decal as it was (the occlusion slot); materials.json gets
 `maps.decal {file, uv, fileId, source, mode: "decal-over-diffuse" |
 "diffuse-over-decal"}`, `null` when absent.

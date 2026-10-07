@@ -76,6 +76,9 @@ struct ShaderProfile {
     std::string decalMaskRole;
     Channel decalMaskChannel = Channel::None;
     DecalGlow decalGlow = DecalGlow::None;
+    bool decalParallax = false;  ///< decal UV parallax-offset by `pardist` (54632, 57131): not mapped
+    /// A `mask` channel that multiplies the specular (69887: B): not mapped, warned.
+    Channel maskSpecular = Channel::None;
 };
 
 /// Profile for a material: by AMAT fileId, else the legacy-untagged trait

@@ -77,6 +77,7 @@ std::vector<Entry> build_table() {
     {
         ShaderProfile p = make("subsurface-decal", AlphaUse::Shine, false);
         p.decalMode = DecalMode::DiffuseOverDecal;
+        p.decalParallax = true;  // decal UV offset by pardist
         t.push_back({{54632}, p});
     }
 
@@ -93,7 +94,9 @@ std::vector<Entry> build_table() {
         m.decalMaskChannel = Channel::R;
         t.push_back({{19910, 525886}, m});
         m.decalMaskRole = "mask";
+        m.maskSpecular = Channel::B;  // 69887 also multiplies the specular by mask.B
         t.push_back({{69887}, m});
+        m.maskSpecular = Channel::None;
         m.decalMaskRole = "blend";
         m.decalMaskChannel = Channel::G;
         t.push_back({{60530}, m});
@@ -110,6 +113,7 @@ std::vector<Entry> build_table() {
         ShaderProfile p = make("decal-glow", AlphaUse::Shine, false);
         p.decalMode = DecalMode::DiffuseOverDecal;
         p.decalGlow = DecalGlow::BelowHalf;
+        p.decalParallax = true;  // decal rgb at a pardist/decptrb-offset UV
         t.push_back({{57131}, p});
     }
 

@@ -40,13 +40,21 @@ struct MaterialMaps {
     MapSlot decal;
     /// "decal-over-diffuse" / "diffuse-over-decal" when `decal` is present, else empty.
     std::string decalMode;
+    /// The decal mask channel as greyscale on the mask's own UV, when that UV is
+    /// not the decal's (19910: decalmask on UV2): the decal's A must be multiplied
+    /// by it in the shader. `decalMaskChannel` names the source channel ("R").
+    MapSlot decalMask;
+    std::string decalMaskChannel;
     /// A layer kept raw, by role, with a hint of how the game uses it ("detail-multiply2x", ...).
     struct Extra { std::string role, use; MapSlot slot; };
     std::vector<Extra> extras;
     /// Where each packed channel came from, e.g. "mask.R", "diffuseAlpha",
     /// "specular.A", "conduct", "mtlness", "specstr", "envcr", "none".
     std::string metalSource, smoothSource, reflectionSource, specularSource;
-    std::array<float, 3> emissionColor = {1, 1, 1};  ///< EmissionMap's average colour, peak 1.
+    /// The emission colour, peak 1: the glow map's average colour (or a placeholder
+    /// glow's constant), x a uniform glowmask; for a decal glow, `glowcol x 2`
+    /// normalised (BelowHalf, white without glowcol) or white (AboveHalf).
+    std::array<float, 3> emissionColor = {1, 1, 1};
     /// Multiplier over emissionColor: 1, except a decal glow's `glowcol x 2`,
     /// whose peak lands here so the colour keeps its hue at peak 1.
     float emissionStrength = 1.0f;

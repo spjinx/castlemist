@@ -532,6 +532,11 @@ existing extra hint "lerp-by-decal-alpha" is ambiguous. No texture discard in an
 of any of them. 57806 also adds `decal.rgb * saturate(2*decal.a - 1)` **unlit** (decal
 upper half = self-illumination); 69887 also multiplies the specular by mask.B.
 Stats: 60027 (469921 mat 11) decal A 0-160, 74% < 16 (no decal), 12% >= 128.
+**19910 mask UV (checked 2026-10-07, PS 43 + VS 0):** t2 `decal` is sampled at `v0.zw`, t4
+`decalmask` at `v1.xy`, t5 `mod` at `v1.zw`; the VS writes `o0.zw` from TEXCOORD1 and `o1.xy`
+from TEXCOORD2 (`TexTransform2`), so the decalmask really is on **UV2** (the MODL uvIndex is
+right). On 469921 Metal7 the decal A is 252-255 everywhere: the UV2 decalmask alone decides
+coverage, so the VRChat export ships it as its own map (`maps.decalMask`).
 
 **prop-projector** (77238, 835499 identical; 69856, 69792, 512093, 512112 identical):
 ```

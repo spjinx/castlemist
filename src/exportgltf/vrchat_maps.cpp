@@ -557,15 +557,16 @@ private:
         const bool over = profile_.decalMode == DecalMode::DecalOverDiffuse;
 
         const Layer* mask = nullptr;
+        const Layer* otherUvMask = nullptr;
         if (over && !profile_.decalMaskRole.empty() &&
             profile_.decalMaskChannel != Channel::None) {
             const std::string& role = profile_.decalMaskRole;
             mask = find({role.c_str()});
-            if (mask && mask->uv != decal->uv) {
-                out_.warnings.push_back(role + " layer uses UV" + std::to_string(mask->uv) +
-                                        ", the decal UV" + std::to_string(decal->uv) +
-                                        ": decal coverage not masked by " + role + "." +
-                                        channel_name(profile_.decalMaskChannel));
+            // A placeholder is a constant: UV-independent, always multiplied in.
+            if (mask && mask->real() && mask->uv != decal->uv) {
+                // The shader samples it on its own UV (19910: TEXCOORD2, the decal
+                // TEXCOORD1), so it cannot go into the decal's alpha: its own map.
+                otherUvMask = mask;
                 mask = nullptr;
             } else if (!mask && !failed(role.c_str())) {
                 out_.warnings.push_back("no " + role + " layer: decal coverage not masked");
@@ -588,6 +589,14 @@ private:
             }
         std::string source = over ? "decal saturate(2a)" : "decal 1-a";
         if (mask) source += " x " + mask->role + "." + channel_name(profile_.decalMaskChannel);
+        if (otherUvMask) {
+            source += " (x decalMask on UV" + std::to_string(otherUvMask->uv) + ")";
+            out_.decalMask = grey_slot(*otherUvMask, profile_.decalMaskChannel);
+            out_.decalMaskChannel = channel_name(profile_.decalMaskChannel);
+            mapped_.push_back(otherUvMask);
+            out_.warnings.push_back("decal coverage must be multiplied by maps.decalMask (UV" +
+                                    std::to_string(otherUvMask->uv) + ")");
+        }
         out_.decal = slot_of(std::move(t), decal->uv, decal->fileId, std::move(source));
         out_.decalMode = over ? "decal-over-diffuse" : "diffuse-over-decal";
         mapped_.push_back(decal);
@@ -595,6 +604,12 @@ private:
         if (over)
             out_.warnings.push_back("decal shine not mapped (decal is on UV" +
                                     std::to_string(decal->uv) + ")");
+        if (profile_.decalParallax)
+            out_.warnings.push_back("decal parallax not mapped (pardist): the decal is "
+                                    "sampled without its view-dependent UV offset");
+        if (profile_.maskSpecular != Channel::None && find({"mask"}))
+            out_.warnings.push_back("specular x mask." + channel_name(profile_.maskSpecular) +
+                                    " not mapped");
     }
 
     /// A decal that glows (57131 below half its alpha, 57806 above), when no
@@ -637,6 +652,7 @@ private:
             }
         }
         emissionTaken_ = true;
+        decalGlowBake_ = true;
     }
 
     void bake_emission() {
@@ -648,15 +664,21 @@ private:
                                                         : nullptr;
         if (!src) return;
         const bool fromMask = src == &out_.emissionMask;
+        // A decal glow's map and mask are the same decal texture on one UV:
+        // the bake carries the decal colour too.
+        const ModelTextureCPU* map = decalGlowBake_ ? &out_.emissionMap.tex : nullptr;
         ModelTextureCPU t = src->tex;
         for (size_t i = 0; i + 3 < t.rgba.size(); i += 4) {
             for (size_t c = 0; c < 3; ++c)
                 t.rgba[i + c] = to_byte(t.rgba[i + c] / 255.0 *
-                                        (fromMask ? out_.emissionColor[c] : scale[c]));
+                                        (fromMask ? out_.emissionColor[c] : scale[c]) *
+                                        (map ? map->rgba[i + c] / 255.0 : 1.0));
             t.rgba[i + 3] = 255;
         }
         out_.emissionBaked = slot_of(std::move(t), src->uv, fromMask ? 0 : src->fileId,
-                                     fromMask ? "emissionMask x emissionColor" : src->source);
+                                     map        ? "emissionMap x emissionMask x emissionColor"
+                                     : fromMask ? "emissionMask x emissionColor"
+                                                : src->source);
     }
 
     void build_distortion() {
@@ -704,6 +726,7 @@ private:
         check("emissionMask", out_.emissionMask);
         check("distortion", out_.distortion);
         check("decal", out_.decal);
+        check("decalMask", out_.decalMask);
         for (const auto& x : out_.extras) check("extra", x.slot);
     }
 
@@ -718,6 +741,7 @@ private:
     std::vector<const Layer*> mapped_;      ///< fully mapped layers: never an extra
     std::array<float, 3> emissionScale_ = {1, 1, 1};  ///< a uniform glowmask's scale
     bool emissionTaken_ = false;            ///< a glow source owns the emission slots
+    bool decalGlowBake_ = false;            ///< emission is a decal glow: bake map x mask x colour
     std::vector<std::string> failedRoles_;  ///< roles of layers that failed to decode
     const bool isDefault_ = &profile_ == &default_profile();
     bool alphaIsOpacity_ = false;  ///< default profile, blended preset: alpha is opacity (I4)

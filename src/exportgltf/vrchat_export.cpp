@@ -207,6 +207,9 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
         json decal = mw.write(maps.decal, "Decal");
         if (!decal.is_null()) decal["mode"] = maps.decalMode;
         jm["decal"] = std::move(decal);
+        json decalMask = mw.write(maps.decalMask, "DecalMask");
+        if (!decalMask.is_null()) decalMask["channel"] = maps.decalMaskChannel;
+        jm["decalMask"] = std::move(decalMask);
         json extras = json::array();
         for (const MaterialMaps::Extra& x : maps.extras) {
             json e = mw.write(x.slot, safe_file_name(x.role.empty() ? "extra" : x.role));
