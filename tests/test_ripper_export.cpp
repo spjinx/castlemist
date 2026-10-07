@@ -10,6 +10,7 @@
 #include "castlemist/native/gw2model.hpp"
 #include "castlemist/ripper/physique.h"
 #include "castlemist/ripper/piece_export.h"
+#include "castlemist/ripper/vrchat.h"
 
 #include <algorithm>
 #include <cmath>
@@ -325,4 +326,37 @@ CM_TEST(export, physique_scales_a_bones_vertices_and_mirrors_its_twin) {
     CHECK_EQ(apply_physique(m, preset), size_t{2});
     for (const GVertex& v : m.meshes[0].vertices) CHECK(std::fabs(v.py - 1.5f) < 1e-4f);  // 1 + 0.5 * 1
     CHECK(std::fabs(m.meshes[0].vertices[0].px - 1.0f) < 1e-4f);
+}
+
+CM_TEST(export, no_blender_still_writes_folder) {
+    ModelPreview model;
+    ModelMeshCPU m;
+    auto vtx = [](float x, float y, float u, float v) {
+        GVertex g{};
+        g.px = x; g.py = y; g.nz = 1; g.tx = 1; g.by = 1; g.u = u; g.v = v;
+        return g;
+    };
+    m.vertices = {vtx(0, 0, 0, 0), vtx(1, 0, 1, 0), vtx(1, 1, 1, 1), vtx(0, 1, 0, 1)};
+    m.indices = {0, 1, 2, 0, 2, 3};
+    m.vertexCount = 4;
+    m.materialIndex = 0;
+    model.meshes.push_back(m);
+    ModelMaterialCPU mat;
+    mat.materialName = "Quad";
+    model.materials.push_back(mat);
+
+    const fs::path parent = fs::temp_directory_path() / "cm_vrchat_model_test";
+    fs::remove_all(parent);
+    fs::create_directories(parent);
+    VrchatOptions vrc;
+    vrc.blender_exe = "-";
+    const VrchatModelReport r = export_vrchat_model(model, parent.string(), "Test Quad", 123, vrc);
+    CHECK(r.ok);
+    CHECK(r.fbx.empty());
+    CHECK(!r.blender.empty());
+    CHECK(r.blender.find("skipped") != std::string::npos);
+    CHECK(fs::exists(fs::path(r.glb)));
+    CHECK(fs::exists(fs::path(r.folder) / "materials.json"));
+    CHECK_EQ(r.materials, size_t{1});
+    fs::remove_all(parent);
 }

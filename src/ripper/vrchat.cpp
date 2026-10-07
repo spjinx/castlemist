@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <tuple>
 #include <filesystem>
 #include <fstream>
@@ -11,6 +12,7 @@
 #include <unordered_map>
 
 #include "castlemist/character/key_store.h"
+#include "castlemist/exportgltf/vrchat_export.h"
 #include "castlemist/ripper/face_morphs.h"
 #include "castlemist/ripper/skeleton_merge.h"
 
@@ -306,10 +308,11 @@ namespace {
 
 // Runs Blender headless on the conversion script; false + `log` on failure.
 bool run_blender(const std::string& blender, const std::string& script, const std::string& glb, const std::string& fbx,
-                 std::string& log) {
+                 std::string& log, const char* mode = nullptr) {
     std::wstring cmd = L"\"" + from_utf8(blender).wstring() + L"\" -b --factory-startup -P \"" +
                        from_utf8(script).wstring() + L"\" -- \"" + from_utf8(glb).wstring() + L"\" \"" +
                        from_utf8(fbx).wstring() + L"\"";
+    if (mode) cmd += L" --mode " + std::wstring(mode, mode + std::strlen(mode));
     STARTUPINFOW si{};
     si.cb = sizeof si;
     si.dwFlags = STARTF_USESHOWWINDOW;
@@ -336,6 +339,13 @@ bool run_blender(const std::string& blender, const std::string& script, const st
         return false;
     }
     return true;
+}
+
+std::string default_script() {
+    wchar_t exe[MAX_PATH] = L"";
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    return to_utf8(character::find_castlemist_root(fs::path(exe).parent_path()) / "tools" / "blender" /
+                   "castlemist_vrchat.py");
 }
 
 std::string safe_name(std::string s) {
@@ -387,6 +397,49 @@ std::string write_vrchat_maps(const ModelPreview& model, const std::string& glb_
     return any ? to_utf8(dir) : std::string();
 }
 
+VrchatModelReport export_vrchat_model(const ModelPreview& model, const std::string& parentDirUtf8,
+                                      const std::string& name, uint32_t modelFileId, const VrchatOptions& vrc) {
+    VrchatModelReport r;
+    const std::string safe = exportgltf::safe_file_name(name);
+    const fs::path dir = from_utf8(parentDirUtf8) / from_utf8(safe);
+    const exportgltf::VrchatFolderResult f = exportgltf::write_vrchat_folder(model, to_utf8(dir), safe, modelFileId);
+    r.folder = f.folder.empty() ? to_utf8(dir) : f.folder;
+    r.glb = f.glb;
+    r.materials = f.materials;
+    r.clips = f.clips;
+    r.warnings = f.warnings;
+    if (!f.ok) {
+        r.error = f.error;
+        return r;
+    }
+    r.ok = true;
+    if (vrc.blender_exe == "-") {
+        r.blender = "Blender skipped (disabled)";
+        return r;
+    }
+    const std::string blender = vrc.blender_exe.empty() ? find_blender() : vrc.blender_exe;
+    const std::string script = vrc.script.empty() ? default_script() : vrc.script;
+    std::error_code ec;
+    if (blender.empty()) {
+        r.blender = "Blender not found -- open the .glb in Blender and run tools/blender/castlemist_vrchat.py --mode model";
+    } else if (!fs::exists(from_utf8(script), ec)) {
+        r.blender = "conversion script missing: " + script;
+    } else {
+        const std::string fbx = to_utf8(dir / from_utf8(safe + ".fbx"));
+        std::string log;
+        if (run_blender(blender, script, r.glb, fbx, log, "model")) {
+            r.fbx = fbx;
+            r.blender = blender;
+        } else {
+            r.blender = log;
+            const std::string logPath = to_utf8(dir / from_utf8(safe + " blender.log"));
+            std::ofstream(from_utf8(logPath), std::ios::binary) << log << '\n';
+            r.blenderLog = logPath;
+        }
+    }
+    return r;
+}
+
 VrchatReport export_vrchat(const character::CharacterManifest& manifest, const std::string& dat_path,
                            const std::string& out_dir, AssemblyOptions options, const VrchatOptions& vrc) {
     VrchatReport r;
@@ -407,12 +460,7 @@ VrchatReport export_vrchat(const character::CharacterManifest& manifest, const s
 
     const std::string blender = vrc.blender_exe.empty() ? find_blender() : vrc.blender_exe;
     std::string script = vrc.script;
-    if (script.empty()) {
-        wchar_t exe[MAX_PATH] = L"";
-        GetModuleFileNameW(nullptr, exe, MAX_PATH);
-        script = to_utf8(character::find_castlemist_root(fs::path(exe).parent_path()) / "tools" / "blender" /
-                         "castlemist_vrchat.py");
-    }
+    if (script.empty()) script = default_script();
     if (blender.empty()) {
         r.blender = "Blender not found -- open the .glb in Blender and run tools/blender/castlemist_vrchat.py";
     } else if (!fs::exists(from_utf8(script), ec)) {
