@@ -954,6 +954,15 @@ void cmd_model(const Args& a) {
             auto r = castlemist::exportgltf::export_model_gltf(*pv, a.at("glb"));
             j["glb"] = r.ok ? json(r.glbPath) : json{{"error", r.error}};
         }
+        if (has(a, "vrchat")) {  // the VRChat folder: .glb, .fbx, .blend, Textures, materials.json
+            const uint32_t fid = static_cast<uint32_t>(to_u64(a.at("file-id")));
+            auto r = castlemist::ripper::export_vrchat_model(*pv, a.at("vrchat"), "model_" + std::to_string(fid), fid);
+            json v = {{"ok", r.ok}, {"folder", r.folder}, {"glb", r.glb}, {"fbx", r.fbx}, {"blender", r.blender},
+                      {"materials", r.materials}, {"clips", r.clips}, {"warnings", r.warnings}};
+            if (!r.ok) v["error"] = r.error;
+            if (!r.blenderLog.empty()) v["blenderLog"] = r.blenderLog;
+            j["vrchat"] = std::move(v);
+        }
     }
     // particle clouds + effect lights
     const auto& fx = model.effects;

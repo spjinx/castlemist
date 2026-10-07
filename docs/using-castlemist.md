@@ -103,6 +103,7 @@ copy any of it.
 | Export Compressed / Decompressed... | save the selected entry's raw bytes |
 | Export glTF (Model)... | the selected model as `.glb` with its textures |
 | Export glTF (Model, Baked UV Atlas)... | the same, with all materials baked into one atlas texture |
+| Export for VRChat (Model)... | the selected model as a folder for Unity/VRChat: `.glb`, `.fbx` + `.blend` (needs Blender), `Textures` (Poiyomi-ready PNGs) and `materials.json`; the name you type becomes the folder name |
 | Export glTF (Map)... | the selected map scene as `.glb` |
 
 ### Tools
@@ -135,6 +136,7 @@ gw2dat_cli sniff   --dat $dat --base-id 477426
 gw2dat_cli extract --dat $dat --base-id 477426 --out model.bin       # decompressed bytes
 gw2dat_cli texture --dat $dat --base-id 46403  --out icon.png        # decoded texture
 gw2dat_cli model   --dat $dat --file-id 1766522 --template dumps\packfile\gw2_packfile.json --glb dagger.glb
+gw2dat_cli model   --dat $dat --file-id 1766522 --template dumps\packfile\gw2_packfile.json --vrchat out   # folder out\model_1766522 for VRChat
 
 # What uses a file, with names and chat links (needs the content map; --names goes online)
 gw2dat_cli users --file-id 1200313 --names

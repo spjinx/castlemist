@@ -31,6 +31,7 @@ HMENU build_menu() {
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_GLTF_MODEL, L"Export &glTF (Model)...");
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_GLTF_MODEL_ATLAS,
                 L"Export glTF (Model, &Baked UV Atlas)...");
+    AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_VRCHAT_MODEL, L"Export for &VRChat (Model)...");
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_GLTF_MAP, L"Export glTF (&Map)...");
     AppendMenuW(g_file_menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXIT, L"E&xit");
@@ -38,6 +39,7 @@ HMENU build_menu() {
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_DECOMPRESSED, MF_GRAYED | MF_DISABLED);
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MODEL, MF_GRAYED | MF_DISABLED);
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MODEL_ATLAS, MF_GRAYED | MF_DISABLED);
+    EnableMenuItem(g_file_menu, ID_FILE_EXPORT_VRCHAT_MODEL, MF_GRAYED | MF_DISABLED);
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MAP, MF_GRAYED | MF_DISABLED);
 
     HMENU tools_menu = CreatePopupMenu();
@@ -1165,6 +1167,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     case WM_APP_GLTF_EXPORT_DONE:
         on_gltf_export_done(hwnd);
         return 0;
+    case WM_APP_VRCHAT_MODEL_DONE:
+        on_vrchat_model_done(hwnd);
+        return 0;
     case WM_APP_CMAP_DONE:
         on_main_cmap_done(hwnd);
         return 0;
@@ -1249,6 +1254,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         case ID_FILE_EXPORT_GLTF_MODEL:
             do_export_gltf_model(hwnd);
             return 0;
+        case ID_FILE_EXPORT_VRCHAT_MODEL:
+            do_export_vrchat_model(hwnd);
+            break;
         case ID_FILE_EXPORT_GLTF_MODEL_ATLAS:
             do_export_gltf_model_atlas(hwnd);
             return 0;

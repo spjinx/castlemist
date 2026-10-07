@@ -26,6 +26,7 @@ void set_export_enabled(bool enabled) {
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MODEL, modelReady ? MF_ENABLED : (MF_GRAYED | MF_DISABLED));
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MODEL_ATLAS,
                    modelReady ? MF_ENABLED : (MF_GRAYED | MF_DISABLED));
+    EnableMenuItem(g_file_menu, ID_FILE_EXPORT_VRCHAT_MODEL, modelReady ? MF_ENABLED : (MF_GRAYED | MF_DISABLED));
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MAP, mapReady ? MF_ENABLED : (MF_GRAYED | MF_DISABLED));
 }
 

@@ -18,6 +18,7 @@
 #include "castlemist/format/struct_template.h"
 #include "castlemist/format/strs_keys.h"
 #include "castlemist/render/gw2bgfx_view.h"
+#include "castlemist/ripper/vrchat.h"
 
 namespace castlemist::ui {
 
@@ -516,6 +517,77 @@ void on_gltf_export_done(HWND hwnd) {
                g_gltf_export_result.particlesJsonPath;
     }
     MessageBoxW(hwnd, utf8_to_wide(msg).c_str(), L"glTF export finished", MB_ICONINFORMATION);
+}
+
+// Set by the background thread just before it posts WM_APP_VRCHAT_MODEL_DONE.
+castlemist::ripper::VrchatModelReport g_vrchat_model_result;
+
+// "Export for VRChat (Model)...": the save dialog picks the folder's parent and name
+// (the chosen file's directory and stem); the export itself runs on a thread.
+void do_export_vrchat_model(HWND hwnd) {
+    if (!g_app->has_loaded_entry || g_app->current_entry.kind != PreviewKind::Model ||
+        !g_app->current_entry.model) {
+        MessageBoxW(hwnd, L"Select a model entry first.", L"castlemist", MB_ICONINFORMATION);
+        return;
+    }
+    wchar_t path[MAX_PATH] = L"model";
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwnd;
+    ofn.lpstrTitle = L"Export for VRChat - the file name becomes the folder name";
+    ofn.lpstrFilter = L"VRChat export folder\0*.*\0";
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOTESTFILECREATE;
+    if (!GetSaveFileNameW(&ofn)) return;
+
+    std::wstring full = path;
+    const size_t slash = full.find_last_of(L"\\/");
+    std::wstring parent = slash == std::wstring::npos ? L"." : full.substr(0, slash);
+    std::wstring stem = slash == std::wstring::npos ? full : full.substr(slash + 1);
+    const size_t dot = stem.find_last_of(L'.');
+    if (dot != std::wstring::npos && dot > 0) stem.resize(dot);
+    if (stem.empty()) stem = L"model";
+
+    // The model's file id, for the Blender step's naming and logs (0 when unknown).
+    uint32_t fileId = 0;
+    {
+        const std::vector<uint32_t> fids = get_by_file_id(g_app->data_gw2, g_app->current_mft_index + 1);
+        if (!fids.empty()) fileId = fids.front();
+    }
+
+    // A copy, so the live preview is never touched by the writer thread.
+    auto model = std::make_shared<ModelPreview>(*g_app->current_entry.model);
+    const std::string parentUtf8 = wide_to_utf8(parent), nameUtf8 = wide_to_utf8(stem);
+    SetWindowTextW(g_app->hwnd_status_label, L"Exporting for VRChat (Blender runs after the textures)...");
+
+    std::thread([hwnd, model, parentUtf8, nameUtf8, fileId]() {
+        g_vrchat_model_result = castlemist::ripper::export_vrchat_model(*model, parentUtf8, nameUtf8, fileId);
+        PostMessageW(hwnd, WM_APP_VRCHAT_MODEL_DONE, 0, 0);
+    }).detach();
+}
+
+void on_vrchat_model_done(HWND hwnd) {
+    const auto& r = g_vrchat_model_result;
+    if (!r.ok) {
+        SetWindowTextW(g_app->hwnd_status_label, L"VRChat export failed.");
+        MessageBoxW(hwnd, utf8_to_wide(r.error).c_str(), L"VRChat export failed", MB_ICONERROR);
+        return;
+    }
+    SetWindowTextW(g_app->hwnd_status_label, L"VRChat export finished.");
+    std::string msg = "Wrote the folder:\n" + r.folder + "\n\n";
+    if (!r.fbx.empty()) {
+        msg += "FBX: " + r.fbx + "\n";
+    } else {
+        msg += "No .fbx: " + (r.blender.empty() ? std::string("Blender did not run") : r.blender);
+        if (!r.blenderLog.empty()) msg += "\nBlender log: " + r.blenderLog;
+        msg += "\n(the .glb, Textures and materials.json were still written)\n";
+    }
+    msg += "Materials: " + std::to_string(r.materials) + ", animation clips: " + std::to_string(r.clips) +
+           ", warnings: " + std::to_string(r.warnings.size());
+    if (!r.warnings.empty()) msg += " (see materials.json)";
+    MessageBoxW(hwnd, utf8_to_wide(msg).c_str(), L"VRChat export finished",
+                r.warnings.empty() ? MB_ICONINFORMATION : MB_ICONWARNING);
 }
 
 // "Save Texture As..." from the texture panel's right-click menu. The panel
