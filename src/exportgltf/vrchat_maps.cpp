@@ -106,6 +106,11 @@ std::array<double, 3> average_colour(const ModelTextureCPU& t) {
     return {sum[0] / peak, sum[1] / peak, sum[2] / peak};
 }
 
+std::array<float, 3> average_rgb(const ModelTextureCPU& t) {
+    const auto c = average_colour(t);
+    return {static_cast<float>(c[0]), static_cast<float>(c[1]), static_cast<float>(c[2])};
+}
+
 const char* extra_use(const std::string& role, const ShaderProfile& profile) {
     if (role == "mod") return "detail-multiply2x";
     if (role == "decal") return "lerp-by-decal-alpha";
@@ -123,6 +128,10 @@ public:
 
     MaterialMaps run() {
         out_.metalSource = out_.smoothSource = out_.reflectionSource = out_.specularSource = "none";
+        if (&profile_ == &default_profile())
+            out_.warnings.push_back("default profile used: AMAT " +
+                                    std::to_string(mat_.materialFile) +
+                                    " is not in the shader table, channels read generically");
         collect_layers();
         if (const auto v = vec("speccp")) out_.specularTint = rgb(*v);
         if (const auto v = vec("envcr"))
@@ -148,6 +157,7 @@ public:
         build_emission();
         build_distortion();
         build_extras();
+        warn_animated_glow();
         warn_uvs();
         return std::move(out_);
     }
@@ -191,17 +201,27 @@ private:
         for (const auto& x : mat_.extraTextures) {
             Layer l = resolve(x.role.empty() ? std::string("unnamed") : x.role, x.texIndex,
                               x.uvIndex, x.fileId);
-            if (l.usable()) layers_.push_back(std::move(l));
+            if (l.usable())
+                layers_.push_back(std::move(l));
+            else
+                failedRoles_.push_back(l.role);
         }
         // A baked glow (e.g. a sylvari's pattern) stands in for a glow layer.
         if (mat_.emissiveTex >= 0) {
             Layer l = resolve("emissive", mat_.emissiveTex, mat_.diffuseUv, 0);
-            if (l.usable()) layers_.push_back(std::move(l));
+            if (l.usable())
+                layers_.push_back(std::move(l));
+            else
+                failedRoles_.push_back(l.role);
         }
         if (mat_.metalRoughTex >= 0) {
             Layer l = resolve("metalRough", mat_.metalRoughTex, mat_.diffuseUv, 0);
             if (l.usable()) layers_.push_back(std::move(l));
         }
+    }
+
+    bool failed(const char* role) const {
+        return std::find(failedRoles_.begin(), failedRoles_.end(), role) != failedRoles_.end();
     }
 
     /// First usable layer with one of the roles, or nullptr.
@@ -400,6 +420,8 @@ private:
     void build_emission() {
         const Layer* glow = find({"glow"});
         if (!glow) glow = find({"emissive"});
+        // A glow layer that failed to decode is still a glow layer: never substitute.
+        const bool glowFailed = !glow && (failed("glow") || failed("emissive"));
         const Layer* glowmask = find({"glowmask"});
         const Layer* mask = find({"mask"});
 
@@ -410,46 +432,66 @@ private:
                                     std::to_string(glow->uv) + " and glowmask UV" +
                                     std::to_string(glowmask->uv) + ": kept the material's own");
 
+        // A uniform glowmask scales the whole emission; a black one switches it off.
+        std::array<float, 3> scale = {1, 1, 1};
+        if (glowmask && glowmask->placeholder) {
+            consumed_.push_back(glowmask);
+            if (glowmask->constant[0] == 0 && glowmask->constant[1] == 0 &&
+                glowmask->constant[2] == 0) {
+                out_.warnings.push_back("glowmask layer (fileId " +
+                                        std::to_string(glowmask->fileId) +
+                                        ") is a black placeholder: no emission");
+                if (glow) consumed_.push_back(glow);
+                return;
+            }
+            for (size_t c = 0; c < 3; ++c) scale[c] = glowmask->constant[c] / 255.0f;
+        }
+
+        bool maskFromMaskGlow = false;
         if (glowmask && glowmask->real()) {
             out_.emissionMask = raw_slot(*glowmask, "glowmask");
             consumed_.push_back(glowmask);
         } else if (mask && mask->real() && profile_.maskGlow != Channel::None) {
             out_.emissionMask = grey_slot(*mask, profile_.maskGlow);
+            maskFromMaskGlow = true;
         } else if (mask && mask->real() && profile_.maskGlowGate != Channel::None) {
             out_.emissionMask = grey_slot(*mask, profile_.maskGlowGate);
         }
-        if (glowmask && glowmask->placeholder) consumed_.push_back(glowmask);
 
         const bool additive = blend_.nearest == BlendPreset::Additive ||
                               blend_.nearest == BlendPreset::SoftAdditive;
         if (glow && glow->real()) {
             out_.emissionMap = raw_slot(*glow, glow->role);
+            out_.emissionColor = average_rgb(out_.emissionMap.tex);
             consumed_.push_back(glow);
-        } else if ((out_.emissionMask.present || additive) && out_.baseColor.present) {
+        } else if (glow) {  // placeholder: its colour, no map
+            out_.emissionColor = {glow->constant[0] / 255.0f, glow->constant[1] / 255.0f,
+                                  glow->constant[2] / 255.0f};
+            consumed_.push_back(glow);
+        } else if (!glowFailed && (maskFromMaskGlow || additive) && out_.baseColor.present) {
+            // The base colour stands in only when there is no glow layer at all.
             out_.emissionMap = out_.baseColor;
             out_.emissionMap.source = "baseColor";
+            out_.emissionColor = average_rgb(out_.emissionMap.tex);
         }
-        if (glow && glow->placeholder) consumed_.push_back(glow);
+        for (size_t c = 0; c < 3; ++c) out_.emissionColor[c] *= scale[c];
 
-        if (out_.emissionMap.present) {
-            const auto c = average_colour(out_.emissionMap.tex);
-            out_.emissionColor = {static_cast<float>(c[0]), static_cast<float>(c[1]),
-                                  static_cast<float>(c[2])};
+        // The .glb's emissiveTexture: mask x emissionColor, else the map x the
+        // uniform glowmask's scale.
+        const MapSlot* src = out_.emissionMask.present  ? &out_.emissionMask
+                             : out_.emissionMap.present ? &out_.emissionMap
+                                                        : nullptr;
+        if (!src) return;
+        const bool fromMask = src == &out_.emissionMask;
+        ModelTextureCPU t = src->tex;
+        for (size_t i = 0; i + 3 < t.rgba.size(); i += 4) {
+            for (size_t c = 0; c < 3; ++c)
+                t.rgba[i + c] = to_byte(t.rgba[i + c] / 255.0 *
+                                        (fromMask ? out_.emissionColor[c] : scale[c]));
+            t.rgba[i + 3] = 255;
         }
-
-        // The .glb's emissiveTexture: mask x the map's average colour, else the map.
-        if (out_.emissionMask.present) {
-            ModelTextureCPU t = out_.emissionMask.tex;
-            for (size_t i = 0; i + 3 < t.rgba.size(); i += 4) {
-                for (size_t c = 0; c < 3; ++c)
-                    t.rgba[i + c] = to_byte(t.rgba[i + c] / 255.0 * out_.emissionColor[c]);
-                t.rgba[i + 3] = 255;
-            }
-            out_.emissionBaked =
-                slot_of(std::move(t), out_.emissionMask.uv, 0, "emissionMask x emissionColor");
-        } else if (out_.emissionMap.present) {
-            out_.emissionBaked = out_.emissionMap;
-        }
+        out_.emissionBaked = slot_of(std::move(t), src->uv, fromMask ? 0 : src->fileId,
+                                     fromMask ? "emissionMask x emissionColor" : src->source);
     }
 
     void build_distortion() {
@@ -466,6 +508,17 @@ private:
             if (!l.real() || (used && use.empty())) continue;
             out_.extras.push_back({l.role, use, raw_slot(l, l.role)});
         }
+    }
+
+    /// Legendary weapons replace the glow with an animated effect castlemist
+    /// cannot express as maps; its layers are already raw extras, so say so.
+    void warn_animated_glow() {
+        if (!profile_.animatedGlowLayers) return;
+        std::string roles;
+        for (const auto& x : out_.extras) roles += (roles.empty() ? "" : ", ") + x.role;
+        out_.warnings.push_back("animated legendary glow is not mapped (profile '" +
+                                profile_.name + "'): its layers are exported raw as extras" +
+                                (roles.empty() ? std::string() : " (" + roles + ")"));
     }
 
     void warn_uvs() {
@@ -495,6 +548,7 @@ private:
     Layer diffuse_, normal_;
     std::vector<Layer> layers_;
     std::vector<const Layer*> consumed_;
+    std::vector<std::string> failedRoles_;  ///< roles of layers that failed to decode
 };
 
 }  // namespace

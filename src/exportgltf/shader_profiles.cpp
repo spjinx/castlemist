@@ -33,8 +33,13 @@ std::vector<Entry> build_table() {
 
     // weapon-glow: lit core, holes < 64, shine saturate(2a-1).
     t.push_back({{561567, 511755, 510615}, make("weapon-glow", AlphaUse::HolesAndShine, true)});
-    // Same lit core, but the glow is an animated legendary effect (still supported).
-    t.push_back({{2083141, 2140066}, make("weapon-glow-legendary", AlphaUse::HolesAndShine, true)});
+    // Same lit core, but the glow is an animated legendary effect (still supported;
+    // the animated layers go out raw with a warning).
+    {
+        ShaderProfile p = make("weapon-glow-legendary", AlphaUse::HolesAndShine, true);
+        p.animatedGlowLayers = true;
+        t.push_back({{2083141, 2140066}, p});
+    }
 
     {
         ShaderProfile p = make("weapon-spec", AlphaUse::HolesAndShine, true);

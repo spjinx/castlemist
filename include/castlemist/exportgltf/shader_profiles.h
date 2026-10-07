@@ -46,6 +46,7 @@ struct ShaderProfile {
     int opacityTexture = -1;               ///< index into textureFileIds whose R is opacity (legacy-untagged: 2)
     bool premultiplyRgbByAlpha = false;
     bool glowOnUv2MaskOnUv0 = false;       ///< weapon-spec swaps them
+    bool animatedGlowLayers = false;       ///< legendary: animated glow layers, not mapped
 };
 
 /// Profile for a material: by AMAT fileId, else the legacy-untagged trait

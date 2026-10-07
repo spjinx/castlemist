@@ -499,3 +499,93 @@ CM_TEST(vrchat, tints_from_constant_vectors) {
     CHECK(m.reflectionSource == "envcr");
     CHECK_EQ(px(m.packed.tex, 0, 2), 255);
 }
+
+CM_TEST(vrchat, placeholder_glow_with_real_glowmask) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(561567);
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "glow", add_tex(model, solid(4, 4, {255, 128, 0, 255}, 958179)), 0);
+    add_layer(model, mat, "glowmask", add_tex(model, solid(2, 2, {200, 200, 200, 255}, 2002)), 2);
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK_FALSE(m.emissionMap.present);  // no base-colour substitute
+    CHECK_NEAR(m.emissionColor[0], 1.0f, 0.001f);
+    CHECK_NEAR(m.emissionColor[1], 128.0f / 255.0f, 0.001f);
+    CHECK_NEAR(m.emissionColor[2], 0.0f, 0.001f);
+    CHECK(m.emissionMask.present);
+    CHECK(m.emissionBaked.present);
+    CHECK_NEAR(px(m.emissionBaked.tex, 0, 0), 200, 1);
+    CHECK_NEAR(px(m.emissionBaked.tex, 0, 1), 100, 1);
+    CHECK(any_warning(m, "placeholder"));
+}
+
+CM_TEST(vrchat, failed_glow_does_not_fall_back_to_base_color) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(561567);
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "glow", -1, 0);
+    add_layer(model, mat, "glowmask", add_tex(model, solid(2, 2, {200, 200, 200, 255}, 2002)), 2);
+    MaterialMaps m = build(model, mat, BlendPreset::Additive);
+    CHECK_FALSE(m.emissionMap.present);
+    CHECK(any_warning(m, "glow layer"));
+    CHECK_NEAR(m.emissionColor[0], 1.0f, 0.001f);
+    CHECK_NEAR(m.emissionColor[1], 1.0f, 0.001f);
+    CHECK_NEAR(m.emissionColor[2], 1.0f, 0.001f);
+    CHECK(m.emissionMask.present);
+}
+
+CM_TEST(vrchat, black_placeholder_glowmask_means_no_emission) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(561567);
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "glow", add_tex(model, solid(2, 2, {255, 64, 0, 255}, 2001)), 0);
+    add_layer(model, mat, "glowmask", add_tex(model, solid(4, 4, {0, 0, 0, 255}, 27338)), 2);
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK_FALSE(m.emissionMap.present);
+    CHECK_FALSE(m.emissionMask.present);
+    CHECK_FALSE(m.emissionBaked.present);
+    CHECK(any_warning(m, "black placeholder"));
+}
+
+CM_TEST(vrchat, uniform_placeholder_glowmask_scales_emission) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(561567);
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "glow", add_tex(model, solid(2, 2, {255, 64, 0, 255}, 2001)), 0);
+    add_layer(model, mat, "glowmask", add_tex(model, solid(4, 4, {128, 128, 128, 255}, 4444)), 2);
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK(m.emissionMap.present);
+    CHECK_FALSE(m.emissionMask.present);
+    CHECK_NEAR(m.emissionColor[0], 128.0f / 255.0f, 0.001f);
+    CHECK(m.emissionBaked.present);
+    CHECK_NEAR(px(m.emissionBaked.tex, 0, 0), 128, 1);
+    CHECK_NEAR(px(m.emissionBaked.tex, 0, 1), 32, 1);
+}
+
+CM_TEST(vrchat, legendary_animated_glow_layers_are_raw_extras) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(2083141);  // weapon-glow-legendary
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "glowmask", add_tex(model, solid(2, 2, {200, 200, 200, 255}, 2002)), 2);
+    add_layer(model, mat, "glowfringe", add_tex(model, solid(2, 2, {1, 2, 3, 255}, 2005)), 0);
+    add_layer(model, mat, "ramp", add_tex(model, solid(2, 2, {4, 5, 6, 255}, 2006)), 0);
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK(profile_for(mat, 0).animatedGlowLayers);
+    bool fringe = false, ramp = false;
+    for (const auto& x : m.extras) {
+        if (x.role == "glowfringe" && x.slot.present) fringe = true;
+        if (x.role == "ramp" && x.slot.present) ramp = true;
+    }
+    CHECK(fringe);
+    CHECK(ramp);
+    CHECK(any_warning(m, "animated legendary glow"));
+}
+
+CM_TEST(vrchat, default_profile_warns) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(999999999);
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    MaterialMaps m = build(model, mat, BlendPreset::Opaque);
+    CHECK(any_warning(m, "default profile"));
+    MaterialMaps w = build(model, mat_with_file(561567), BlendPreset::Opaque);
+    CHECK_FALSE(any_warning(w, "default profile"));
+}
