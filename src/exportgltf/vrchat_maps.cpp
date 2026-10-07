@@ -154,6 +154,7 @@ public:
         }
 
         build_base_color();
+        build_alpha_mask();
         build_normal();
         build_packed();
         build_decal();
@@ -341,6 +342,72 @@ private:
                 t.rgba[i + 3] = outA;
             }
         out_.baseColor = slot_of(std::move(t), diffuse_.uv, d.fileId, "diffuse");
+    }
+
+    /// The profile's cutout layer (511663, 53858) on its own UV: the clip value
+    /// as a greyscale alphaMask, cutoff 0.5. A placeholder is a constant: it
+    /// either never cuts (no map) or cuts the whole material (BaseColor A = 0).
+    void build_alpha_mask() {
+        if (profile_.cutoutRole.empty()) return;
+        const std::string& role = profile_.cutoutRole;
+        const bool rxa = profile_.cutoutChannels == CutoutChannels::RxA;
+        const std::string source = rxa ? role + ".R x " + role + ".A" : role + ".R";
+        const Layer* cut = find({role.c_str()});
+        if (!cut) {
+            // A failed decode already warned in resolve(); say what is lost either way.
+            out_.warnings.push_back((failed(role.c_str()) ? role + " layer failed to decode"
+                                                          : "no " + role + " layer") +
+                                    ": alpha mask not built (the " + source +
+                                    " < 0.5 clip is dropped)");
+            return;
+        }
+        mapped_.push_back(cut);
+        const auto value = [rxa](uint8_t r, uint8_t a) {
+            return rxa ? static_cast<uint8_t>((r * a + 127) / 255) : r;
+        };
+
+        if (cut->placeholder) {
+            const uint8_t v = value(cut->constant[0], cut->constant[3]);
+            if (v >= 128) return;  // never cuts: nothing to map
+            if (out_.baseColor.present)
+                for (size_t i = 3; i < out_.baseColor.tex.rgba.size(); i += 4)
+                    out_.baseColor.tex.rgba[i] = 0;
+            out_.warnings.push_back(role + " layer is a placeholder with " + source + " = " +
+                                    std::to_string(v) + "/255 < 0.5: it cuts the whole "
+                                    "material (BaseColor alpha 0)");
+            return;
+        }
+
+        const ModelTextureCPU& s = *cut->tex;
+        ModelTextureCPU t = blank(s.width, s.height, s.fileId);
+        bool neverCuts = true;
+        for (size_t i = 0; i + 3 < t.rgba.size(); i += 4) {
+            const uint8_t v = value(s.rgba[i], s.rgba[i + 3]);
+            t.rgba[i] = t.rgba[i + 1] = t.rgba[i + 2] = v;
+            t.rgba[i + 3] = 255;
+            if (v < 128) neverCuts = false;
+        }
+        out_.alphaMask = slot_of(std::move(t), cut->uv, cut->fileId, source);
+        out_.alphaMaskCutoff = 0.5f;
+
+        const auto fade = constant("cutfade");
+        if (neverCuts)
+            out_.warnings.push_back(
+                source + " >= 0.5 on every texel: the cutout never cuts at rest, it is a "
+                "dissolve" + (fade ? " driven by cutfade (" + std::to_string(*fade) + ")"
+                                   : std::string()));
+        if (fade && *fade != 1.0f)
+            out_.warnings.push_back("cutfade (" + std::to_string(*fade) +
+                                    ") not baked into the alphaMask");
+        if (const auto p = constant("cutptrb"); p && *p != 0.0f)
+            out_.warnings.push_back("cutout UV perturbation (cutptrb " + std::to_string(*p) +
+                                    ") not mapped: the alphaMask is sampled unperturbed");
+        if (profile_.clips)
+            out_.warnings.push_back(
+                "the game discards on " + source + " x saturate(2a) < 0.5; exported as "
+                "BaseColor holes (saturate(2a) < 0.5) and the alphaMask (" + source +
+                " < 0.5) tested apart, so texels where both are >= 0.5 but the product "
+                "is < 0.5 are kept");
     }
 
     void build_normal() {
@@ -727,6 +794,7 @@ private:
         check("distortion", out_.distortion);
         check("decal", out_.decal);
         check("decalMask", out_.decalMask);
+        check("alphaMask", out_.alphaMask);
         for (const auto& x : out_.extras) check("extra", x.slot);
     }
 

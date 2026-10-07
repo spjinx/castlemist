@@ -262,6 +262,24 @@ the decal as it was (the occlusion slot); materials.json gets
 `maps.decal {file, uv, fileId, source, mode: "decal-over-diffuse" |
 "diffuse-over-decal"}`, `null` when absent.
 
+**Alpha mask (cutout layer).** Some shaders discard on a separate layer on its
+own UV, not on the diffuse alpha (research note 8.2/8.3): the profile's
+`cutoutRole` names it and `cutoutChannels` the value — 511663
+(`weapon-cutout-glow`) `cutout.R × cutout.A` (× `cutfade`), 53858
+(`prop-cutout`) `cutout.R` (× `saturate(2·diffuse.a)`). Such a profile is
+alpha-tested (`alpha_tested()`: `clips` or a cutout role), so the preset is
+Cutout and the .glb keeps MASK on the BaseColor alpha; the cutout itself ships
+only in the folder, as the greyscale **AlphaMask** map on the layer's UV
+(`maps.alphaMask {file, uv, fileId, source, cutoff}`, `cutoff` 0.5; −1 is
+reserved for an opacity mask) and is no longer an extra. BaseColor A keeps the
+diffuse holes only where the profile `clips` (53858, not 511663, whose diffuse
+alpha is shine only); 53858's product is split into the two tests with a
+warning. A 4×4 placeholder cutout is a constant: ≥ 0.5 never cuts (no map),
+< 0.5 cuts the whole material (BaseColor A = 0, warning). A missing or failed
+cutout layer warns "alpha mask not built" and the rest exports. Warned, not
+mapped: a mask that never cuts (every texel ≥ 0.5: a `cutfade` dissolve, as on
+3123167), a `cutfade` other than 1, and the `cutptrb` UV perturbation.
+
 Each rule records which source it used, so `materials.json` can say
 "smoothness from diffuse alpha" or "metal from conduct".
 

@@ -57,6 +57,12 @@ enum class DecalGlow {
     AboveHalf
 };
 
+/// Which channels of a `cutout` layer make the clip value (note sections 8.2, 8.3).
+enum class CutoutChannels {
+    R,    ///< 53858: `cutout.R` (x `saturate(2 * diffuse.a)`, kept in BaseColor)
+    RxA   ///< 511663: `cutout.R * cutout.A` (x `cutfade`)
+};
+
 /// How one shader family uses its textures.
 struct ShaderProfile {
     std::string name;
@@ -79,7 +85,15 @@ struct ShaderProfile {
     bool decalParallax = false;  ///< decal UV parallax-offset by `pardist` (54632, 57131): not mapped
     /// A `mask` channel that multiplies the specular (69887: B): not mapped, warned.
     Channel maskSpecular = Channel::None;
+    /// A layer, on its own UV, whose value the shader discards below 0.5
+    /// (511663, 53858: role "cutout"); empty when none. Its value ships as
+    /// MaterialMaps::alphaMask; the material is alpha-tested (alpha_tested).
+    std::string cutoutRole;
+    CutoutChannels cutoutChannels = CutoutChannels::R;
 };
+
+/// True when the material discards: on its diffuse alpha (`clips`) or on a cutout layer.
+inline bool alpha_tested(const ShaderProfile& p) { return p.clips || !p.cutoutRole.empty(); }
 
 /// Profile for a material: by AMAT fileId, else the legacy-untagged trait
 /// (materialId 0, flags 0, every extra texture role empty, SrcAlpha/InvSrcAlpha

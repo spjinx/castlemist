@@ -175,8 +175,24 @@ std::vector<Entry> build_table() {
         p.animatedGlowLayers = true;
         t.push_back({{2329259}, p});
     }
-    // weapon-cutout-glow (interim): the clip is on the cutout layer, which never cuts at rest.
-    t.push_back({{511663}, make("weapon-cutout-glow", AlphaUse::Shine, false)});
+    // Cutout layers (note sections 8.2, 8.3): the discard is on a `cutout` layer on its
+    // own UV, shipped as the alphaMask. weapon-cutout-glow: cutout.R*A*cutfade < 0.5 (a
+    // dissolve; never cuts at rest on 3123167/1823422); the diffuse alpha is shine only,
+    // so `clips` (diffuse holes) stays false and alpha_tested() comes from the cutout.
+    {
+        ShaderProfile p = make("weapon-cutout-glow", AlphaUse::Shine, false);
+        p.cutoutRole = "cutout";
+        p.cutoutChannels = CutoutChannels::RxA;
+        t.push_back({{511663}, p});
+    }
+    // prop-cutout (53858, "cutout + mod"): discard cutout.R * saturate(2*diffA) < 0.5
+    // (cutout on UV2), shine, mod x2 (an extra).
+    {
+        ShaderProfile p = make("prop-cutout", AlphaUse::HolesAndShine, true);
+        p.cutoutRole = "cutout";
+        p.cutoutChannels = CutoutChannels::R;
+        t.push_back({{53858}, p});
+    }
     // Unsupported: need their own pass.
     t.push_back({{157432, 3718974, 15206},
                  unsupported(make("fx-multiply", AlphaUse::Unused, false))});

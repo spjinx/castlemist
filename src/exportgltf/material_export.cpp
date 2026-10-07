@@ -44,7 +44,8 @@ std::string material_name(const ModelMaterialCPU& mat) {
 MaterialShading material_shading(const ModelMaterialCPU& mat) {
     MaterialShading s;
     s.profile = &profile_for(mat, mat.renderState);
-    s.blend = decode_blend(mat.renderState, mat.hasRenderState, mat.isEffect, s.profile->clips);
+    s.blend = decode_blend(mat.renderState, mat.hasRenderState, mat.isEffect,
+                           alpha_tested(*s.profile));
     return s;
 }
 

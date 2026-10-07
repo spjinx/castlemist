@@ -210,6 +210,9 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
         json decalMask = mw.write(maps.decalMask, "DecalMask");
         if (!decalMask.is_null()) decalMask["channel"] = maps.decalMaskChannel;
         jm["decalMask"] = std::move(decalMask);
+        json alphaMask = mw.write(maps.alphaMask, "AlphaMask");
+        if (!alphaMask.is_null()) alphaMask["cutoff"] = maps.alphaMaskCutoff;  // -1: opacity
+        jm["alphaMask"] = std::move(alphaMask);
         json extras = json::array();
         for (const MaterialMaps::Extra& x : maps.extras) {
             json e = mw.write(x.slot, safe_file_name(x.role.empty() ? "extra" : x.role));
@@ -238,7 +241,7 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
             {"blend", blend_json(mat, blend)},
             {"alphaCutoff", kAlphaCutoff},
             // Only clipping shaders were disassembled to this threshold.
-            {"alphaCutoffIsDefault", !profile.clips},
+            {"alphaCutoffIsDefault", !alpha_tested(profile)},
             {"renderQueueOffset", mat.sortLayer},  // draw order from the material's sort layer
             {"sortOrder", mat.sortOrder},           // raw
             {"cull", mat.isEffect ? "Off" : "Back"},

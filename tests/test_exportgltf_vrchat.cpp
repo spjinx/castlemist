@@ -1525,3 +1525,168 @@ CM_TEST(vrchat, materials_json_decal_entry) {
     CHECK(dm.value("source", json()) == "decalmask.R");
     for (const json& x : mt["maps"]["extras"]) CHECK(x["role"] != "decalmask");
 }
+
+// ------------------------------------------------------------- cutout layers --
+// docs/research/gw2-material-channels.md 8.2 (511663) and 8.3 "cutout + mod" (53858):
+// the clip is on a `cutout` layer on its own UV, so it ships as maps.alphaMask.
+
+CM_TEST(vrchat, cutout_layer_becomes_alpha_mask) {
+    const ShaderProfile& p = profile_for(mat_with_file(511663), 0);
+    CHECK(p.name == "weapon-cutout-glow");
+    CHECK(p.cutoutRole == "cutout");
+    CHECK(p.cutoutChannels == CutoutChannels::RxA);
+    CHECK(alpha_tested(p));
+    CHECK(decode_blend(0, true, false, alpha_tested(p)).preset == BlendPreset::Cutout);
+
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(511663);
+    mat.diffuseTex = add_tex(model, solid(2, 2, {100, 100, 100, 164}, 1000));
+    add_layer(model, mat, "cutout",
+              add_tex(model, tex_from(4, 1, {{255, 0, 0, 255}, {255, 0, 0, 128},
+                                             {128, 0, 0, 128}, {0, 0, 0, 255}}, 8001)),
+              1);
+    add_layer(model, mat, "glow", add_tex(model, solid(2, 2, {255, 64, 0, 255}, 2001)), 1);
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK(m.alphaMask.present);
+    CHECK_EQ(m.alphaMask.uv, 1);
+    CHECK_EQ(m.alphaMask.fileId, 8001u);
+    CHECK(m.alphaMask.source == "cutout.R x cutout.A");
+    CHECK_NEAR(m.alphaMaskCutoff, 0.5f, 1e-6);
+    const int want[4] = {255, 128, 64, 0};
+    for (int i = 0; i < 4; ++i) {
+        CHECK_NEAR(px(m.alphaMask.tex, i, 0), want[i], 1);
+        CHECK_EQ(px(m.alphaMask.tex, i, 1), px(m.alphaMask.tex, i, 0));
+        CHECK_EQ(px(m.alphaMask.tex, i, 2), px(m.alphaMask.tex, i, 0));
+        CHECK_EQ(px(m.alphaMask.tex, i, 3), 255);
+    }
+    CHECK_FALSE(has_extra(m, "cutout"));
+    // The diffuse alpha is shine only: no holes in BaseColor; the glow is still mapped.
+    for (int i = 0; i < 4; ++i) CHECK_EQ(px(m.baseColor.tex, i, 3), 255);
+    CHECK(m.emissionMap.present);
+    CHECK(m.smoothSource == "diffuseAlpha");
+    CHECK_FALSE(any_warning(m, "never cuts at rest"));
+
+    // Every texel >= 0.5 (3123167): a dissolve, said once, naming cutfade.
+    ModelMaterialCPU rest = mat_with_file(511663);
+    rest.diffuseTex = mat.diffuseTex;
+    rest.namedConstants = {{"cutfade", 1.0f}};
+    add_layer(model, rest, "cutout",
+              add_tex(model, tex_from(2, 1, {{255, 0, 0, 255}, {200, 0, 0, 200}}, 8002)), 1);
+    MaterialMaps r = build(model, rest, BlendPreset::Cutout);
+    CHECK(r.alphaMask.present);
+    CHECK_EQ(count_warnings(r, "never cuts at rest"), size_t{1});
+    CHECK(any_warning(r, "cutfade"));
+}
+
+CM_TEST(vrchat, cutout_layer_with_diffuse_holes) {
+    const ShaderProfile& p = profile_for(mat_with_file(53858), 0);
+    CHECK(p.supported);
+    CHECK(p.clips);
+    CHECK(p.diffuseAlpha == AlphaUse::HolesAndShine);
+    CHECK(p.cutoutRole == "cutout");
+    CHECK(p.cutoutChannels == CutoutChannels::R);
+
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(53858);
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "cutout",
+              add_tex(model, tex_from(2, 1, {{200, 10, 0, 40}, {50, 0, 0, 255}}, 8003)), 2);
+    add_layer(model, mat, "mod", add_tex(model, solid(2, 2, {128, 128, 128, 255}, 8004)), 1);
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    // BaseColor keeps the diffuse holes saturate(2a) < 0.5.
+    const int wantA[4] = {0, 255, 255, 255};
+    for (int i = 0; i < 4; ++i) CHECK_EQ(px(m.baseColor.tex, i, 3), wantA[i]);
+    CHECK(m.alphaMask.present);
+    CHECK_EQ(m.alphaMask.uv, 2);
+    CHECK(m.alphaMask.source == "cutout.R");
+    CHECK_NEAR(m.alphaMaskCutoff, 0.5f, 1e-6);
+    CHECK_EQ(px(m.alphaMask.tex, 0, 0), 200);  // R only, the alpha is ignored
+    CHECK_EQ(px(m.alphaMask.tex, 1, 0), 50);
+    CHECK_FALSE(has_extra(m, "cutout"));
+    CHECK(has_extra(m, "mod"));
+    CHECK(any_warning(m, "alphaMask (cutout.R) uses UV2"));
+    // The game multiplies the two before one test: splitting them is an approximation.
+    CHECK(any_warning(m, "cutout.R x saturate(2a)"));
+}
+
+CM_TEST(vrchat, cutout_layer_missing_warns) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(511663);
+    mat.diffuseTex = add_tex(model, solid(2, 2, {100, 100, 100, 164}, 1000));
+    add_layer(model, mat, "glow", add_tex(model, solid(2, 2, {255, 64, 0, 255}, 2001)), 1);
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK_FALSE(m.alphaMask.present);
+    CHECK_EQ(count_warnings(m, "no cutout layer: alpha mask not built"), size_t{1});
+    CHECK(m.baseColor.present);
+    CHECK(m.emissionMap.present);
+
+    ModelMaterialCPU bad = mat;
+    add_layer(model, bad, "cutout", -1, 1);  // failed to decode
+    MaterialMaps b = build(model, bad, BlendPreset::Cutout);
+    CHECK_FALSE(b.alphaMask.present);
+    CHECK(any_warning(b, "cutout layer (fileId 4242) failed to decode"));
+    CHECK(any_warning(b, "alpha mask not built"));
+    CHECK_FALSE(has_extra(b, "cutout"));
+    CHECK(b.baseColor.present);
+    CHECK(b.emissionMap.present);
+}
+
+CM_TEST(vrchat, cutout_placeholder_is_constant) {
+    ModelPreview model;
+    const int diffuse = add_tex(model, solid(2, 2, {100, 100, 100, 164}, 1000));
+
+    ModelMaterialCPU keep = mat_with_file(511663);
+    keep.diffuseTex = diffuse;
+    add_layer(model, keep, "cutout", add_tex(model, solid(4, 4, {255, 0, 0, 200}, 8005)), 1);
+    MaterialMaps k = build(model, keep, BlendPreset::Cutout);
+    CHECK_FALSE(k.alphaMask.present);
+    for (int i = 0; i < 4; ++i) CHECK_EQ(px(k.baseColor.tex, i, 3), 255);
+    CHECK_FALSE(any_warning(k, "whole material"));
+    CHECK_FALSE(any_warning(k, "alpha mask not built"));
+
+    ModelMaterialCPU cut = mat_with_file(511663);
+    cut.diffuseTex = diffuse;
+    add_layer(model, cut, "cutout", add_tex(model, solid(4, 4, {100, 0, 0, 255}, 8006)), 1);
+    MaterialMaps c = build(model, cut, BlendPreset::Cutout);
+    CHECK_FALSE(c.alphaMask.present);
+    for (int i = 0; i < 4; ++i) CHECK_EQ(px(c.baseColor.tex, i, 3), 0);
+    CHECK_EQ(count_warnings(c, "cuts the whole material"), size_t{1});
+    CHECK_FALSE(has_extra(c, "cutout"));
+}
+
+CM_TEST(vrchat, materials_json_alpha_mask_entry) {
+    ModelPreview model = glow_quad();
+    ModelMaterialCPU hammer = mat_with_file(511663);
+    hammer.index = 1;
+    hammer.materialName = "Hammer";
+    hammer.hasRenderState = true;
+    hammer.renderState = 0;
+    hammer.diffuseTex = add_tex(model, solid(2, 2, {100, 100, 100, 164}, 1000));
+    add_layer(model, hammer, "cutout",
+              add_tex(model, tex_from(2, 1, {{255, 0, 0, 255}, {40, 0, 0, 255}}, 8007)), 1);
+    model.materials.push_back(hammer);
+    model.meshes.push_back(quad_mesh(1));
+
+    fs::path dir = fresh_dir("alphamask");
+    VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Hammer", 1);
+    CHECK(r.ok);
+    CHECK(fs::exists(dir / "Textures" / "Hammer - AlphaMask.png"));
+    json doc = read_json(dir / "materials.json");
+    const json& h = *material_named(doc, "Hammer");
+    CHECK(h["preset"] == "Cutout");
+    CHECK(h["alphaCutoffIsDefault"] == false);
+    json am = h["maps"].value("alphaMask", json());
+    if (!am.is_object()) am = json::object();
+    CHECK(am.value("file", json()) == "Textures/Hammer - AlphaMask.png");
+    CHECK(am.value("uv", json()) == 1);
+    CHECK(am.value("fileId", json()) == 8007);
+    CHECK(am.value("source", json()) == "cutout.R x cutout.A");
+    CHECK_NEAR(am.value("cutoff", json(-9.0)).get<double>(), 0.5, 1e-6);
+    for (const json& x : h["maps"]["extras"]) CHECK(x["role"] != "cutout");
+    const json& blade = *material_named(doc, "Blade");
+    CHECK(blade["maps"].contains("alphaMask"));
+    CHECK(blade["maps"].value("alphaMask", json(1)).is_null());
+    // The .glb keeps the BaseColor alpha test: MASK.
+    json g = glb_json(dir / "Hammer.glb");
+    CHECK(g["materials"][1]["alphaMode"] == "MASK");
+}

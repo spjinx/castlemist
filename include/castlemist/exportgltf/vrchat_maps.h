@@ -45,6 +45,12 @@ struct MaterialMaps {
     /// by it in the shader. `decalMaskChannel` names the source channel ("R").
     MapSlot decalMask;
     std::string decalMaskChannel;
+    /// Opacity or cutout on its own UV set, greyscale in RGB (A 255): the shader
+    /// multiplies the BaseColor alpha by it (opacity) or discards below
+    /// `alphaMaskCutoff` (cutout layer: 511663 `cutout.R x cutout.A`, 53858
+    /// `cutout.R`). Its `source` names the formula.
+    MapSlot alphaMask;
+    float alphaMaskCutoff = -1.0f;  ///< -1 = opacity, not a cutoff
     /// A layer kept raw, by role, with a hint of how the game uses it ("detail-multiply2x", ...).
     struct Extra { std::string role, use; MapSlot slot; };
     std::vector<Extra> extras;
