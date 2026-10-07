@@ -225,6 +225,17 @@ std::vector<Entry> build_table() {
         p.unlit = true;
         t.push_back({{842652}, p});
     }
+    // prop-projector (note section 8.3, hand-read: 77238 = 835499, 69856 = 69792 = 512093 =
+    // 512112 by opcode stream): prop-lit with mod; albedo = lerp(diffuse*mod*2,
+    // projector.rgb, w), w from the world normal. Only 512093/512112 clip on the diffuse alpha.
+    {
+        ShaderProfile p = make("prop-projector", AlphaUse::Shine, false);
+        p.projectorRole = "projector";
+        t.push_back({{77238, 835499, 69856, 69792}, p});
+        p.diffuseAlpha = AlphaUse::HolesAndShine;
+        p.clips = true;
+        t.push_back({{512093, 512112}, p});
+    }
     // Unsupported: need their own pass.
     t.push_back({{157432, 3718974, 15206},
                  unsupported(make("fx-multiply", AlphaUse::Unused, false))});

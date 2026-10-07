@@ -172,6 +172,7 @@ public:
         bake_emission();
         build_distortion();
         build_rim();
+        build_projector();
         build_extras();
         warn_animated_glow();
         warn_uvs();
@@ -956,6 +957,33 @@ private:
         out_.warnings.push_back(std::move(w));
     }
 
+    /// 77238: albedo = lerp(diffuse*mod*2, projector.rgb, w), w = smoothstep(prjfall.x,
+    /// prjfall.y, f(N)) x saturate(2 * projector.a). The weight depends on the world
+    /// normal, so the layer ships as its own map and the rest is described.
+    void build_projector() {
+        const std::string& role = profile_.projectorRole;
+        if (role.empty()) return;
+        const Layer* p = find({role.c_str()});
+        if (!p) {
+            out_.warnings.push_back((failed(role.c_str()) ? role + " layer failed to decode"
+                                                          : "no " + role + " layer") +
+                                    ": projector not built");
+            return;
+        }
+        consumed_.push_back(p);
+        if (p->placeholder)
+            out_.projectorConstant = p->constant;
+        else
+            out_.projector = raw_slot(*p, role);
+        // The note spells it `prjfall`; the MODL constant decodes as `prkfall` (2141433 mat 7).
+        auto fall = vec("prjfall");
+        if (!fall) fall = vec("prkfall");
+        if (fall) out_.projectorFalloff = std::array<float, 2>{(*fall)[0], (*fall)[1]};
+        out_.warnings.push_back(
+            "projector blends by world-up facing: not baked (described in materials.json "
+            "(projector): weight = smoothstep(prjfall) x saturate(2a) of the projector layer)");
+    }
+
     void build_extras() {
         // With a baseColorRole the diffuse is not colour (842652: a UV-offset map).
         if (!profile_.baseColorRole.empty() && diffuse_.real())
@@ -999,6 +1027,7 @@ private:
         check("decal", out_.decal);
         check("decalMask", out_.decalMask);
         check("alphaMask", out_.alphaMask);
+        check("projector", out_.projector);
         for (const auto& x : out_.extras) check("extra", x.slot);
     }
 

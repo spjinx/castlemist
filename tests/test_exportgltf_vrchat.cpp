@@ -2168,3 +2168,141 @@ CM_TEST(vrchat, rim_ramp_in_materials_json) {
     CHECK(material_named(doc, "Blade")->contains("rim"));
     CHECK((*material_named(doc, "Blade"))["rim"].is_null());
 }
+
+// ----------------------------------------------------------------- projector --
+// Note 8.3 "prop-projector" (77238 family): moss/snow weighted by the world normal,
+// w = smoothstep(prjfall.x, prjfall.y, f(N)) x saturate(2 * projector.a). Not a UV
+// bake: the projector layer ships as its own map and the weight is described.
+
+namespace {
+
+ModelMaterialCPU projector_mat(ModelPreview& model, bool withProjector = true) {
+    ModelMaterialCPU mat = mat_with_file(77238);
+    mat.diffuseTex = add_tex(model, tex_from(2, 2, {{100, 100, 100, 200}, {100, 100, 100, 200},
+                                                    {100, 100, 100, 200}, {100, 100, 100, 200}},
+                                             1000));
+    if (withProjector)
+        add_layer(model, mat, "projector",
+                  add_tex(model, tex_from(2, 1, {{10, 200, 30, 255}, {20, 210, 40, 128}}, 77300)), 1);
+    add_layer(model, mat, "mod", add_tex(model, solid(2, 2, {128, 128, 128, 255}, 77301)), 1);
+    return mat;
+}
+
+}  // namespace
+
+CM_TEST(vrchat, projector_layer_described) {
+    for (uint32_t id : {77238u, 835499u, 69856u, 69792u}) {
+        const ShaderProfile& p = profile_for(mat_with_file(id), 0);
+        CHECK(p.name == "prop-projector");
+        CHECK(p.supported);
+        CHECK_FALSE(p.clips);
+        CHECK(p.projectorRole == "projector");
+    }
+    for (uint32_t id : {512093u, 512112u}) {
+        const ShaderProfile& p = profile_for(mat_with_file(id), 0);
+        CHECK(p.name == "prop-projector");
+        CHECK(p.clips);
+        CHECK(p.diffuseAlpha == AlphaUse::HolesAndShine);
+        CHECK(p.projectorRole == "projector");
+    }
+    CHECK(profile_for(mat_with_file(561567), 0).projectorRole.empty());
+
+    ModelPreview model;
+    ModelMaterialCPU mat = projector_mat(model);
+    mat.namedConstantVectors = {{"prjfall", {0.25f, 0.75f, 0, 0}}};
+    MaterialMaps m = build(model, mat, BlendPreset::Opaque);
+    CHECK(m.projector.present);
+    CHECK_EQ(m.projector.uv, 1);
+    CHECK_EQ(m.projector.fileId, 77300u);
+    CHECK(m.projector.source == "projector");
+    CHECK_EQ(px(m.projector.tex, 1, 1), 210);
+    CHECK(m.projectorFalloff.has_value());
+    if (m.projectorFalloff) {
+        CHECK_NEAR((*m.projectorFalloff)[0], 0.25f, 1e-6);
+        CHECK_NEAR((*m.projectorFalloff)[1], 0.75f, 1e-6);
+    }
+    CHECK_FALSE(has_extra(m, "projector"));  // consumed, not an extra
+    CHECK(has_extra(m, "mod"));
+    CHECK(any_warning(m, "projector blends by world-up facing: not baked"));
+
+    // No prjfall: falloff unknown (null), still described.
+    ModelMaterialCPU none = projector_mat(model);
+    MaterialMaps n = build(model, none, BlendPreset::Opaque);
+    CHECK(n.projector.present);
+    CHECK_FALSE(n.projectorFalloff.has_value());
+
+    // Other profiles never consume a "projector" layer.
+    ModelMaterialCPU other = mat_with_file(561567);
+    other.diffuseTex = mat.diffuseTex;
+    add_layer(model, other, "projector", mat.extraTextures[0].texIndex, 1);
+    MaterialMaps o = build(model, other, BlendPreset::Cutout);
+    CHECK_FALSE(o.projector.present);
+    CHECK(has_extra(o, "projector"));
+}
+
+CM_TEST(vrchat, projector_missing_warns) {
+    ModelPreview model;
+    ModelMaterialCPU none = projector_mat(model, false);
+    MaterialMaps a = build(model, none, BlendPreset::Opaque);
+    CHECK_FALSE(a.projector.present);
+    CHECK(any_warning(a, "no projector layer: projector not built"));
+    CHECK(a.baseColor.present);
+
+    ModelMaterialCPU bad = projector_mat(model, false);
+    add_layer(model, bad, "projector", -1, 1);
+    MaterialMaps b = build(model, bad, BlendPreset::Opaque);
+    CHECK_FALSE(b.projector.present);
+    CHECK(any_warning(b, "projector layer failed to decode: projector not built"));
+    CHECK(b.baseColor.present);
+
+    // A placeholder is a constant, not a missing map.
+    ModelMaterialCPU flat = projector_mat(model, false);
+    add_layer(model, flat, "projector", add_tex(model, solid(4, 4, {10, 200, 30, 255}, 77302)), 1);
+    MaterialMaps c = build(model, flat, BlendPreset::Opaque);
+    CHECK_FALSE(c.projector.present);
+    CHECK(c.projectorConstant.has_value());
+    if (c.projectorConstant) CHECK_EQ((*c.projectorConstant)[1], 200);
+    CHECK_FALSE(has_extra(c, "projector"));
+    CHECK_FALSE(any_warning(c, "projector not built"));
+    CHECK(any_warning(c, "not baked"));
+}
+
+CM_TEST(vrchat, projector_in_materials_json) {
+    ModelPreview model = glow_quad();
+    ModelMaterialCPU rock = projector_mat(model);
+    rock.index = 1;
+    rock.materialName = "Rock";
+    rock.namedConstantVectors = {{"prjfall", {0.1f, 0.6f, 0, 0}}};
+    model.materials.push_back(rock);
+    model.meshes.push_back(quad_mesh(1));
+
+    fs::path dir = fresh_dir("projector");
+    VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Rock", 1);
+    CHECK(r.ok);
+    json doc = read_json(dir / "materials.json");
+    const json& m = *material_named(doc, "Rock");
+    CHECK(m["profile"] == "prop-projector");
+    const json& p = m["projector"];
+    CHECK(p.is_object());
+    if (p.is_object()) {
+        CHECK(p["file"].get<std::string>().find(" - Projector.png") != std::string::npos);
+        CHECK(p["uv"] == 1);
+        CHECK(p["fileId"] == 77300);
+        CHECK_NEAR(p["falloff"][0].get<double>(), 0.1, 1e-6);
+        CHECK_NEAR(p["falloff"][1].get<double>(), 0.6, 1e-6);
+        CHECK(p["coverage"] == "saturate(2a)");
+        CHECK(fs::exists(dir / p["file"].get<std::string>()));
+    }
+    CHECK(material_named(doc, "Blade")->contains("projector"));
+    CHECK((*material_named(doc, "Blade"))["projector"].is_null());
+}
+
+CM_TEST(vrchat, projector_falloff_reads_prkfall_spelling) {
+    // The MODL constant of 77238 decodes as `prkfall` (2141433 mat 7), not `prjfall`.
+    ModelPreview model;
+    ModelMaterialCPU mat = projector_mat(model);
+    mat.namedConstantVectors = {{"prkfall", {0.33f, 0.66f, 0, 0}}};
+    MaterialMaps m = build(model, mat, BlendPreset::Opaque);
+    CHECK(m.projectorFalloff.has_value());
+    if (m.projectorFalloff) CHECK_NEAR((*m.projectorFalloff)[1], 0.66f, 1e-6);
+}

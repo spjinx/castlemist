@@ -63,6 +63,12 @@ struct MaterialMaps {
         std::string maskSource;  ///< "mask.R"
         std::optional<float> scroll;
     } rim;
+    /// A world-normal projector overlay (77238: moss/snow): the layer as its own map,
+    /// described, not baked. `falloff` is `prjfall` (x, y); coverage is `saturate(2a)`.
+    /// A 4x4 placeholder layer sets `projectorConstant` (RGBA bytes) instead of the map.
+    MapSlot projector;
+    std::optional<std::array<float, 2>> projectorFalloff;
+    std::optional<std::array<uint8_t, 4>> projectorConstant;
     /// A layer kept raw, by role, with a hint of how the game uses it ("detail-multiply2x", ...).
     struct Extra { std::string role, use; MapSlot slot; };
     std::vector<Extra> extras;
