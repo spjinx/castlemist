@@ -360,3 +360,73 @@ CM_TEST(export, no_blender_still_writes_folder) {
     CHECK_EQ(r.materials, size_t{1});
     fs::remove_all(parent);
 }
+
+namespace {
+
+ModelPreview vrchat_quad() {
+    ModelPreview model;
+    ModelMeshCPU m;
+    auto vtx = [](float x, float y, float u, float v) {
+        GVertex g{};
+        g.px = x; g.py = y; g.nz = 1; g.tx = 1; g.by = 1; g.u = u; g.v = v;
+        return g;
+    };
+    m.vertices = {vtx(0, 0, 0, 0), vtx(1, 0, 1, 0), vtx(1, 1, 1, 1), vtx(0, 1, 0, 1)};
+    m.indices = {0, 1, 2, 0, 2, 3};
+    m.vertexCount = 4;
+    model.meshes.push_back(m);
+    ModelMaterialCPU mat;
+    mat.materialName = "Quad";
+    model.materials.push_back(mat);
+    return model;
+}
+
+std::string slurp(const fs::path& p) {
+    std::ifstream f(p, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+}
+
+}  // namespace
+
+// A failing Blender leaves its own output in "<Name> blender.log", then
+// castlemist's reason; a stale log from an earlier run is not kept.
+CM_TEST(export, failing_blender_log_holds_its_output) {
+    const fs::path parent = fs::temp_directory_path() / "cm_vrchat_model_log_test";
+    fs::remove_all(parent);
+    fs::create_directories(parent / "Test Quad");
+    const fs::path log = parent / "Test Quad" / "Test Quad blender.log";
+    std::ofstream(log) << "STALE FROM AN EARLIER RUN\n";
+    const fs::path script = parent / "script.py";
+    std::ofstream(script) << "raise SystemExit(1)\n";
+
+    VrchatOptions vrc;
+    // A stand-in "Blender" that prints an error and exits 2 for these arguments.
+    vrc.blender_exe = "C:\\Windows\\System32\\where.exe";
+    vrc.script = script.string();
+    const VrchatModelReport r = export_vrchat_model(vrchat_quad(), parent.string(), "Test Quad", 123, vrc);
+    CHECK(r.ok);
+    CHECK(r.fbx.empty());
+    CHECK(fs::path(r.blenderLog) == log);
+    const std::string text = slurp(log);
+    CHECK(text.find("ERROR:") != std::string::npos);  // the process's own output (where.exe's)
+    CHECK(text.find("[castlemist] Blender exited with 2") != std::string::npos);  // then the reason
+    CHECK(text.find("STALE") == std::string::npos);
+    fs::remove_all(parent);
+}
+
+CM_TEST(export, unstartable_blender_log_says_why) {
+    const fs::path parent = fs::temp_directory_path() / "cm_vrchat_model_nostart_test";
+    fs::remove_all(parent);
+    fs::create_directories(parent);
+    const fs::path script = parent / "script.py";
+    std::ofstream(script) << "\n";
+    VrchatOptions vrc;
+    vrc.blender_exe = (parent / "no such blender.exe").string();
+    vrc.script = script.string();
+    const VrchatModelReport r = export_vrchat_model(vrchat_quad(), parent.string(), "Test Quad", 123, vrc);
+    CHECK(r.ok);
+    CHECK(r.fbx.empty());
+    CHECK(r.blender.find("could not start Blender") != std::string::npos);
+    CHECK(slurp(r.blenderLog).find("could not start Blender") != std::string::npos);
+    fs::remove_all(parent);
+}
