@@ -75,7 +75,7 @@ are fine).
 
 | tool | needed for | get it |
 | ---- | ---------- | ------ |
-| Ghidra 12 + JDK 21 + Python 3.9–3.14 | step 5 (the struct template), if you don't have IDA Pro | see [struct-template.md](struct-template.md) |
+| Ghidra 12 + JDK 21 + Python 3.13 (not 3.14) | step 5 (the struct template), if you don't have IDA Pro | see [struct-template.md](struct-template.md); after installing Python or Java, open a **new** terminal (no reboot needed) |
 | Blender 4.x | step 8's **Export for VRChat** | <https://www.blender.org/download/> (default install location) |
 
 ---
