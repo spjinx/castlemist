@@ -77,6 +77,7 @@ constexpr UINT_PTR ID_VIEW_THEME_LIGHT  = 1011;
 constexpr UINT_PTR ID_VIEW_THEME_CUSTOM = 1012;
 constexpr UINT_PTR ID_VIEW_THEME_ACCENT = 1013;
 constexpr UINT_PTR ID_TOOLS_CHARACTER = 1019;      // Character Ripper (GW2 API) dialog
+constexpr UINT_PTR ID_TOOLS_DOWNLOAD_NAMES = 1020; // fetch every game name into content_names.tsv
 constexpr UINT_PTR ID_TOOLS_DECODE_TOKEN = 1015;   // token/filename-bytes decoder popup
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL = 1016; // Export glTF... (single model, plain decoded textures)
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MAP = 1017;   // Export glTF... (whole map scene)
@@ -314,6 +315,9 @@ constexpr UINT WM_APP_CHAR_ASSEMBLE_DONE = WM_APP + 9;
 constexpr UINT WM_APP_CHAR_VRCHAT_DONE = WM_APP + 11;  // (+10, +12: look_dialog)
 /// Posted to the main window when game names for content objects arrive.
 constexpr UINT WM_APP_CONTENT_NAMES_DONE = WM_APP + 13;
+/// Download all game names: wparam = done, lparam = total; then done (wparam = ok).
+constexpr UINT WM_APP_NAMES_PROGRESS = WM_APP + 14;
+constexpr UINT WM_APP_NAMES_BULK_DONE = WM_APP + 15;
 
 enum class MiddleTab { Compressed = 0, Decompressed = 1, Structure = 2, Preview = 3 };
 
@@ -729,6 +733,17 @@ void refresh_content_names();
 /// The main list's Name column (mft::NameProvider): the first game name among
 /// the objects that use any of `file_ids`, "+N" when more use it.
 bool name_for_files(const std::vector<uint32_t>& file_ids, bool fetch, std::wstring& out);
+/// Download the name of every API-nameable content object in the background
+/// (building the content map first if needed), so browsing never waits on the
+/// API and the search box can find anything by name. `quiet`: report problems
+/// in the status bar instead of a message box.
+void download_all_names(HWND hwnd, bool quiet);
+void on_main_cmap_done(HWND hwnd);
+void on_names_progress(size_t done, size_t total);
+void on_names_bulk_done(bool ok, size_t total);
+/// Base ids of every entry used by a content object whose cached name contains
+/// `key` (name_query_key form). `named_total`: how many names are cached.
+std::vector<uint32_t> base_ids_matching_name(const std::wstring& key, size_t* named_total);
 /// Re-show the current entry's info panel (e.g. once names or the map arrive).
 void refresh_entry_info();
 

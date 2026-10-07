@@ -65,3 +65,21 @@ CM_TEST(content_links, nothing_uses_it) {
     std::wstring t = format_content_links({}, 0, lookup);
     CHECK(has(t, L"No content object"));
 }
+
+CM_TEST(content_links, text_with_any_non_digit_is_a_name_query) {
+    CHECK(is_name_query(L"astralaria"));
+    CHECK(is_name_query(L"10 Slot"));
+    CHECK_FALSE(is_name_query(L"477426"));
+    CHECK_FALSE(is_name_query(L"  4774 "));
+    CHECK_FALSE(is_name_query(L""));
+    CHECK_FALSE(is_name_query(L"   "));
+}
+
+CM_TEST(content_links, name_match_ignores_case_and_finds_substrings) {
+    const std::wstring q = name_query_key(L"  ASTRAL ");
+    CHECK(name_matches("Astralaria", q));
+    CHECK(name_matches("The astral one", q));
+    CHECK_FALSE(name_matches("Bolt", q));
+    CHECK_FALSE(name_matches("", q));
+    CHECK(name_matches("Piñata Smashing", name_query_key(L"PIÑATA")));
+}

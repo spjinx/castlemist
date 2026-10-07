@@ -510,6 +510,13 @@ const std::vector<ContentRef>& users_of(uint32_t file_id) {
     return it == g_users.end() ? none : it->second;
 }
 
+std::vector<ContentRef> objects() {
+    std::vector<ContentRef> out;
+    out.reserve(g_map.size());
+    for (const auto& [k, fids] : g_map) out.push_back({static_cast<uint32_t>(k >> 32), static_cast<uint32_t>(k)});
+    return out;
+}
+
 const std::vector<ContentRef>& granted_by(uint32_t content_type, uint32_t id) {
     static const std::vector<ContentRef> none;
     build_reverse();

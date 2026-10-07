@@ -2,6 +2,7 @@
 /// @brief File commands: open, export, load template/keys, search and filters.
 
 #include "detail/app_state.h"
+#include "detail/content_links.h"
 
 #include "castlemist/core/text.h"
 
@@ -250,6 +251,8 @@ void on_index_build_done(HWND hwnd, bool ok) {
     SetWindowTextW(g_app->hwnd_status_label, L"Index build finished.");
     if (MessageBoxW(hwnd, L"Index built. Open it now?", L"castlemist", MB_ICONQUESTION | MB_YESNO) == IDYES)
         load_index_path(hwnd, g_index_out_path.c_str());
+    // Then the game names for the Name column and name search (content map first, if it isn't built yet).
+    download_all_names(hwnd, true);
 }
 
 void do_load_template(HWND hwnd) {
@@ -573,9 +576,24 @@ std::string combo_sel(HWND combo) {
 void apply_filters() {
     if (!g_app->dat_loaded && !g_app->index_loaded) return;
 
-    wchar_t buf[32] = L"";
-    GetWindowTextW(g_app->hwnd_search_edit, buf, 32);
-    bool id_active = buf[0] != L'\0';
+    wchar_t buf[256] = L"";
+    GetWindowTextW(g_app->hwnd_search_edit, buf, 256);
+
+    // Text that isn't a number searches by game name (see content_names.cpp).
+    const bool by_name = is_name_query(buf);
+    std::vector<uint32_t> name_ids;
+    size_t names_cached = 0;
+    if (by_name) name_ids = base_ids_matching_name(name_query_key(buf), &names_cached);
+    auto show_name_results = [&](std::vector<uint32_t> ids) {
+        wchar_t st[256];
+        swprintf(st, 256, L"Name search -> %zu entries%ls", ids.size(),
+                 names_cached == 0 ? L"  (no names yet: Tools > Download all game names)" : L"");
+        if (ids.empty()) ids.push_back(UINT32_MAX);  // no such base id: an empty list, not "show all"
+        castlemist::mft::set_filter(g_app->hwnd_list, std::move(ids));
+        SetWindowTextW(g_app->hwnd_status_label, st);
+    };
+
+    bool id_active = !by_name && buf[0] != L'\0';
     uint32_t id_val = id_active ? static_cast<uint32_t>(wcstoul(buf, nullptr, 10)) : 0;
     bool by_file_id = SendMessageW(g_app->hwnd_search_fileid_check, BM_GETCHECK, 0, 0) == BST_CHECKED;
 
@@ -600,6 +618,17 @@ void apply_filters() {
             content.exclude_chunk = c.exclude_chunk;
         }
 
+        if (by_name) {
+            // Narrowed further by whichever type / container / content filters are set.
+            if (!(type.empty() && cont.empty() && content.empty())) {
+                std::vector<uint32_t> allowed =
+                    castlemist::db::query_base_ids(type, cont, content, 0, false, false, 1000000);
+                std::sort(allowed.begin(), allowed.end());
+                std::erase_if(name_ids, [&](uint32_t b) { return !std::binary_search(allowed.begin(), allowed.end(), b); });
+            }
+            show_name_results(std::move(name_ids));
+            return;
+        }
         if (!id_active && type.empty() && cont.empty() && content.empty()) {
             castlemist::mft::set_filter(g_app->hwnd_list, {});  // no filter -> show every asset
             SetWindowTextW(g_app->hwnd_status_label, L"Index: showing all entries");
@@ -614,7 +643,11 @@ void apply_filters() {
         return;
     }
 
-    // Parse mode: id search only (no type/container without an index).
+    // Parse mode: id or name search only (no type/container without an index).
+    if (by_name) {
+        show_name_results(std::move(name_ids));
+        return;
+    }
     if (!id_active) { castlemist::mft::set_filter(g_app->hwnd_list, {}); return; }
     std::vector<uint32_t> base_ids;
     if (by_file_id) {
