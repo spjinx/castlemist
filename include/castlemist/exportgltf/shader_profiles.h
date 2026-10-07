@@ -74,6 +74,9 @@ struct ShaderProfile {
     AlphaUse diffuseAlpha = AlphaUse::Shine;
     Channel maskMetal = Channel::None, maskGloss = Channel::None, maskSheen = Channel::None,
             maskGlow = Channel::None, maskGlowGate = Channel::None;
+    /// The layer role the maskMetal/maskGloss/maskSheen/maskGlow/maskGlowGate channels
+    /// read ("mask" on armor; 3121953 reads "metalmask").
+    std::string maskRole = "mask";
     SpecLayer specLayer = SpecLayer::None;
     int opacityTexture = -1;               ///< index into textureFileIds whose R is opacity (legacy-untagged: 2)
     bool premultiplyRgbByAlpha = false;

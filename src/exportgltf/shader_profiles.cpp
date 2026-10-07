@@ -125,6 +125,14 @@ std::vector<Entry> build_table() {
         p.specLayer = SpecLayer::GlossInAlpha;
         t.push_back({{1729747}, p});
     }
+    // prop-metalmask (note section 8.3): the 561567 lit core; metal = metalmask.G
+    // (t2), mod x2 on UV1.
+    {
+        ShaderProfile p = make("prop-metalmask", AlphaUse::HolesAndShine, true);
+        p.maskRole = "metalmask";
+        p.maskMetal = Channel::G;
+        t.push_back({{3121953}, p});
+    }
     t.push_back({{77876}, make("prop-unlit-holes", AlphaUse::Unused, true)});
     t.push_back({{77598, 189570}, make("prop-diffuse-only", AlphaUse::Unused, false)});
 

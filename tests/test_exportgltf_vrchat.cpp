@@ -489,6 +489,33 @@ CM_TEST(vrchat, armor_mask_channels) {
     CHECK(m.emissionMap.present);  // the base colour
 }
 
+CM_TEST(vrchat, mask_role_reads_named_layer) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(3121953);  // prop-metalmask
+    mat.diffuseTex = add_tex(model, solid(8, 8, {120, 60, 30, 255}, 1000));
+    add_layer(model, mat, "metalmask", add_tex(model, solid(2, 2, {10, 180, 50, 30}, 1001)), 0);
+    add_layer(model, mat, "mask", add_tex(model, solid(2, 2, {1, 2, 3, 4}, 1002)), 0);
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK(profile_for(mat, 0).name == "prop-metalmask");
+    CHECK(m.packed.present);
+    CHECK_EQ(px(m.packed.tex, 9, 0), 180);
+    CHECK(m.metalSource == "metalmask.G");
+
+    // A hand-built profile reading metalmask.G: same result, metalmask is no extra.
+    ShaderProfile p;
+    p.name = "t";
+    p.maskRole = "metalmask";
+    p.maskMetal = Channel::G;
+    ModelPreview model2;
+    ModelMaterialCPU mat2 = mat_with_file(1);
+    mat2.diffuseTex = add_tex(model2, solid(8, 8, {120, 60, 30, 255}, 1000));
+    add_layer(model2, mat2, "metalmask", add_tex(model2, solid(2, 2, {10, 180, 50, 30}, 1001)), 0);
+    MaterialMaps m2 = build_material_maps(model2, mat2, blend_of(BlendPreset::Opaque), p);
+    CHECK_EQ(px(m2.packed.tex, 9, 0), 180);
+    CHECK(m2.metalSource == "metalmask.G");
+    for (const auto& e : m2.extras) CHECK(e.role != "metalmask");
+}
+
 CM_TEST(vrchat, weapon_glow_emission) {
     ModelPreview model;
     ModelMaterialCPU mat = mat_with_file(561567);

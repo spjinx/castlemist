@@ -116,7 +116,7 @@ const char* extra_use(const std::string& role, const ShaderProfile& profile) {
     if (role == "decal") return "lerp-by-decal-alpha";
     if (role == "height") return "parallax";
     if (role == "specular") return "specular-color";
-    if (role == "mask" && profile.maskSheen != Channel::None) return "sheen-in-B";
+    if (role == profile.maskRole && profile.maskSheen != Channel::None) return "sheen-in-B";
     return "";
 }
 
@@ -432,7 +432,7 @@ private:
 
     /// R metal, G smooth, B reflection mask, A specular mask.
     void build_packed() {
-        const Layer* mask = reads_mask() ? find({"mask"}) : nullptr;
+        const Layer* mask = reads_mask() ? find({profile_.maskRole.c_str()}) : nullptr;
         // Gloss (weapon-spec) or exponent/128 (legacy-spec): either way the
         // specular layer's alpha is the smoothness.
         const Layer* spec = profile_.specLayer != SpecLayer::None ? find({"specular"}) : nullptr;
@@ -446,7 +446,7 @@ private:
 
         if (mask && profile_.maskMetal != Channel::None) {
             ch[0] = {Src::Mask, static_cast<int>(profile_.maskMetal), 0};
-            out_.metalSource = "mask." + channel_name(profile_.maskMetal);
+            out_.metalSource = profile_.maskRole + "." + channel_name(profile_.maskMetal);
         } else if (const auto m = constant("mtlness")) {
             ch[0].value = to_byte(*m);
             out_.metalSource = "mtlness";
@@ -457,7 +457,7 @@ private:
 
         if (mask && profile_.maskGloss != Channel::None) {
             ch[1] = {Src::Mask, static_cast<int>(profile_.maskGloss), 0};
-            out_.smoothSource = "mask." + channel_name(profile_.maskGloss);
+            out_.smoothSource = profile_.maskRole + "." + channel_name(profile_.maskGloss);
         } else if (spec) {
             ch[1] = {Src::SpecA, 3, 0};
             out_.smoothSource = profile_.specLayer == SpecLayer::ExponentInAlpha
@@ -558,7 +558,7 @@ private:
         // A glow layer that failed to decode is still a glow layer: never substitute.
         const bool glowFailed = !glow && (failed("glow") || failed("emissive"));
         const Layer* glowmask = find({"glowmask"});
-        const Layer* mask = find({"mask"});
+        const Layer* mask = find({profile_.maskRole.c_str()});
 
         if (profile_.glowOnUv2MaskOnUv0 && glow && glowmask && (glow->uv != 2 || glowmask->uv != 0))
             out_.warnings.push_back("profile '" + profile_.name +
