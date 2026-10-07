@@ -817,8 +817,10 @@ void cmd_model(const Args& a) {
     json tpl;
     try { tin >> tpl; } catch (const std::exception& ex) { fail(std::string("template JSON error: ") + ex.what()); }
 
-    // decompressed MODL bytes
+    // decompressed MODL bytes, and the model's file id (the built preview and
+    // the exports below load by file id, whichever way the entry was picked)
     std::vector<uint8_t> data;
+    uint32_t modelFileId = has(a, "file-id") ? static_cast<uint32_t>(to_u64(a.at("file-id"))) : 0;
     if (has(a, "data")) {
         data = read_file(a.at("data"));
     } else {
@@ -826,6 +828,10 @@ void cmd_model(const Args& a) {
         load_dat_file(dat, need(a, "dat"));
         uint32_t idx = 0;
         data = extract_bytes(dat, a, idx);
+        if (!modelFileId) {
+            std::vector<uint32_t> fids = get_by_file_id(dat, idx + 1);  // MFT index -> base id -> file ids
+            if (!fids.empty()) modelFileId = fids.front();
+        }
     }
 
     castlemist::model::Model model = castlemist::model::Extractor(data, tpl).extract();
@@ -935,9 +941,17 @@ void cmd_model(const Args& a) {
     }
     j["cloth"] = std::move(cloth);
     // The built preview's game-shader facts per material (alpha test, extra roles).
-    Gw2Dat pdat;
-    load_dat_file(pdat, need(a, "dat"));
-    if (auto pv = load_model_by_fileid(pdat, static_cast<uint32_t>(to_u64(a.at("file-id"))))) {
+    // Needs the archive and a file id: --data alone (a loose MODL) gets only the
+    // summary above.
+    std::shared_ptr<ModelPreview> pv;
+    if (has(a, "dat") && modelFileId) {
+        Gw2Dat pdat;
+        load_dat_file(pdat, a.at("dat"));
+        pv = load_model_by_fileid(pdat, modelFileId);
+    } else if (has(a, "glb") || has(a, "vrchat")) {
+        fail("--glb/--vrchat need --dat and the model's file id (pass --file-id with --data)");
+    }
+    if (pv) {
         json gm = json::array();
         for (const auto& g : pv->gameMaterials)
             gm.push_back(json{{"index", g.index}, {"ok", g.ok}, {"prepassCutout", g.prepassCutout}});
@@ -956,7 +970,7 @@ void cmd_model(const Args& a) {
             j["glb"] = r.ok ? json(r.glbPath) : json{{"error", r.error}};
         }
         if (has(a, "vrchat")) {  // the VRChat folder: .glb, .fbx, .blend, Textures, materials.json
-            const uint32_t fid = static_cast<uint32_t>(to_u64(a.at("file-id")));
+            const uint32_t fid = modelFileId;
             castlemist::ripper::VrchatOptions vo;  // [--blender <exe>|-] [--blender-script <py>]
             if (has(a, "blender")) vo.blender_exe = a.at("blender");
             if (has(a, "blender-script")) vo.script = a.at("blender-script");
