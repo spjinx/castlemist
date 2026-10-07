@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <vector>
 #include <windows.h>
 
@@ -44,6 +45,13 @@ void set_metadata_provider(HWND listview, MetadataProvider provider);
 /// Return false to fall back to the MFT field. Also drives that column's sorting.
 using SizeProvider = std::function<bool(uint32_t base_id, uint64_t& uncompressed_size)>;
 void set_size_provider(HWND listview, SizeProvider provider);
+
+/// Optional provider for the "Name" column: the in-game name of what uses this
+/// asset (an item, skin, map, ...), given the row's fileIds. `fetch` is false
+/// while sorting -- answer from what is already known, queue no lookups.
+/// Return false to leave the cell blank. Also drives that column's sorting.
+using NameProvider = std::function<bool(const std::vector<uint32_t>& file_ids, bool fetch, std::wstring& name)>;
+void set_name_provider(HWND listview, NameProvider provider);
 
 /// Forward WM_NOTIFY messages here from the parent window when
 /// notify->hwndFrom is this listview's HWND.

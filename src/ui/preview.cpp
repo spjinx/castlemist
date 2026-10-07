@@ -186,6 +186,7 @@ void apply_extracted_entry(uint32_t mft_index, ExtractedEntry&& entry) {
     // MUST happen before current_entry is replaced: the Bink player reads the
     // movie in place out of the old entry's `decompressed` buffer.
     stop_video();
+    g_app->current_mft_index = mft_index;  // already so for a list click; GW2_AUTOLOAD comes straight here
 
     g_app->current_entry = std::move(entry);
     g_app->has_loaded_entry = true;
@@ -422,7 +423,8 @@ void apply_extracted_entry(uint32_t mft_index, ExtractedEntry&& entry) {
         break;
     }
 
-    castlemist::info::show_entry_info(g_app->hwnd_info, g_app->data_gw2, mft_index, g_app->current_entry);
+    castlemist::info::show_entry_info(g_app->hwnd_info, g_app->data_gw2, mft_index, g_app->current_entry,
+                                      content_links_text(mft_index));
     set_export_enabled(true);
     relayout(); // swap in the surface that matches this entry's type
     InvalidateRect(g_app->hwnd_preview, nullptr, FALSE);

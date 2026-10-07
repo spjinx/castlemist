@@ -311,7 +311,9 @@ constexpr UINT WM_APP_CHAR_NAMES_DONE = WM_APP + 6;
 constexpr UINT WM_APP_CHAR_FETCH_DONE = WM_APP + 7;
 constexpr UINT WM_APP_CHAR_EXPORT_DONE = WM_APP + 8;
 constexpr UINT WM_APP_CHAR_ASSEMBLE_DONE = WM_APP + 9;
-constexpr UINT WM_APP_CHAR_VRCHAT_DONE = WM_APP + 11;  // (+10: look_dialog thumbnails)
+constexpr UINT WM_APP_CHAR_VRCHAT_DONE = WM_APP + 11;  // (+10, +12: look_dialog)
+/// Posted to the main window when game names for content objects arrive.
+constexpr UINT WM_APP_CONTENT_NAMES_DONE = WM_APP + 13;
 
 enum class MiddleTab { Compressed = 0, Decompressed = 1, Structure = 2, Preview = 3 };
 
@@ -710,6 +712,25 @@ CmapEnsure ensure_content_map(HWND notify);
 /// rebuild_precheck() refuses, in which case nothing is touched.
 CmapEnsure rebuild_content_map(HWND notify);
 bool content_map_building();
+
+// ---- content_names.cpp -- game names + chat links for what uses a file
+/// The cached game name of a content object: nullptr = not fetched yet, "" = none.
+const std::string* cached_content_name(uint32_t type, uint32_t id);
+/// Queue names not cached yet for a background fetch from the public GW2 API;
+/// `notify` gets WM_APP_CONTENT_NAMES_DONE as they arrive.
+void request_content_names(HWND notify, const std::vector<castlemist::cmap::ContentRef>& refs);
+/// The info panel's "Game content" section for entry `mft_index` (or the
+/// content object selected in the cntc browser), queueing any missing names.
+std::wstring content_links_text(uint32_t mft_index);
+/// content_browser.cpp: an entry's game name for the entries table's Name column,
+/// and filling those cells in once names arrive.
+std::wstring content_object_name(const ContentObject& o);
+void refresh_content_names();
+/// The main list's Name column (mft::NameProvider): the first game name among
+/// the objects that use any of `file_ids`, "+N" when more use it.
+bool name_for_files(const std::vector<uint32_t>& file_ids, bool fetch, std::wstring& out);
+/// Re-show the current entry's info panel (e.g. once names or the map arrive).
+void refresh_entry_info();
 
 /// Point the main browser at a dat fileId (file-id search) and bring it forward.
 void navigate_to_file_id(uint32_t fid);

@@ -499,6 +499,57 @@ CM_TEST(content_map, cmap_skin_token_recorded) {
     std::filesystem::remove(path);
 }
 
+CM_TEST(content_map, a_file_lists_the_content_objects_that_use_it) {
+    namespace cmap = castlemist::cmap;
+    cmap::clear();
+    cmap::build_from_packs({{7, 902, item_pack(76158, 1, 0)},
+                            {50, 901, skin_pack(13497, 6506, 1)},
+                            {30, 900, file_refs_pack()}});
+
+    const auto& skin_users = cmap::users_of(777);
+    CHECK_EQ(skin_users.size(), size_t{1});
+    if (!skin_users.empty()) {
+        CHECK_EQ(skin_users[0].type, cmap::CONTENT_TYPE_SKIN);
+        CHECK_EQ(skin_users[0].id, 6506u);
+    }
+    const auto& item_users = cmap::users_of(500);
+    CHECK_EQ(item_users.size(), size_t{1});
+    if (!item_users.empty()) CHECK_EQ(item_users[0].id, 76158u);
+    CHECK(cmap::users_of(12345).empty());
+
+    const auto& granted = cmap::granted_by(cmap::CONTENT_TYPE_SKIN, 6506);
+    CHECK_EQ(granted.size(), size_t{1});
+    if (!granted.empty()) {
+        CHECK_EQ(granted[0].type, cmap::CONTENT_TYPE_ITEM);
+        CHECK_EQ(granted[0].id, 76158u);
+    }
+
+    // The reverse lookups come back after a cache round trip, and a clear() forgets them.
+    std::wstring path = (std::filesystem::temp_directory_path() / "cm_test_cmap_users.bin").wstring();
+    CHECK(cmap::save(path));
+    cmap::clear();
+    CHECK(cmap::users_of(777).empty());
+    CHECK(cmap::load(path));
+    CHECK_EQ(cmap::users_of(777).size(), size_t{1});
+    CHECK_EQ(cmap::granted_by(cmap::CONTENT_TYPE_SKIN, 6506).size(), size_t{1});
+    cmap::clear();
+    std::filesystem::remove(path);
+}
+
+CM_TEST(content_map, content_kinds_name_their_api_endpoint_and_chat_link) {
+    namespace cmap = castlemist::cmap;
+    const cmap::ContentKind* item = cmap::content_kind(cmap::CONTENT_TYPE_ITEM);
+    CHECK(item != nullptr);
+    if (item) {
+        CHECK_EQ(std::string(item->api), std::string("items"));
+        CHECK_EQ(item->chat_header, uint8_t{0x02});
+    }
+    const cmap::ContentKind* mount = cmap::content_kind(cmap::CONTENT_TYPE_MOUNT_SKIN);
+    CHECK(mount != nullptr);
+    if (mount) CHECK_EQ(mount->chat_header, uint8_t{0});  // mount skins have no chat link
+    CHECK(cmap::content_kind(123456) == nullptr);
+}
+
 namespace {
 
 // A colour object (type 9) at content offset `o` of a pack: dataId, one material

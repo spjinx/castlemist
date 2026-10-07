@@ -10,7 +10,7 @@ namespace castlemist::mft {
 
 namespace {
 
-constexpr int kColumnCount = 9;
+constexpr int kColumnCount = 10;
 
 struct MftListState {
     Gw2Dat* data_gw2 = nullptr;
@@ -21,6 +21,7 @@ struct MftListState {
     SelectionCallback on_select;
     MetadataProvider meta_provider;    // Type/Container columns (from an index DB)
     SizeProvider size_provider;        // real Uncompressed size (from an index DB)
+    NameProvider name_provider;        // in-game names (content map + GW2 API)
 };
 
 MftListState* get_state(HWND listview) {
@@ -79,12 +80,35 @@ void apply_string_sort(MftListState& state, int column, bool ascending) {
     });
 }
 
+// Name (9): each row's name worked out once, then sorted -- named rows A-Z (or
+// Z-A), every unnamed row after them in archive order, in either direction.
+void apply_name_sort(MftListState& state, bool ascending) {
+    const auto& list = state.data_gw2->mft_base_id_data_list;
+    std::vector<std::wstring> names(list.size());
+    for (size_t i = 0; i < list.size(); ++i) {
+        std::wstring n;
+        if (state.name_provider(list[i].file_id, false, n) && n != L"\x2026") names[i] = std::move(n);
+    }
+    std::stable_sort(state.display_order.begin(), state.display_order.end(), [&](size_t a, size_t b) {
+        const std::wstring& na = names[a];
+        const std::wstring& nb = names[b];
+        if (na.empty() || nb.empty()) return !na.empty() && nb.empty();
+        int c = _wcsicmp(na.c_str(), nb.c_str());
+        return ascending ? (c < 0) : (c > 0);
+    });
+}
+
 void apply_sort(MftListState& state) {
     if (state.sort_column < 0 || state.data_gw2 == nullptr) {
         return;
     }
     int column = state.sort_column;
     bool ascending = state.sort_ascending;
+    if (column == 9) {
+        std::sort(state.display_order.begin(), state.display_order.end());  // stable base for the unnamed
+        if (state.name_provider) apply_name_sort(state, ascending);
+        return;
+    }
     if ((column == 7 || column == 8) && state.meta_provider) {
         apply_string_sort(state, column, ascending);
         return;
@@ -190,6 +214,14 @@ void fill_disp_info(MftListState& state, NMLVDISPINFOW& info) {
         }
         break;
     }
+    case 9: {
+        std::wstring name;
+        if (state.name_provider && state.name_provider(base_entry.file_id, true, name)) {
+            wcsncpy(info.item.pszText, name.c_str(), static_cast<size_t>(info.item.cchTextMax) - 1);
+            info.item.pszText[info.item.cchTextMax - 1] = L'\0';
+        }
+        break;
+    }
     default:
         break;
     }
@@ -224,6 +256,7 @@ HWND create(HWND parent, HINSTANCE instance, int control_id) {
     add_column(listview, 6, L"Comp", 50);
     add_column(listview, 7, L"Type", 70);
     add_column(listview, 8, L"Container", 80);
+    add_column(listview, 9, L"Name", 220);
 
     SetWindowLongPtrW(listview, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(new MftListState()));
     return listview;
@@ -306,6 +339,14 @@ void set_metadata_provider(HWND listview, MetadataProvider provider) {
     MftListState* state = get_state(listview);
     if (state != nullptr) {
         state->meta_provider = std::move(provider);
+        InvalidateRect(listview, nullptr, TRUE);
+    }
+}
+
+void set_name_provider(HWND listview, NameProvider provider) {
+    MftListState* state = get_state(listview);
+    if (state != nullptr) {
+        state->name_provider = std::move(provider);
         InvalidateRect(listview, nullptr, TRUE);
     }
 }

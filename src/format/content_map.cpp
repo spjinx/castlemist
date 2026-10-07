@@ -31,6 +31,18 @@ std::unordered_map<uint32_t, std::string> g_fileid_name;
 
 constexpr size_t kMaxRefsPerObject = 16;
 
+// Reverse indexes behind users_of() / granted_by(), derived from g_map and
+// g_item_links on first use and dropped whenever those change.
+std::unordered_map<uint32_t, std::vector<ContentRef>> g_users;
+std::unordered_map<uint64_t, std::vector<ContentRef>> g_granters;
+bool g_reverse_built = false;
+
+void invalidate_reverse() {
+    g_users.clear();
+    g_granters.clear();
+    g_reverse_built = false;
+}
+
 // The datastore's one shared fileRefs table (array 2, decoded to fileIds). Every
 // fileIndices slot in every pack holds an INDEX into this table, not a fileId --
 // measured against a live Gw2.dat: through the table, item+64 / skin+88 are 100%
@@ -431,6 +443,7 @@ void finalize_palettes() {
 // Translate every queued object's fileRefs indices to fileIds and publish them.
 // Objects stay queued if the fileRefs pack hasn't been seen yet.
 void finalize() {
+    invalidate_reverse();
     finalize_links();
     finalize_palettes();
     if (g_file_refs.empty()) return;
@@ -447,11 +460,67 @@ void finalize() {
     g_pending.clear();
 }
 
+void build_reverse() {
+    if (g_reverse_built) return;
+    g_reverse_built = true;
+    auto by_type_then_id = [](const ContentRef& a, const ContentRef& b) {
+        return a.type != b.type ? a.type < b.type : a.id < b.id;
+    };
+    for (const auto& [k, fids] : g_map) {
+        const ContentRef r{static_cast<uint32_t>(k >> 32), static_cast<uint32_t>(k)};
+        for (uint32_t f : fids) {
+            std::vector<ContentRef>& v = g_users[f];
+            if (v.empty() || v.back().type != r.type || v.back().id != r.id) v.push_back(r);
+        }
+    }
+    for (auto& [f, v] : g_users) std::sort(v.begin(), v.end(), by_type_then_id);
+    for (const auto& [item, links] : g_item_links)
+        for (const ContentLink& l : links) g_granters[key(l.type, l.id)].push_back({CONTENT_TYPE_ITEM, item});
+    for (auto& [k, v] : g_granters) std::sort(v.begin(), v.end(), by_type_then_id);
+}
+
 } // namespace
+
+const ContentKind* content_kind(uint32_t content_type) {
+    // The dataId (+40) is the API id for these; verified against the API for
+    // items, skins, outfits and mount skins, and by name for the rest.
+    static const ContentKind kAchievement{"Achievement", "achievements", 0x0E};
+    static const ContentKind kItem{"Item", "items", 0x02};
+    static const ContentKind kMap{"Map", "maps", 0};
+    static const ContentKind kOutfit{"Outfit", "outfits", 0x0B};
+    static const ContentKind kSkill{"Skill", "skills", 0x06};
+    static const ContentKind kSkin{"Skin", "skins", 0x0A};
+    static const ContentKind kMountSkin{"Mount skin", "mounts/skins", 0};
+    switch (content_type) {
+    case 0: return &kAchievement;
+    case CONTENT_TYPE_ITEM: return &kItem;
+    case 45: return &kMap;
+    case CONTENT_TYPE_OUTFIT: return &kOutfit;
+    case 64: return &kSkill;
+    case CONTENT_TYPE_SKIN: return &kSkin;
+    case CONTENT_TYPE_MOUNT_SKIN: return &kMountSkin;
+    default: return nullptr;
+    }
+}
+
+const std::vector<ContentRef>& users_of(uint32_t file_id) {
+    static const std::vector<ContentRef> none;
+    build_reverse();
+    auto it = g_users.find(file_id);
+    return it == g_users.end() ? none : it->second;
+}
+
+const std::vector<ContentRef>& granted_by(uint32_t content_type, uint32_t id) {
+    static const std::vector<ContentRef> none;
+    build_reverse();
+    auto it = g_granters.find(key(content_type, id));
+    return it == g_granters.end() ? none : it->second;
+}
 
 bool built() { return !g_map.empty(); }
 size_t size() { return g_map.size(); }
 void clear() {
+    invalidate_reverse();
     g_map.clear();
     g_base_id.clear();
     g_fileid_name.clear();
@@ -604,6 +673,7 @@ bool load(const std::wstring& path) {
     uint32_t magic = 0, count = 0;
     if (std::fread(&magic, 4, 1, f) != 1 || magic != kCacheMagic) { std::fclose(f); return false; }
     if (std::fread(&count, 4, 1, f) != 1) { std::fclose(f); return false; }
+    invalidate_reverse();
     g_map.reserve(count + 16);
     for (uint32_t i = 0; i < count; ++i) {
         uint64_t k; uint8_t n;

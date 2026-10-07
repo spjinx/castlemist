@@ -51,6 +51,13 @@ std::vector<uint8_t> base64_decode(const std::string& in);
 /// Decode a chat link. Accepts "[&....]", "&....", or a bare "....".
 Decoded decode(const std::string& text);
 
+/// The chat link for one game id, e.g. encode_id(0x02, 46762) = "[&AgGqtgAA]".
+/// An item link (0x02) carries quantity 1 and no skin/upgrades; the other
+/// single-id links (NPC text, PoI, skill, trait, recipe, skin, outfit,
+/// achievement) carry the id as a u32. Empty for any other header -- coin,
+/// user, WvW and template links are not one id.
+std::string encode_id(uint8_t header, uint32_t id);
+
 /// Multi-line human-readable report (CRLF terminated lines) for a text control.
 std::string to_report(const Decoded& d);
 

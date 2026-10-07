@@ -37,6 +37,19 @@ constexpr uint32_t CONTENT_TYPE_MOUNT_SKIN = 302;  // dataId = /v2/mounts/skins 
 /// The chat link header byte -> content type it resolves against (0 = unmapped).
 uint32_t content_type_for_header(uint8_t header);
 
+/// What the outside world calls a content type: a label, the public GW2 API
+/// endpoint its dataIds are ids of (/v2/<api>, no key needed), and the chat
+/// link header for one of them (0 = the game has no chat link for it).
+struct ContentKind {
+    const char* name;
+    const char* api;
+    uint8_t chat_header;
+};
+
+/// The kind for `content_type`, nullptr for types whose dataId isn't known to
+/// be an API id.
+const ContentKind* content_kind(uint32_t content_type);
+
 bool built();
 size_t size();  // number of (type,id) entries currently held
 void clear();
@@ -116,6 +129,23 @@ constexpr uint32_t CONTENT_TYPE_PALETTE = 147;
 /// The palette with uid `id` (+20; palettes carry no dataId), nullptr if
 /// unknown. Part of the disk cache.
 const Palette* palette(uint32_t id);
+
+/// A content object, by type and dataId.
+struct ContentRef {
+    uint32_t type = 0;
+    uint32_t id = 0;
+};
+
+/// Every content object that lists `file_id` among its assets (the reverse of
+/// resolve_all()), by type then id: the items a texture is the icon of, the
+/// skins a model is the appearance of, ... Empty if none or no map is loaded.
+/// Built on first use from whatever is loaded (a build or the disk cache);
+/// call from one thread at a time.
+const std::vector<ContentRef>& users_of(uint32_t file_id);
+
+/// The items whose item_links() include the appearance (type, id) -- what
+/// unlocks a skin, outfit or mount skin -- by item id. Same rules as users_of().
+const std::vector<ContentRef>& granted_by(uint32_t content_type, uint32_t id);
 
 /// The object's first asset fileId (item: icon; skin/outfit: model).
 uint32_t resolve(uint32_t content_type, uint32_t id);

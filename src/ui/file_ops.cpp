@@ -38,6 +38,7 @@ bool load_dat_path(HWND hwnd, const wchar_t* path) {
         g_app->dat_loaded = true;
 
         castlemist::mft::set_source(g_app->hwnd_list, g_app->data_gw2);
+        castlemist::mft::set_name_provider(g_app->hwnd_list, name_for_files);
         castlemist::hex::set_data(g_app->hwnd_hex_before, nullptr, 0);
         castlemist::hex::set_data(g_app->hwnd_hex_after, nullptr, 0);
         castlemist::structtree::clear(g_app->hwnd_struct_tree);

@@ -113,5 +113,6 @@ castlemist_add_test(render
 
 castlemist_add_test(ui
     SOURCES test_ui_layout.cpp test_ui_content_map_service.cpp test_ui_character_state.cpp
+            test_ui_content_links.cpp
     DEPS    castlemist::ui
     PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/ui")

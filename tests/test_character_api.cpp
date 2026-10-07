@@ -251,3 +251,32 @@ CM_TEST(api, colors_keep_shift) {
     CHECK_NEAR(cloth.saturation, 0.28125, 1e-6);
     CHECK_NEAR(cloth.lightness, 1.44531, 1e-6);
 }
+
+CM_TEST(gw2api, names_come_from_a_public_endpoint_without_a_key) {
+    FakeHttpClient f;
+    f.routes[kBase + "/v2/mounts/skins?ids=292,9999"] = {
+        206, R"([{"id":292,"name":"Dark Monarch Skyscale","icon":"x"}])", ""};
+    Gw2Api api(f, "");
+    std::map<uint32_t, std::string> n = api.names("mounts/skins", {292, 9999});
+    CHECK_EQ(n.size(), size_t{1});
+    CHECK_EQ(n[292], std::string("Dark Monarch Skyscale"));
+    CHECK_EQ(f.calls.size(), size_t{1});
+    if (!f.calls.empty())
+        for (const auto& [k, v] : f.calls[0].second) CHECK(k != "Authorization");
+}
+
+CM_TEST(gw2api, names_batch_two_hundred_ids_per_request) {
+    FakeHttpClient f;
+    f.prefix_routes[kBase + "/v2/items?ids="] = {200, "[]", ""};
+    Gw2Api api(f, "");
+    std::vector<uint32_t> ids;
+    for (uint32_t i = 1; i <= 201; ++i) ids.push_back(i);
+    api.names("items", ids);
+    CHECK_EQ(f.calls.size(), size_t{2});
+}
+
+CM_TEST(gw2api, names_of_only_unknown_ids_are_empty_not_an_error) {
+    FakeHttpClient f;  // every route 404s
+    Gw2Api api(f, "");
+    CHECK(api.names("skins", {1, 2}).empty());
+}

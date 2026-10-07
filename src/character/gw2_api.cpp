@@ -58,8 +58,9 @@ std::vector<std::string> missing_scopes(const TokenInfo& t) {
 }
 
 std::string Gw2Api::get_json(const std::string& path) {
-    HttpResponse r = http_.get(std::string(kApiBase) + path,
-                               {{"Authorization", "Bearer " + key_}, {"X-Schema-Version", "latest"}});
+    Headers headers{{"X-Schema-Version", "latest"}};
+    if (!key_.empty()) headers.insert(headers.begin(), {"Authorization", "Bearer " + key_});
+    HttpResponse r = http_.get(std::string(kApiBase) + path, headers);
     if (r.status == 0) throw ApiError(0, "Could not reach api.guildwars2.com: " + r.error);
     if (r.status == 401 || r.status == 403)
         throw ApiError(r.status, "API key rejected (HTTP " + std::to_string(r.status) +
@@ -204,6 +205,23 @@ std::map<uint32_t, ApiColor> Gw2Api::colors(const std::vector<uint32_t>& ids) {
                 c.rgb[m] = {rgb[0].get<uint8_t>(), rgb[1].get<uint8_t>(), rgb[2].get<uint8_t>()};
         }
         out[c.id] = std::move(c);
+    });
+    return out;
+}
+
+std::map<uint32_t, std::string> Gw2Api::names(const std::string& endpoint, const std::vector<uint32_t>& ids) {
+    std::map<uint32_t, std::string> out;
+    // A batch of nothing but unknown ids is a 404 ("all ids provided are invalid"): no names, not an error.
+    auto get = [this](const std::string& p) -> std::string {
+        try {
+            return get_json(p);
+        } catch (const ApiError& e) {
+            if (e.status() == 404) return "[]";
+            throw;
+        }
+    };
+    batched(ids, endpoint, get, [&](const json& o) {
+        if (o.contains("id") && o["id"].is_number_unsigned()) out[o["id"].get<uint32_t>()] = str(o, "name");
     });
     return out;
 }

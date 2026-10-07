@@ -100,6 +100,10 @@ public:
     std::map<uint32_t, ApiItem> items(const std::vector<uint32_t>& ids);
     std::map<uint32_t, ApiSkin> skins(const std::vector<uint32_t>& ids);
     std::map<uint32_t, ApiColor> colors(const std::vector<uint32_t>& ids);
+    /// id -> display name from any public `?ids=` endpoint ("items", "maps",
+    /// "mounts/skins", ...), batched the same way. These need no key: a Gw2Api
+    /// made with an empty key sends no Authorization header at all.
+    std::map<uint32_t, std::string> names(const std::string& endpoint, const std::vector<uint32_t>& ids);
 
 private:
     std::string get_json(const std::string& path_and_query);

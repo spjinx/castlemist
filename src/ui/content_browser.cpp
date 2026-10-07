@@ -67,6 +67,35 @@ std::wstring content_asset_kind(uint32_t fid) {
     return kind;
 }
 
+constexpr const wchar_t* kNamePending = L"\x2026";  // shown while a name is being looked up
+
+// An entry's game name, by its API id (data_id): blank when its type has no
+// API names or the API has none, an ellipsis while it is being looked up.
+std::wstring content_object_name(const ContentObject& o) {
+    if (!castlemist::cmap::content_kind(o.type)) return L"";
+    const std::string* n = cached_content_name(o.type, o.data_id);
+    return n ? utf8_to_wide(*n) : kNamePending;
+}
+
+// Names arrived: fill in the Name cells of the entries table in place.
+void refresh_content_names() {
+    HWND cb = g_app->hwnd_content_child;
+    if (!cb || !IsWindowVisible(cb)) return;
+    const auto& objs = g_app->current_entry.content_objects;
+    const int rows = ListView_GetItemCount(cb);
+    wchar_t cur[256];
+    for (int r = 0; r < rows; ++r) {
+        LVITEMW it{};
+        it.mask = LVIF_PARAM;
+        it.iItem = r;
+        ListView_GetItem(cb, &it);
+        if (it.lParam < 0 || it.lParam >= static_cast<LPARAM>(objs.size())) continue;
+        std::wstring name = content_object_name(objs[it.lParam]);
+        ListView_GetItemText(cb, r, 1, cur, 256);
+        if (name != cur) ListView_SetItemText(cb, r, 1, const_cast<wchar_t*>(name.c_str()));
+    }
+}
+
 // DETAIL: load one asset fileId and show it in the right-hand preview surface.
 void load_content_asset_fid(uint32_t fid) {
     castlemist::snd::stop();
@@ -139,6 +168,7 @@ void on_content_master_select(int idx) {
     SendMessageW(cb, WM_SETREDRAW, FALSE, 0);
     ListView_DeleteAllItems(cb);
     g_app->content_child_objidx.clear();
+    std::vector<castlemist::cmap::ContentRef> want;  // names to fetch for this type's entries
     for (int i = 0; i < static_cast<int>(objs.size()); ++i) {
         if (objs[i].type != type) continue;
         g_app->content_child_objidx.push_back(i);
@@ -155,9 +185,14 @@ void on_content_master_select(int idx) {
             if (joined.size() > 120) break;
         }
         std::wstring lw(joined.begin(), joined.end());
-        lv_add_row(cb, i, idw, naw, cn.c_str(), lw.c_str()); // lParam = content_objects idx
+        const int row = lv_add_row(cb, i, idw, content_object_name(objs[i]).c_str(), naw, cn.c_str(), lw.c_str()); // lParam = content_objects idx
+        wchar_t api_id[24];
+        swprintf(api_id, 24, L"%u", objs[i].data_id);
+        ListView_SetItemText(cb, row, 5, api_id);
+        if (castlemist::cmap::content_kind(objs[i].type)) want.push_back({objs[i].type, objs[i].data_id});
     }
     SendMessageW(cb, WM_SETREDRAW, TRUE, 0);
+    request_content_names(g_app->hwnd_main, want);
     ListView_DeleteAllItems(g_app->hwnd_content_asset_list);
     g_app->content_sort_col[1] = g_app->content_sort_col[2] = -1;
     castlemist::snd::stop();
@@ -166,6 +201,7 @@ void on_content_master_select(int idx) {
     g_app->content_sub = ExtractedEntry{};
     g_app->content_sub_loaded = false;
     g_app->content_obj_sel = -1;
+    refresh_entry_info();
     const char* tn = content_type_name(type);
     const size_t ne = g_app->content_child_objidx.size();
     wchar_t hdr[128];
@@ -197,6 +233,7 @@ void on_content_child_select(int oi) {
     const auto& objs = g_app->current_entry.content_objects;
     if (oi < 0 || oi >= static_cast<int>(objs.size())) return;
     g_app->content_obj_sel = oi;
+    refresh_entry_info();  // the info panel's "Game content" follows the selected object
     const auto& assets = objs[oi].assets;
     // Fill the asset table: one row per asset (index + fileId + classified kind).
     HWND ac = g_app->hwnd_content_asset_list;
@@ -278,12 +315,20 @@ int CALLBACK content_lv_compare(LPARAM l1, LPARAM l2, LPARAM lpctx) {
         const auto& B = g_app->content_types[l2];
         if (c->col == 1) r = static_cast<long long>(A.second) - static_cast<long long>(B.second);
         else r = _wcsicmp(content_type_label(A.first).c_str(), content_type_label(B.first).c_str());
-    } else if (c->list == 1) { // Entries: col0 = id, col1 = asset count
+    } else if (c->list == 1) { // Entries: col0 = id, col1 = name, col2 = asset count
         const auto& objs = g_app->current_entry.content_objects;
         if (l1 >= static_cast<LPARAM>(objs.size()) || l2 >= static_cast<LPARAM>(objs.size())) return 0;
         const auto& A = objs[l1];
         const auto& B = objs[l2];
-        if (c->col == 1) r = static_cast<long long>(A.assets.size()) - static_cast<long long>(B.assets.size());
+        if (c->col == 1) {
+            // Named entries first, then A-Z; the unnamed keep id order among themselves.
+            const std::wstring na = content_object_name(A), nb = content_object_name(B);
+            const bool ea = na.empty() || na == kNamePending, eb = nb.empty() || nb == kNamePending;
+            if (ea != eb) r = ea ? 1 : -1;
+            else if (!ea) r = _wcsicmp(na.c_str(), nb.c_str());
+            if (r == 0) r = static_cast<long long>(A.id) - static_cast<long long>(B.id);
+        }
+        else if (c->col == 2) r = static_cast<long long>(A.assets.size()) - static_cast<long long>(B.assets.size());
         else r = static_cast<long long>(A.id) - static_cast<long long>(B.id);
     } else { // Assets: col0 = index, col1 = fileId, col2 = kind
         const auto& assets = selected_entry_assets();

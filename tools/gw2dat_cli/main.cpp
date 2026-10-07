@@ -66,6 +66,7 @@
 #include "castlemist/native/BinaryParser.h"
 #include "castlemist/native/gw2model.hpp"
 #include "castlemist/native/granny_anim.hpp"
+#include "castlemist/format/chat_link.h"
 #include "castlemist/format/content_map.h"
 #include "castlemist/character/fetch.h"
 #include "castlemist/character/key_store.h"
@@ -1830,6 +1831,69 @@ void ensure_cmap(const Args& a) {
     castlemist::cmap::save(cmap_file.wstring());
 }
 
+// What uses a file: the content objects that list --file-id (or --base-id's
+// fileIds) as an asset, each with its chat link and the items that grant it.
+// --names adds display names from the public GW2 API (goes online, no key).
+void cmd_users(const Args& a) {  // --sample-type T: the first few files of type T instead
+    namespace cmap = castlemist::cmap;
+    ensure_cmap(a);
+    if (!cmap::built()) fail("no content map: pass --cmap, or --dat with an index DB");
+    std::vector<uint32_t> fids;
+    if (has(a, "file-id")) fids.push_back(static_cast<uint32_t>(to_u64(a.at("file-id"))));
+    if (has(a, "base-id")) {
+        Gw2Dat dat;
+        load_dat_file(dat, need(a, "dat"));
+        fids = get_by_file_id(dat, static_cast<uint32_t>(to_u64(a.at("base-id"))));
+    }
+    if (has(a, "sample-type")) {
+        // Research aid: the first fileIds (by id) used by objects of one content type.
+        const uint32_t type = static_cast<uint32_t>(to_u64(a.at("sample-type")));
+        for (uint32_t f = 1; f < 4000000 && fids.size() < 8; ++f)
+            for (const cmap::ContentRef& r : cmap::users_of(f))
+                if (r.type == type) { fids.push_back(f); break; }
+    }
+    if (fids.empty()) fail("pass --file-id N, --sample-type T, or --base-id N with --dat");
+
+    std::vector<cmap::ContentRef> refs;
+    for (uint32_t f : fids)
+        for (const cmap::ContentRef& r : cmap::users_of(f)) {
+            refs.push_back(r);
+            for (const cmap::ContentRef& g : cmap::granted_by(r.type, r.id)) refs.push_back(g);
+        }
+    std::map<uint32_t, std::map<uint32_t, std::string>> names;  // type -> id -> name
+    if (has(a, "names")) {
+        castlemist::character::WinHttpClient http;
+        castlemist::character::Gw2Api api(http, "");
+        std::map<uint32_t, std::vector<uint32_t>> want;
+        for (const cmap::ContentRef& r : refs)
+            if (cmap::content_kind(r.type)) want[r.type].push_back(r.id);
+        for (auto& [type, ids] : want) {
+            std::sort(ids.begin(), ids.end());
+            ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+            names[type] = api.names(cmap::content_kind(type)->api, ids);
+        }
+    }
+    auto describe_ref = [&](const cmap::ContentRef& r) {
+        const cmap::ContentKind* k = cmap::content_kind(r.type);
+        json j{{"type", r.type}, {"kind", k ? k->name : ""}, {"id", r.id}};
+        if (k && k->chat_header) j["chatLink"] = castlemist::chat::encode_id(k->chat_header, r.id);
+        auto t = names.find(r.type);
+        if (t != names.end() && t->second.count(r.id)) j["name"] = t->second[r.id];
+        return j;
+    };
+    json users = json::array();
+    for (uint32_t f : fids)
+        for (const cmap::ContentRef& r : cmap::users_of(f)) {
+            json j = describe_ref(r);
+            j["fileId"] = f;
+            json g = json::array();
+            for (const cmap::ContentRef& x : cmap::granted_by(r.type, r.id)) g.push_back(describe_ref(x));
+            if (!g.empty()) j["grantedBy"] = g;
+            users.push_back(j);
+        }
+    emit({{"ok", true}, {"fileIds", fids}, {"users", users}});
+}
+
 // Colour palettes from the content map: all of them (id, base, size), or one
 // palette's colours (--id N) with their first material's shift.
 void cmd_palette(const Args& a) {
@@ -2287,6 +2351,7 @@ int main(int argc, char** argv) {
         else if (cmd == "encode-texture") cmd_encode_texture(a);
         else if (cmd == "cntc-dump") cmd_cntc_dump(a);
         else if (cmd == "palette") cmd_palette(a);
+        else if (cmd == "users") cmd_users(a);
         else if (cmd == "look-options") cmd_look_options(a);
         else if (cmd == "composite-types") cmd_composite_types(a);
         else if (cmd == "look-set") cmd_look_set(a);
