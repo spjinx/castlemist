@@ -536,6 +536,25 @@ CM_TEST(content_map, a_file_lists_the_content_objects_that_use_it) {
     std::filesystem::remove(path);
 }
 
+CM_TEST(content_map, objects_lists_every_loaded_object) {
+    namespace cmap = castlemist::cmap;
+    cmap::clear();
+    cmap::build_from_packs({{7, 902, item_pack(76158, 1, 0)},
+                            {50, 901, skin_pack(13497, 6506, 1)},
+                            {30, 900, file_refs_pack()}});
+    std::vector<cmap::ContentRef> all = cmap::objects();
+    CHECK_EQ(all.size(), size_t{2});
+    bool item = false, skin = false;
+    for (const auto& r : all) {
+        item |= r.type == cmap::CONTENT_TYPE_ITEM && r.id == 76158;
+        skin |= r.type == cmap::CONTENT_TYPE_SKIN && r.id == 6506;
+    }
+    CHECK(item);
+    CHECK(skin);
+    cmap::clear();
+    CHECK(cmap::objects().empty());
+}
+
 CM_TEST(content_map, content_kinds_name_their_api_endpoint_and_chat_link) {
     namespace cmap = castlemist::cmap;
     const cmap::ContentKind* item = cmap::content_kind(cmap::CONTENT_TYPE_ITEM);

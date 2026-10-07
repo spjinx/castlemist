@@ -43,6 +43,7 @@ HMENU build_menu() {
     HMENU tools_menu = CreatePopupMenu();
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DECODE_LINK, L"&Decode Chat Link... ([&...])");
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_CHARACTER, L"&Character Ripper... (GW2 API)");
+    AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DOWNLOAD_NAMES, L"Download all game &names (GW2 API)");
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DECODE_TOKEN,
                 L"Decode &Token / Filename Bytes...");
 
@@ -475,7 +476,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         g_app->hwnd_main = hwnd;
 
         g_app->hwnd_search_edit =
-            CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_NUMBER, 0, 0, 0, 0, hwnd,
+            CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 0, 0, 0, 0, hwnd,
                              reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SEARCH_EDIT)), g_hinstance, nullptr);
         g_app->hwnd_search_fileid_check = CreateWindowExW(
             0, L"BUTTON", L"By File ID", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 0, 0, 0, 0, hwnd,
@@ -1157,6 +1158,15 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     case WM_APP_GLTF_EXPORT_DONE:
         on_gltf_export_done(hwnd);
         return 0;
+    case WM_APP_CMAP_DONE:
+        on_main_cmap_done(hwnd);
+        return 0;
+    case WM_APP_NAMES_PROGRESS:
+        on_names_progress(static_cast<size_t>(wparam), static_cast<size_t>(lparam));
+        return 0;
+    case WM_APP_NAMES_BULK_DONE:
+        on_names_bulk_done(wparam != 0, static_cast<size_t>(lparam));
+        return 0;
     case WM_APP_CONTENT_NAMES_DONE:
         InvalidateRect(g_app->hwnd_list, nullptr, FALSE);  // the main list's Name column
         refresh_content_names();
@@ -1198,6 +1208,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             return 0;
         case ID_TOOLS_CHARACTER:
             open_character_dialog(hwnd);
+            return 0;
+        case ID_TOOLS_DOWNLOAD_NAMES:
+            download_all_names(hwnd, false);
             return 0;
         case ID_TOOLS_DECODE_TOKEN:
             open_token_decoder(hwnd);

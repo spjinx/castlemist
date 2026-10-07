@@ -8,12 +8,14 @@
 #include "detail/content_links.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <map>
 #include <mutex>
 #include <set>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "castlemist/character/gw2_api.h"
 #include "castlemist/character/http.h"
@@ -69,6 +71,33 @@ std::wstring format_content_links(const std::vector<LinkedObject>& users, size_t
         s += more;
     }
     return s;
+}
+
+namespace {
+constexpr const wchar_t* kBlank = L" \t";
+
+std::wstring lower(std::wstring s) {
+    if (!s.empty()) CharLowerBuffW(s.data(), static_cast<DWORD>(s.size()));
+    return s;
+}
+} // namespace
+
+bool is_name_query(const std::wstring& text) {
+    for (wchar_t c : text)
+        if (!wcschr(kBlank, c) && (c < L'0' || c > L'9')) return true;
+    return false;
+}
+
+std::wstring name_query_key(const std::wstring& text) {
+    const size_t b = text.find_first_not_of(kBlank);
+    if (b == std::wstring::npos) return {};
+    const size_t e = text.find_last_not_of(kBlank);
+    return lower(text.substr(b, e - b + 1));
+}
+
+bool name_matches(const std::string& name, const std::wstring& key) {
+    if (name.empty() || key.empty()) return false;
+    return lower(utf8_to_wide(name)).find(key) != std::wstring::npos;
 }
 
 // ---- the name cache
@@ -168,7 +197,170 @@ void names_worker() {
     }
 }
 
+// ---- downloading every name at once (Tools > Download all game names)
+
+std::atomic<bool> g_bulk_running{false};
+bool g_bulk_after_cmap = false;  // start once the content map build finishes (UI thread only)
+std::string g_bulk_error;        // why the last bulk run stopped; read after WM_APP_NAMES_BULK_DONE
+
+// One page of names, waiting out the API's rate limit (HTTP 429) or a timed-out
+// request (status 0) a few times before giving up. Other failures throw.
+std::map<uint32_t, std::string> fetch_page(castlemist::character::Gw2Api& api, const char* endpoint,
+                                           const std::vector<uint32_t>& ids) {
+    for (int attempt = 0;; ++attempt) {
+        try {
+            return api.names(endpoint, ids);
+        } catch (const castlemist::character::ApiError& e) {
+            if ((e.status() != 429 && e.status() != 0) || attempt >= 6) throw;
+            Sleep(e.status() == 429 ? 15000 : 5000);
+        }
+    }
+}
+
+void bulk_worker(HWND notify) {
+    // Every object the API can name that isn't cached yet, by endpoint.
+    std::map<uint32_t, std::vector<uint32_t>> todo;  // type -> ids
+    size_t total = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_names_mutex);
+        load_names_locked();
+        for (const cmap::ContentRef& r : cmap::objects())
+            if (cmap::content_kind(r.type) && !g_names.count(content_name_key(r.type, r.id))) {
+                todo[r.type].push_back(r.id);
+                ++total;
+            }
+    }
+    castlemist::character::WinHttpClient http;
+    castlemist::character::Gw2Api api(http, "");
+    constexpr DWORD kPaceMs = 250;  // ~4 requests/s, under the ~300/min limit
+    size_t done = 0;
+    bool ok = true;
+    PostMessageW(notify, WM_APP_NAMES_PROGRESS, 0, static_cast<LPARAM>(total));
+    // The most useful names first; achievements last -- that endpoint is slow
+    // (~20 s for 200 ids, past the client's timeout), so it goes 50 at a time.
+    std::vector<uint32_t> order;
+    for (const auto& [type, ids] : todo) order.push_back(type);
+    std::stable_sort(order.begin(), order.end(), [](uint32_t a, uint32_t b) { return (a == 0) < (b == 0); });
+    for (uint32_t type : order) {
+        std::vector<uint32_t>& ids = todo[type];
+        std::sort(ids.begin(), ids.end());
+        const char* endpoint = cmap::content_kind(type)->api;
+        const size_t kPage = type == 0 ? 50 : 200;  // 200 = the API's ?ids= limit
+        for (size_t at = 0; at < ids.size() && ok; at += kPage) {
+            const std::vector<uint32_t> page(ids.begin() + at, ids.begin() + std::min(ids.size(), at + kPage));
+            std::vector<std::pair<uint64_t, std::string>> fresh;
+            try {
+                std::map<uint32_t, std::string> got = fetch_page(api, endpoint, page);
+                for (uint32_t id : page) {
+                    auto it = got.find(id);
+                    fresh.push_back({content_name_key(type, id), it == got.end() ? std::string() : it->second});
+                }
+            } catch (const std::exception& e) {
+                g_bulk_error = std::string(endpoint) + ": " + e.what();
+                ok = false;  // offline / API down: keep what we have; running it again resumes
+                break;
+            }
+            {
+                std::lock_guard<std::mutex> lock(g_names_mutex);
+                for (const auto& [key, n] : fresh) g_names[key] = n;
+            }
+            append_names(fresh);
+            done += page.size();
+            PostMessageW(notify, WM_APP_NAMES_PROGRESS, static_cast<WPARAM>(done), static_cast<LPARAM>(total));
+            if ((done / kPage) % 10 == 0) PostMessageW(notify, WM_APP_CONTENT_NAMES_DONE, 0, 0);
+            Sleep(kPaceMs);
+        }
+        if (!ok) break;
+    }
+    g_bulk_running = false;
+    PostMessageW(notify, WM_APP_CONTENT_NAMES_DONE, 0, 0);
+    PostMessageW(notify, WM_APP_NAMES_BULK_DONE, ok ? 1 : 0, static_cast<LPARAM>(total));
+}
+
 } // namespace
+
+void download_all_names(HWND hwnd, bool quiet) {
+    if (g_bulk_running) {
+        SetWindowTextW(g_app->hwnd_status_label, L"Game names are already downloading.");
+        return;
+    }
+    switch (ensure_content_map(hwnd)) {
+    case CmapEnsure::Ready: break;
+    case CmapEnsure::Started:
+    case CmapEnsure::Building:
+        g_bulk_after_cmap = true;
+        SetWindowTextW(g_app->hwnd_status_label, L"Building the content map first, then downloading game names...");
+        return;
+    default:
+        if (quiet)
+            SetWindowTextW(g_app->hwnd_status_label, L"Game names: open the .dat and an index to build the content map.");
+        else
+            MessageBoxW(hwnd, L"Game names come from the content map, which is built from the .dat.\n\n"
+                              L"Open the .dat and an index DB first.", L"castlemist", MB_ICONINFORMATION | MB_OK);
+        return;
+    }
+    g_bulk_after_cmap = false;
+    g_bulk_running = true;
+    {
+        std::lock_guard<std::mutex> lock(g_names_mutex);
+        g_wanted.clear();  // the bulk run covers these
+    }
+    std::thread(bulk_worker, hwnd).detach();
+}
+
+void on_main_cmap_done(HWND hwnd) {
+    if (g_bulk_after_cmap) download_all_names(hwnd, true);
+}
+
+void on_names_progress(size_t done, size_t total) {
+    wchar_t s[128];
+    swprintf(s, 128, L"Downloading game names: %zu / %zu", done, total);
+    SetWindowTextW(g_app->hwnd_status_label, s);
+}
+
+void on_names_bulk_done(bool ok, size_t total) {
+    size_t named = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_names_mutex);
+        for (const auto& [k, n] : g_names) named += !n.empty();
+    }
+    wchar_t s[512];
+    if (ok)
+        swprintf(s, 512, L"Game names ready: %zu named (%zu looked up this run). Search the list by name.", named, total);
+    else
+        swprintf(s, 512, L"Game names stopped early (%ls); %zu named so far. Run it again to resume.",
+                 utf8_to_wide(g_bulk_error).c_str(), named);
+    SetWindowTextW(g_app->hwnd_status_label, s);
+    InvalidateRect(g_app->hwnd_list, nullptr, FALSE);
+}
+
+std::vector<uint32_t> base_ids_matching_name(const std::wstring& key, size_t* named_total) {
+    std::vector<uint32_t> out;
+    std::wstring ignored;
+    name_for_files({}, false, ignored);  // loads the content map from its cache if needed
+    if (!cmap::built()) return out;
+
+    // The (type, id)s whose cached name matches, then the files any of them use.
+    std::unordered_set<uint64_t> hits;
+    {
+        std::lock_guard<std::mutex> lock(g_names_mutex);
+        load_names_locked();
+        if (named_total) *named_total = g_names.size();
+        for (const auto& [k, n] : g_names)
+            if (name_matches(n, key)) hits.insert(k);
+    }
+    if (hits.empty()) return out;
+    for (const MftBaseIdData& e : g_app->data_gw2.mft_base_id_data_list) {
+        bool match = false;
+        for (uint32_t fid : e.file_id) {
+            for (const cmap::ContentRef& r : cmap::users_of(fid))
+                if (hits.count(content_name_key(r.type, r.id))) { match = true; break; }
+            if (match) break;
+        }
+        if (match) out.push_back(e.base_id);
+    }
+    return out;
+}
 
 const std::string* cached_content_name(uint32_t type, uint32_t id) {
     std::lock_guard<std::mutex> lock(g_names_mutex);
@@ -180,7 +372,7 @@ const std::string* cached_content_name(uint32_t type, uint32_t id) {
 void request_content_names(HWND notify, const std::vector<cmap::ContentRef>& refs) {
     std::lock_guard<std::mutex> lock(g_names_mutex);
     load_names_locked();
-    if (GetTickCount64() < g_offline_until) return;
+    if (GetTickCount64() < g_offline_until || g_bulk_running) return;  // a bulk run covers everything
     g_names_notify = notify;
     for (const cmap::ContentRef& r : refs) {
         const uint64_t k = content_name_key(r.type, r.id);

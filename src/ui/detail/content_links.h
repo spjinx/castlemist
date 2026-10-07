@@ -33,4 +33,14 @@ std::wstring format_content_ref(const castlemist::cmap::ContentRef& r, const Nam
 /// The whole section for `users` (the first of `total` objects that use the file).
 std::wstring format_content_links(const std::vector<LinkedObject>& users, size_t total, const NameLookup& name);
 
+/// Search box text that means "search by name": anything but digits and spaces
+/// (digits alone stay a base id / file id search).
+bool is_name_query(const std::wstring& text);
+
+/// The form name_matches() compares against: trimmed and lower-cased.
+std::wstring name_query_key(const std::wstring& text);
+
+/// Whether the UTF-8 game name contains `key` (from name_query_key), ignoring case.
+bool name_matches(const std::string& name, const std::wstring& key);
+
 } // namespace castlemist::ui

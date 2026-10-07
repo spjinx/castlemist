@@ -143,6 +143,10 @@ struct ContentRef {
 /// call from one thread at a time.
 const std::vector<ContentRef>& users_of(uint32_t file_id);
 
+/// Every object the map holds (anything that references at least one asset),
+/// in no particular order.
+std::vector<ContentRef> objects();
+
 /// The items whose item_links() include the appearance (type, id) -- what
 /// unlocks a skin, outfit or mount skin -- by item id. Same rules as users_of().
 const std::vector<ContentRef>& granted_by(uint32_t content_type, uint32_t id);
