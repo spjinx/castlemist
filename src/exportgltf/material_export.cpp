@@ -10,6 +10,8 @@
 
 #include "internal.h"
 
+#include "castlemist/exportgltf/vrchat_maps.h"
+
 #include <algorithm>
 
 namespace castlemist::exportgltf {
@@ -18,18 +20,9 @@ using nlohmann::json;
 
 namespace {
 
-// The average colour of a glow texture, scaled so its brightest channel is 1:
-// the hue the glow paints its mask with, at full strength. White when the
-// texture is missing or black.
-json glow_colour(const ModelPreview& model, int texIndex) {
-    if (texIndex < 0 || texIndex >= static_cast<int>(model.textures.size())) return {1.0, 1.0, 1.0};
-    const std::vector<uint8_t>& px = model.textures[static_cast<size_t>(texIndex)].rgba;
-    double sum[3] = {0, 0, 0};
-    for (size_t i = 0; i + 3 < px.size(); i += 4)
-        for (int c = 0; c < 3; ++c) sum[c] += px[i + c];
-    double peak = std::max({sum[0], sum[1], sum[2]});
-    if (peak <= 0) return {1.0, 1.0, 1.0};
-    return {sum[0] / peak, sum[1] / peak, sum[2] / peak};
+json glow_colour_json(const ModelPreview& model, int texIndex) {
+    const std::array<double, 3> c = glow_colour(model, texIndex);
+    return {c[0], c[1], c[2]};
 }
 
 } // namespace
@@ -159,7 +152,7 @@ std::vector<int> write_materials(GltfWriter& w, const ModelPreview& model, const
         json maskRef = glowMask ? texRef(*glowMask) : json();
         if (!maskRef.is_null()) {
             material["emissiveTexture"] = std::move(maskRef);
-            material["emissiveFactor"] = glowLayer ? glow_colour(model, glowLayer->texIndex) : json{1.0, 1.0, 1.0};
+            material["emissiveFactor"] = glowLayer ? glow_colour_json(model, glowLayer->texIndex) : json{1.0, 1.0, 1.0};
         } else if (glowLayer) {
             json ref = texRef(*glowLayer);
             if (!ref.is_null()) {

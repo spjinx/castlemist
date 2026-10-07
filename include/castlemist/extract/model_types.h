@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -159,6 +160,10 @@ struct ModelMaterialCPU {
     ///        real numbers are still there to hand-tune in Blender even where
     ///        castlemist doesn't know what to do with them itself.
     std::vector<std::pair<std::string, float>> namedConstants;
+    /// @brief The same constants with all four components (namedConstants keeps
+    ///        only the first): colour constants such as `speccp`/`envcr`/`envcp`
+    ///        carry an RGB tint plus a scalar in w. Same order as namedConstants.
+    std::vector<std::pair<std::string, std::array<float, 4>>> namedConstantVectors;
 
     /// @brief A material texture that isn't diffuseTex or normalTex -- a
     ///        decal/detail/mask layer the real shader samples through its own

@@ -1,12 +1,15 @@
 /// @file
-/// @brief Tests for the VRChat (Poiyomi) export helpers: blend decode.
+/// @brief Tests for the VRChat (Poiyomi) export helpers: blend decode, shader
+///        profiles, map building.
 
 #include "test_framework.h"
 
 #include "castlemist/exportgltf/blend_mode.h"
 #include "castlemist/exportgltf/shader_profiles.h"
+#include "castlemist/exportgltf/vrchat_maps.h"
 #include "castlemist/extract/model_types.h"
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 
@@ -216,4 +219,283 @@ CM_TEST(vrchat, profile_default_for_unknown) {
     CHECK(p.maskSheen == Channel::None);
     CHECK(p.maskGlow == Channel::None);
     CHECK(p.maskGlowGate == Channel::None);
+}
+
+// ---------------------------------------------------------------- map building --
+
+namespace {
+
+ModelTextureCPU tex_from(int w, int h, const std::vector<std::array<uint8_t, 4>>& texels,
+                         uint32_t fileId) {
+    ModelTextureCPU t;
+    t.fileId = fileId;
+    t.width = w;
+    t.height = h;
+    for (const auto& p : texels) t.rgba.insert(t.rgba.end(), p.begin(), p.end());
+    return t;
+}
+
+ModelTextureCPU solid(int w, int h, std::array<uint8_t, 4> p, uint32_t fileId) {
+    return tex_from(w, h, std::vector<std::array<uint8_t, 4>>(static_cast<size_t>(w * h), p),
+                    fileId);
+}
+
+/// A 2x2 diffuse with the four alpha bands {30, 90, 128, 255}.
+ModelTextureCPU banded_diffuse() {
+    return tex_from(2, 2,
+                    {{100, 100, 100, 30}, {100, 100, 100, 90}, {100, 100, 100, 128},
+                     {100, 100, 100, 255}},
+                    1000);
+}
+
+int add_tex(ModelPreview& m, ModelTextureCPU t) {
+    m.textures.push_back(std::move(t));
+    return static_cast<int>(m.textures.size()) - 1;
+}
+
+void add_layer(ModelPreview& m, ModelMaterialCPU& mat, const char* role, int texIndex,
+               uint8_t uv) {
+    ModelMaterialCPU::ExtraTexture x;
+    x.texIndex = texIndex;
+    x.uvIndex = uv;
+    x.fileId = texIndex >= 0 ? m.textures[static_cast<size_t>(texIndex)].fileId : 4242;
+    x.role = role;
+    mat.extraTextures.push_back(x);
+}
+
+int px(const ModelTextureCPU& t, int i, int c) {
+    return t.rgba[static_cast<size_t>(i * 4 + c)];
+}
+
+bool any_warning(const MaterialMaps& m, const char* needle) {
+    for (const std::string& w : m.warnings)
+        if (w.find(needle) != std::string::npos) return true;
+    return false;
+}
+
+BlendInfo blend_of(BlendPreset p) {
+    BlendInfo b;
+    b.preset = b.nearest = p;
+    return b;
+}
+
+MaterialMaps build(const ModelPreview& model, const ModelMaterialCPU& mat, BlendPreset p) {
+    return build_material_maps(model, mat, blend_of(p), profile_for(mat, 0));
+}
+
+}  // namespace
+
+CM_TEST(vrchat, alpha_bands_with_clipping_profile) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(561567);  // weapon-glow
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK(m.baseColor.present);
+    CHECK(m.packed.present);
+    const int wantA[4] = {0, 255, 255, 255};
+    const int wantG[4] = {0, 0, 0, 255};
+    for (int i = 0; i < 4; ++i) {
+        CHECK_EQ(px(m.baseColor.tex, i, 3), wantA[i]);
+        CHECK_NEAR(px(m.packed.tex, i, 1), wantG[i], 1);
+        CHECK_EQ(px(m.packed.tex, i, 3), px(m.packed.tex, i, 1));
+    }
+    CHECK(m.smoothSource == "diffuseAlpha");
+    CHECK(m.specularSource == "diffuseAlpha");
+}
+
+CM_TEST(vrchat, alpha_bands_without_clipping) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(13822);  // legacy-spec, ReflectionOnly
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    MaterialMaps m = build(model, mat, BlendPreset::Opaque);
+    const int wantB[4] = {0, 0, 0, 255};
+    for (int i = 0; i < 4; ++i) {
+        CHECK_EQ(px(m.baseColor.tex, i, 3), 255);
+        CHECK_NEAR(px(m.packed.tex, i, 2), wantB[i], 1);
+    }
+    CHECK(m.reflectionSource == "diffuseAlpha");
+}
+
+CM_TEST(vrchat, armor_mask_channels) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(2449347);  // armor-mask
+    mat.diffuseTex = add_tex(model, solid(8, 8, {120, 60, 30, 255}, 1000));
+    add_layer(model, mat, "mask", add_tex(model, solid(2, 2, {200, 100, 50, 30}, 1001)), 0);
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK(m.packed.present);
+    CHECK_EQ(m.packed.tex.width, 8);  // diffuse size, mask nearest-sampled
+    CHECK_EQ(px(m.packed.tex, 9, 0), 200);
+    CHECK_EQ(px(m.packed.tex, 9, 1), 100);
+    CHECK(m.metalSource == "mask.R");
+    CHECK(m.smoothSource == "mask.G");
+    CHECK(m.emissionMask.present);
+    CHECK(m.emissionMask.source == "mask.A");
+    CHECK_EQ(px(m.emissionMask.tex, 0, 0), 30);
+    CHECK(m.emissionMap.present);  // the base colour
+}
+
+CM_TEST(vrchat, weapon_glow_emission) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(561567);
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "glow", add_tex(model, solid(2, 2, {255, 64, 0, 255}, 2001)), 0);
+    add_layer(model, mat, "glowmask", add_tex(model, solid(2, 2, {128, 128, 128, 255}, 2002)), 2);
+    add_layer(model, mat, "glowperturb",
+              add_tex(model, solid(2, 2, {128, 128, 255, 255}, 2003)), 1);
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK(m.emissionMap.present);
+    CHECK_EQ(m.emissionMap.uv, 0);
+    CHECK_EQ(m.emissionMap.fileId, 2001u);
+    CHECK(m.emissionMask.present);
+    CHECK_EQ(m.emissionMask.uv, 2);
+    CHECK(m.emissionBaked.present);
+    CHECK_NEAR(m.emissionColor[0], 1.0f, 0.001f);
+    CHECK_NEAR(m.emissionColor[1], 64.0f / 255.0f, 0.001f);
+    CHECK_NEAR(px(m.emissionBaked.tex, 0, 0), 128, 1);
+    CHECK_NEAR(px(m.emissionBaked.tex, 0, 1), 32, 1);
+    CHECK(m.distortion.present);
+    CHECK_EQ(m.distortion.uv, 1);
+    CHECK(m.distortion.source == "glowperturb");
+    CHECK(m.extras.empty());
+}
+
+CM_TEST(vrchat, weapon_spec_swapped_uvs) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(2348484);  // weapon-spec
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "glow", add_tex(model, solid(2, 2, {0, 200, 255, 255}, 2001)), 2);
+    add_layer(model, mat, "glowmask", add_tex(model, solid(2, 2, {255, 255, 255, 255}, 2002)), 0);
+    add_layer(model, mat, "specular", add_tex(model, solid(2, 2, {90, 90, 90, 77}, 2004)), 0);
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK_EQ(m.emissionMap.uv, 2);
+    CHECK_EQ(m.emissionMask.uv, 0);
+    CHECK(m.smoothSource == "specular.A");
+    for (int i = 0; i < 4; ++i) CHECK_EQ(px(m.packed.tex, i, 1), 77);
+    bool specExtra = false;
+    for (const auto& x : m.extras)
+        if (x.role == "specular" && x.use == "specular-color" && x.slot.present) specExtra = true;
+    CHECK(specExtra);
+}
+
+CM_TEST(vrchat, conduct_as_metal) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(561567);
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    mat.namedConstants = {{"conduct", 0.4f}};
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK(m.metalSource == "conduct");
+    for (int i = 0; i < 4; ++i) CHECK_NEAR(px(m.packed.tex, i, 0), 102, 1);
+
+    mat.namedConstants = {{"conduct", 1.5f}};
+    MaterialMaps hi = build(model, mat, BlendPreset::Cutout);
+    CHECK_EQ(px(hi.packed.tex, 0, 0), 255);
+}
+
+CM_TEST(vrchat, normal_rebuilt_from_rg) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(561567);
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    mat.normalTex = add_tex(model, solid(2, 2, {255, 128, 0, 0}, 3000));
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK(m.normal.present);
+    CHECK_EQ(px(m.normal.tex, 0, 0), 255);
+    CHECK_EQ(px(m.normal.tex, 0, 1), 127);  // 255 - 128: green flipped
+    CHECK_NEAR(px(m.normal.tex, 0, 2), 128, 1);
+    CHECK_EQ(px(m.normal.tex, 0, 3), 255);
+}
+
+CM_TEST(vrchat, premultiplied_effect_rgb) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(19092);  // fx-soft-additive
+    mat.diffuseTex = add_tex(model, solid(2, 2, {200, 100, 50, 128}, 1000));
+    MaterialMaps m = build(model, mat, BlendPreset::SoftAdditive);
+    CHECK_NEAR(px(m.baseColor.tex, 0, 0), 100, 1);
+    CHECK_NEAR(px(m.baseColor.tex, 0, 1), 50, 1);
+    CHECK_NEAR(px(m.baseColor.tex, 0, 2), 25, 1);
+    CHECK_EQ(px(m.baseColor.tex, 0, 3), 128);
+    CHECK(m.emissionMap.present);  // additive-style with no glow layer: base colour
+}
+
+CM_TEST(vrchat, missing_layer_is_skipped_with_warning) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(561567);
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    mat.normalTex = add_tex(model, solid(2, 2, {128, 128, 255, 255}, 3000));
+    add_layer(model, mat, "glow", add_tex(model, solid(2, 2, {255, 64, 0, 255}, 2001)), 0);
+    add_layer(model, mat, "glowmask", -1, 2);
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK_FALSE(m.emissionMask.present);
+    CHECK(any_warning(m, "glowmask"));
+    CHECK(m.baseColor.present);
+    CHECK(m.normal.present);
+    CHECK(m.packed.present);
+    CHECK(m.emissionMap.present);
+}
+
+CM_TEST(vrchat, placeholder_texture_becomes_constant) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(2449347);  // armor-mask
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "mask", add_tex(model, solid(4, 4, {255, 255, 255, 255}, 13368)), 0);
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK(any_warning(m, "placeholder"));
+    CHECK_FALSE(m.emissionMask.present);
+    for (const auto& x : m.extras) CHECK(x.slot.fileId != 13368u);
+    // The constant still reaches the packed map.
+    CHECK_EQ(px(m.packed.tex, 0, 0), 255);
+    CHECK(m.metalSource == "mask.R");
+}
+
+CM_TEST(vrchat, uv_above_three_warns) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(561567);
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "glow", add_tex(model, solid(2, 2, {255, 64, 0, 255}, 2001)), 0);
+    add_layer(model, mat, "glowmask", add_tex(model, solid(2, 2, {9, 9, 9, 255}, 2002)), 4);
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK(any_warning(m, "UV4"));
+}
+
+CM_TEST(vrchat, unsupported_profile_exports_layers_raw) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(2507831);  // armor-silk
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "mask", add_tex(model, solid(2, 2, {200, 100, 50, 30}, 1001)), 0);
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK(any_warning(m, "armor-silk"));
+    CHECK(m.baseColor.present);
+    CHECK_EQ(px(m.baseColor.tex, 0, 3), 30);  // raw, not banded
+    CHECK_FALSE(m.packed.present);
+    CHECK_FALSE(m.emissionMask.present);
+    CHECK_EQ(m.extras.size(), size_t{1});
+    CHECK(m.extras[0].role == "mask");
+}
+
+CM_TEST(vrchat, legacy_untagged_opacity_from_texture) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(185120);  // legacy-untagged
+    mat.diffuseTex = add_tex(model, solid(2, 2, {10, 20, 30, 0}, 1000));
+    mat.normalTex = add_tex(model, solid(2, 2, {128, 128, 255, 255}, 1001));
+    add_tex(model,
+            tex_from(2, 2, {{11, 0, 0, 255}, {22, 0, 0, 255}, {33, 0, 0, 255}, {44, 0, 0, 255}},
+                     1002));
+    mat.textureFileIds = {1000, 1001, 1002};
+    MaterialMaps m = build(model, mat, BlendPreset::TransClipping);
+    const int want[4] = {11, 22, 33, 44};
+    for (int i = 0; i < 4; ++i) CHECK_EQ(px(m.baseColor.tex, i, 3), want[i]);
+}
+
+CM_TEST(vrchat, tints_from_constant_vectors) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(561567);
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    mat.namedConstantVectors = {{"speccp", {0.5f, 0.25f, 0.125f, 32.0f}},
+                                {"envcr", {0.1f, 0.2f, 0.3f, 0.9f}}};
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK(m.specularTint.has_value());
+    CHECK_NEAR((*m.specularTint)[1], 0.25f, 1e-6f);
+    CHECK(m.reflectionTint.has_value());
+    CHECK_NEAR((*m.reflectionTint)[2], 0.3f, 1e-6f);
+    CHECK(m.reflectionSource == "envcr");
+    CHECK_EQ(px(m.packed.tex, 0, 2), 255);
 }

@@ -175,6 +175,8 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
             if (name.empty()) continue;
             if (name == "mtlness") mat.metallic = std::clamp(c.value[0], 0.0f, 1.0f);
             else if (name == "specstr") mat.roughness = 1.0f - std::clamp(c.value[0], 0.0f, 1.0f);
+            mat.namedConstantVectors.emplace_back(
+                name, std::array<float, 4>{c.value[0], c.value[1], c.value[2], c.value[3]});
             mat.namedConstants.emplace_back(std::move(name), c.value[0]);
         }
 
