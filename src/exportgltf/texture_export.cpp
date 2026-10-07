@@ -74,6 +74,18 @@ int bake_effect_emissive_texture(GltfWriter& w, const ModelTextureCPU& diffuse) 
     return w.add_or_reuse_texture(emissiveKey, png, std::to_string(diffuse.fileId) + "_emissive");
 }
 
+std::vector<uint8_t> encode_png(const ModelTextureCPU& tex) {
+    std::vector<uint8_t> png;
+    if (tex.width <= 0 || tex.height <= 0 ||
+        tex.rgba.size() < static_cast<size_t>(tex.width) * tex.height * 4) {
+        return png;
+    }
+    if (!stbi_write_png_to_func(append_to_vector, &png, tex.width, tex.height, 4, tex.rgba.data(),
+                                tex.width * 4))
+        png.clear();
+    return png;
+}
+
 TextureSaveResult save_texture_png(const ModelTextureCPU& tex, const std::string& pngPath) {
     TextureSaveResult r;
     if (tex.width <= 0 || tex.height <= 0 ||

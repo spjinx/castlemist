@@ -1,17 +1,27 @@
 /// @file
 /// @brief Tests for the VRChat (Poiyomi) export helpers: blend decode, shader
-///        profiles, map building.
+///        profiles, map building, the export folder.
 
 #include "test_framework.h"
 
 #include "castlemist/exportgltf/blend_mode.h"
 #include "castlemist/exportgltf/shader_profiles.h"
+#include "castlemist/exportgltf/gltf_export.h"
+#include "castlemist/exportgltf/vrchat_export.h"
 #include "castlemist/exportgltf/vrchat_maps.h"
+#include "castlemist/native/granny_anim.hpp"
 #include "castlemist/extract/model_types.h"
 
 #include <array>
 #include <cstdint>
+#include <cctype>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+
+#include "nlohmann/json.hpp"
 
 using namespace castlemist::exportgltf;
 
@@ -588,4 +598,342 @@ CM_TEST(vrchat, default_profile_warns) {
     CHECK(any_warning(m, "default profile"));
     MaterialMaps w = build(model, mat_with_file(561567), BlendPreset::Opaque);
     CHECK_FALSE(any_warning(w, "default profile"));
+}
+
+// ------------------------------------------------------------- export folder --
+
+namespace {
+
+namespace fs = std::filesystem;
+using nlohmann::json;
+
+fs::path fresh_dir(const char* label) {
+    fs::path dir = fs::temp_directory_path() / (std::string("cm_vrchat_") + label);
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    return dir;
+}
+
+json read_json(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    return json::parse(in);
+}
+
+/// The JSON chunk of a .glb.
+json glb_json(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    std::vector<uint8_t> b((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    auto u32 = [&](size_t i) {
+        return static_cast<uint32_t>(b[i]) | (static_cast<uint32_t>(b[i + 1]) << 8) |
+               (static_cast<uint32_t>(b[i + 2]) << 16) | (static_cast<uint32_t>(b[i + 3]) << 24);
+    };
+    if (b.size() < 20) return json();
+    const uint32_t len = u32(12);
+    return json::parse(std::string(reinterpret_cast<const char*>(&b[20]), len));
+}
+
+GVertex vtx(float x, float y, float u, float v) {
+    GVertex g{};
+    g.px = x; g.py = y; g.pz = 0;
+    g.nz = 1; g.tx = 1; g.by = 1;
+    g.u = u; g.v = v;
+    return g;
+}
+
+ModelMeshCPU quad_mesh(uint32_t materialIndex) {
+    ModelMeshCPU m;
+    m.vertices = {vtx(0, 0, 0, 0), vtx(1, 0, 1, 0), vtx(1, 1, 1, 1), vtx(0, 1, 0, 1)};
+    m.indices = {0, 1, 2, 0, 2, 3};
+    m.vertexCount = 4;
+    m.hasTangents = true;
+    m.materialIndex = materialIndex;
+    return m;
+}
+
+/// A quad drawn with one weapon-glow material: banded diffuse, normal, glow.
+ModelPreview glow_quad() {
+    ModelPreview model;
+    model.meshes.push_back(quad_mesh(0));
+    ModelMaterialCPU mat = mat_with_file(561567);
+    mat.materialName = "Blade";
+    mat.hasRenderState = true;
+    mat.renderState = 0;  // no blend: Opaque, Cutout with the clipping profile
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    mat.normalTex = add_tex(model, solid(2, 2, {128, 128, 255, 255}, 3000));
+    add_layer(model, mat, "glow", add_tex(model, solid(2, 2, {255, 64, 0, 255}, 2001)), 0);
+    mat.namedConstants = {{"specstr", 0.5f}, {"glofade", 0.7f}, {"gloptrb", 0.4f}};
+    model.materials.push_back(mat);
+    castlemist::granny::Anim clip;
+    clip.name = "StowedA";
+    model.animClips.push_back(clip);
+    return model;
+}
+
+const json* material_named(const json& doc, const std::string& name) {
+    for (const json& m : doc["materials"])
+        if (m["name"] == name) return &m;
+    return nullptr;
+}
+
+bool any_of_warnings(const std::vector<std::string>& ws, const char* needle) {
+    for (const std::string& w : ws)
+        if (w.find(needle) != std::string::npos) return true;
+    return false;
+}
+
+}  // namespace
+
+CM_TEST(vrchat, folder_layout) {
+    ModelPreview model = glow_quad();
+    fs::path dir = fresh_dir("layout");
+    VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Dagger", 1766522);
+    CHECK(r.ok);
+    CHECK(fs::exists(dir / "Dagger.glb"));
+    CHECK(fs::exists(dir / "materials.json"));
+    CHECK(fs::exists(dir / "Textures" / "Blade - BaseColor.png"));
+    CHECK(fs::exists(dir / "Textures" / "Blade - Normal.png"));
+    CHECK(fs::exists(dir / "Textures" / "Blade - Packed.png"));
+    CHECK(fs::exists(dir / "Textures" / "Blade - EmissionMap.png"));
+    CHECK_EQ(r.materials, size_t{1});
+    CHECK_EQ(r.clips, size_t{1});
+    CHECK(fs::path(r.glb) == dir / "Dagger.glb");
+    json doc = read_json(dir / "materials.json");
+    const json& maps = doc["materials"][0]["maps"];
+    CHECK(maps["baseColor"]["file"] == "Textures/Blade - BaseColor.png");
+    CHECK(maps["normal"]["file"] == "Textures/Blade - Normal.png");
+    CHECK(maps["packed"]["file"] == "Textures/Blade - Packed.png");
+    CHECK(maps["emissionMap"]["file"] == "Textures/Blade - EmissionMap.png");
+    for (const char* key : {"baseColor", "normal", "packed", "emissionMap"})
+        CHECK(fs::exists(dir / fs::path(maps[key]["file"].get<std::string>())));
+}
+
+CM_TEST(vrchat, materials_json_fields) {
+    ModelPreview model = glow_quad();
+    // A second material on the default profile (not clipping) with a scroll.
+    ModelMaterialCPU plain = mat_with_file(999999999);
+    plain.index = 1;
+    plain.materialName = "Plain";
+    plain.hasRenderState = true;
+    plain.renderState = 0x6565000;  // SrcAlpha / InvSrcAlpha
+    plain.diffuseTex = add_tex(model, solid(2, 2, {9, 9, 9, 255}, 5000));
+    plain.namedConstants = {{"intscru", 0.25f}, {"intscrv", -1.5f}};
+    add_layer(model, plain, "glow", add_tex(model, solid(2, 2, {0, 64, 255, 255}, 5001)), 0);
+    model.materials.push_back(plain);
+    model.meshes.push_back(quad_mesh(1));
+
+    fs::path dir = fresh_dir("fields");
+    VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Dagger", 1766522);
+    CHECK(r.ok);
+    json doc = read_json(dir / "materials.json");
+    CHECK(doc["model"] == 1766522);
+    CHECK(doc["poiyomi"] == "10");
+    CHECK(doc["castlemist"].is_string());
+    CHECK(doc["animations"] == json::array({"StowedA"}));
+    CHECK(doc["particles"].is_null());
+    CHECK(r.particlesJson.empty());
+
+    const json& blade = *material_named(doc, "Blade");
+    CHECK(blade["amat"] == 561567);
+    CHECK(blade["profile"] == "weapon-glow");
+    CHECK(blade["preset"] == "Cutout");
+    CHECK(blade["renderPreset"] == "Cutout");
+    CHECK(blade["mode"] == 1);
+    CHECK(blade["exact"] == true);
+    CHECK(blade["usedByMeshes"] == true);
+    CHECK(blade["cull"] == "Back");
+    CHECK_NEAR(blade["alphaCutoff"].get<double>(), 0.25, 1e-9);
+    CHECK(blade["alphaCutoffIsDefault"] == false);  // the clipping shader's own threshold
+    CHECK(blade["renderQueueOffset"].is_null());    // castlemist can't read sortLayer
+    CHECK(blade["gw2"].size() == 3);
+    CHECK_NEAR(blade["gw2"]["glofade"].get<double>(), 0.7, 1e-6);
+    CHECK_NEAR(blade["gw2"]["gloptrb"].get<double>(), 0.4, 1e-6);
+    CHECK_NEAR(blade["gw2"]["specstr"].get<double>(), 0.5, 1e-6);
+    CHECK(blade["maps"]["packed"]["sources"]["smooth"] == "diffuseAlpha");
+    CHECK(blade["maps"]["baseColor"]["source"] == "diffuse");
+    CHECK(blade["maps"]["baseColor"]["fileId"] == 1000);
+    CHECK(blade["maps"]["emissionMap"]["panning"].is_null());
+    CHECK(blade["maps"]["distortion"].is_null());
+    CHECK(blade["emission"]["color"].size() == 3);
+
+    const json& p = *material_named(doc, "Plain");
+    CHECK(p["profile"] == "default");
+    CHECK(p["preset"] == "Fade");
+    CHECK(p["mode"] == 2);
+    CHECK(p["exact"] == true);
+    CHECK(p["blend"]["srcRgb"] == 5);
+    CHECK(p["blend"]["dstRgb"] == 6);
+    CHECK(p["blend"]["eqRgb"] == 0);
+    CHECK(p["blend"]["eqA"] == 0);
+    CHECK_NEAR(p["alphaCutoff"].get<double>(), 0.25, 1e-9);
+    CHECK(p["alphaCutoffIsDefault"] == true);
+    CHECK(p["gw2"].size() == 2);
+    CHECK_NEAR(p["gw2"]["intscru"].get<double>(), 0.25, 1e-6);
+    const json& pan = p["maps"]["emissionMap"]["panning"];
+    CHECK(pan["unit"] == "gw2-raw");
+    CHECK_NEAR(pan["u"].get<double>(), 0.25, 1e-6);
+    CHECK_NEAR(pan["v"].get<double>(), -1.5, 1e-6);
+    CHECK(any_of_warnings(r.warnings, "Plain: default profile"));
+}
+
+CM_TEST(vrchat, distortion_strength_and_missing_packed) {
+    ModelPreview model = glow_quad();
+    add_layer(model, model.materials[0], "glowperturb",
+              add_tex(model, solid(2, 2, {128, 128, 255, 255}, 2003)), 1);
+    // An effect with no diffuse: nothing to pack.
+    ModelMaterialCPU fx = mat_with_file(999999999);
+    fx.index = 1;
+    fx.materialName = "Fx";
+    fx.isEffect = true;
+    model.materials.push_back(fx);
+    fs::path dir = fresh_dir("distort");
+    VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Dagger", 1);
+    CHECK(r.ok);
+    json doc = read_json(dir / "materials.json");
+    const json& blade = *material_named(doc, "Blade");
+    CHECK(blade["maps"]["distortion"]["file"] == "Textures/Blade - Distortion.png");
+    CHECK_NEAR(blade["maps"]["distortion"]["strength"].get<double>(), 0.4, 1e-6);
+    CHECK(fs::exists(dir / "Textures" / "Blade - Distortion.png"));
+    const json& f = *material_named(doc, "Fx");
+    CHECK(f["maps"]["packed"].is_null());
+    CHECK(f["cull"] == "Off");
+    CHECK_FALSE(fs::exists(dir / "Textures" / "Fx - Packed.png"));
+}
+
+CM_TEST(vrchat, zero_triangle_material) {
+    ModelPreview model = glow_quad();
+    ModelMaterialCPU spare = model.materials[0];
+    spare.index = 1;
+    spare.materialName = "Spare";
+    model.materials.push_back(spare);  // no mesh draws with it
+    fs::path dir = fresh_dir("zero_tri");
+    VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Dagger", 1);
+    CHECK(r.ok);
+    CHECK_EQ(r.materials, size_t{2});
+    json doc = read_json(dir / "materials.json");
+    CHECK(material_named(doc, "Blade")->at("usedByMeshes") == true);
+    const json& s = *material_named(doc, "Spare");
+    CHECK(s["usedByMeshes"] == false);
+    CHECK(s["maps"]["baseColor"]["file"] == "Textures/Spare - BaseColor.png");
+    CHECK(fs::exists(dir / "Textures" / "Spare - BaseColor.png"));
+}
+
+CM_TEST(vrchat, material_file_names_are_unique_and_legal) {
+    ModelPreview model = glow_quad();
+    model.materials[0].materialName = "A:B";
+    ModelMaterialCPU second = model.materials[0];
+    second.index = 1;
+    second.materialName = "A?B";
+    model.materials.push_back(second);
+    ModelMaterialCPU third = model.materials[0];
+    third.index = 2;
+    third.materialName = "\xC3\xA9p\xC3\xA9" "e";  // "epee" with accents: non-ASCII stays
+    model.materials.push_back(third);
+    ModelMaterialCPU fourth = model.materials[0];
+    fourth.index = 3;
+    fourth.materialName = "a_b";  // collides with "A_B" on a case-insensitive disk
+    model.materials.push_back(fourth);
+
+    fs::path dir = fresh_dir("names");
+    VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Dag/ger", 1);
+    CHECK(r.ok);
+    CHECK(fs::exists(dir / "Dag_ger.glb"));
+    json doc = read_json(dir / "materials.json");
+    CHECK_EQ(doc["materials"].size(), size_t{4});
+    std::vector<std::string> files;
+    for (const json& m : doc["materials"]) {
+        const std::string f = m["maps"]["baseColor"]["file"].get<std::string>();
+        files.push_back(f);
+        const std::string leaf = f.substr(std::string("Textures/").size());
+        for (char c : std::string("/\\:*?\"<>|")) CHECK(leaf.find(c) == std::string::npos);
+        CHECK(fs::exists(dir / fs::path(std::u8string(f.begin(), f.end()))));
+    }
+    for (size_t i = 0; i < files.size(); ++i)
+        for (size_t j = i + 1; j < files.size(); ++j) {
+            std::string a = files[i], b = files[j];
+            for (char& c : a) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            for (char& c : b) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            CHECK(a != b);
+        }
+    CHECK(doc["materials"][0]["name"] == "A:B");  // the real name is kept in the JSON
+
+    CHECK(safe_file_name("") == "_");
+    CHECK(safe_file_name("  . ") == "_");
+    CHECK(safe_file_name(" a|b ") == "a_b");
+    CHECK(safe_file_name("CON") != "CON");
+}
+
+CM_TEST(vrchat, folder_for_material_without_game_shader) {
+    ModelPreview model = glow_quad();
+    ModelMaterialCPU& m = model.materials[0];
+    m.materialFile = 0;
+    m.materialName.clear();
+    m.hasRenderState = false;
+    m.isEffect = true;
+    fs::path dir = fresh_dir("no_shader");
+    VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Prop", 0);
+    CHECK(r.ok);
+    json doc = read_json(dir / "materials.json");
+    const json& j = doc["materials"][0];
+    CHECK(j["name"] == "Mat_0");
+    CHECK(j["amat"].is_null());
+    CHECK(j["preset"] == "Additive");
+    CHECK(j["mode"] == 4);
+    CHECK(j["profile"] == "default");
+    CHECK(j["blend"].is_null());  // no game blend word: no table of zeros
+    CHECK(any_of_warnings(r.warnings, "Mat_0: no game shader"));
+    CHECK(any_of_warnings(r.warnings, "Mat_0: default profile"));
+    CHECK(fs::exists(dir / "Prop.glb"));
+    CHECK(fs::exists(dir / "materials.json"));
+    CHECK(fs::exists(dir / "Textures" / "Mat_0 - BaseColor.png"));
+}
+
+CM_TEST(vrchat, empty_model_is_refused_before_writing) {
+    ModelPreview model;
+    fs::path dir = fresh_dir("empty");
+    VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Empty", 0);
+    CHECK_FALSE(r.ok);
+    CHECK_FALSE(r.error.empty());
+    CHECK_FALSE(fs::exists(dir));
+}
+
+CM_TEST(vrchat, gltf_alpha_mode_from_profile) {
+    ModelPreview model = glow_quad();
+    model.textures[static_cast<size_t>(model.materials[0].diffuseTex)].hasCutout = true;
+    fs::path dir = fresh_dir("alpha");
+    fs::create_directories(dir);
+    CHECK(export_model_gltf(model, (dir / "a.glb").string()).ok);
+    json g = glb_json(dir / "a.glb");
+    const json& wm = g["materials"][0];
+    CHECK(wm["alphaMode"] == "MASK");
+    CHECK_NEAR(wm["alphaCutoff"].get<double>(), 0.25, 1e-9);
+    // The packed map rides as metallicRoughness (G = 1 - smooth, B = metal).
+    CHECK(wm["pbrMetallicRoughness"].contains("metallicRoughnessTexture"));
+
+    model.materials[0].materialFile = 999999999;  // default profile: never clips
+    CHECK(export_model_gltf(model, (dir / "b.glb").string()).ok);
+    json h = glb_json(dir / "b.glb");
+    CHECK(h["materials"][0].value("alphaMode", std::string("OPAQUE")) == "OPAQUE");
+    CHECK_FALSE(h["materials"][0].contains("alphaCutoff"));
+}
+
+CM_TEST(vrchat, gltf_alpha_mask_kept_for_baked_textures_without_game_shader) {
+    // Character pieces, map props and baked atlases carry no game shader: their
+    // diffuse alpha is real coverage (hair cards, foliage), so the texture's own
+    // hasCutout still makes the .glb material MASK, as before the profiles.
+    ModelPreview model = glow_quad();
+    model.materials[0].hasRenderState = false;
+    model.materials[0].materialFile = 0;
+    model.textures[static_cast<size_t>(model.materials[0].diffuseTex)].hasCutout = true;
+    fs::path dir = fresh_dir("alpha_legacy");
+    fs::create_directories(dir);
+    CHECK(export_model_gltf(model, (dir / "a.glb").string()).ok);
+    json g = glb_json(dir / "a.glb");
+    CHECK(g["materials"][0]["alphaMode"] == "MASK");
+    CHECK_NEAR(g["materials"][0]["alphaCutoff"].get<double>(), 0.25, 1e-9);
+    // Their alpha is not shine either: no packed map, the glb stays matte.
+    CHECK_FALSE(g["materials"][0]["pbrMetallicRoughness"].contains("metallicRoughnessTexture"));
+
+    model.textures[static_cast<size_t>(model.materials[0].diffuseTex)].hasCutout = false;
+    CHECK(export_model_gltf(model, (dir / "b.glb").string()).ok);
+    CHECK(glb_json(dir / "b.glb")["materials"][0]["alphaMode"] == "OPAQUE");
 }
