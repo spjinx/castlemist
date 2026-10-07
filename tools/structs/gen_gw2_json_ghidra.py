@@ -27,7 +27,9 @@
 #
 # Verified against a live Gw2-64.exe (Ghidra 12.1.3, PyGhidra 3.1.0, Python
 # 3.14, 2026-10-06): fileTypes=31 chunks=69 types=6582, and models parse the
-# same as with the previous template. Type names carry an address suffix
+# same as with the previous template. (That 3.14 already had JPype built; a
+# fresh setup should use Python 3.13 -- Ghidra's bundled JPype wheels stop at
+# 3.13, and on 3.14 pip needs a C++ compiler to build it.) Type names carry an address suffix
 # (PackMapLights_CAD80) wherever one name has several layouts; those suffixes
 # shift between game builds, so two JSONs from different builds diff noisily
 # even when the structs match.

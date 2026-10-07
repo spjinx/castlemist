@@ -44,9 +44,33 @@ on first launch. Point it at the Adoptium install (for example
 
 ### 2. Install Python
 
-PyGhidra needs **Python 3.9–3.14**. Install it from <https://www.python.org/downloads/windows/>
-and tick **Add python.exe to PATH** on the first installer screen. Check with
-`python --version`.
+PyGhidra needs **Python 3.13** (3.9–3.13 all work; **not 3.14**, see below).
+
+python.org's Windows download is now the **Python install manager**, which
+installs the newest Python (3.14) by default. After installing it, open a new
+terminal and add 3.13:
+
+```powershell
+py install 3.13
+```
+
+(With a classic python.org installer instead, download a 3.13.x release from
+<https://www.python.org/downloads/windows/> and tick **Add python.exe to PATH**
+on its first screen.)
+
+> **Why not 3.14, even though Ghidra lists it.** Ghidra installs PyGhidra
+> offline from its own bundled packages, and its bundled JPype (the Java
+> bridge) stops at 3.13. On 3.14, pip tries to compile JPype instead and fails
+> with *"Microsoft Visual C++ 14.0 or greater is required"*. Ghidra also tries
+> 3.14 first when it's installed, so step 4 tells it to use 3.13.
+
+No restart needed, but **open a new terminal** afterwards: one that was already
+open won't see the new `PATH`. Then check with `py -3.13 --version`, which
+should print `Python 3.13.x`.
+
+> If `python` opens the Microsoft Store instead, Python isn't on `PATH` yet.
+> Re-run the installer and tick the box, or turn off the `python.exe` entry in
+> **Settings > Apps > Advanced app settings > App execution aliases**.
 
 ### 3. Install Ghidra
 
@@ -57,15 +81,34 @@ and tick **Add python.exe to PATH** on the first installer screen. Check with
 
 ### 4. Start Ghidra in PyGhidra mode
 
+First, if Python 3.14 is also installed (the install manager's default), tell
+Ghidra to use 3.13. In PowerShell, with your Ghidra version in the folder name:
+
+```powershell
+New-Item -ItemType Directory -Force "$env:APPDATA\ghidra\ghidra_12.1.4_PUBLIC" | Out-Null
+Set-Content -Path "$env:APPDATA\ghidra\ghidra_12.1.4_PUBLIC\python_command.save" -Value "py","-3.13"
+```
+
+Ghidra checks that file before trying Python versions newest-first.
+
 Don't use the usual `ghidraRun.bat`. Start Ghidra with:
 
 ```
 C:\ghidra\ghidra_12.x_PUBLIC\support\pyghidraRun.bat
 ```
 
-The first time, it sets up PyGhidra's Python environment from the copy bundled
-with Ghidra, so it takes a minute. Answer **y** if it asks to install. After
-that it opens the normal Ghidra window.
+The first time, it sets up PyGhidra from the copy bundled with Ghidra (no
+internet needed) and asks two questions in the console window:
+
+```
+Do you wish to install PyGhidra (y/n)? y
+Install into new Ghidra virtual environment (y/n)? y
+```
+
+Answer **y** to both. That keeps PyGhidra in its own environment, separate
+from your other Python packages. It takes a minute, only happens once, and then
+the normal Ghidra window opens. (Installed Python while Ghidra was open?
+Close Ghidra and start it again with `pyghidraRun.bat`.)
 
 > Started Ghidra the normal way? The script will refuse to run with
 > *"Ghidra was not started with PyGhidra"*. Close Ghidra and use
@@ -87,7 +130,11 @@ that it opens the normal Ghidra window.
 1. **Window > Script Manager**.
 2. Click the **Manage Script Directories** button (the icon with a list of
    folders, in the Script Manager's toolbar), click **+**, add your
-   castlemist folder's `tools\structs`, and close that dialog.
+   castlemist folder's `tools\structs` **folder** (not the `.py` file inside it;
+   a file there shows up red as *"no bundle type"*, and can be removed with the
+   red **–** button), make sure its box is ticked, and close that dialog. A
+   `$USER_HOME/ghidra_scripts` row saying *"file not found"* is a harmless
+   default.
 3. In the Script Manager's filter box type `gen_gw2`, select
    **gen_gw2_json_ghidra.py**, and click **Run** (the green arrow).
 4. Wait for the console (bottom of the CodeBrowser) to print something like:
@@ -158,8 +205,9 @@ should get a 3D mesh instead of hex. (castlemist loads the file by itself; use
 | symptom | likely cause | fix |
 | ------- | ------------ | --- |
 | *"Ghidra was not started with PyGhidra"* | launched with `ghidraRun.bat` | start with `support\pyghidraRun.bat` |
+| *"Microsoft Visual C++ 14.0 or greater is required"* while installing PyGhidra | Python 3.14: Ghidra's bundled JPype only covers 3.9–3.13, so pip tries to compile it | `py install 3.13`; delete `%APPDATA%\ghidra\ghidra_12.x_PUBLIC\venv`; point Ghidra at 3.13 (the `python_command.save` command in step 4); run `pyghidraRun.bat` again |
 | Ghidra won't start, or asks for a JDK path | Java isn't 21 | install JDK 21 (step 1) and point Ghidra at it |
-| `gen_gw2_json_ghidra.py` isn't in the Script Manager | its folder isn't a script directory | step 6.2 |
+| `gen_gw2_json_ghidra.py` isn't in the Script Manager | its folder isn't a script directory, or the `.py` file was added instead of the folder | step 6.2, then the Script Manager's refresh button |
 | The script prints `chunks=0` / `types=0` | wrong file imported (e.g. the 32-bit client or a launcher), or a patch reshaped the tables | import the 64-bit `Gw2-64.exe` from the game folder; if it still finds nothing after a patch, compare with an older JSON and open an issue |
 | Models still show hex in castlemist | the JSON isn't where castlemist looks | it must be `dumps\packfile\gw2_packfile.json` inside the castlemist folder, and castlemist must run from inside that folder (e.g. `build\release\bin\`) |
 
