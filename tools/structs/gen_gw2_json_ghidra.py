@@ -20,18 +20,25 @@
 # if it isn't already listed -> double-click this script with your
 # Gw2-64.exe CodeBrowser open and active.
 #
-# UNTESTED against a real Gw2-64.exe -- there is no GW2 install available
-# where this was written, only the IDA original to port from. The logic is
-# a careful 1:1 translation (see the comments matching each function back to
-# gen_gw2_json.py), but "translates cleanly" is not the same as "verified
-# against real data". If a run produces zero fileTypes/chunks, the most
-# likely culprits, in order: (1) this exe's real section name isn't exactly
-# ".rdata" (some builds fold read-only data into ".text" -- the "if RD0==0"
-# fallback here mirrors the IDA original's own fallback for that), (2) the
-# reflection tables genuinely moved/changed shape in a client patch, (3) a
-# bug in this port. Compare a suspicious result against dumps/packfile/
-# gw2_packfile.json's existing shape (e.g. does "mach" still show up in
-# strucTabs with 2 PackAnimMachines versions?) before assuming (2) or (3).
+# Or headless, with no GUI (about 2 minutes, project discarded afterwards):
+#   support\pyghidraRun.bat -H <scratch dir> gw2 -import <...>\Gw2-64.exe
+#     -noanalysis -scriptPath <castlemist>\tools\structs
+#     -postScript gen_gw2_json_ghidra.py -deleteProject
+#
+# Verified against a live Gw2-64.exe (Ghidra 12.1.3, PyGhidra 3.1.0, Python
+# 3.14, 2026-10-06): fileTypes=31 chunks=69 types=6582, and models parse the
+# same as with the previous template. Type names carry an address suffix
+# (PackMapLights_CAD80) wherever one name has several layouts; those suffixes
+# shift between game builds, so two JSONs from different builds diff noisily
+# even when the structs match.
+#
+# If a run produces zero fileTypes/chunks, the most likely culprits, in
+# order: (1) the wrong executable (the 32-bit client or a launcher), (2) this
+# exe's read-only data isn't in a section named exactly ".rdata" (the "if
+# RD0==0" fallback here mirrors the IDA original's own fallback for that),
+# (3) the reflection tables changed shape in a client patch. Compare against
+# an older gw2_packfile.json (e.g. does "mach" still show up in strucTabs
+# with 2 PackAnimMachines versions?) before assuming (3).
 #
 # Output schema (unchanged from gen_gw2_json.py):
 #   { "format":"gw2packfile", "pointerSize":64,
@@ -42,7 +49,29 @@ import json
 import jpype
 from ghidra.program.model.mem import MemoryAccessException
 
-OUT_PATH = r"C:\Users\vital\Downloads\castlemist\castlemist\dumps\packfile\gw2_packfile.json"
+import os
+
+
+# Where the JSON goes: this repo's dumps/packfile/ (found relative to this
+# script, tools/structs/), so it works from any clone; your home folder if the
+# script was copied somewhere else. The path is printed when it finishes.
+def _default_out_path():
+    here = None
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        try:
+            here = str(getSourceFile().getParentFile().getAbsolutePath())
+        except Exception:
+            here = None
+    if here:
+        dumps = os.path.normpath(os.path.join(here, "..", "..", "dumps", "packfile"))
+        if os.path.isdir(dumps):
+            return os.path.join(dumps, "gw2_packfile.json")
+    return os.path.join(os.path.expanduser("~"), "gw2_packfile.json")
+
+
+OUT_PATH = _default_out_path()
 
 mem = currentProgram.getMemory()
 BADADDR = 0xFFFFFFFFFFFFFFFF
@@ -291,5 +320,6 @@ def main():
     amb = sorted(nm for nm, t in tabs_per_name.items() if len(t) > 1)
     print("OK fileTypes=%d chunks=%d types=%d ambiguous=%s" % (
         len(fileTypes), len(chunks), len(types), amb))
+    print("Wrote " + OUT_PATH)
 
 main()

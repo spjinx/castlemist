@@ -2,12 +2,17 @@
 
 ## Toolchain
 
-MinGW-w64 GCC 14 (UCRT, POSIX threads, SEH) with CMake 3.21+ and Ninja. The
-toolchain this is developed against lives at:
+MinGW-w64 GCC 13 or newer (UCRT, POSIX threads, SEH) with CMake 3.21+ and
+Ninja. The simplest way to get all three is MSYS2's UCRT64 environment:
 
+```bash
+pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja
 ```
-C:\Users\<you>\Documents\codeblocks-25.03mingw-nosetup\MinGW\bin
-```
+
+with `C:\msys64\ucrt64\bin` on `PATH`. Without it g++ cannot find its own
+helper DLLs and fails with no message at all. Any other MinGW-w64 GCC of the
+same flavour works too. [getting-started.md](getting-started.md) has the full
+first-time setup.
 
 MSVC is not supported. The build has never been configured for it, and the
 static-link path relies on GCC behaviour.
@@ -85,6 +90,8 @@ gdb -batch -ex run build/debug/bin/castlemist.exe
 
 All of them come from `external/` and are declared in `cmake/Externals.cmake`,
 which fails at configure time by name if one is missing.
+`tools/setup/fetch_externals.ps1` downloads every one of them at the right
+version (`-WithBgfx` adds the optional bgfx trio).
 [`external/README.md`](../external/README.md) lists what belongs there and
 where each library comes from -- the directory is not tracked in git.
 

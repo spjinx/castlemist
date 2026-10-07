@@ -1,5 +1,14 @@
 # Documentation
 
+## New here? Start with these
+
+| document | covers |
+| -------- | ------ |
+| [getting-started.md](getting-started.md) | install, build, open your Gw2.dat, the struct template, the index, game names and search, the Character Ripper, top to bottom |
+| [struct-template.md](struct-template.md) | making `gw2_packfile.json` with Ghidra + PyGhidra (free) or IDA |
+| [using-castlemist.md](using-castlemist.md) | every panel, menu and exporter, and the command line |
+| [troubleshooting.md](troubleshooting.md) | what goes wrong and how to fix it |
+
 ## Working on castlemist
 
 | document | read it when |

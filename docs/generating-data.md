@@ -7,7 +7,7 @@ corresponding job.
 
 | file | goes in | produced by | without it |
 | ---- | ------- | ----------- | ---------- |
-| `gw2_packfile.json` | `dumps/packfile/` | `tools/structs/gen_gw2_json.py` in IDA | models show hex, not geometry |
+| `gw2_packfile.json` | `dumps/packfile/` | `tools/structs/gen_gw2_json_ghidra.py` in Ghidra (free), or `gen_gw2_json.py` in IDA | models show hex, not geometry |
 | `gw2_index.db` | `dumps/index/` | `tools/gw2index` | no type/container columns or filters |
 | `textkeys.csv`, `strs_textbase.csv` | `dumps/strs/` | `tools/strs/*.py` | packed strings stay locked |
 | `bink2w64.dll` | `dumps/binaries/` | extracted from the dat | cinematics do not play |
@@ -57,8 +57,9 @@ Field kinds:
 
 ### How to regenerate it
 
-You need IDA Pro with a Guild Wars 2 x64 IDB (ASLR disabled makes the addresses
-stable).
+Step by step, for both Ghidra (free, via PyGhidra) and IDA:
+**[struct-template.md](struct-template.md)**. In short, for IDA you need IDA Pro
+with a Guild Wars 2 x64 IDB (ASLR disabled makes the addresses stable).
 
 ```
 IDA  ->  File  ->  Script file...  ->  tools/structs/gen_gw2_json.py
@@ -97,14 +98,13 @@ records what actually happened.
 
 ### Building the indexer
 
-```bash
-bash ../gw2index/build.sh          # caches sqlite3.o, then builds gw2index.exe
-```
+`gw2index.exe` builds with the project, into `build/<preset>/bin/`. The app can
+also build the same database itself: **File > Build Index DB from .dat...**.
 
 ### Indexing an archive
 
 ```bash
-cd ../gw2index
+cd build/release/bin
 
 # The small one first — your account's Local.dat, ~322 entries, about a second.
 ./gw2index.exe --dat "$APPDATA/Guild Wars 2/Local.dat" \
@@ -194,9 +194,17 @@ wrong text.
 
 ## 4. The Bink runtime -- `bink2w64.dll`
 
-It lives *inside* the dat: BINARIES `MZx`, baseId 140117 / fileId 1247272.
-Extract it with `gw2dat_cli` (or copy it out of the game directory) into
-`dumps/binaries/`. `GW2_BINK_DLL` overrides the location.
+It lives *inside* the dat, as an `exe`-type entry: base id **136046** on the
+October 2026 build (it was 140117 on older ones; these ids move between
+patches). Extract it into `dumps/binaries/`:
+
+```bash
+gw2dat_cli extract --dat <Gw2.dat> --base-id 136046 --out dumps/binaries/bink2w64.dll
+```
+
+If that writes something that isn't a DLL, find the current id: set the
+index's type filter to `exe` (about 16 entries) and look for the ~390 KB one
+whose bytes contain `bink2w64.dll`. `GW2_BINK_DLL` overrides the location.
 
 Every entry point is resolved with `GetProcAddress`, so its absence only
 disables playback.

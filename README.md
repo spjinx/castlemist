@@ -114,6 +114,16 @@ a light base and a dark one on a dark base.
 > are not covered by Windows' `DarkMode_*` themes; fixing them properly means
 > owner-drawing both.
 
+## Getting started
+
+New to castlemist? **[docs/getting-started.md](docs/getting-started.md)** goes
+from a fresh PC to searching the archive by item name: installing the
+toolchain, fetching the libraries with one script, building, generating the
+struct template with Ghidra ([docs/struct-template.md](docs/struct-template.md)),
+building the index, and downloading the game names. After that,
+[docs/using-castlemist.md](docs/using-castlemist.md) tours every panel and
+[docs/troubleshooting.md](docs/troubleshooting.md) covers what goes wrong.
+
 ## Running it
 
 ```bash
@@ -180,9 +190,15 @@ everything into a single self-contained executable.
 ## Building
 
 Needs MinGW-w64 (GCC 13+), CMake 3.21+, Ninja, and the libraries listed in
-[`external/README.md`](external/README.md). With MSYS2, put
-`C:\msys64\ucrt64\bin` on `PATH` first; without it g++ fails with no message.
-The VRChat export also needs [Blender](https://www.blender.org/).
+[`external/README.md`](external/README.md), which one script fetches:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\setup\fetch_externals.ps1 -WithBgfx
+```
+
+With MSYS2, put `C:\msys64\ucrt64\bin` on `PATH` first; without it g++ fails with no
+message. The VRChat export also needs [Blender](https://www.blender.org/).
+Step by step: [docs/getting-started.md](docs/getting-started.md).
 
 ```bash
 cmake --preset debug
