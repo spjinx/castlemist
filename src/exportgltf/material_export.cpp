@@ -42,6 +42,12 @@ std::vector<int> write_materials(GltfWriter& w, const ModelPreview& model, const
             if (mat.diffuseUv != 0) baseColorTex["texCoord"] = mat.diffuseUv;
             pbr["baseColorTexture"] = std::move(baseColorTex);
         }
+        if (mat.metalRoughTex >= 0 && mat.metalRoughTex < static_cast<int>(texIndices.size()) &&
+            texIndices[static_cast<size_t>(mat.metalRoughTex)] >= 0) {
+            pbr["metallicRoughnessTexture"] = {{"index", texIndices[static_cast<size_t>(mat.metalRoughTex)]}};
+            pbr["metallicFactor"] = 1.0;
+            pbr["roughnessFactor"] = 1.0;
+        }
 
         // Same priority spjinx/t3d's own glTF exporter uses (RenderUtils.ts:
         // `finalMaterial.name = rawMesh.materialName || (mat ? String(mat.filename)
@@ -76,8 +82,24 @@ std::vector<int> write_materials(GltfWriter& w, const ModelPreview& model, const
         // doesn't care whether any material references a texture), just not
         // pre-wired to anything -- listed in extras below so its real
         // fileId/UV set are at least visible for manual wiring.
-        if (!mat.extraTextures.empty()) {
-            const auto& ex0 = mat.extraTextures[0];
+        auto texRef = [&](const ModelMaterialCPU::ExtraTexture& ex) -> json {
+            if (ex.texIndex < 0 || ex.texIndex >= static_cast<int>(texIndices.size()) ||
+                texIndices[static_cast<size_t>(ex.texIndex)] < 0)
+                return json();
+            json ref{{"index", texIndices[static_cast<size_t>(ex.texIndex)]}};
+            if (ex.uvIndex != 0) ref["texCoord"] = ex.uvIndex;
+            return ref;
+        };
+        // The material's own glow layer ("glow", else "glowmask") is its
+        // emissive map; the occlusion slot below takes the first other layer.
+        const ModelMaterialCPU::ExtraTexture* glowLayer = nullptr;
+        for (const auto& ex : mat.extraTextures)
+            if (ex.role == "glow" || (!glowLayer && ex.role == "glowmask")) glowLayer = &ex;
+        const ModelMaterialCPU::ExtraTexture* occLayer = nullptr;
+        for (const auto& ex : mat.extraTextures)
+            if (ex.role.rfind("glow", 0) != 0) { occLayer = &ex; break; }
+        if (occLayer) {
+            const auto& ex0 = *occLayer;
             if (ex0.texIndex >= 0 && ex0.texIndex < static_cast<int>(texIndices.size()) &&
                 texIndices[static_cast<size_t>(ex0.texIndex)] >= 0) {
                 json occTex{{"index", texIndices[static_cast<size_t>(ex0.texIndex)]}};
@@ -108,6 +130,21 @@ std::vector<int> write_materials(GltfWriter& w, const ModelPreview& model, const
             }
         }
 
+        if (glowLayer) {
+            json ref = texRef(*glowLayer);
+            if (!ref.is_null()) {
+                material["emissiveTexture"] = std::move(ref);
+                material["emissiveFactor"] = {1.0, 1.0, 1.0};
+            }
+        }
+
+        // A baked glow (e.g. a sylvari's pattern glow) rides on its own texture.
+        if (mat.emissiveTex >= 0 && mat.emissiveTex < static_cast<int>(texIndices.size()) &&
+            texIndices[static_cast<size_t>(mat.emissiveTex)] >= 0) {
+            material["emissiveTexture"] = {{"index", texIndices[static_cast<size_t>(mat.emissiveTex)]}};
+            material["emissiveFactor"] = {1.0, 1.0, 1.0};
+        }
+
         // Every named MODL material constant this codebase doesn't already
         // map to a real glTF property (glow, sss, scroll speed, the raw
         // specpwr/specstr behind the roughness approximation above, ...),
@@ -119,6 +156,7 @@ std::vector<int> write_materials(GltfWriter& w, const ModelPreview& model, const
             const auto& ex = mat.extraTextures[i];
             extras["gw2_extraTex" + std::to_string(i) + "_fileId"] = ex.fileId;
             extras["gw2_extraTex" + std::to_string(i) + "_uvIndex"] = ex.uvIndex;
+            if (!ex.role.empty()) extras["gw2_extraTex" + std::to_string(i) + "_role"] = ex.role;
         }
         if (!extras.empty()) material["extras"] = std::move(extras);
 

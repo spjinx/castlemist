@@ -56,7 +56,19 @@ castlemist_add_test(format
             test_format_chat_link.cpp
             test_format_strs.cpp
             test_format_content_schema.cpp
+            test_format_composite.cpp
     DEPS    castlemist::format)
+
+castlemist_add_test(character
+    SOURCES test_character_key_store.cpp
+            test_character_http.cpp
+            test_character_api.cpp
+            test_character_resolver.cpp
+            test_character_manifest_json.cpp
+            test_character_look_store.cpp
+    DEPS    castlemist::character ext::json)
+target_compile_definitions(cm_test_character PRIVATE
+    CM_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 
 castlemist_add_test(db
     SOURCES test_db_index.cpp test_db_type_names.cpp
@@ -88,12 +100,19 @@ castlemist_add_test(exportgltf
     DEPS    castlemist::exportgltf ext::json
     PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/exportgltf")
 
+castlemist_add_test(ripper
+    SOURCES test_ripper_dye.cpp test_ripper_atlas.cpp test_ripper_export.cpp test_ripper_skeleton.cpp test_ripper_assemble.cpp test_ripper_look.cpp
+    DEPS    castlemist::ripper ext::json ext::stb)
+target_compile_definitions(cm_test_ripper PRIVATE
+    CM_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+
 castlemist_add_test(render
     SOURCES test_render_math.cpp test_render_preview_rig.cpp
     DEPS    castlemist::render
     PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/render")
 
 castlemist_add_test(ui
-    SOURCES test_ui_layout.cpp
+    SOURCES test_ui_layout.cpp test_ui_content_map_service.cpp test_ui_character_state.cpp
+            test_ui_content_links.cpp
     DEPS    castlemist::ui
     PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/ui")

@@ -254,6 +254,30 @@ Decoded decode(const std::string& text) {
     return d;
 }
 
+std::string encode_id(uint8_t header, uint32_t id) {
+    std::vector<uint8_t> p{header};
+    switch (header) {
+    case 0x02: p.push_back(1); break;  // quantity
+    case 0x03: case 0x04: case 0x06: case 0x07: case 0x09: case 0x0A: case 0x0B: case 0x0E: break;
+    default: return {};
+    }
+    // Item: 3-byte id + a zero flag byte; the rest: a u32. Same bytes either way.
+    for (int i = 0; i < 4; ++i) p.push_back(static_cast<uint8_t>(id >> (8 * i)));
+
+    static const char* kAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out = "[&";
+    for (size_t i = 0; i < p.size(); i += 3) {
+        uint32_t n = static_cast<uint32_t>(p[i]) << 16;
+        if (i + 1 < p.size()) n |= static_cast<uint32_t>(p[i + 1]) << 8;
+        if (i + 2 < p.size()) n |= p[i + 2];
+        out += kAlphabet[(n >> 18) & 63];
+        out += kAlphabet[(n >> 12) & 63];
+        out += i + 1 < p.size() ? kAlphabet[(n >> 6) & 63] : '=';
+        out += i + 2 < p.size() ? kAlphabet[n & 63] : '=';
+    }
+    return out + "]";
+}
+
 std::string to_report(const Decoded& d) {
     std::ostringstream os;
     if (!d.ok && d.error.empty() && d.type.empty()) { os << "(nothing decoded)\r\n"; return os.str(); }

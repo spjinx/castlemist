@@ -18,6 +18,7 @@ constexpr uint32_t kPackSearchSpan = 64;      // t3d's PACK_SEARCH_SPAN
 } // namespace
 
 uint32_t ContentObject::unique_id() const { return read_u32(bytes, 20); }
+uint32_t ContentObject::data_id() const { return read_u32(bytes, 40); }
 
 uint32_t decode_fileref_pair(std::span<const uint8_t> data, size_t at) {
     if (at + 4 > data.size()) return 0;

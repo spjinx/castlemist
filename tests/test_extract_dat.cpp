@@ -415,3 +415,59 @@ CM_TEST(dat, model_token64_fields_keep_their_high_half) {
             if ((t.token >> 32) != 0) any_high_half = true;
     CHECK(any_high_half);
 }
+
+CM_TEST(dat, texture_decodes_by_file_id) {
+    Gw2Dat& dat = shared_dat();
+    ModelTextureCPU tex;
+    CHECK(decode_texture_rgba(dat, 151455, tex));  // Warden Coat, SylvariFemale base texture
+    CHECK_EQ(tex.width, 512);
+    CHECK_EQ(tex.height, 256);
+    CHECK_EQ(tex.rgba.size(), size_t{512 * 256 * 4});
+    ModelTextureCPU none;
+    CHECK_FALSE(decode_texture_rgba(dat, 0, none));
+}
+
+CM_TEST(dat, texture_rgba_ignores_the_reduced_resolution_toggle) {
+    Gw2Dat& dat = shared_dat();
+    // Armor base textures from a real export; any with a reduced member exposes the toggle.
+    for (uint32_t id : {151455u, 151485u, 418445u, 2693767u, 2460768u, 2162270u, 2306526u, 2162253u, 1202479u}) {
+        ModelTextureCPU full, reduced;
+        CHECK(decode_texture_rgba(dat, id, full));
+        set_texture_full_res(false);  // the viewer's "reduced" setting
+        bool ok = decode_texture_rgba(dat, id, reduced);
+        set_texture_full_res(true);
+        CHECK(ok);
+        CHECK_EQ(reduced.width, full.width);  // the ripper's atlas math needs the full member
+        CHECK_EQ(reduced.height, full.height);
+    }
+}
+
+
+CM_TEST(dat, texture_rgba_decodes_the_exact_entry) {
+    Gw2Dat& dat = shared_dat();
+    // The Warden Coat's dye masks: the Composite names 512x256 entries. Two of
+    // them have a 1024x512 high-res copy in the next entry and the base texture
+    // has none, so following the full/reduced pairing returned a mismatched set
+    // (and the ripper dropped those masks). The exact entries all match.
+    for (uint32_t id : {151449u, 151451u, 151453u}) {
+        ModelTextureCPU t;
+        CHECK(decode_texture_rgba(dat, id, t));
+        CHECK_EQ(t.width, 512);
+        CHECK_EQ(t.height, 256);
+        CHECK_EQ(t.baseId, get_by_base_id(dat, id));
+    }
+}
+
+CM_TEST(dat, texture_full_prefers_the_high_res_copy) {
+    Gw2Dat& dat = shared_dat();
+    ModelTextureCPU t;
+    int exact_w = 0;
+    CHECK(decode_texture_full(dat, 151449, t, &exact_w));  // Warden Coat mask: 512x256 + a 1024x512 copy
+    CHECK_EQ(t.width, 1024);
+    CHECK_EQ(t.height, 512);
+    CHECK_EQ(exact_w, 512);
+    ModelTextureCPU base;
+    CHECK(decode_texture_full(dat, 2585044, base, &exact_w));  // Angler Vest base: no larger copy
+    CHECK_EQ(base.width, 512);
+    CHECK_EQ(exact_w, 512);
+}

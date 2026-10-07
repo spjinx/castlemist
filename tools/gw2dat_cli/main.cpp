@@ -13,6 +13,28 @@
 //   parse    (--dat <path> (--index N | --file-id N) | --data <bin>) --template <json>
 //                                            [--max-depth D] [--max-nodes N] [--out <json>]
 //   sniff    --dat <path> (--index N | --file-id N)
+//   character (--key-name NAME | --key KEY) [--character NAME] [--tab N]
+//            [--out <json>] [--cmap <content_map.bin>]
+//            -- lists an account's characters, or resolves one character's
+//            equipment to a manifest (GOES ONLINE: api.guildwars2.com only)
+//            [--dat <path> [--index <db>]] rebuilds a missing content map first
+//   character-export --manifest <json> --dat <path> --out <dir> [--index <db>]
+//            -- one .glb per equipped piece (race model, dyes baked), plus a report
+//   character-vrchat --manifest <json> --dat <path> --out <dir> [--weapons ..] [--blender <exe>]
+//            -- VRChat avatar (.glb + .fbx via Blender + setup notes), with the saved look
+//   palette  [--id N] [--dat <path>]   -- colour palettes (character creator colours)
+//   look-options --race R --gender G --dat <path>   -- faces, hair styles, skin/hair colours
+//   look-set --character NAME [--face N] [--hair N] [--skin-color ID] [--hair-color ID]
+//            [--hair-color2 ID] [--ears N] [--eye-color ID] [--pattern N] [--pattern-color ID]
+//            [--glow-color ID] [--glow-intensity 0..1] [--physique N] [--remove]
+//            -- saves the look character-assemble applies
+//   cntc-dump --dat <path> --out-dir <dir>   -- research: every content pack, decompressed
+//   composite-types --race R --gender G --dat <path> [--type N]
+//            -- research: a race's Composite entries by piece type, physiques, face presets
+//   character-assemble --manifest <json> --dat <path> --out <dir | file.glb with --combined>
+//            [--combined] [--weapons stowed|hands|none] [--face N] [--hair N] [--metres] [--index <db>]
+//            [--skin-color ID] [--hair-color ID] [--hair-color2 ID] [--no-look]
+//            -- body.glb + one .glb per piece on one skeleton (default), or one combined .glb
 //
 // On success exit code is 0 and the JSON has "ok": true; on failure exit code
 // is 1 and the JSON is {"ok": false, "error": "..."}.
@@ -23,10 +45,13 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <map>
+#include <optional>
 #include <span>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -41,9 +66,35 @@
 #include "castlemist/native/BinaryParser.h"
 #include "castlemist/native/gw2model.hpp"
 #include "castlemist/native/granny_anim.hpp"
+#include "castlemist/format/chat_link.h"
+#include "castlemist/format/content_map.h"
+#include "castlemist/character/fetch.h"
+#include "castlemist/character/key_store.h"
+#include "castlemist/character/look_store.h"
+#include "castlemist/character/manifest_json.h"
+#include "castlemist/db/index_db.h"
+#include "castlemist/extract/entry_extractor.h"
+#include "castlemist/ripper/assemble.h"
+#include "castlemist/ripper/look.h"
+#include "castlemist/ripper/vrchat.h"
+#include "castlemist/ripper/character_export.h"
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <shellapi.h>
+
+// Private (static) copies: castlemist_exportgltf and castlemist_format carry
+// their own stb implementations, and this tool links both through
+// castlemist::ripper, so non-static copies collide in static (release) links.
+#define STB_IMAGE_WRITE_STATIC
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
+#define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
@@ -862,6 +913,43 @@ void cmd_model(const Args& a) {
     j["totalTriangles"] = totalTri;
     j["meshes"] = std::move(meshes);
     j["materials"] = std::move(mats);
+    json cloth = json::array();
+    for (const auto& cp : model.clothPieces) {
+        float mn[3] = {1e30f, 1e30f, 1e30f}, mx[3] = {-1e30f, -1e30f, -1e30f};
+        for (const auto& v : cp.verts) {
+            const float p[3] = {v.px, v.py, v.pz};
+            for (int k = 0; k < 3; ++k) mn[k] = std::min(mn[k], p[k]), mx[k] = std::max(mx[k], p[k]);
+        }
+        float umn = 1e30f, umx = -1e30f, vmn = 1e30f, vmx = -1e30f;
+        size_t weighted = 0;
+        for (const auto& v : cp.verts) {
+            umn = std::min(umn, v.u); umx = std::max(umx, v.u);
+            vmn = std::min(vmn, v.v); vmx = std::max(vmx, v.v);
+            weighted += (v.boneWt[1] > 0 || v.boneIdx[0] != 0);
+        }
+        cloth.push_back({{"materialIndex", cp.materialIndex}, {"lockCount", cp.lockCount}, {"vertices", cp.verts.size()},
+                         {"uv", {umn, umx, vmn, vmx}}, {"skinnedVerts", weighted},
+                         {"triangles", cp.indices.size() / 3}, {"edges", cp.edges.size()},
+                         {"min", {mn[0], mn[1], mn[2]}}, {"max", {mx[0], mx[1], mx[2]}}});
+    }
+    j["cloth"] = std::move(cloth);
+    // The built preview's game-shader facts per material (alpha test, extra roles).
+    Gw2Dat pdat;
+    load_dat_file(pdat, need(a, "dat"));
+    if (auto pv = load_model_by_fileid(pdat, static_cast<uint32_t>(to_u64(a.at("file-id"))))) {
+        json gm = json::array();
+        for (const auto& g : pv->gameMaterials)
+            gm.push_back(json{{"index", g.index}, {"ok", g.ok}, {"prepassCutout", g.prepassCutout}});
+        j["gameMaterials"] = gm;
+        json roles = json::array();
+        for (const auto& m : pv->materials) {
+            json r = json::array();
+            for (const auto& ex : m.extraTextures)
+                r.push_back(json{{"role", ex.role}, {"fileId", ex.fileId}, {"uv", static_cast<int>(ex.uvIndex)}});
+            roles.push_back(json{{"index", m.index}, {"extras", r}, {"diffuse", m.diffuseTex}, {"normal", m.normalTex}});
+        }
+        j["materialRoles"] = roles;
+    }
     // particle clouds + effect lights
     const auto& fx = model.effects;
     json emitters = json::array();
@@ -1682,12 +1770,560 @@ void cmd_encode_texture(const Args& a) {
     emit(j);
 }
 
+// The UTF-8 value of `--flag` from the wide command line. argv is in the ANSI
+// code page, which mangles character names like "Þórr"; the API needs UTF-8.
+std::string utf8_arg(const char* flag) {
+    int n = 0;
+    LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &n);
+    std::string out;
+    std::wstring wflag(flag, flag + std::strlen(flag));
+    for (int i = 0; wargv && i + 1 < n; ++i) {
+        if (wflag != wargv[i]) continue;
+        const wchar_t* w = wargv[i + 1];
+        int len = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+        out.resize(len > 0 ? static_cast<size_t>(len - 1) : 0);
+        if (len > 1) WideCharToMultiByte(CP_UTF8, 0, w, -1, out.data(), len, nullptr, nullptr);
+        break;
+    }
+    if (wargv) LocalFree(wargv);
+    return out;
+}
+
+std::filesystem::path exe_dir() {
+    wchar_t exe[MAX_PATH] = L"";
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    return std::filesystem::path(exe).parent_path();
+}
+
+// Opens the index DB (needed to enumerate content packs and find the Composite):
+// --index, else dumps/index/gw2_index.db under the castlemist root. Not fatal.
+void open_index(const Args& a) {
+    if (castlemist::db::is_open()) return;
+    std::filesystem::path p = has(a, "index") ? std::filesystem::path(utf8_arg("--index"))
+                                              : castlemist::character::find_castlemist_root(exe_dir()) / "dumps" /
+                                                    "index" / "gw2_index.db";
+    std::error_code ec;
+    if (!std::filesystem::exists(p, ec) || std::filesystem::file_size(p, ec) == 0) return;
+    std::string err;
+    castlemist::db::open(p.wstring(), err);
+}
+
+// The content map: the cache beside the exe (or --cmap); failing that, with
+// --dat and an index DB, a fresh build from the dat's content packs, cached.
+void ensure_cmap(const Args& a) {
+    std::filesystem::path cmap_file = has(a, "cmap") ? std::filesystem::path(utf8_arg("--cmap"))
+                                                     : exe_dir() / "content_map.bin";
+    if (castlemist::cmap::built() || castlemist::cmap::load(cmap_file.wstring())) return;
+    if (!has(a, "dat")) return;
+    open_index(a);
+    if (!castlemist::db::is_open()) return;
+    Gw2Dat dat;
+    load_dat_file(dat, a.at("dat"));
+    std::vector<MftData> entries;
+    std::vector<uint32_t> file_ids;
+    for (uint32_t b : castlemist::db::query_base_ids("", "cntc", 0, false, false, 100000)) {
+        if (b == 0 || b - 1 >= dat.mft_data_list.size()) continue;
+        entries.push_back(dat.mft_data_list[b - 1]);
+        std::vector<uint32_t> f = get_by_file_id(dat, b);
+        file_ids.push_back(f.empty() ? 0 : *std::min_element(f.begin(), f.end()));
+    }
+    castlemist::cmap::build(dat.file_info.file_path, entries, file_ids, nullptr);
+    castlemist::cmap::save(cmap_file.wstring());
+}
+
+// What uses a file: the content objects that list --file-id (or --base-id's
+// fileIds) as an asset, each with its chat link and the items that grant it.
+// --names adds display names from the public GW2 API (goes online, no key).
+void cmd_users(const Args& a) {  // --sample-type T: the first few files of type T instead
+    namespace cmap = castlemist::cmap;
+    ensure_cmap(a);
+    if (!cmap::built()) fail("no content map: pass --cmap, or --dat with an index DB");
+    std::vector<uint32_t> fids;
+    if (has(a, "file-id")) fids.push_back(static_cast<uint32_t>(to_u64(a.at("file-id"))));
+    if (has(a, "base-id")) {
+        Gw2Dat dat;
+        load_dat_file(dat, need(a, "dat"));
+        fids = get_by_file_id(dat, static_cast<uint32_t>(to_u64(a.at("base-id"))));
+    }
+    if (has(a, "sample-type")) {
+        // Research aid: the first fileIds (by id) used by objects of one content type.
+        const uint32_t type = static_cast<uint32_t>(to_u64(a.at("sample-type")));
+        for (uint32_t f = 1; f < 4000000 && fids.size() < 8; ++f)
+            for (const cmap::ContentRef& r : cmap::users_of(f))
+                if (r.type == type) { fids.push_back(f); break; }
+    }
+    if (fids.empty()) fail("pass --file-id N, --sample-type T, or --base-id N with --dat");
+
+    std::vector<cmap::ContentRef> refs;
+    for (uint32_t f : fids)
+        for (const cmap::ContentRef& r : cmap::users_of(f)) {
+            refs.push_back(r);
+            for (const cmap::ContentRef& g : cmap::granted_by(r.type, r.id)) refs.push_back(g);
+        }
+    std::map<uint32_t, std::map<uint32_t, std::string>> names;  // type -> id -> name
+    if (has(a, "names")) {
+        castlemist::character::WinHttpClient http;
+        castlemist::character::Gw2Api api(http, "");
+        std::map<uint32_t, std::vector<uint32_t>> want;
+        for (const cmap::ContentRef& r : refs)
+            if (cmap::content_kind(r.type)) want[r.type].push_back(r.id);
+        for (auto& [type, ids] : want) {
+            std::sort(ids.begin(), ids.end());
+            ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+            names[type] = api.names(cmap::content_kind(type)->api, ids);
+        }
+    }
+    auto describe_ref = [&](const cmap::ContentRef& r) {
+        const cmap::ContentKind* k = cmap::content_kind(r.type);
+        json j{{"type", r.type}, {"kind", k ? k->name : ""}, {"id", r.id}};
+        if (k && k->chat_header) j["chatLink"] = castlemist::chat::encode_id(k->chat_header, r.id);
+        auto t = names.find(r.type);
+        if (t != names.end() && t->second.count(r.id)) j["name"] = t->second[r.id];
+        return j;
+    };
+    json users = json::array();
+    for (uint32_t f : fids)
+        for (const cmap::ContentRef& r : cmap::users_of(f)) {
+            json j = describe_ref(r);
+            j["fileId"] = f;
+            json g = json::array();
+            for (const cmap::ContentRef& x : cmap::granted_by(r.type, r.id)) g.push_back(describe_ref(x));
+            if (!g.empty()) j["grantedBy"] = g;
+            users.push_back(j);
+        }
+    emit({{"ok", true}, {"fileIds", fids}, {"users", users}});
+}
+
+// Colour palettes from the content map: all of them (id, base, size), or one
+// palette's colours (--id N) with their first material's shift.
+void cmd_palette(const Args& a) {
+    ensure_cmap(a);
+    json out = json::array();
+    auto shift_json = [](const castlemist::cmap::ColorShift& s) {
+        return json{{"brightness", s.brightness}, {"contrast", s.contrast}, {"hue", s.hue},
+                    {"saturation", s.saturation}, {"lightness", s.lightness}};
+    };
+    for (uint32_t id = 0; id < 4096; ++id) {
+        if (has(a, "id") && id != static_cast<uint32_t>(std::stoul(a.at("id")))) continue;
+        const castlemist::cmap::Palette* p = castlemist::cmap::palette(id);
+        if (!p) continue;
+        json pj{{"id", id}, {"base", {p->base[0], p->base[1], p->base[2]}}, {"count", p->colors.size()}};
+        if (has(a, "id")) {
+            json colors = json::array();
+            for (const auto& c : p->colors)
+                colors.push_back({{"id", c.id}, {"shift", c.materials.empty() ? json() : shift_json(c.materials[0])}});
+            pj["colors"] = colors;
+        }
+        out.push_back(pj);
+    }
+    emit({{"ok", true}, {"palettes", out}});
+}
+
+// Research aid: every content pack (cntc), decompressed, as <out-dir>/cntc_<baseId>.bin.
+void cmd_cntc_dump(const Args& a) {
+    open_index(a);
+    if (!castlemist::db::is_open()) fail("no index DB (build it in castlemist, or pass --index)");
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    const std::filesystem::path dir = utf8_arg("--out-dir");
+    std::filesystem::create_directories(dir);
+    json packs = json::array();
+    for (uint32_t b : castlemist::db::query_base_ids("", "cntc", 0, false, false, 100000)) {
+        if (b == 0 || b - 1 >= dat.mft_data_list.size()) continue;
+        const MftData& e = dat.mft_data_list[b - 1];
+        std::vector<uint8_t> data = decompress_entry(read_entry_bytes(dat.file_info.file_path, e), e.compression_flag);
+        const std::filesystem::path out = dir / ("cntc_" + std::to_string(b) + ".bin");
+        std::ofstream of(out, std::ios::binary);
+        of.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+        std::vector<uint32_t> f = get_by_file_id(dat, b);
+        packs.push_back({{"baseId", b},
+                         {"fileId", f.empty() ? 0 : *std::min_element(f.begin(), f.end())},
+                         {"bytes", data.size()}});
+    }
+    emit({{"ok", true}, {"packs", packs}});
+}
+
+void cmd_character(const Args& a) {
+    namespace ch = castlemist::character;
+    std::string key;
+    if (has(a, "key")) {
+        key = a.at("key");
+    } else if (has(a, "key-name")) {
+        std::filesystem::path file = ch::default_key_file();
+        ch::KeyStore ks;
+        std::string err;
+        if (!ks.load(file, &err)) fail(err);
+        const ch::ApiKey* k = ks.get(a.at("key-name"));
+        if (!k) fail("no saved key named '" + a.at("key-name") + "' in " + file.string());
+        key = k->key;
+    } else {
+        fail("need --key or --key-name");
+    }
+
+    ch::WinHttpClient http;
+    ch::Gw2Api api(http, key);
+    std::vector<std::string> missing = ch::missing_scopes(api.token_info());
+    if (!missing.empty()) {
+        std::string list;
+        for (const std::string& m : missing) list += (list.empty() ? "" : ", ") + m;
+        fail("API key is missing scopes: " + list);
+    }
+
+    if (!has(a, "character")) {
+        json j;
+        j["ok"] = true;
+        j["characters"] = api.character_names();
+        emit(j);
+        return;
+    }
+
+    ensure_cmap(a);  // not fatal: without it pieces say no_content_map
+
+    std::optional<int> tab;
+    if (has(a, "tab")) tab = static_cast<int>(to_u64(a.at("tab")));
+    ch::CmapAssetLookup assets;
+    ch::FetchResult r = ch::fetch_character(api, utf8_arg("--character"), tab, assets);
+    json manifest = ch::manifest_to_json(r.manifest);
+
+    if (has(a, "out")) {
+        std::ofstream of(std::filesystem::path(utf8_arg("--out")), std::ios::binary);
+        if (!of) fail("cannot write " + a.at("out"));
+        of << manifest.dump(2) << '\n';
+    }
+    json tabs = json::array();
+    for (const ch::TabSummary& t : r.tabs) tabs.push_back({{"id", t.tab}, {"name", t.name}, {"active", t.is_active}});
+    json j;
+    j["ok"] = true;
+    j["cmap"] = castlemist::cmap::built();
+    j["tabs"] = tabs;
+    j["manifest"] = manifest;
+    emit(j);
+}
+
+// A manifest (raw, or `character`'s own output) from --manifest.
+castlemist::character::CharacterManifest read_manifest(const Args& a) {
+    std::ifstream f(std::filesystem::path(utf8_arg("--manifest")), std::ios::binary);
+    if (!f) fail("cannot read manifest: " + need(a, "manifest"));
+    json mj = json::parse(f, nullptr, false);
+    if (mj.is_discarded()) fail("manifest is not JSON");
+    if (mj.contains("manifest")) mj = mj["manifest"];
+    return castlemist::character::manifest_from_json(mj);
+}
+
+void cmd_character_assemble(const Args& a) {
+    namespace rp = castlemist::ripper;
+    castlemist::character::CharacterManifest m = read_manifest(a);
+    rp::AssemblyOptions opt;
+    if (has(a, "weapons")) {
+        const std::string w = a.at("weapons");
+        if (w == "stowed") opt.weapons = rp::WeaponPlacement::Stowed;
+        else if (w == "hands") opt.weapons = rp::WeaponPlacement::Hands;
+        else if (w == "none") opt.weapons = rp::WeaponPlacement::None;
+        else fail("--weapons must be stowed, hands or none");
+    }
+    // The character's saved look (character_looks.json), then any overrides.
+    namespace ch = castlemist::character;
+    ch::CharacterLook look;
+    bool saved = false;
+    if (!has(a, "no-look")) {
+        ch::LookStore store;
+        std::string err;
+        if (store.load(ch::default_look_file(), &err))
+            if (auto l = store.get(m.name)) look = *l, saved = true;
+    }
+    if (has(a, "face")) look.face = static_cast<int>(to_u64(a.at("face")));
+    if (has(a, "hair")) look.hair = static_cast<int>(to_u64(a.at("hair")));
+    if (has(a, "skin-color")) look.skin_color = static_cast<uint32_t>(to_u64(a.at("skin-color")));
+    if (has(a, "hair-color")) look.hair_color = static_cast<uint32_t>(to_u64(a.at("hair-color")));
+    if (has(a, "hair-color2")) look.hair_color2 = static_cast<uint32_t>(to_u64(a.at("hair-color2")));
+    if (has(a, "ears")) look.ears = static_cast<int>(to_u64(a.at("ears")));
+    if (has(a, "eye-color")) look.eye_color = static_cast<uint32_t>(to_u64(a.at("eye-color")));
+    if (has(a, "pattern")) look.pattern = std::stoi(a.at("pattern"));
+    if (has(a, "pattern-color")) look.pattern_color = static_cast<uint32_t>(to_u64(a.at("pattern-color")));
+    if (has(a, "glow-color")) look.glow_color = static_cast<uint32_t>(to_u64(a.at("glow-color")));
+    if (has(a, "glow-intensity")) look.glow_intensity = std::stof(a.at("glow-intensity"));
+    if (has(a, "physique")) look.physique = std::stoi(a.at("physique"));
+    if (has(a, "sliders")) {  // "Cheeks=1,Jaw Width=0.86,..."
+        std::stringstream ss(a.at("sliders"));
+        std::string item;
+        while (std::getline(ss, item, ',')) {
+            const size_t eq = item.find('=');
+            if (eq == std::string::npos) fail("--sliders wants Name=value,...: " + item);
+            std::string name = item.substr(0, eq);
+            while (!name.empty() && name.front() == ' ') name.erase(name.begin());
+            look.sliders[name] = std::stof(item.substr(eq + 1));
+        }
+    }
+    opt.metres = has(a, "metres");
+    open_index(a);
+    opt.face_morphs = !has(a, "no-morphs");
+    if (look.skin_color || look.hair_color || look.hair_color2 || look.eye_color || look.pattern_color ||
+        look.glow_color)
+        ensure_cmap(a);  // the palettes
+    rp::apply_look(opt, look, m.race, m.gender);
+    if (look.skin_color && !opt.skin_tint) fail("skin colour " + std::to_string(look.skin_color) + " is not in the " + m.race + " skin palette (or the content map is missing)");
+    if (look.hair_color && !opt.hair_tint) fail("hair colour " + std::to_string(look.hair_color) + " is not in the " + m.race + " hair palette (or the content map is missing)");
+    // Default: a folder with body.glb + one file per piece; --combined: one file.
+    const bool combined = has(a, "combined");
+    rp::AssemblyReport rep = combined ? rp::assemble_character(m, need(a, "dat"), utf8_arg("--out"), opt)
+                                      : rp::assemble_character_separate(m, need(a, "dat"), utf8_arg("--out"), opt);
+    if (!rep.ok) fail(rep.error);
+    json parts = json::array();
+    for (const rp::AssemblyPart& p : rep.parts)
+        parts.push_back({{"part", p.name}, {"status", p.status}, {"reason", p.reason}, {"mesh", p.mesh},
+                         {"file", p.file}});
+    json j;
+    j["ok"] = true;
+    j["joints"] = rep.joints;
+    j["weapons"] = rp::to_string(opt.weapons);
+    j["mode"] = combined ? "combined" : "separate";
+    j["look"] = {{"saved", saved}, {"face", look.face}, {"hair", look.hair}, {"skin_color", look.skin_color},
+                 {"hair_color", look.hair_color}, {"hair_color2", look.hair_color2}, {"ears", look.ears},
+                 {"eye_color", look.eye_color}, {"pattern", look.pattern}, {"pattern_color", look.pattern_color},
+                 {"glow_color", look.glow_color}, {"glow_intensity", look.glow_intensity}, {"physique", look.physique}, {"sliders", look.sliders}};
+    j["parts"] = parts;
+    emit(j);
+}
+
+// VRChat avatar: character-vrchat --manifest m --dat d --out <dir> [--weapons
+// stowed|hands|none (default none)] [--blender <blender.exe>] -- the saved look,
+// one combined model in metres with humanoid bone names, face keys and
+// visemes; Blender (found or given) turns it into an .fbx for Unity.
+void cmd_character_vrchat(const Args& a) {
+    namespace rp = castlemist::ripper;
+    namespace ch = castlemist::character;
+    ch::CharacterManifest m = read_manifest(a);
+    rp::AssemblyOptions opt;
+    opt.weapons = rp::WeaponPlacement::None;
+    if (has(a, "weapons")) {
+        const std::string w = a.at("weapons");
+        opt.weapons = w == "stowed" ? rp::WeaponPlacement::Stowed : w == "hands" ? rp::WeaponPlacement::Hands
+                                                                                  : rp::WeaponPlacement::None;
+    }
+    open_index(a);
+    ch::LookStore store;
+    std::string err;
+    ch::CharacterLook look;
+    if (store.load(ch::default_look_file(), &err)) look = store.get(m.name).value_or(ch::CharacterLook{});
+    ensure_cmap(a);
+    rp::apply_look(opt, look, m.race, m.gender);
+    rp::VrchatOptions vo;
+    if (has(a, "blender")) vo.blender_exe = utf8_arg("--blender");
+    rp::VrchatReport r = rp::export_vrchat(m, need(a, "dat"), utf8_arg("--out"), opt, vo);
+    if (!r.ok) fail(r.error);
+    emit({{"ok", true}, {"glb", r.glb}, {"fbx", r.fbx}, {"notes", r.notes}, {"blender", r.blender},
+          {"joints", r.joints}, {"physbone_chains", r.physbone_chains}});
+}
+
+// A race's Composite appearance entries by piece type (0-3 bare body, 5 face,
+// 6 hair, 7 ears, 8-14 armor, others listed as found): token, meshes, textures.
+void cmd_composite_types(const Args& a) {
+    namespace rp = castlemist::ripper;
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    auto comp = rp::load_composite(dat);
+    if (!comp) fail("no Composite in the dat");
+    const auto* r = comp->race(need(a, "race") + need(a, "gender"));
+    if (!r) fail("no such race");
+    const int only = has(a, "type") ? static_cast<int>(to_u64(a.at("type"))) : -1;
+    std::map<int, json> by_type;
+    for (const auto& [token, f] : r->file_data) {
+        json& t = by_type[f.type];
+        if (t.is_null()) t = json{{"count", 0}, {"entries", json::array()}};
+        t["count"] = t["count"].get<int>() + 1;
+        if (only < 0 ? t["entries"].size() < 3 : f.type == only)
+            t["entries"].push_back({{"token", token}, {"mesh", f.mesh_base}, {"overlap", f.mesh_overlap},
+                                    {"texture", f.texture_base}, {"normal", f.texture_normal},
+                                    {"masks", f.mask_dye}, {"cut", f.mask_cut}, {"hide", f.hide_flags},
+                                    {"skin_flags", f.skin_flags}, {"blit_set", f.blit_set}});
+    }
+    json types = json::object();
+    for (auto& [type, t] : by_type) types[std::to_string(type)] = std::move(t);
+    json styles = json::array();
+    for (const auto& s : r->skin_styles) styles.push_back(s);
+    auto presets_json = [](const std::vector<castlemist::composite::BoneScalePreset>& ps) {
+        json out = json::array();
+        for (const auto& p : ps) {
+            json groups = json::array();
+            for (const auto& g : p.groups) {
+                json subs = json::array();
+                for (const auto& s : g.subs)
+                    subs.push_back({{"bone", s.bone}, {"flag", s.flag}, {"max", s.max}, {"min", s.min}, {"values", s.values}});
+                groups.push_back({{"token", g.token}, {"weight", g.weight}, {"subs", subs}});
+            }
+            out.push_back({{"groups", groups}, {"second", p.second_count}});
+        }
+        return out;
+    };
+    emit({{"ok", true}, {"types", types}, {"skin_styles", styles}, {"physiques", presets_json(r->body_bone_scales)},
+          {"face_presets", presets_json(r->face_bone_scales)}});
+}
+
+// What a race can look like: face / hair style counts and its skin and hair
+// palettes with swatch colours (needs the content map for the colours).
+void cmd_look_options(const Args& a) {
+    namespace rp = castlemist::ripper;
+    const std::string race = need(a, "race"), gender = need(a, "gender");
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    open_index(a);
+    ensure_cmap(a);
+    json j{{"ok", true}, {"race", race}, {"gender", gender}};
+    if (auto comp = rp::load_composite(dat))
+        if (const auto* r = comp->race(race + gender)) {
+            j["faces"] = r->faces.size();
+            j["hair_styles"] = r->hair_styles.size();
+        }
+    const rp::RacePalettes pal = rp::race_palettes(race, gender);
+    auto palette_json = [](uint32_t uid) {
+        json colors = json::array();
+        if (const castlemist::cmap::Palette* p = castlemist::cmap::palette(uid))
+            for (const auto& c : p->colors) {
+                auto rgb = rp::swatch_rgb(*p, c);
+                char hex[8];
+                std::snprintf(hex, sizeof hex, "%02X%02X%02X", rgb[0], rgb[1], rgb[2]);
+                colors.push_back({{"id", c.id}, {"rgb", hex}, {"name", rp::color_name(c.id)}});
+            }
+        return json{{"palette", uid}, {"colors", colors}};
+    };
+    j["skin"] = palette_json(pal.skin);
+    j["hair_colors"] = palette_json(pal.hair);
+    j["eye_colors"] = palette_json(pal.eye);
+    if (pal.pattern) j["pattern_colors"] = palette_json(pal.pattern);
+    if (pal.glow) j["glow_colors"] = palette_json(pal.glow);
+    if (pal.accessory) j["accessory_colors"] = palette_json(pal.accessory);
+    emit(j);
+}
+
+// Picker thumbnails, as PNGs plus one contact sheet: look-thumbs --manifest m
+// --dat d --kind face|hair|ears|pattern --out dir [--size 128] (the character's
+// saved look supplies the colours).
+void cmd_look_thumbs(const Args& a) {
+    namespace rp = castlemist::ripper;
+    namespace ch = castlemist::character;
+    ch::CharacterManifest m = read_manifest(a);
+    const std::string kind = need(a, "kind");
+    const int size = has(a, "size") ? std::stoi(a.at("size")) : 128;
+    open_index(a);
+    ensure_cmap(a);
+    ch::LookStore store;
+    std::string err;
+    store.load(ch::default_look_file(), &err);
+    const ch::CharacterLook look = store.get(m.name).value_or(ch::CharacterLook{});
+    rp::AssemblyOptions opt;
+    rp::apply_look(opt, look, m.race, m.gender);
+    std::vector<rp::ImageRgba> imgs;
+    if (kind == "pattern") {
+        const rp::RacePalettes pal = rp::race_palettes(m.race, m.gender);
+        auto rgb_of = [](uint32_t palette, uint32_t id, std::array<uint8_t, 3> fallback) {
+            if (const castlemist::cmap::Palette* p = castlemist::cmap::palette(palette))
+                for (const auto& c : p->colors)
+                    if (c.id == id) return rp::swatch_rgb(*p, c);
+            return fallback;
+        };
+        imgs = rp::pattern_thumbnails(m, need(a, "dat"), rgb_of(pal.skin, look.skin_color, {200, 170, 130}),
+                                      rgb_of(pal.pattern, look.pattern_color, {40, 80, 40}), size, &err);
+    } else {
+        const rp::LookPart part = kind == "face" ? rp::LookPart::Face : kind == "hair" ? rp::LookPart::Hair
+                                : kind == "ears" ? rp::LookPart::Ears : (fail("--kind must be face, hair, ears or pattern"), rp::LookPart::Face);
+        imgs = rp::look_thumbnails(m, need(a, "dat"), part, opt, size, &err);
+    }
+    if (imgs.empty()) fail(err.empty() ? "no options" : err);
+    const std::filesystem::path dir = utf8_arg("--out");
+    std::filesystem::create_directories(dir);
+    const int cols = 8, cw = imgs[0].w, chh = imgs[0].h;
+    const int rows = static_cast<int>((imgs.size() + cols - 1) / cols);
+    std::vector<uint8_t> sheet(static_cast<size_t>(cols * cw) * rows * chh * 4, 0);
+    for (size_t i = 0; i < imgs.size(); ++i) {
+        const auto& im = imgs[i];
+        stbi_write_png((dir / (kind + "_" + std::to_string(i + 1) + ".png")).string().c_str(), im.w, im.h, 4,
+                       im.px.data(), im.w * 4);
+        const int ox = static_cast<int>(i % cols) * cw, oy = static_cast<int>(i / cols) * chh;
+        for (int y = 0; y < im.h; ++y)
+            std::copy_n(im.px.data() + static_cast<size_t>(y) * im.w * 4, im.w * 4,
+                        sheet.data() + (static_cast<size_t>(oy + y) * cols * cw + ox) * 4);
+    }
+    stbi_write_png((dir / (kind + "_sheet.png")).string().c_str(), cols * cw, rows * chh, 4, sheet.data(), cols * cw * 4);
+    emit({{"ok", true}, {"count", imgs.size()}, {"sheet", (dir / (kind + "_sheet.png")).string()}});
+}
+
+// Saves a character's look: look-set --character NAME [--face N] [--hair N]
+// [--skin-color ID] [--hair-color ID] [--hair-color2 ID] (unset fields keep
+// their saved value); --remove forgets it.
+void cmd_look_set(const Args& a) {
+    namespace ch = castlemist::character;
+    const std::string name = need(a, "character");
+    ch::LookStore store;
+    std::string err;
+    if (!store.load(ch::default_look_file(), &err)) fail(err);
+    if (has(a, "remove")) {
+        store.remove(name);
+    } else {
+        ch::CharacterLook look = store.get(name).value_or(ch::CharacterLook{});
+        if (has(a, "face")) look.face = static_cast<int>(to_u64(a.at("face")));
+        if (has(a, "hair")) look.hair = static_cast<int>(to_u64(a.at("hair")));
+        if (has(a, "skin-color")) look.skin_color = static_cast<uint32_t>(to_u64(a.at("skin-color")));
+        if (has(a, "hair-color")) look.hair_color = static_cast<uint32_t>(to_u64(a.at("hair-color")));
+        if (has(a, "hair-color2")) look.hair_color2 = static_cast<uint32_t>(to_u64(a.at("hair-color2")));
+        if (has(a, "ears")) look.ears = static_cast<int>(to_u64(a.at("ears")));
+        if (has(a, "eye-color")) look.eye_color = static_cast<uint32_t>(to_u64(a.at("eye-color")));
+        if (has(a, "pattern")) look.pattern = std::stoi(a.at("pattern"));
+        if (has(a, "pattern-color")) look.pattern_color = static_cast<uint32_t>(to_u64(a.at("pattern-color")));
+        if (has(a, "glow-color")) look.glow_color = static_cast<uint32_t>(to_u64(a.at("glow-color")));
+        if (has(a, "glow-intensity")) look.glow_intensity = std::stof(a.at("glow-intensity"));
+        if (has(a, "physique")) look.physique = std::stoi(a.at("physique"));
+        if (has(a, "sliders")) {  // "Cheeks=1,Jaw Width=0.86,..."
+            std::stringstream ss(a.at("sliders"));
+            std::string item;
+            while (std::getline(ss, item, ',')) {
+                const size_t eq = item.find('=');
+                if (eq == std::string::npos) fail("--sliders wants Name=value,...: " + item);
+                std::string name = item.substr(0, eq);
+                while (!name.empty() && name.front() == ' ') name.erase(name.begin());
+                look.sliders[name] = std::stof(item.substr(eq + 1));
+            }
+        }
+        store.set(name, look);
+    }
+    if (!store.save(ch::default_look_file(), &err)) fail(err);
+    json j{{"ok", true}, {"file", ch::default_look_file().string()}};
+    if (auto l = store.get(name))
+        j["look"] = {{"face", (*l).face}, {"hair", (*l).hair}, {"skin_color", (*l).skin_color},
+                 {"hair_color", (*l).hair_color}, {"hair_color2", (*l).hair_color2}, {"ears", (*l).ears},
+                 {"eye_color", (*l).eye_color}, {"pattern", (*l).pattern}, {"pattern_color", (*l).pattern_color},
+                 {"glow_color", (*l).glow_color}, {"glow_intensity", (*l).glow_intensity}, {"physique", (*l).physique}, {"sliders", (*l).sliders}};
+    emit(j);
+}
+
+void cmd_character_export(const Args& a) {
+    namespace ch = castlemist::character;
+    std::ifstream f(std::filesystem::path(utf8_arg("--manifest")), std::ios::binary);
+    if (!f) fail("cannot read manifest: " + need(a, "manifest"));
+    json mj = json::parse(f, nullptr, false);
+    if (mj.is_discarded()) fail("manifest is not JSON");
+    if (mj.contains("manifest")) mj = mj["manifest"];  // accept `character`'s own output too
+    ch::CharacterManifest m = ch::manifest_from_json(mj);
+    open_index(a);
+    castlemist::ripper::CharacterExportReport rep =
+        castlemist::ripper::export_character(m, need(a, "dat"), utf8_arg("--out").empty() ? need(a, "out") : utf8_arg("--out"));
+    if (!rep.error.empty()) fail(rep.error);
+    json pieces = json::array();
+    for (const auto& [slot, r] : rep.pieces)
+        pieces.push_back({{"slot", slot}, {"status", r.status}, {"file", r.glb_path}, {"reason", r.reason}});
+    json j;
+    j["ok"] = true;
+    j["exported"] = rep.exported();
+    j["pieces"] = pieces;
+    emit(j);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
         fail("usage: gw2dat_cli <info|list|lookup|resolve|extract|texture|parse|sniff|"
-             "compress|decompress|encode-texture|scananim> [--flags]");
+             "compress|decompress|encode-texture|scananim|character|character-export|"
+             "character-assemble> [--flags]");
     }
     std::string cmd = argv[1];
     Args a = parse_args(argc, argv, 2);
@@ -1713,6 +2349,17 @@ int main(int argc, char** argv) {
         else if (cmd == "compress") cmd_compress(a);
         else if (cmd == "decompress") cmd_decompress(a);
         else if (cmd == "encode-texture") cmd_encode_texture(a);
+        else if (cmd == "cntc-dump") cmd_cntc_dump(a);
+        else if (cmd == "palette") cmd_palette(a);
+        else if (cmd == "users") cmd_users(a);
+        else if (cmd == "look-options") cmd_look_options(a);
+        else if (cmd == "composite-types") cmd_composite_types(a);
+        else if (cmd == "look-set") cmd_look_set(a);
+        else if (cmd == "look-thumbs") cmd_look_thumbs(a);
+        else if (cmd == "character-vrchat") cmd_character_vrchat(a);
+        else if (cmd == "character") cmd_character(a);
+        else if (cmd == "character-export") cmd_character_export(a);
+        else if (cmd == "character-assemble") cmd_character_assemble(a);
         else fail("unknown command: " + cmd);
     } catch (const std::exception& ex) {
         fail(ex.what());

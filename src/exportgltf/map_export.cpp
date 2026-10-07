@@ -22,7 +22,7 @@ GltfExportResult export_map_gltf(const MapScene& scene, const std::string& glbPa
         return result;
     }
 
-    fs::path outPath(glbPath);
+    fs::path outPath = fs::path(std::u8string(glbPath.begin(), glbPath.end()));  // glbPath is UTF-8
     std::error_code ec;
     fs::create_directories(outPath.parent_path(), ec);
 
@@ -101,7 +101,7 @@ GltfExportResult export_map_gltf(const MapScene& scene, const std::string& glbPa
     w.add_scene_root(rootIndex);
 
     std::vector<uint8_t> glb = w.finish();
-    std::ofstream out(glbPath, std::ios::binary);
+    std::ofstream out(outPath, std::ios::binary);
     if (!out) {
         result.error = "Could not open '" + glbPath + "' for writing.";
         return result;

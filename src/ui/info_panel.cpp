@@ -230,7 +230,8 @@ void show_dat_info(HWND panel, const Gw2Dat& data_gw2) {
     set_panel_text(panel, L"");
 }
 
-void show_entry_info(HWND panel, const Gw2Dat& data_gw2, uint32_t mft_index, const ExtractedEntry& entry) {
+void show_entry_info(HWND panel, const Gw2Dat& data_gw2, uint32_t mft_index, const ExtractedEntry& entry,
+                     const std::wstring& extra) {
     if (mft_index >= data_gw2.mft_data_list.size()) {
         return;
     }
@@ -341,6 +342,7 @@ void show_entry_info(HWND panel, const Gw2Dat& data_gw2, uint32_t mft_index, con
         }
     }
 
+    text += extra;
     set_panel_text(panel, text);
 }
 

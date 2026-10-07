@@ -1,0 +1,723 @@
+/// @file
+/// @brief Tools > Character Ripper: pick a saved GW2 API key, fetch the
+///        account's characters, and show one character's equipped gear resolved
+///        to dat assets (castlemist::character). All network work runs on a
+///        worker thread; results come back as WM_APP_CHAR_* messages whose
+///        lParam is a heap result this dialog takes ownership of.
+
+#include "detail/app_state.h"
+#include "detail/character_state.h"
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstdio>
+#include <exception>
+#include <filesystem>
+#include <fstream>
+#include <memory>
+#include <optional>
+#include <set>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "castlemist/character/fetch.h"
+#include "castlemist/character/key_store.h"
+#include "castlemist/character/look_store.h"
+#include "castlemist/character/manifest_json.h"
+#include "castlemist/format/content_map.h"
+#include "castlemist/ripper/assemble.h"
+#include "castlemist/ripper/character_export.h"
+#include "castlemist/ripper/look.h"
+#include "castlemist/ripper/vrchat.h"
+
+#include <shlobj.h>
+#include <windowsx.h>
+
+namespace castlemist::ui {
+
+std::wstring utf8_to_wide(const std::string& s) {
+    if (s.empty()) return {};
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    std::wstring w(static_cast<size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
+    return w;
+}
+
+std::string wide_to_utf8(const std::wstring& w) {
+    if (w.empty()) return {};
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+    std::string s(static_cast<size_t>(n), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n, nullptr, nullptr);
+    return s;
+}
+
+namespace {
+
+namespace ch = castlemist::character;
+
+HWND g_ch_wnd = nullptr;
+HWND g_ch_key_combo = nullptr;
+HWND g_ch_char_combo = nullptr;
+HWND g_ch_tab_combo = nullptr;
+HWND g_ch_table = nullptr;
+HWND g_ch_status = nullptr;
+HWND g_ch_fetch_btn = nullptr;
+HWND g_ch_build_btn = nullptr;
+HWND g_ch_export_btn = nullptr;
+HWND g_ch_assemble_btn = nullptr;
+HWND g_ch_combine_chk = nullptr;
+HWND g_ch_look_btn = nullptr;
+HWND g_ch_vrchat_btn = nullptr;
+
+ch::KeyStore g_ch_keys;
+RipperState g_ch;                             // names / shown character / their key
+std::atomic<unsigned> g_ch_request{0};        // newest request id; stale results are dropped
+
+struct NamesDone {
+    unsigned request = 0;
+    std::string key;
+    std::vector<std::string> names;
+    std::string error;
+};
+
+struct FetchDone {
+    unsigned request = 0;
+    std::optional<ch::FetchResult> result;
+    std::string error;
+    bool had_map = false;
+};
+
+// For fetches while the content map is missing or still building: the shared
+// cmap must not be read from this worker while the build thread writes it.
+struct NoMapLookup final : ch::AssetLookup {
+    bool built() const override { return false; }
+    std::vector<uint32_t> skin_assets(uint32_t) const override { return {}; }
+    std::optional<uint32_t> item_skin(uint32_t) const override { return std::nullopt; }
+    uint64_t skin_token(uint32_t) const override { return 0; }
+};
+
+void set_status(const std::wstring& s) { SetWindowTextW(g_ch_status, s.c_str()); }
+
+void set_busy(bool busy) {
+    EnableWindow(g_ch_fetch_btn, !busy);
+    EnableWindow(g_ch_char_combo, !busy);
+    EnableWindow(g_ch_tab_combo, !busy);
+    EnableWindow(g_ch_build_btn, !busy);
+    EnableWindow(g_ch_export_btn, !busy);
+    EnableWindow(g_ch_assemble_btn, !busy);
+    EnableWindow(g_ch_vrchat_btn, !busy);
+}
+
+// Posts `result` to the dialog, or frees it if the dialog is gone.
+template <typename T>
+void post_result(UINT msg, T* result) {
+    HWND w = g_ch_wnd;
+    if (!w || !IsWindow(w) || !PostMessageW(w, msg, 0, reinterpret_cast<LPARAM>(result))) delete result;
+}
+
+void refill_keys() {
+    std::string err;
+    std::wstring keep;
+    if (LRESULT sel = SendMessageW(g_ch_key_combo, CB_GETCURSEL, 0, 0); sel != CB_ERR) {
+        wchar_t buf[256] = L"";
+        SendMessageW(g_ch_key_combo, CB_GETLBTEXT, sel, reinterpret_cast<LPARAM>(buf));
+        keep = buf;
+    }
+    SendMessageW(g_ch_key_combo, CB_RESETCONTENT, 0, 0);
+    if (!g_ch_keys.load(ch::default_key_file(), &err)) {
+        set_status(utf8_to_wide(err));
+        return;
+    }
+    int select = 0, i = 0;
+    for (const ch::ApiKey& k : g_ch_keys.list()) {
+        std::wstring name = utf8_to_wide(k.name);
+        SendMessageW(g_ch_key_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name.c_str()));
+        if (name == keep) select = i;
+        ++i;
+    }
+    if (!g_ch_keys.list().empty()) SendMessageW(g_ch_key_combo, CB_SETCURSEL, select, 0);
+    else set_status(L"No API keys saved yet - click Manage keys... to add one.");
+}
+
+const ch::ApiKey* selected_key() {
+    LRESULT sel = SendMessageW(g_ch_key_combo, CB_GETCURSEL, 0, 0);
+    if (sel == CB_ERR || static_cast<size_t>(sel) >= g_ch_keys.list().size()) return nullptr;
+    return &g_ch_keys.list()[static_cast<size_t>(sel)];
+}
+
+// ---- table ---------------------------------------------------------------------
+
+void add_column(int index, const wchar_t* title, int width) {
+    LVCOLUMNW col{};
+    col.mask = LVCF_TEXT | LVCF_WIDTH;
+    col.pszText = const_cast<wchar_t*>(title);
+    col.cx = width;
+    SendMessageW(g_ch_table, LVM_INSERTCOLUMNW, index, reinterpret_cast<LPARAM>(&col));
+}
+
+void set_cell(int row, int col, const std::wstring& text) {
+    LVITEMW it{};
+    it.iSubItem = col;
+    it.pszText = const_cast<wchar_t*>(text.c_str());
+    SendMessageW(g_ch_table, LVM_SETITEMTEXTW, row, reinterpret_cast<LPARAM>(&it));
+}
+
+std::wstring dyes_text(const ch::ManifestPiece& p) {
+    std::wstring out;
+    for (const ch::ManifestDye& d : p.dyes) {
+        if (!out.empty()) out += L", ";
+        if (!d.known) {
+            out += d.color_name.empty() ? L"?" : utf8_to_wide(d.color_name) + L" ?";
+            continue;
+        }
+        wchar_t hex[16];
+        swprintf(hex, 16, L" #%02X%02X%02X", d.rgb[0], d.rgb[1], d.rgb[2]);
+        out += utf8_to_wide(d.color_name) + hex;
+    }
+    return out;
+}
+
+void fill_table() {
+    SendMessageW(g_ch_table, LVM_DELETEALLITEMS, 0, 0);
+    if (!g_ch.current) return;
+    int row = 0;
+    for (const ch::ManifestPiece& p : g_ch.current->manifest.pieces) {
+        std::wstring slot = utf8_to_wide(p.slot);
+        LVITEMW it{};
+        it.mask = LVIF_TEXT;
+        it.iItem = row;
+        it.pszText = slot.data();
+        SendMessageW(g_ch_table, LVM_INSERTITEMW, 0, reinterpret_cast<LPARAM>(&it));
+        set_cell(row, 1, utf8_to_wide(p.item_name.empty() ? "#" + std::to_string(p.item_id) : p.item_name));
+        set_cell(row, 2, p.skin_id ? utf8_to_wide(p.skin_name.empty() ? "#" + std::to_string(p.skin_id) : p.skin_name)
+                                   : std::wstring());
+        set_cell(row, 3, dyes_text(p));
+        set_cell(row, 4, utf8_to_wide(ch::to_string(p.status)));
+        ++row;
+    }
+}
+
+void fill_tabs() {
+    SendMessageW(g_ch_tab_combo, CB_RESETCONTENT, 0, 0);
+    if (!g_ch.current) return;
+    int i = 0, select = 0;
+    for (const ch::TabSummary& t : g_ch.current->tabs) {
+        std::wstring label = L"Tab " + std::to_wstring(t.tab);
+        if (!t.name.empty()) label += L": " + utf8_to_wide(t.name);
+        if (t.is_active) label += L" (active)";
+        SendMessageW(g_ch_tab_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
+        if (t.tab == g_ch.current->manifest.tab_id) select = i;
+        ++i;
+    }
+    SendMessageW(g_ch_tab_combo, CB_SETCURSEL, select, 0);
+}
+
+// ---- workers -------------------------------------------------------------------
+
+void start_names_fetch() {
+    const ch::ApiKey* k = selected_key();
+    if (!k) {
+        set_status(L"Pick an API key first (Manage keys... to add one).");
+        return;
+    }
+    std::string key = k->key;
+    unsigned req = ++g_ch_request;
+    set_busy(true);
+    set_status(L"Checking the key and fetching characters...");
+    std::thread([key, req]() {
+        auto* r = new NamesDone{req, key, {}, {}};
+        try {
+            ch::WinHttpClient http;
+            ch::Gw2Api api(http, key);
+            std::vector<std::string> missing = ch::missing_scopes(api.token_info());
+            if (!missing.empty()) {
+                std::string list;
+                for (const std::string& m : missing) list += (list.empty() ? "" : ", ") + m;
+                r->error = "Key is missing scopes: " + list + ". Add them at account.arena.net/applications.";
+            } else {
+                r->names = api.character_names();
+            }
+        } catch (const std::exception& e) {
+            r->error = e.what();
+        }
+        post_result(WM_APP_CHAR_NAMES_DONE, r);
+    }).detach();
+}
+
+std::string selected_character() {
+    LRESULT sel = SendMessageW(g_ch_char_combo, CB_GETCURSEL, 0, 0);
+    if (sel == CB_ERR || static_cast<size_t>(sel) >= g_ch.names.size()) return {};
+    return g_ch.names[static_cast<size_t>(sel)];
+}
+
+void start_character_fetch(std::optional<int> tab) {
+    std::string name = selected_character();
+    if (name.empty() || g_ch.current_key.empty()) return;
+    CmapEnsure map = ensure_content_map(g_ch_wnd);
+    bool had_map = map == CmapEnsure::Ready;
+    std::string key = g_ch.current_key;
+    unsigned req = ++g_ch_request;
+    set_busy(true);
+    set_status(L"Fetching " + utf8_to_wide(name) + L"...");
+    // Hold the shared map for the whole fetch so a rebuild can't clear it under us.
+    if (had_map) acquire_content_map_reader();
+    std::thread([key, name, tab, req, had_map]() {
+        auto* r = new FetchDone{req, std::nullopt, {}, had_map};
+        try {
+            ch::WinHttpClient http;
+            ch::Gw2Api api(http, key);
+            ch::CmapAssetLookup cmap_assets;
+            NoMapLookup no_map;
+            const ch::AssetLookup& assets = had_map ? static_cast<const ch::AssetLookup&>(cmap_assets) : no_map;
+            r->result = ch::fetch_character(api, name, tab, assets);
+        } catch (const std::exception& e) {
+            r->error = e.what();
+        }
+        if (had_map) release_content_map_reader();
+        post_result(WM_APP_CHAR_FETCH_DONE, r);
+    }).detach();
+}
+
+void on_names_done(std::unique_ptr<NamesDone> r) {
+    if (r->request != g_ch_request) return;
+    set_busy(false);
+    g_ch.names_done(r->key, std::move(r->names), r->error);
+    fill_table();
+    fill_tabs();
+    SendMessageW(g_ch_char_combo, CB_RESETCONTENT, 0, 0);
+    for (const std::string& n : g_ch.names)
+        SendMessageW(g_ch_char_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(utf8_to_wide(n).c_str()));
+    set_status(r->error.empty() ? std::to_wstring(g_ch.names.size()) + L" characters - pick one."
+                                : utf8_to_wide(r->error));
+}
+
+void on_fetch_done(std::unique_ptr<FetchDone> r) {
+    if (r->request != g_ch_request) return;
+    set_busy(false);
+    g_ch.fetch_done(std::move(r->result), r->error);
+    fill_tabs();
+    fill_table();
+    if (!r->error.empty()) {
+        set_status(utf8_to_wide(r->error));
+        return;
+    }
+    size_t ok = 0;
+    for (const ch::ManifestPiece& p : g_ch.current->manifest.pieces) ok += p.status == ch::PieceStatus::Ok;
+    const ch::CharacterManifest& m = g_ch.current->manifest;
+    std::wstring s = utf8_to_wide(m.name) + L" - " + utf8_to_wide(m.race) + L" " + utf8_to_wide(m.gender) + L" " +
+                     utf8_to_wide(m.profession) + L": " + std::to_wstring(ok) + L" of " +
+                     std::to_wstring(m.pieces.size()) + L" pieces resolved to models.";
+    if (!r->had_map) s += L" Content map not built - models unavailable (Build map).";
+    set_status(s);
+}
+
+// ---- buttons -------------------------------------------------------------------
+
+void open_selected_model() {
+    LRESULT row = SendMessageW(g_ch_table, LVM_GETNEXTITEM, static_cast<WPARAM>(-1), LVNI_SELECTED);
+    if (!g_ch.current || row < 0 || static_cast<size_t>(row) >= g_ch.current->manifest.pieces.size()) {
+        set_status(L"Select a row first.");
+        return;
+    }
+    const ch::ManifestPiece& p = g_ch.current->manifest.pieces[static_cast<size_t>(row)];
+    if (p.status != ch::PieceStatus::Ok || p.file_ids.empty()) {
+        set_status(L"That piece has no model (" + utf8_to_wide(ch::to_string(p.status)) + L").");
+        return;
+    }
+    uint32_t mesh = p.file_ids[0];
+    for (const auto& [slot, m] : g_ch.exported_mesh)
+        if (slot == p.slot && m) mesh = m;  // the race/gender model once an export resolved it
+    navigate_to_file_id(mesh);
+}
+
+struct ExportDone {
+    std::string folder;
+    castlemist::ripper::CharacterExportReport report;
+};
+
+// Exports every piece of the shown character into a folder the user picks.
+void export_pieces() {
+    if (!g_ch.current) {
+        set_status(L"Fetch a character first.");
+        return;
+    }
+    if (!g_app->dat_loaded) {
+        set_status(L"Open Gw2.dat first (File > Open) - the models and textures come from it.");
+        return;
+    }
+    BROWSEINFOW bi{};
+    bi.hwndOwner = g_ch_wnd;
+    bi.lpszTitle = L"Export the character's pieces (.glb) into:";
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
+    if (!pidl) return;
+    wchar_t folder[MAX_PATH] = L"";
+    bool ok = SHGetPathFromIDListW(pidl, folder);
+    CoTaskMemFree(pidl);
+    if (!ok) return;
+    std::string dir = wide_to_utf8(folder);
+    std::string dat_path = g_app->data_gw2.file_info.file_path;
+    ch::CharacterManifest manifest = g_ch.current->manifest;
+    ++g_ch_request;
+    set_busy(true);
+    set_status(L"Exporting " + std::to_wstring(manifest.pieces.size()) + L" pieces to " + folder + L"...");
+    std::thread([manifest, dat_path, dir]() {
+        auto* r = new ExportDone{dir, {}};
+        try {
+            r->report = castlemist::ripper::export_character(manifest, dat_path, dir);
+        } catch (const std::exception& e) {  // never let a bad texture or full disk take the app down
+            r->report.error = std::string("Export failed: ") + e.what();
+        }
+        post_result(WM_APP_CHAR_EXPORT_DONE, r);
+    }).detach();
+}
+
+struct AssembleDone {
+    std::string path;
+    castlemist::ripper::AssemblyReport report;
+};
+
+// The whole character as one rigged .glb, saved where the user picks.
+// The character as body.glb + one file per piece (default), or as one combined
+// .glb when "Combine into one file" is ticked.
+void assemble_character_glb() {
+    if (!g_ch.current) {
+        set_status(L"Fetch a character first.");
+        return;
+    }
+    if (!g_app->dat_loaded) {
+        set_status(L"Open Gw2.dat first (File > Open) - the models and textures come from it.");
+        return;
+    }
+    const bool combined = SendMessageW(g_ch_combine_chk, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    std::wstring name = utf8_to_wide(g_ch.current->manifest.name);
+    for (wchar_t& c : name)
+        if (wcschr(L"\\/:*?\"<>|", c)) c = L'_';
+    std::wstring target;
+    if (combined) {
+        wchar_t path[MAX_PATH] = L"";
+        swprintf(path, MAX_PATH, L"%ls.glb", name.c_str());
+        OPENFILENAMEW ofn{};
+        ofn.lStructSize = sizeof ofn;
+        ofn.hwndOwner = g_ch_wnd;
+        ofn.lpstrFilter = L"glTF binary (*.glb)\0*.glb\0All files\0*.*\0";
+        ofn.lpstrFile = path;
+        ofn.nMaxFile = MAX_PATH;
+        ofn.lpstrDefExt = L"glb";
+        ofn.lpstrTitle = L"Export the whole character as one rigged .glb";
+        ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+        if (!GetSaveFileNameW(&ofn)) return;
+        target = path;
+    } else {
+        BROWSEINFOW bi{};
+        bi.hwndOwner = g_ch_wnd;
+        bi.lpszTitle = L"Export the body and each piece (.glb, one skeleton) into:";
+        bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+        PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
+        if (!pidl) return;
+        wchar_t folder[MAX_PATH] = L"";
+        bool ok = SHGetPathFromIDListW(pidl, folder);
+        CoTaskMemFree(pidl);
+        if (!ok) return;
+        target = std::wstring(folder) + L"\\" + name;  // its own subfolder: body.glb, 01_Coat_...
+    }
+    std::string out = wide_to_utf8(target);
+    std::string dat_path = g_app->data_gw2.file_info.file_path;
+    ch::CharacterManifest manifest = g_ch.current->manifest;
+    // The character's saved look (Edit look...), resolved here: palettes are
+    // read on this thread only.
+    castlemist::ripper::AssemblyOptions opt;
+    {
+        ch::LookStore store;
+        std::string err;
+        ch::CharacterLook look;
+        if (store.load(ch::default_look_file(), &err)) look = store.get(manifest.name).value_or(ch::CharacterLook{});
+        if (!content_map_building() && castlemist::cmap::built())
+            castlemist::ripper::apply_look(opt, look, manifest.race, manifest.gender);
+        else
+            opt.face = look.face, opt.hair = look.hair, opt.ears = look.ears, opt.pattern = look.pattern;
+    }
+    ++g_ch_request;
+    set_busy(true);
+    set_status(L"Assembling " + name + L"...");
+    std::thread([manifest, dat_path, out, combined, opt]() {
+        auto* r = new AssembleDone{out, {}};
+        try {
+            r->report = combined ? castlemist::ripper::assemble_character(manifest, dat_path, out, opt)
+                                 : castlemist::ripper::assemble_character_separate(manifest, dat_path, out, opt);
+        } catch (const std::exception& e) {
+            r->report.error = std::string("Assembly failed: ") + e.what();
+        }
+        post_result(WM_APP_CHAR_ASSEMBLE_DONE, r);
+    }).detach();
+}
+
+struct VrchatDone {
+    castlemist::ripper::VrchatReport report;
+};
+
+// The character as a VRChat avatar (.glb, .fbx via Blender, setup notes) in a
+// folder the user picks, with the saved look.
+void export_vrchat() {
+    if (!g_ch.current) {
+        set_status(L"Fetch a character first.");
+        return;
+    }
+    if (!g_app->dat_loaded) {
+        set_status(L"Open Gw2.dat first (File > Open) - the models and textures come from it.");
+        return;
+    }
+    BROWSEINFOW bi{};
+    bi.hwndOwner = g_ch_wnd;
+    bi.lpszTitle = L"Export the VRChat avatar (.fbx + .glb + setup notes) into:";
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
+    if (!pidl) return;
+    wchar_t folder[MAX_PATH] = L"";
+    bool ok = SHGetPathFromIDListW(pidl, folder);
+    CoTaskMemFree(pidl);
+    if (!ok) return;
+    std::wstring name = utf8_to_wide(g_ch.current->manifest.name);
+    for (wchar_t& c : name)
+        if (wcschr(L"\/:*?\"<>|", c)) c = L'_';
+    const std::string out = wide_to_utf8(std::wstring(folder) + L"\\" + name + L" (VRChat)");
+    const std::string dat_path = g_app->data_gw2.file_info.file_path;
+    const ch::CharacterManifest manifest = g_ch.current->manifest;
+    castlemist::ripper::AssemblyOptions opt;
+    opt.weapons = castlemist::ripper::WeaponPlacement::None;  // an avatar, not a loadout
+    {
+        ch::LookStore store;
+        std::string err;
+        ch::CharacterLook look;
+        if (store.load(ch::default_look_file(), &err)) look = store.get(manifest.name).value_or(ch::CharacterLook{});
+        if (!content_map_building() && castlemist::cmap::built())
+            castlemist::ripper::apply_look(opt, look, manifest.race, manifest.gender);
+    }
+    ++g_ch_request;
+    set_busy(true);
+    set_status(L"Building the VRChat avatar of " + name + L" (Blender runs in the background)...");
+    std::thread([manifest, dat_path, out, opt]() {
+        auto* r = new VrchatDone{};
+        try {
+            r->report = castlemist::ripper::export_vrchat(manifest, dat_path, out, opt);
+        } catch (const std::exception& e) {
+            r->report.error = std::string("VRChat export failed: ") + e.what();
+        }
+        post_result(WM_APP_CHAR_VRCHAT_DONE, r);
+    }).detach();
+}
+
+void on_vrchat_done(std::unique_ptr<VrchatDone> r) {
+    set_busy(false);
+    if (!r->report.ok) {
+        set_status(utf8_to_wide(r->report.error));
+        return;
+    }
+    if (!r->report.fbx.empty())
+        set_status(L"Saved " + utf8_to_wide(r->report.fbx) + L" - see the VRChat setup notes beside it.");
+    else
+        set_status(L"Saved " + utf8_to_wide(r->report.glb) + L" - no .fbx: " + utf8_to_wide(r->report.blender));
+}
+
+void on_assemble_done(std::unique_ptr<AssembleDone> r) {
+    set_busy(false);
+    if (!r->report.ok) {
+        set_status(utf8_to_wide(r->report.error));
+        return;
+    }
+    size_t used = 0;
+    for (const auto& p : r->report.parts) used += p.status == "used";
+    std::set<std::string> files;
+    for (const auto& p : r->report.parts)
+        if (!p.file.empty()) files.insert(p.file);
+    set_status(L"Saved " + utf8_to_wide(r->path) + L" (" + std::to_wstring(used) + L" parts" +
+               (files.empty() ? std::wstring() : L" in " + std::to_wstring(files.size()) + L" files") + L", " +
+               std::to_wstring(r->report.joints) + L" joints).");
+}
+
+void on_export_done(std::unique_ptr<ExportDone> r) {
+    set_busy(false);
+    if (!r->report.error.empty()) {
+        set_status(utf8_to_wide(r->report.error));
+        return;
+    }
+    g_ch.exported_mesh.clear();
+    for (const auto& [slot, pr] : r->report.pieces) g_ch.exported_mesh.emplace_back(slot, pr.ok ? pr.mesh : 0);
+    set_status(L"Exported " + std::to_wstring(r->report.exported()) + L" of " +
+               std::to_wstring(r->report.pieces.size()) + L" pieces to " + utf8_to_wide(r->folder) +
+               L" (details: export_report.json).");
+}
+
+void save_manifest() {
+    if (!g_ch.current) {
+        set_status(L"Fetch a character first.");
+        return;
+    }
+    std::wstring name = utf8_to_wide(g_ch.current->manifest.name);
+    for (wchar_t& c : name)
+        if (wcschr(L"\\/:*?\"<>|", c)) c = L'_';
+    wchar_t path[MAX_PATH] = L"";
+    swprintf(path, MAX_PATH, L"%ls.json", name.c_str());
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof ofn;
+    ofn.hwndOwner = g_ch_wnd;
+    ofn.lpstrFilter = L"Character manifest (*.json)\0*.json\0All files\0*.*\0";
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrDefExt = L"json";
+    ofn.lpstrTitle = L"Save character manifest";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+    if (!GetSaveFileNameW(&ofn)) return;
+    std::ofstream out(std::filesystem::path(path), std::ios::binary | std::ios::trunc);
+    out << ch::manifest_to_json(g_ch.current->manifest).dump(2) << '\n';
+    set_status(out ? L"Saved " + std::wstring(path) : L"Could not write " + std::wstring(path));
+}
+
+void build_map() {
+    CmapEnsure r = castlemist::cmap::built() ? rebuild_content_map(g_ch_wnd) : ensure_content_map(g_ch_wnd);
+    switch (r) {
+    case CmapEnsure::Ready:
+        set_status(L"Content map ready.");
+        if (g_ch.current) start_character_fetch(g_ch.current->manifest.tab_id);
+        break;
+    case CmapEnsure::Building: set_status(L"Still building the content map..."); break;
+    case CmapEnsure::Started: set_status(L"Building the content map from the cntc packs... (one-time)"); break;
+    case CmapEnsure::InUse: set_status(L"Wait for the current fetch to finish, then Build map."); break;
+    case CmapEnsure::NeedDat: set_status(L"Open Gw2.dat first (File > Open), then Build map. Current map kept."); break;
+    case CmapEnsure::NeedIndex:
+        set_status(L"Open the Gw2.dat index DB first (File > Open Index DB), then Build map. Current map kept.");
+        break;
+    }
+}
+
+std::optional<int> selected_tab() {
+    LRESULT sel = SendMessageW(g_ch_tab_combo, CB_GETCURSEL, 0, 0);
+    if (!g_ch.current || sel == CB_ERR || static_cast<size_t>(sel) >= g_ch.current->tabs.size()) return std::nullopt;
+    return g_ch.current->tabs[static_cast<size_t>(sel)].tab;
+}
+
+LRESULT CALLBACK CharacterWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+    switch (msg) {
+    case WM_COMMAND:
+        switch (LOWORD(wparam)) {
+        case ID_CH_MANAGE: open_character_keys_dialog(hwnd, [] { refill_keys(); }); return 0;
+        case ID_CH_FETCH: start_names_fetch(); return 0;
+        case ID_CH_CHAR_LIST:
+            if (HIWORD(wparam) == CBN_SELCHANGE) start_character_fetch(std::nullopt);
+            return 0;
+        case ID_CH_TAB_COMBO:
+            if (HIWORD(wparam) == CBN_SELCHANGE) start_character_fetch(selected_tab());
+            return 0;
+        case ID_CH_OPEN_MODEL: open_selected_model(); return 0;
+        case ID_CH_SAVE: save_manifest(); return 0;
+        case ID_CH_BUILD_MAP: build_map(); return 0;
+        case ID_CH_EXPORT: export_pieces(); return 0;
+        case ID_CH_ASSEMBLE: assemble_character_glb(); return 0;
+        case ID_CH_VRCHAT: export_vrchat(); return 0;
+        case ID_CH_EDIT_LOOK:
+            if (g_ch.current) open_look_dialog(hwnd, g_ch.current->manifest);
+            else set_status(L"Fetch a character first.");
+            return 0;
+        case ID_CH_CLOSE: DestroyWindow(hwnd); return 0;
+        }
+        break;
+    case WM_NOTIFY: {
+        auto* nm = reinterpret_cast<NMHDR*>(lparam);
+        if (nm->idFrom == ID_CH_TABLE && nm->code == NM_DBLCLK) open_selected_model();
+        break;
+    }
+    case WM_APP_CHAR_NAMES_DONE: on_names_done(std::unique_ptr<NamesDone>(reinterpret_cast<NamesDone*>(lparam))); return 0;
+    case WM_APP_CHAR_FETCH_DONE: on_fetch_done(std::unique_ptr<FetchDone>(reinterpret_cast<FetchDone*>(lparam))); return 0;
+    case WM_APP_CHAR_EXPORT_DONE: on_export_done(std::unique_ptr<ExportDone>(reinterpret_cast<ExportDone*>(lparam))); return 0;
+    case WM_APP_CHAR_VRCHAT_DONE: on_vrchat_done(std::unique_ptr<VrchatDone>(reinterpret_cast<VrchatDone*>(lparam))); return 0;
+    case WM_APP_CHAR_ASSEMBLE_DONE: on_assemble_done(std::unique_ptr<AssembleDone>(reinterpret_cast<AssembleDone*>(lparam))); return 0;
+    case WM_APP_CMAP_DONE:
+        set_status(L"Content map built.");
+        if (g_ch.current) start_character_fetch(g_ch.current->manifest.tab_id);
+        return 0;
+    case WM_CLOSE: DestroyWindow(hwnd); return 0;
+    case WM_DESTROY:
+        ++g_ch_request;  // drop any in-flight result
+        g_ch_wnd = g_ch_key_combo = g_ch_char_combo = g_ch_tab_combo = g_ch_table = g_ch_status = g_ch_fetch_btn =
+            g_ch_build_btn = g_ch_export_btn = g_ch_assemble_btn = g_ch_combine_chk = g_ch_look_btn = g_ch_vrchat_btn = nullptr;
+        g_ch = RipperState{};
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+} // namespace
+
+void open_character_dialog(HWND owner) {
+    if (g_ch_wnd) {
+        SetForegroundWindow(g_ch_wnd);
+        return;
+    }
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = CharacterWndProc;
+        wc.hInstance = g_hinstance;
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+        wc.lpszClassName = L"Gw2CharacterWnd";
+        RegisterClassW(&wc);
+        registered = true;
+    }
+    const int W = 820, H = 600;
+    g_ch_wnd = CreateWindowExW(WS_EX_TOOLWINDOW, L"Gw2CharacterWnd", L"Character Ripper",
+                               WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT, W, H, owner,
+                               nullptr, g_hinstance, nullptr);
+    if (!g_ch_wnd) return;
+
+    HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    auto mk = [&](const wchar_t* cls, const wchar_t* txt, DWORD style, int x, int y, int w, int h, UINT_PTR id) {
+        HWND c = CreateWindowExW(0, cls, txt, WS_CHILD | WS_VISIBLE | style, x, y, w, h, g_ch_wnd,
+                                 reinterpret_cast<HMENU>(id), g_hinstance, nullptr);
+        SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        return c;
+    };
+
+    mk(L"STATIC", L"API key:", SS_LEFT, 10, 14, 60, 18, 0);
+    g_ch_key_combo = mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL, 75, 10, 200, 200, ID_CH_KEY_COMBO);
+    mk(L"BUTTON", L"Manage keys...", BS_PUSHBUTTON, 285, 9, 110, 26, ID_CH_MANAGE);
+    g_ch_fetch_btn = mk(L"BUTTON", L"Fetch characters", BS_DEFPUSHBUTTON, 405, 9, 130, 26, ID_CH_FETCH);
+
+    mk(L"STATIC", L"Character:", SS_LEFT, 10, 48, 60, 18, 0);
+    g_ch_char_combo = mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL, 75, 44, 260, 300, ID_CH_CHAR_LIST);
+    mk(L"STATIC", L"Equipment tab:", SS_LEFT, 350, 48, 85, 18, 0);
+    g_ch_tab_combo = mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL, 440, 44, 200, 200, ID_CH_TAB_COMBO);
+
+    g_ch_table = mk(WC_LISTVIEWW, L"", WS_BORDER | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS, 10, 78, W - 36,
+                    H - 240, ID_CH_TABLE);
+    SendMessageW(g_ch_table, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+    add_column(0, L"Slot", 105);
+    add_column(1, L"Item", 210);
+    add_column(2, L"Skin", 170);
+    add_column(3, L"Dyes", 210);
+    add_column(4, L"Status", 85);
+
+    // What the API doesn't say -- face, hair, colours -- picked in its own dialog.
+    g_ch_look_btn = mk(L"BUTTON", L"Edit look...", BS_PUSHBUTTON, 10, H - 150, 110, 28, ID_CH_EDIT_LOOK);
+    g_ch_vrchat_btn = mk(L"BUTTON", L"Export for VRChat...", BS_PUSHBUTTON, 126, H - 150, 140, 28, ID_CH_VRCHAT);
+    mk(L"STATIC", L"Look from the game's character creator; the exports use the saved look. VRChat: .fbx via Blender + setup notes.",
+       SS_LEFT | SS_ENDELLIPSIS, 274, H - 144, W - 300, 18, 0);
+
+    g_ch_status = mk(L"STATIC", L"", SS_LEFT | SS_ENDELLIPSIS, 10, H - 112, W - 36, 18, 0);
+    mk(L"BUTTON", L"Open model", BS_PUSHBUTTON, 10, H - 84, 100, 28, ID_CH_OPEN_MODEL);
+    mk(L"BUTTON", L"Save manifest...", BS_PUSHBUTTON, 115, H - 84, 115, 28, ID_CH_SAVE);
+    g_ch_build_btn = mk(L"BUTTON", L"Build map", BS_PUSHBUTTON, 235, H - 84, 90, 28, ID_CH_BUILD_MAP);
+    g_ch_export_btn = mk(L"BUTTON", L"Export pieces...", BS_PUSHBUTTON, 330, H - 84, 115, 28, ID_CH_EXPORT);
+    g_ch_assemble_btn = mk(L"BUTTON", L"Export character...", BS_PUSHBUTTON, 450, H - 84, 130, 28, ID_CH_ASSEMBLE);
+    g_ch_combine_chk = mk(L"BUTTON", L"Combine into one file", BS_AUTOCHECKBOX, 588, H - 80, 140, 20, ID_CH_COMBINE);
+    mk(L"BUTTON", L"Close", BS_PUSHBUTTON, W - 106, H - 84, 80, 28, ID_CH_CLOSE);
+
+    refill_keys();
+    if (!g_ch_keys.list().empty())
+        set_status(L"Pick a key and click Fetch characters. (Goes online: api.guildwars2.com only.)");
+    ShowWindow(g_ch_wnd, SW_SHOW);
+}
+
+} // namespace castlemist::ui

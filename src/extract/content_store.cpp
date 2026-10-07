@@ -204,6 +204,7 @@ std::vector<ContentObject> parse_cntc_objects(const std::vector<uint8_t>& d, siz
         ContentObject obj;
         obj.type = ies[k].type;
         obj.id = rd32(cOff + o + 20);
+        if (cOff + o + 44 <= n) obj.data_id = rd32(cOff + o + 40);
         for (auto f = std::lower_bound(fi.begin(), fi.end(), o);
              f != fi.end() && *f < nextOff && obj.assets.size() < 16; ++f) {
             uint32_t v = rd32(cOff + *f);

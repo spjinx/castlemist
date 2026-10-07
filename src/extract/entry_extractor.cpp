@@ -564,3 +564,13 @@ ExtractedEntry extract_loose_file(std::vector<uint8_t> bytes, const std::string&
     if (plain_ok) return plain;
     return decompress_raw_entry(std::move(bytes), 0, source_path, /*already_plain=*/true);
 }
+
+bool decode_texture_rgba(Gw2Dat& dat, uint32_t file_id, ModelTextureCPU& out) {
+    if (file_id == 0) return false;
+    return decode_texture_exact(dat, file_id, out);
+}
+
+bool decode_texture_full(Gw2Dat& dat, uint32_t file_id, ModelTextureCPU& out, int* exact_width) {
+    if (file_id == 0) return false;
+    return decode_texture_full_res(dat, file_id, out, exact_width);
+}

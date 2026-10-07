@@ -179,6 +179,31 @@ CM_TEST(chatlink, unknown_headers_are_reported_not_guessed) {
     CHECK_EQ(d.header, uint8_t{0x7F});
 }
 
+CM_TEST(chatlink, encodes_an_item_link_with_quantity_one) {
+    // Wiki: Zojja's Claymore base link, item 46762.
+    CHECK_EQ(encode_id(0x02, 46762), std::string("[&AgGqtgAA]"));
+    Decoded d = decode(encode_id(0x02, 76158));
+    CHECK(d.ok);
+    CHECK_EQ(d.primary_id, 76158u);
+    CHECK_EQ(field(d, "Quantity")->value, uint64_t{1});
+}
+
+CM_TEST(chatlink, encodes_single_id_links_that_decode_back) {
+    CHECK_EQ(encode_id(0x0A, 1), std::string("[&CgEAAAA=]"));  // wiki: skin 1
+    for (uint8_t h : {uint8_t{0x06}, uint8_t{0x0A}, uint8_t{0x0B}, uint8_t{0x0E}}) {
+        Decoded d = decode(encode_id(h, 6506));
+        CHECK(d.ok);
+        CHECK_EQ(d.header, h);
+        CHECK_EQ(d.primary_id, 6506u);
+    }
+}
+
+CM_TEST(chatlink, does_not_encode_links_that_are_not_a_single_id) {
+    CHECK(encode_id(0x01, 5).empty());  // coin
+    CHECK(encode_id(0x0D, 5).empty());  // build template
+    CHECK(encode_id(0x00, 5).empty());
+}
+
 CM_TEST(chatlink, report_mentions_the_type_and_the_primary_id) {
     Decoded d = decode(link({0x06, 0x2A, 0x00, 0x00}));
     std::string r = to_report(d);

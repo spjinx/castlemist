@@ -76,6 +76,9 @@ venv/
 # Real MCP wiring holds absolute paths to this machine; mcp/mcp.example.json is
 # the tracked template.
 .mcp.json
+# GW2 API keys (plain text, see src/character/key_store.cpp).
+/api_keys.json
+/character_looks.json
 *.user
 *.swp
 *.swo

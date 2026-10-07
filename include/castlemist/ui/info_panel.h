@@ -2,6 +2,7 @@
 #define GW2_INFO_PANEL_H
 
 #include <cstdint>
+#include <string>
 #include <windows.h>
 
 #include "castlemist/extract/entry_extractor.h"
@@ -17,8 +18,9 @@ HWND create(HWND parent, HINSTANCE instance, int control_id);
 void show_dat_info(HWND panel, const Gw2Dat& data_gw2);
 
 /// Appends the selected MFT entry's fields (and, if it's an image, its decoded
-/// dimensions/format) below the archive info set by show_dat_info().
-void show_entry_info(HWND panel, const Gw2Dat& data_gw2, uint32_t mft_index, const ExtractedEntry& entry);
+/// dimensions/format) below the archive info set by show_dat_info(), then `extra`.
+void show_entry_info(HWND panel, const Gw2Dat& data_gw2, uint32_t mft_index, const ExtractedEntry& entry,
+                     const std::wstring& extra = {});
 
 } // namespace castlemist::info
 

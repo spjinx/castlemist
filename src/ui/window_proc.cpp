@@ -42,6 +42,7 @@ HMENU build_menu() {
 
     HMENU tools_menu = CreatePopupMenu();
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DECODE_LINK, L"&Decode Chat Link... ([&...])");
+    AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_CHARACTER, L"&Character Ripper... (GW2 API)");
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DECODE_TOKEN,
                 L"Decode &Token / Filename Bytes...");
 
@@ -853,9 +854,11 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         lv_add_col(g_app->hwnd_content_list, 0, L"Type", 112);
         lv_add_col(g_app->hwnd_content_list, 1, L"Count", 55);
         lv_add_col(g_app->hwnd_content_child, 0, L"Id", 80);
-        lv_add_col(g_app->hwnd_content_child, 1, L"Assets", 50);
-        lv_add_col(g_app->hwnd_content_child, 2, L"Slug (id)", 110);
-        lv_add_col(g_app->hwnd_content_child, 3, L"Labels", 320);
+        lv_add_col(g_app->hwnd_content_child, 1, L"Name", 200);
+        lv_add_col(g_app->hwnd_content_child, 2, L"Assets", 50);
+        lv_add_col(g_app->hwnd_content_child, 3, L"Slug (id)", 110);
+        lv_add_col(g_app->hwnd_content_child, 4, L"Labels", 320);
+        lv_add_col(g_app->hwnd_content_child, 5, L"API id", 70);  // the chat-link / API id (+40); Id is the internal uid
         lv_add_col(g_app->hwnd_content_asset_list, 0, L"#", 36);
         lv_add_col(g_app->hwnd_content_asset_list, 1, L"FileId", 90);
         lv_add_col(g_app->hwnd_content_asset_list, 2, L"Kind", 110);
@@ -1154,6 +1157,11 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     case WM_APP_GLTF_EXPORT_DONE:
         on_gltf_export_done(hwnd);
         return 0;
+    case WM_APP_CONTENT_NAMES_DONE:
+        InvalidateRect(g_app->hwnd_list, nullptr, FALSE);  // the main list's Name column
+        refresh_content_names();
+        refresh_entry_info();
+        return 0;
     case WM_APP_EXTRACT_DONE: {
         std::unique_ptr<ExtractResult> result(reinterpret_cast<ExtractResult*>(lparam));
         if (g_app == nullptr || result->generation != g_app->request_generation) {
@@ -1187,6 +1195,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             return 0;
         case ID_TOOLS_DECODE_LINK:
             open_chat_link_decoder(hwnd);
+            return 0;
+        case ID_TOOLS_CHARACTER:
+            open_character_dialog(hwnd);
             return 0;
         case ID_TOOLS_DECODE_TOKEN:
             open_token_decoder(hwnd);

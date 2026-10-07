@@ -1,0 +1,106 @@
+#ifndef CASTLEMIST_FORMAT_COMPOSITE_H
+#define CASTLEMIST_FORMAT_COMPOSITE_H
+
+// The character Composite file (packfile container "cmpc", chunk "comp" v19 =
+// PackCompositeV20) -- how GW2 dresses a character. Per race/gender it maps an
+// armor appearance token (a skin's u64 at +208, see content_map.h's
+// skin_token()) to that race's model, its dyeable diffuse, normal map, the four
+// per-channel dye masks and a cut mask; and it lists the 1024x1024 character
+// atlas rects ("blit rects") the armor textures are composited into.
+//
+// Layout and every measured fact: docs/research/gw2-armor-skins-and-dyes.md.
+// The generic struct-template parser misreads this file: in 64-bit packfiles a
+// fileref is an 8-byte self-relative pointer, not a 4-byte value.
+
+#include <array>
+#include <cstdint>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
+namespace castlemist::composite {
+
+struct BlitRect {
+    uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;  // atlas pixels, [x0,x1) x [y0,y1)
+};
+
+struct BlitRectSet {
+    std::string name;  // "ArmorHeavy", "ArmorLight", "ArmorCharrHeavy", ...
+    uint32_t width = 0, height = 0;
+    std::vector<BlitRect> rects;
+};
+
+/// One armor appearance for one race/gender. fileIds are 0 when unset.
+struct CompositeFileData {
+    uint64_t token = 0;
+    uint8_t type = 0;  // piece kind: 8 boots, 9 coat, 10 gloves, 11 helm, 12 leggings, 13 aquatic helm, 14 shoulders
+    uint32_t mesh_base = 0, mesh_overlap = 0;
+    std::array<uint32_t, 4> mask_dye{};  // dye channel 1..4 masks
+    uint32_t mask_cut = 0, texture_base = 0, texture_normal = 0;
+    uint32_t dye_flags = 0, hide_flags = 0, skin_flags = 0;
+    uint8_t blit_set = 0;  // index into Composite::blit_sets
+};
+
+/// One record of a physique / face preset group (53 bytes, packed): the bone
+/// it moves (5-bit packed name, e.g. "claviclel", "spine2", "kneel"), a flag
+/// byte, the slider range and 9 floats of deltas.
+struct BoneScaleSub {
+    uint64_t bone = 0;
+    uint8_t flag = 0;
+    float max = 0, min = 0;
+    std::array<float, 9> values{};
+};
+/// A scale group of a preset (chest, hips, shoulders, legs, ... -- 5-bit packed
+/// names), its weight and its records.
+struct BoneScaleGroup {
+    uint64_t token = 0;
+    float weight = 0;
+    std::vector<BoneScaleSub> subs;
+};
+/// A physique (bodyBoneScales) or face (faceBoneScales) preset.
+struct BoneScalePreset {
+    std::vector<BoneScaleGroup> groups;
+    uint32_t second_count = 0;  // the record's second array (unknown), its length
+};
+
+struct CompositeRace {
+    std::string name;  // "SylvariFemale" = API race + gender; also NPC variants ("CreatureCM", ...)
+    uint32_t skeleton_file = 0;
+    std::unordered_map<uint64_t, CompositeFileData> file_data;  // keyed by token
+    /// Bare-body sets: {chest, feet, hands, legs} tokens into file_data (types 0-3).
+    std::vector<std::array<uint64_t, 4>> skin_styles;
+    std::vector<uint64_t> faces;        // type 5 entries (face + eyes)
+    std::vector<uint64_t> hair_styles;  // type 6 entries
+    std::vector<uint64_t> ears;         // type 7 entries
+    /// Skin patterns (sylvari patterns, norn tattoos, ...): per pattern one
+    /// greyscale mask fileId per bare part, each in that part's own texture
+    /// space -- {chest, face, feet, hands, legs, ears}.
+    std::vector<std::array<uint32_t, 6>> skin_patterns;
+    /// Physiques (the character creator's body types) and face presets.
+    std::vector<BoneScalePreset> body_bone_scales, face_bone_scales;
+};
+
+/// The undergarments every race wears where it has no armor: FileData named
+/// "underwearic" (coat slot, type 9: the top -- females only) and "underwearil"
+/// (leggings slot, type 12: the bottom), the same tokens in every race. A
+/// FileData token is its name 5-bit packed (a = 1 ... z = 26, first letter in
+/// the low bits): bare-body parts are "skinbc" / "skinbf" / "skinbh" / "skinbl".
+constexpr uint64_t kUndergarmentTopToken = 0x000D32096F2291D5ull;
+constexpr uint64_t kUndergarmentBottomToken = 0x003132096F2291D5ull;
+
+struct Composite {
+    std::vector<BlitRectSet> blit_sets;
+    std::vector<CompositeRace> races;
+    const CompositeRace* race(std::string_view name) const;
+};
+
+/// Parses the decompressed Composite packfile. nullopt if it isn't one or any
+/// pointer/array falls outside the buffer.
+std::optional<Composite> parse_composite(std::span<const uint8_t> decompressed);
+
+} // namespace castlemist::composite
+
+#endif // CASTLEMIST_FORMAT_COMPOSITE_H

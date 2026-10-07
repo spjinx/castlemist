@@ -1,0 +1,551 @@
+[
+  {
+    "tab": 1,
+    "name": "",
+    "is_active": true,
+    "equipment": [
+      {
+        "id": 79895,
+        "slot": "HelmAquatic",
+        "stats": {
+          "id": 1224,
+          "attributes": {
+            "Power": 54,
+            "Precision": 30,
+            "ConditionDamage": 54,
+            "ConditionDuration": 30
+          }
+        },
+        "binding": "Account",
+        "location": "Equipped"
+      },
+      {
+        "id": 78611,
+        "slot": "Coat",
+        "upgrades": [
+          24824
+        ],
+        "skin": 517,
+        "binding": "Character",
+        "bound_to": "Test Character",
+        "location": "Equipped",
+        "dyes": [
+          6,
+          1682,
+          475,
+          null
+        ]
+      },
+      {
+        "id": 78594,
+        "slot": "Boots",
+        "upgrades": [
+          24824
+        ],
+        "skin": 10875,
+        "binding": "Character",
+        "bound_to": "Test Character",
+        "location": "Equipped",
+        "dyes": [
+          1682,
+          473,
+          1599,
+          585
+        ]
+      },
+      {
+        "id": 78591,
+        "slot": "Gloves",
+        "upgrades": [
+          24824
+        ],
+        "skin": 10026,
+        "binding": "Character",
+        "bound_to": "Test Character",
+        "location": "Equipped",
+        "dyes": [
+          1682,
+          1682,
+          6,
+          585
+        ]
+      },
+      {
+        "id": 78690,
+        "slot": "Helm",
+        "upgrades": [
+          24824
+        ],
+        "skin": 8826,
+        "binding": "Character",
+        "bound_to": "Test Character",
+        "location": "Equipped",
+        "dyes": [
+          1682,
+          1682,
+          1682,
+          148
+        ]
+      },
+      {
+        "id": 78312,
+        "slot": "Leggings",
+        "upgrades": [
+          24824
+        ],
+        "skin": 512,
+        "binding": "Character",
+        "bound_to": "Test Character",
+        "location": "Equipped",
+        "dyes": [
+          473,
+          1682,
+          6,
+          null
+        ]
+      },
+      {
+        "id": 78532,
+        "slot": "Shoulders",
+        "upgrades": [
+          24824
+        ],
+        "skin": 9472,
+        "binding": "Character",
+        "bound_to": "Test Character",
+        "location": "Equipped",
+        "dyes": [
+          1682,
+          1599,
+          20,
+          585
+        ]
+      },
+      {
+        "id": 67004,
+        "slot": "Backpack",
+        "infusions": [
+          87218
+        ],
+        "skin": 5544,
+        "stats": {
+          "id": 586,
+          "attributes": {
+            "Power": 63,
+            "Toughness": 40,
+            "Vitality": 40
+          }
+        },
+        "binding": "Account",
+        "location": "Equipped",
+        "dyes": [
+          449,
+          69,
+          482,
+          709
+        ]
+      },
+      {
+        "id": 95013,
+        "slot": "Accessory1",
+        "infusions": [
+          49433
+        ],
+        "binding": "Account",
+        "location": "Equipped"
+      },
+      {
+        "id": 94975,
+        "slot": "Accessory2",
+        "stats": {
+          "id": 1268,
+          "attributes": {
+            "Power": 92,
+            "Precision": 49,
+            "ConditionDamage": 92,
+            "ConditionDuration": 49
+          }
+        },
+        "binding": "Account",
+        "location": "Equipped"
+      },
+      {
+        "id": 37079,
+        "slot": "Ring1",
+        "infusions": [
+          49428
+        ],
+        "binding": "Account",
+        "location": "Equipped"
+      },
+      {
+        "id": 37075,
+        "slot": "Ring2",
+        "binding": "Account",
+        "location": "Equipped"
+      },
+      {
+        "id": 95380,
+        "slot": "Amulet",
+        "stats": {
+          "id": 586,
+          "attributes": {
+            "Power": 157,
+            "Toughness": 108,
+            "Vitality": 108
+          }
+        },
+        "binding": "Account",
+        "location": "EquippedFromLegendaryArmory"
+      },
+      {
+        "id": 78300,
+        "slot": "WeaponAquaticA",
+        "upgrades": [
+          24615,
+          24618
+        ],
+        "skin": 4789,
+        "binding": "Character",
+        "bound_to": "Test Character",
+        "location": "Equipped"
+      },
+      {
+        "id": 78235,
+        "slot": "WeaponAquaticB",
+        "upgrades": [
+          24615,
+          24618
+        ],
+        "skin": 4918,
+        "binding": "Character",
+        "bound_to": "Test Character",
+        "location": "Equipped"
+      },
+      {
+        "id": 80824,
+        "slot": "WeaponA1",
+        "upgrades": [
+          24618,
+          24615
+        ],
+        "skin": 8813,
+        "stats": {
+          "id": 1224,
+          "attributes": {
+            "Power": 215,
+            "Precision": 118,
+            "ConditionDamage": 215,
+            "ConditionDuration": 118
+          }
+        },
+        "binding": "Account",
+        "location": "Equipped"
+      },
+      {
+        "id": 25964,
+        "slot": "WeaponB1",
+        "upgrades": [
+          24615
+        ],
+        "skin": 8996,
+        "binding": "Character",
+        "bound_to": "Test Character",
+        "location": "Equipped"
+      },
+      {
+        "id": 97204,
+        "slot": "WeaponB2",
+        "upgrades": [
+          24618
+        ],
+        "skin": 11871,
+        "binding": "Character",
+        "bound_to": "Test Character",
+        "location": "Equipped"
+      }
+    ],
+    "equipment_pvp": {
+      "amulet": 9,
+      "rune": 21175,
+      "sigils": [
+        21149,
+        81227,
+        21150,
+        81268
+      ]
+    }
+  },
+  {
+    "tab": 2,
+    "name": "",
+    "is_active": false,
+    "equipment": [
+      {
+        "id": 79895,
+        "slot": "HelmAquatic",
+        "stats": {
+          "id": 1224,
+          "attributes": {
+            "Power": 54,
+            "Precision": 30,
+            "ConditionDamage": 54,
+            "ConditionDuration": 30
+          }
+        },
+        "binding": "Account",
+        "location": "Equipped"
+      },
+      {
+        "id": 96278,
+        "slot": "Coat",
+        "upgrades": [
+          83338
+        ],
+        "skin": 10484,
+        "binding": "Account",
+        "location": "Armory",
+        "dyes": [
+          69,
+          69,
+          482,
+          1538
+        ]
+      },
+      {
+        "id": 96932,
+        "slot": "Boots",
+        "upgrades": [
+          83338
+        ],
+        "skin": 229,
+        "binding": "Account",
+        "location": "Armory",
+        "dyes": [
+          482,
+          69,
+          1338,
+          null
+        ]
+      },
+      {
+        "id": 96967,
+        "slot": "Gloves",
+        "upgrades": [
+          83338
+        ],
+        "skin": 10026,
+        "binding": "Account",
+        "location": "Armory",
+        "dyes": [
+          1599,
+          69,
+          69,
+          1538
+        ]
+      },
+      {
+        "id": 96711,
+        "slot": "Helm",
+        "upgrades": [
+          83338
+        ],
+        "infusions": [
+          101199
+        ],
+        "skin": 8826,
+        "binding": "Account",
+        "location": "Armory",
+        "dyes": [
+          1682,
+          1682,
+          1682,
+          1538
+        ]
+      },
+      {
+        "id": 97710,
+        "slot": "Leggings",
+        "upgrades": [
+          83338
+        ],
+        "skin": 1,
+        "binding": "Account",
+        "location": "Armory",
+        "dyes": [
+          1538,
+          69,
+          482,
+          null
+        ]
+      },
+      {
+        "id": 96114,
+        "slot": "Shoulders",
+        "upgrades": [
+          83338
+        ],
+        "skin": 5795,
+        "binding": "Account",
+        "location": "Armory",
+        "dyes": [
+          1338,
+          482,
+          null,
+          null
+        ]
+      },
+      {
+        "id": 79157,
+        "slot": "Backpack",
+        "skin": 11400,
+        "stats": {
+          "id": 1706,
+          "attributes": {
+            "Vitality": 52,
+            "ConditionDamage": 52,
+            "BoonDuration": 27,
+            "ConditionDuration": 27
+          }
+        },
+        "binding": "Account",
+        "location": "Armory",
+        "dyes": [
+          75,
+          482,
+          1553,
+          111
+        ]
+      },
+      {
+        "id": 95013,
+        "slot": "Accessory1",
+        "infusions": [
+          49433
+        ],
+        "binding": "Account",
+        "location": "Equipped"
+      },
+      {
+        "id": 94975,
+        "slot": "Accessory2",
+        "stats": {
+          "id": 1268,
+          "attributes": {
+            "Power": 92,
+            "Precision": 49,
+            "ConditionDamage": 92,
+            "ConditionDuration": 49
+          }
+        },
+        "binding": "Account",
+        "location": "Equipped"
+      },
+      {
+        "id": 79124,
+        "slot": "Ring1",
+        "stats": {
+          "id": 1706,
+          "attributes": {
+            "Vitality": 106,
+            "ConditionDamage": 106,
+            "BoonDuration": 56,
+            "ConditionDuration": 56
+          }
+        },
+        "binding": "Account",
+        "location": "Armory"
+      },
+      {
+        "id": 37079,
+        "slot": "Ring2",
+        "infusions": [
+          49428
+        ],
+        "binding": "Account",
+        "location": "Equipped"
+      },
+      {
+        "id": 95380,
+        "slot": "Amulet",
+        "infusions": [
+          87398
+        ],
+        "stats": {
+          "id": 1694,
+          "attributes": {
+            "Vitality": 133,
+            "ConditionDamage": 133,
+            "BoonDuration": 71,
+            "ConditionDuration": 71
+          }
+        },
+        "binding": "Account",
+        "location": "LegendaryArmory"
+      },
+      {
+        "id": 78300,
+        "slot": "WeaponAquaticA",
+        "upgrades": [
+          24615,
+          24618
+        ],
+        "skin": 4789,
+        "binding": "Character",
+        "bound_to": "Test Character",
+        "location": "Equipped"
+      },
+      {
+        "id": 78235,
+        "slot": "WeaponAquaticB",
+        "upgrades": [
+          24615,
+          24618
+        ],
+        "skin": 4918,
+        "binding": "Character",
+        "bound_to": "Test Character",
+        "location": "Equipped"
+      },
+      {
+        "id": 73514,
+        "slot": "WeaponA1",
+        "upgrades": [
+          44950,
+          24624
+        ],
+        "skin": 8550,
+        "binding": "Account",
+        "location": "Armory"
+      },
+      {
+        "id": 47006,
+        "slot": "WeaponB1",
+        "upgrades": [
+          44944
+        ],
+        "skin": 12354,
+        "binding": "Account",
+        "location": "Armory"
+      },
+      {
+        "id": 97779,
+        "slot": "WeaponB2",
+        "skin": 11871,
+        "binding": "Character",
+        "bound_to": "Test Character",
+        "location": "Armory"
+      }
+    ],
+    "equipment_pvp": {
+      "amulet": 40,
+      "rune": 21179,
+      "sigils": [
+        81235,
+        81222,
+        21149,
+        81268
+      ]
+    }
+  }
+]

@@ -21,7 +21,7 @@ GltfExportResult export_model_gltf(const ModelPreview& model, const std::string&
         return result;
     }
 
-    fs::path outPath(glbPath);
+    fs::path outPath = fs::path(std::u8string(glbPath.begin(), glbPath.end()));  // glbPath is UTF-8
     std::string stem = outPath.stem().string();
 
     std::error_code ec;
@@ -65,15 +65,17 @@ GltfExportResult export_model_gltf(const ModelPreview& model, const std::string&
     // The scene root absorbs GW2's Z-up -> glTF's Y-up conversion (a fixed
     // -90-degrees-about-X rotation) so every mesh vertex and joint transform
     // below it stays in GW2's own native numbers -- see internal.h's design note.
-    int rootIndex = w.add_node(json{
+    json root{
         {"name", "GW2_ZupToYup"},
-        {"rotation", {-0.70710678, 0.0, 0.0, 0.70710678}},
+        {"rotation", {opts.rootRotation[0], opts.rootRotation[1], opts.rootRotation[2], opts.rootRotation[3]}},
         {"children", rootChildren},
-    });
+    };
+    if (opts.rootScale != 1.0) root["scale"] = {opts.rootScale, opts.rootScale, opts.rootScale};
+    int rootIndex = w.add_node(std::move(root));
     w.add_scene_root(rootIndex);
 
     std::vector<uint8_t> glb = w.finish();
-    std::ofstream out(glbPath, std::ios::binary);
+    std::ofstream out(outPath, std::ios::binary);
     if (!out) {
         result.error = "Could not open '" + glbPath + "' for writing.";
         return result;

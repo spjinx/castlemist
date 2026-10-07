@@ -31,7 +31,8 @@
 /// slug is usually **last**. They must be told apart by shape, not position.
 struct ContentObject {
     uint32_t type = 0;               ///< Content type number; see ::content_type_name.
-    uint32_t id = 0;                 ///< Numeric id within the type.
+    uint32_t id = 0;                 ///< Numeric id within the type (the internal uid at +20).
+    uint32_t data_id = 0;            ///< The API / chat-link id (+40), see content_map.h.
     std::vector<uint32_t> assets;    ///< Referenced dat asset fileIds (model, textures, sounds).
 
     /// @brief The object's identifier slug, e.g. `"vl8Av.4gynM"`.

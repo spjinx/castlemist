@@ -16,7 +16,9 @@
 
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <set>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -24,6 +26,7 @@
 #include "castlemist/native/gw2dat.h"
 #include "castlemist/ui/theme.h"
 
+#include "castlemist/character/manifest.h"
 #include "castlemist/db/index_db.h"
 #include "castlemist/extract/entry_extractor.h"
 #include "castlemist/format/chat_link.h"
@@ -73,6 +76,7 @@ constexpr UINT_PTR ID_VIEW_THEME_DARK   = 1010;
 constexpr UINT_PTR ID_VIEW_THEME_LIGHT  = 1011;
 constexpr UINT_PTR ID_VIEW_THEME_CUSTOM = 1012;
 constexpr UINT_PTR ID_VIEW_THEME_ACCENT = 1013;
+constexpr UINT_PTR ID_TOOLS_CHARACTER = 1019;      // Character Ripper (GW2 API) dialog
 constexpr UINT_PTR ID_TOOLS_DECODE_TOKEN = 1015;   // token/filename-bytes decoder popup
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL = 1016; // Export glTF... (single model, plain decoded textures)
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MAP = 1017;   // Export glTF... (whole map scene)
@@ -87,6 +91,39 @@ constexpr UINT_PTR ID_CL_CLOSE = 2075;
 constexpr UINT_PTR ID_CL_RESOLVE = 2076;
 constexpr UINT_PTR ID_CL_OPEN_ICON = 2077;
 constexpr UINT_PTR ID_CL_OPEN_MODEL = 2078;
+constexpr UINT_PTR ID_CL_REBUILD = 2080;
+
+// Character Ripper dialog (character_dialog.cpp) and its key manager (character_keys_dialog.cpp).
+constexpr UINT_PTR ID_CH_KEY_COMBO = 2150;
+constexpr UINT_PTR ID_CH_MANAGE = 2151;
+constexpr UINT_PTR ID_CH_FETCH = 2152;
+constexpr UINT_PTR ID_CH_CHAR_LIST = 2153;
+constexpr UINT_PTR ID_CH_TAB_COMBO = 2154;
+constexpr UINT_PTR ID_CH_TABLE = 2155;
+constexpr UINT_PTR ID_CH_OPEN_MODEL = 2156;
+constexpr UINT_PTR ID_CH_SAVE = 2157;
+constexpr UINT_PTR ID_CH_CLOSE = 2158;
+constexpr UINT_PTR ID_CH_BUILD_MAP = 2159;
+constexpr UINT_PTR ID_CK_LIST = 2160;
+constexpr UINT_PTR ID_CK_NAME = 2161;
+constexpr UINT_PTR ID_CK_KEY = 2162;
+constexpr UINT_PTR ID_CK_SHOW = 2163;
+constexpr UINT_PTR ID_CK_SAVE = 2164;
+constexpr UINT_PTR ID_CK_RENAME = 2165;
+constexpr UINT_PTR ID_CK_REMOVE = 2166;
+constexpr UINT_PTR ID_CK_CLOSE = 2167;
+constexpr UINT_PTR ID_CH_EXPORT = 2168;
+constexpr UINT_PTR ID_CH_ASSEMBLE = 2169;
+constexpr UINT_PTR ID_CH_COMBINE = 2170;  // "Combine into one file" checkbox
+// The Look row: face / hair style combos, skin / hair / hair 2 colour swatches.
+constexpr UINT_PTR ID_CH_FACE = 2171;
+constexpr UINT_PTR ID_CH_HAIR = 2172;
+constexpr UINT_PTR ID_CH_SKIN_COLOR = 2173;
+constexpr UINT_PTR ID_CH_HAIR_COLOR = 2174;
+constexpr UINT_PTR ID_CH_HAIR_COLOR2 = 2175;
+constexpr UINT_PTR ID_CH_SAVE_LOOK = 2176;
+constexpr UINT_PTR ID_CH_EDIT_LOOK = 2177;  // opens the Look dialog
+constexpr UINT_PTR ID_CH_VRCHAT = 2178;     // Export for VRChat...
 constexpr int ID_LISTVIEW = 2001;
 constexpr int ID_HEX_BEFORE = 2002;
 constexpr int ID_HEX_AFTER = 2003;
@@ -269,6 +306,14 @@ constexpr UINT WM_APP_INDEX_PROGRESS = WM_APP + 3;
 constexpr UINT WM_APP_INDEX_DONE = WM_APP + 4;
 /// Posted when a background glTF export finishes; result is in g_gltf_export_result.
 constexpr UINT WM_APP_GLTF_EXPORT_DONE = WM_APP + 5;
+// Character Ripper workers -> dialog; lParam owns a heap result the dialog deletes.
+constexpr UINT WM_APP_CHAR_NAMES_DONE = WM_APP + 6;
+constexpr UINT WM_APP_CHAR_FETCH_DONE = WM_APP + 7;
+constexpr UINT WM_APP_CHAR_EXPORT_DONE = WM_APP + 8;
+constexpr UINT WM_APP_CHAR_ASSEMBLE_DONE = WM_APP + 9;
+constexpr UINT WM_APP_CHAR_VRCHAT_DONE = WM_APP + 11;  // (+10, +12: look_dialog)
+/// Posted to the main window when game names for content objects arrive.
+constexpr UINT WM_APP_CONTENT_NAMES_DONE = WM_APP + 13;
 
 enum class MiddleTab { Compressed = 0, Decompressed = 1, Structure = 2, Preview = 3 };
 
@@ -643,6 +688,60 @@ void cl_resolve_asset();
 void cl_search(bool by_file_id);
 LRESULT CALLBACK ChatLinkWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 void open_chat_link_decoder(HWND owner);
+
+// ---- content_map_service.cpp -- the shared cntc content-map build
+enum class CmapEnsure { Ready, Building, Started, NeedDat, NeedIndex, InUse };
+/// ensure_content_map's first answer: Building wins over built() (a build's
+/// finalize already reports built), then Ready; nullopt = go on to load/build.
+std::optional<CmapEnsure> ensure_precheck(bool building, bool built);
+/// Why a rebuild may not discard the current map (nullopt = it may): a build is
+/// running, a reader (character fetch) is using it, or there is no dat / index
+/// to build a new one from.
+std::optional<CmapEnsure> rebuild_precheck(bool building, int readers, bool dat_loaded, bool index_loaded);
+/// Background readers of the shared cmap (character fetches) hold this for as
+/// long as they read it; rebuild_content_map refuses (InUse) meanwhile.
+void acquire_content_map_reader();
+void release_content_map_reader();
+int content_map_readers();
+std::wstring cmap_cache_path();
+/// Ready if built or the disk cache loads; Building/Started post WM_APP_CMAP_DONE
+/// to `notify` when the background build finishes; NeedDat/NeedIndex: the caller
+/// tells the user what to open first.
+CmapEnsure ensure_content_map(HWND notify);
+/// Drops the map and its disk cache, then ensure_content_map(notify) -- unless
+/// rebuild_precheck() refuses, in which case nothing is touched.
+CmapEnsure rebuild_content_map(HWND notify);
+bool content_map_building();
+
+// ---- content_names.cpp -- game names + chat links for what uses a file
+/// The cached game name of a content object: nullptr = not fetched yet, "" = none.
+const std::string* cached_content_name(uint32_t type, uint32_t id);
+/// Queue names not cached yet for a background fetch from the public GW2 API;
+/// `notify` gets WM_APP_CONTENT_NAMES_DONE as they arrive.
+void request_content_names(HWND notify, const std::vector<castlemist::cmap::ContentRef>& refs);
+/// The info panel's "Game content" section for entry `mft_index` (or the
+/// content object selected in the cntc browser), queueing any missing names.
+std::wstring content_links_text(uint32_t mft_index);
+/// content_browser.cpp: an entry's game name for the entries table's Name column,
+/// and filling those cells in once names arrive.
+std::wstring content_object_name(const ContentObject& o);
+void refresh_content_names();
+/// The main list's Name column (mft::NameProvider): the first game name among
+/// the objects that use any of `file_ids`, "+N" when more use it.
+bool name_for_files(const std::vector<uint32_t>& file_ids, bool fetch, std::wstring& out);
+/// Re-show the current entry's info panel (e.g. once names or the map arrive).
+void refresh_entry_info();
+
+/// Point the main browser at a dat fileId (file-id search) and bring it forward.
+void navigate_to_file_id(uint32_t fid);
+
+// ---- character_dialog.cpp / character_keys_dialog.cpp -- Character Ripper
+void open_character_dialog(HWND owner);
+void open_character_keys_dialog(HWND owner, std::function<void()> on_changed);
+// look_dialog.cpp -- Character Ripper > Edit look...
+void open_look_dialog(HWND owner, const castlemist::character::CharacterManifest& manifest);
+std::wstring utf8_to_wide(const std::string& s);
+std::string wide_to_utf8(const std::wstring& w);
 
 // ---- token_decoder_dialog.cpp -- token / filename-bytes decoder popup
 LRESULT CALLBACK TokenDecoderWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);

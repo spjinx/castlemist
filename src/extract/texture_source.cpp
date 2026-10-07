@@ -59,21 +59,44 @@ static bool peek_mft_atex(Gw2Dat& dat, size_t i0, int& w, int& h, std::string& f
 }
 
 // Given the entry a fileId resolved to (i0), find the full/reduced member of its
-// pair. The pair is a same-format neighbor with exactly double/half dimensions; the
-// full member is always the higher index (baseId B vs B-1). Returns i0 unchanged if
-// there is no paired sibling.
+// pair: the same-format texture at the next / previous fileId with exactly
+// double / half dimensions (reduced = F, full = F+1). Returns i0 unchanged if there
+// is no paired sibling.
+// The two entries hold consecutive fileIds (reduced F, full F+1). A same-format,
+// double-size neighbour alone is not enough: the MFT order can put an unrelated
+// texture next to it (sylvari male hair mask 151249 sits beside 151234, a different
+// 1024x1024 mask, while its real full copy is 151250 elsewhere in the table).
+static bool consecutive_files(Gw2Dat& dat, size_t lower, size_t upper) {
+    const std::vector<uint32_t> a = get_by_file_id(dat, static_cast<uint32_t>(lower + 1));
+    const std::vector<uint32_t> b = get_by_file_id(dat, static_cast<uint32_t>(upper + 1));
+    for (uint32_t x : a)
+        for (uint32_t y : b)
+            if (y == x + 1) return true;
+    return false;
+}
+
+static size_t find_entry_of_file(Gw2Dat& dat, uint32_t file_id) {
+    const uint32_t base = get_by_base_id(dat, file_id);
+    return base == 0 ? SIZE_MAX : static_cast<size_t>(base - 1);
+}
+
 static size_t resolve_res_index(Gw2Dat& dat, size_t i0, bool wantFull) {
     int w0, h0; std::string f0;
     if (!peek_mft_atex(dat, i0, w0, h0, f0)) return i0;
-    int w1, h1; std::string f1;
-    // A full sibling one entry above => i0 is the reduced member.
-    if (i0 + 1 < dat.mft_data_list.size() && peek_mft_atex(dat, i0 + 1, w1, h1, f1)
-        && f1 == f0 && w1 == 2 * w0 && h1 == 2 * h0)
-        return wantFull ? i0 + 1 : i0;
-    // A reduced sibling one entry below => i0 is the full member.
-    if (i0 >= 1 && peek_mft_atex(dat, i0 - 1, w1, h1, f1)
-        && f1 == f0 && w0 == 2 * w1 && h0 == 2 * h1)
-        return wantFull ? i0 : i0 - 1;
+    auto is_pair = [&](size_t lo, size_t hi) {  // lo reduced, hi full
+        int wl, hl, wh, hh; std::string fl, fh;
+        return peek_mft_atex(dat, lo, wl, hl, fl) && peek_mft_atex(dat, hi, wh, hh, fh) && fl == fh &&
+               wh == 2 * wl && hh == 2 * hl && consecutive_files(dat, lo, hi);
+    };
+    // The sibling by fileId: F+1 is the full copy of F, F-1 the reduced one of F.
+    for (uint32_t fid : get_by_file_id(dat, static_cast<uint32_t>(i0 + 1))) {
+        const size_t up = find_entry_of_file(dat, fid + 1);
+        if (up != SIZE_MAX && up < dat.mft_data_list.size() && is_pair(i0, up)) return wantFull ? up : i0;
+        if (fid > 1) {
+            const size_t down = find_entry_of_file(dat, fid - 1);
+            if (down != SIZE_MAX && down < dat.mft_data_list.size() && is_pair(down, i0)) return wantFull ? i0 : down;
+        }
+    }
     return i0;
 }
 
@@ -156,11 +179,36 @@ static bool decode_mft_atex(Gw2Dat& dat, size_t i0, ModelTextureCPU& out) {
 // choosing the full- or reduced-resolution member of its pair per g_tex_full_res.
 // Returns false if the fileId isn't found or isn't a decodable texture.
 bool decode_texture_by_fileid(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out) {
+    return decode_texture_by_fileid_res(dat, fileId, out, g_tex_full_res.load());
+}
+
+bool decode_texture_exact(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out) {
+    uint32_t base = get_by_base_id(dat, fileId);
+    if (base == 0 || base - 1 >= dat.mft_data_list.size()) return false;
+    if (!decode_mft_atex(dat, base - 1, out)) return false;
+    out.fileId = fileId;
+    return true;
+}
+
+bool decode_texture_full_res(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out, int* exact_width) {
+    uint32_t base = get_by_base_id(dat, fileId);
+    if (base == 0 || base - 1 >= dat.mft_data_list.size()) return false;
+    if (exact_width) {
+        int w = 0, h = 0;
+        std::string fmt;
+        *exact_width = peek_mft_atex(dat, base - 1, w, h, fmt) ? w : 0;
+    }
+    if (!decode_mft_atex(dat, resolve_res_index(dat, base - 1, /*wantFull=*/true), out)) return false;
+    out.fileId = fileId;
+    return true;
+}
+
+bool decode_texture_by_fileid_res(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out, bool want_full) {
     uint32_t base = get_by_base_id(dat, fileId);
     if (base == 0 || base - 1 >= dat.mft_data_list.size()) {
         return false;
     }
-    size_t i0 = resolve_res_index(dat, base - 1, g_tex_full_res.load());
+    size_t i0 = resolve_res_index(dat, base - 1, want_full);
     if (!decode_mft_atex(dat, i0, out)) return false;
     out.fileId = fileId;
     return true;

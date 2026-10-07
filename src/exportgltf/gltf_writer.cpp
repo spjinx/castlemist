@@ -72,7 +72,8 @@ int GltfWriter::add_accessor(const void* data, size_t byteLength, int componentT
 }
 
 int GltfWriter::add_or_reuse_texture(uint32_t fileId, const std::vector<uint8_t>& pngBytes) {
-    auto found = textureByFileId_.find(fileId);
+    // fileId 0 = generated in memory (a baked atlas), not a dat file: never shared.
+    auto found = fileId ? textureByFileId_.find(fileId) : textureByFileId_.end();
     if (found != textureByFileId_.end()) return found->second;
 
     int bvIndex = add_buffer_view(pngBytes.data(), pngBytes.size(), 0);
@@ -84,7 +85,7 @@ int GltfWriter::add_or_reuse_texture(uint32_t fileId, const std::vector<uint8_t>
     doc_["textures"].push_back(std::move(texture));
     int textureIndex = static_cast<int>(doc_["textures"].size()) - 1;
 
-    textureByFileId_[fileId] = textureIndex;
+    if (fileId) textureByFileId_[fileId] = textureIndex;
     return textureIndex;
 }
 

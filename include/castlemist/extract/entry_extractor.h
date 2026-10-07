@@ -191,6 +191,28 @@ ExtractedEntry extract_loose_file(std::vector<uint8_t> bytes, const std::string&
 /// Takes effect on the next model (re)load.
 /// @{
 void set_texture_full_res(bool full); ///< true (default) = prefer the full-res member.
+
+/// @brief Decode the texture a fileId resolves to into CPU RGBA8888.
+///
+/// Exactly the entry the fileId names -- never the full/reduced sibling that
+/// model materials switch to, whatever ::texture_full_res says. The character
+/// ripper needs this: a piece's base texture and dye masks only line up (and
+/// match its atlas math) as the Composite file names them; some have a
+/// high-res sibling and some don't. Only safe
+/// on the thread that owns @p dat. @return false for an unknown fileId or one
+/// that isn't a decodable texture.
+bool decode_texture_rgba(Gw2Dat& dat, uint32_t file_id, ModelTextureCPU& out);
+
+/// @brief The full-resolution copy of a fileId's texture when GW2 ships one (a
+///        same-format neighbour entry at exactly double size), else the entry
+///        itself. `exact_width`, when given, receives the width of the entry
+///        the fileId names, so the caller can tell the two apart.
+bool decode_texture_full(Gw2Dat& dat, uint32_t file_id, ModelTextureCPU& out, int* exact_width = nullptr);
+
+/// @brief The model at `file_id`, built against the already-open `dat` --
+///        unlike extract_entry(), which reopens (re-parses) the whole dat for
+///        every model it builds. nullptr if it isn't a model or fails to load.
+std::shared_ptr<ModelPreview> load_model_by_fileid(Gw2Dat& dat, uint32_t file_id);
 bool texture_full_res();              ///< Current preference.
 /// @}
 

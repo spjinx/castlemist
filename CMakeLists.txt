@@ -109,6 +109,10 @@ castlemist_add_layer(format DEPS castlemist::core castlemist::native
                                  ext::jpegturbo ext::webp ext::stb
                                  windowscodecs ole32 oleaut32 uuid)
 
+# character talks to the public GW2 API (WinHTTP) and resolves a character's
+# equipment through format's content map. No UI dependency.
+castlemist_add_layer(character DEPS castlemist::format ext::json winhttp)
+
 # db also builds the index (index_builder), which reads the archive directly and
 # resolves chunk struct variants from the JSON template.
 castlemist_add_layer(db     DEPS castlemist::core castlemist::native ext::sqlite ext::json)
@@ -134,6 +138,11 @@ castlemist_add_layer(sim    DEPS castlemist::extract ext::glm)
 # to encode embedded textures as PNGs, and ext::json (already used by
 # native/db) to build the glTF JSON chunk without hand-rolled escaping.
 castlemist_add_layer(exportgltf DEPS castlemist::extract ext::stb ext::json)
+
+# ripper turns a character manifest into exported pieces: composite lookup,
+# dye baking and atlas cropping on top of extract + exportgltf.
+castlemist_add_layer(ripper DEPS castlemist::character castlemist::extract castlemist::exportgltf
+                                 castlemist::format castlemist::db ext::json ext::stb)
 
 castlemist_add_layer(render DEPS castlemist::extract castlemist::sim
                                  d3d11 dxgi d3dcompiler dxguid)
@@ -164,7 +173,7 @@ endif()
 # dwmapi is *not* linked -- DwmSetWindowAttribute is resolved with GetProcAddress
 # so the exe still starts on a Windows without it.
 castlemist_add_layer(ui     DEPS castlemist::render castlemist::db castlemist::extract
-                                 castlemist::exportgltf
+                                 castlemist::exportgltf castlemist::character castlemist::ripper
                                  comctl32 comdlg32 shell32 user32 gdi32 advapi32 uxtheme)
 
 
