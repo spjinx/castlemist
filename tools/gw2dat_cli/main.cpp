@@ -947,7 +947,8 @@ void cmd_model(const Args& a) {
             json r = json::array();
             for (const auto& ex : m.extraTextures)
                 r.push_back(json{{"role", ex.role}, {"fileId", ex.fileId}, {"uv", static_cast<int>(ex.uvIndex)}});
-            roles.push_back(json{{"index", m.index}, {"extras", r}, {"diffuse", m.diffuseTex}, {"normal", m.normalTex}});
+            roles.push_back(json{{"index", m.index}, {"extras", r}, {"diffuse", m.diffuseTex}, {"normal", m.normalTex},
+                                 {"diffuseUv", static_cast<int>(m.diffuseUv)}, {"normalUv", static_cast<int>(m.normalUv)}});
         }
         j["materialRoles"] = roles;
         if (has(a, "glb")) {  // the same .glb the app's "Export glTF (Model)..." writes

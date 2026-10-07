@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -178,6 +179,32 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
 /// AND no skeleton anywhere in the file). Empty when there is nothing to
 /// describe either (not even an animation clip).
 std::wstring describe_animation_only_modl(const std::vector<uint8_t>& modl_bytes, const nlohmann::json& tpl);
+
+/// @brief One texture slot of a MODL material, as the material lists it.
+struct MaterialTextureSlot {
+    uint32_t fileId = 0;
+    std::string role;  ///< the slot's token up to its first '_' ("glow", "mask", ...; may be empty)
+    uint8_t uv = 0;
+};
+
+/// @brief Roles that are layers over the base colour: mask, decal, detail, glow*.
+bool is_layer_role(const std::string& role);
+
+/// @brief The files a material names only under layer roles -- never its base
+///        colour or normal (character armor leaves the diffuse slot empty and
+///        keeps only such layers). A file that also has a non-layer slot (AMAT
+///        511663: one file is the diffuse AND the glow) is not one of them.
+std::set<uint32_t> layer_only_files(const std::vector<MaterialTextureSlot>& slots);
+
+/// @brief Sets diffuseUv / normalUv and fills extraTextures from the slots,
+///        keyed by slot, not by file: the first non-layer slot of the diffuse
+///        (normal) file claims it; a later slot of that file merges only when
+///        its role is the claiming one; every other slot is an ExtraTexture.
+///        A diffuse in @p layerOnly is dropped (diffuseTex = -1).
+/// @param texIndexOf fileId -> index into ModelPreview::textures, or -1.
+void assign_texture_slots(ModelMaterialCPU& mat, const std::vector<MaterialTextureSlot>& slots,
+                          const std::set<uint32_t>& layerOnly,
+                          const std::function<int(uint32_t)>& texIndexOf);
 
 // ---------------------------------------------------------------- map scene --
 // map_scene.cpp
