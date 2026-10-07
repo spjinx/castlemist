@@ -25,6 +25,9 @@ enum class AlphaUse {
     ReflectionOnly,  ///< shine drives reflection strength only
     Intensity,       ///< premultiplied effect intensity
     Opacity,
+    /// 44709: opacity = `saturate(2a)` (x ramp x diffade, not mapped) in the lower
+    /// half, unlit self-illumination `rgb * saturate(2a-1) * 2` in the upper half.
+    OpacityAndGlow,
     InteriorWeight,  ///< jade: lerp(diffuse, interior parallax, a)
     Unused
 };

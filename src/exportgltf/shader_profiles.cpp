@@ -169,6 +169,8 @@ std::vector<Entry> build_table() {
 
     // fx-alpha: straight opacity in alpha (SrcA/InvSrcA), rgb not premultiplied.
     t.push_back({{23507, 19255}, make("fx-alpha", AlphaUse::Opacity, false)});
+    // fx-alpha-glow (note section 8.2, 44709): alpha = opacity below half, self-illumination above.
+    t.push_back({{44709}, make("fx-alpha-glow", AlphaUse::OpacityAndGlow, false)});
     // armor-prism: shine, animated flake/prism layers raw; mask G/R are layer weights.
     {
         ShaderProfile p = make("armor-prism", AlphaUse::Shine, false);

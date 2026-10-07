@@ -159,6 +159,7 @@ public:
         build_packed();
         build_decal();
         build_emission();
+        build_alpha_glow();
         build_decal_glow();
         bake_emission();
         build_distortion();
@@ -336,6 +337,8 @@ private:
                 } else if (alphaIsOpacity_ || profile_.diffuseAlpha == AlphaUse::Intensity ||
                            profile_.diffuseAlpha == AlphaUse::Opacity) {
                     outA = a;
+                } else if (profile_.diffuseAlpha == AlphaUse::OpacityAndGlow) {
+                    outA = to_byte(2.0 * a / 255.0);
                 } else if (profile_.clips) {
                     outA = a < 64 ? 0 : 255;
                 }
@@ -677,6 +680,32 @@ private:
         if (profile_.maskSpecular != Channel::None && find({"mask"}))
             out_.warnings.push_back("specular x mask." + channel_name(profile_.maskSpecular) +
                                     " not mapped");
+    }
+
+    /// 44709: the upper half of the diffuse alpha is unlit self-illumination,
+    /// `rgb * saturate(2a-1) * 2`. A real glow source keeps the emission slots.
+    void build_alpha_glow() {
+        if (profile_.diffuseAlpha != AlphaUse::OpacityAndGlow) return;
+        out_.warnings.push_back("opacity ramp and diffade not mapped (opacity = saturate(2a) only)");
+        if (!diffuse_.real()) return;
+        if (emissionTaken_) {
+            out_.warnings.push_back(
+                "self-illumination (diffuse alpha above 0.5) not mapped: emission slot in use");
+            return;
+        }
+        const ModelTextureCPU& d = *diffuse_.tex;
+        ModelTextureCPU m = blank(d.width, d.height, d.fileId);
+        for (size_t i = 0; i + 3 < m.rgba.size(); i += 4) {
+            m.rgba[i] = m.rgba[i + 1] = m.rgba[i + 2] = shine(d.rgba[i + 3]);
+            m.rgba[i + 3] = 255;
+        }
+        out_.emissionMask = slot_of(std::move(m), diffuse_.uv, d.fileId, "diffuse saturate(2a-1)");
+        out_.emissionMap = out_.baseColor;
+        out_.emissionMap.source = "baseColor";
+        out_.emissionColor = {1, 1, 1};
+        out_.emissionStrength = 2.0f;  // rgb * saturate(2a-1) * 2
+        emissionTaken_ = true;
+        decalGlowBake_ = true;  // bake map x mask x colour
     }
 
     /// A decal that glows (57131 below half its alpha, 57806 above), when no

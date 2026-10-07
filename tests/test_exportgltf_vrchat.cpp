@@ -1106,6 +1106,50 @@ CM_TEST(vrchat, decal_glow_slot_in_use_warns) {
     CHECK(m.decal.present);  // the decal map itself is still built
 }
 
+CM_TEST(vrchat, opacity_and_glow_splits_alpha) {
+    const ShaderProfile& p = profile_for(mat_with_file(44709), 0);
+    CHECK(p.name == "fx-alpha-glow");
+    CHECK(p.diffuseAlpha == AlphaUse::OpacityAndGlow);
+    CHECK_FALSE(p.clips);
+
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(44709);
+    mat.diffuseTex = add_tex(
+        model, tex_from(5, 1,
+                        {{10, 20, 30, 0}, {10, 20, 30, 64}, {10, 20, 30, 127}, {10, 20, 30, 128},
+                         {10, 20, 30, 255}},
+                        1000));
+    MaterialMaps m = build(model, mat, BlendPreset::Fade);
+    CHECK(m.baseColor.present);
+    const int wantA[5] = {0, 128, 254, 255, 255};
+    for (int i = 0; i < 5; ++i) CHECK_NEAR(px(m.baseColor.tex, i, 3), wantA[i], 1);
+    CHECK(m.emissionMask.present);
+    CHECK(m.emissionMap.present);
+    CHECK(m.emissionMap.source == "baseColor");
+    const int wantG[5] = {0, 0, 0, 0, 255};
+    for (int i = 0; i < 5; ++i) CHECK_NEAR(px(m.emissionMask.tex, i, 0), wantG[i], 1);
+    CHECK_EQ(px(m.emissionMap.tex, 4, 0), 10);
+    CHECK_NEAR(m.emissionStrength, 2.0f, 0.001f);
+    CHECK(m.emissionBaked.present);
+    CHECK_NEAR(px(m.emissionBaked.tex, 4, 1), 20, 1);
+    CHECK_NEAR(px(m.emissionBaked.tex, 0, 1), 0, 1);
+    CHECK(any_warning(m, "ramp"));
+    CHECK(any_warning(m, "diffade"));
+}
+
+CM_TEST(vrchat, opacity_and_glow_with_glow_layer_warns) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(44709);
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "glow", add_tex(model, solid(2, 2, {255, 64, 0, 255}, 2001)), 0);
+    MaterialMaps m = build(model, mat, BlendPreset::Fade);
+    CHECK(m.emissionMap.present);
+    CHECK_EQ(m.emissionMap.fileId, 2001u);
+    CHECK(m.emissionMap.source == "glow");
+    CHECK(any_warning(m, "self-illumination"));
+    CHECK_NEAR(px(m.baseColor.tex, 3, 3), 255, 1);  // the opacity half is still built
+}
+
 // ------------------------------------------------------------- export folder --
 
 namespace {
