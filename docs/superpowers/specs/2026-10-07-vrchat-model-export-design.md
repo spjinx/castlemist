@@ -122,7 +122,8 @@ Blending fields exactly.
 `alphaTest` is **not** `GameMaterial.prepassCutout` (true for stipple and
 distance-fade discards too) and **not** `ModelTextureCPU::hasCutout` (a
 dark shine map reads as holes). It comes from the shader profile; an AMAT
-with no profile is treated as not clipping, with a "clip unknown" warning.
+with no profile is treated as not clipping; its single "default profile" warning
+says the clip is unknown.
 Materials with no game shader (no `hasRenderState`) fall back to today's
 `isEffect`: Additive when set, else Opaque.
 
@@ -178,7 +179,14 @@ Choice order: AMAT fileId → a trait the note proves reliable (the
 legacy-untagged trait: all texture tokens 0, matId 0, flags 0,
 SrcA/InvSrcA) → **default**. The default is deliberately conservative: no
 holes, shine `saturate(2a-1)`, mask/specular layers exported raw and not
-interpreted, plus a "default profile" warning. A new AMAT gets a profile by
+interpreted, plus a "default profile" warning (which also says the clip is
+unknown). Ruling R8: a **uniform** diffuse alpha (every texel equal, or a
+placeholder) carries no shine data, so on the default profile it is read as
+unused — Packed G = `specstr` (else 128, source "default"), A = 255 (source
+"default") — with a warning; profiled shaders keep alpha 255 = full shine. On a
+blended preset (not Opaque/Cutout) the default profile keeps the diffuse alpha
+as opacity in BaseColor (no premultiply) and reads no shine from it, with a
+warning. A new AMAT gets a profile by
 adding a table row, never by special-casing the map code.
 
 ### 3. Map building — `castlemist/exportgltf/vrchat_maps.h` (new, pure)

@@ -185,8 +185,6 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
             warnings.push_back(std::string("blend is not an exact Poiyomi preset: nearest '") +
                                poiyomi_preset_name(blend.nearest) +
                                "', use the raw factors in \"blend\" (Advanced Blending)");
-        if (&profile == &default_profile())
-            warnings.push_back("clip unknown: no shader profile, treated as not alpha-tested");
 
         MapWriter mw(folder, matFile, warnings);
         json jm{{"baseColor", mw.write(maps.baseColor, "BaseColor")},

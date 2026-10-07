@@ -600,6 +600,121 @@ CM_TEST(vrchat, default_profile_warns) {
     CHECK_FALSE(any_warning(w, "default profile"));
 }
 
+// M5: one default-profile warning that also says the clip is unknown.
+CM_TEST(vrchat, default_profile_warning_names_clip_unknown) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(999999999);
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    MaterialMaps m = build(model, mat, BlendPreset::Opaque);
+    size_t n = 0;
+    for (const std::string& w : m.warnings)
+        if (w.find("default profile used") != std::string::npos) {
+            ++n;
+            CHECK(w.find("clip unknown") != std::string::npos);
+        }
+    CHECK_EQ(n, size_t{1});
+}
+
+// I1 / R8: on the default profile a uniform diffuse alpha carries no shine.
+CM_TEST(vrchat, default_profile_uniform_alpha_is_unused) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(999999999);
+    mat.diffuseTex = add_tex(model, solid(2, 2, {100, 100, 100, 255}, 1000));
+    MaterialMaps m = build(model, mat, BlendPreset::Opaque);
+    CHECK(m.packed.present);
+    for (int i = 0; i < 4; ++i) {
+        CHECK_EQ(px(m.packed.tex, i, 1), 128);
+        CHECK_EQ(px(m.packed.tex, i, 3), 255);
+    }
+    CHECK(m.smoothSource == "default");
+    CHECK(m.specularSource == "default");
+    CHECK(any_warning(m, "diffuse alpha is uniform (255): read as unused, not shine (default profile)"));
+
+    mat.namedConstants = {{"specstr", 0.3f}};
+    MaterialMaps s = build(model, mat, BlendPreset::Opaque);
+    for (int i = 0; i < 4; ++i) CHECK_NEAR(px(s.packed.tex, i, 1), 77, 1);
+    CHECK(s.smoothSource == "specstr");
+
+    // A profiled shader keeps alpha 255 as full shine.
+    ModelMaterialCPU wg = mat_with_file(561567);
+    wg.diffuseTex = mat.diffuseTex;
+    MaterialMaps p = build(model, wg, BlendPreset::Cutout);
+    CHECK_EQ(px(p.packed.tex, 0, 1), 255);
+    CHECK(p.smoothSource == "diffuseAlpha");
+    CHECK_FALSE(any_warning(p, "uniform"));
+}
+
+// I4: the default profile on a blended preset keeps the alpha as opacity.
+CM_TEST(vrchat, default_profile_blended_keeps_alpha_as_opacity) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(999999999);
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    MaterialMaps m = build(model, mat, BlendPreset::Fade);
+    const int wantA[4] = {30, 90, 128, 255};
+    for (int i = 0; i < 4; ++i) {
+        CHECK_EQ(px(m.baseColor.tex, i, 0), 100);  // no premultiply
+        CHECK_EQ(px(m.baseColor.tex, i, 3), wantA[i]);
+        CHECK_EQ(px(m.packed.tex, i, 1), 128);
+        CHECK_EQ(px(m.packed.tex, i, 3), 255);
+    }
+    CHECK(m.smoothSource == "default");
+    CHECK(any_warning(m, "default profile on a blended preset: diffuse alpha kept as opacity, not shine"));
+}
+
+// I3: legacy-spec reads smoothness from the specular layer's alpha (exponent/128).
+CM_TEST(vrchat, legacy_spec_specular_alpha_feeds_smoothness) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(13822);  // legacy-spec
+    mat.diffuseTex = add_tex(model, banded_diffuse());
+    add_layer(model, mat, "specular",
+              add_tex(model, tex_from(2, 2, {{90, 90, 90, 0}, {90, 90, 90, 85}, {90, 90, 90, 170},
+                                             {90, 90, 90, 255}},
+                                      2004)),
+              0);
+    MaterialMaps m = build(model, mat, BlendPreset::Opaque);
+    const int wantG[4] = {0, 85, 170, 255};
+    for (int i = 0; i < 4; ++i) CHECK_EQ(px(m.packed.tex, i, 1), wantG[i]);
+    CHECK(m.smoothSource == "specular.A (exponent/128)");
+    bool specExtra = false;
+    for (const auto& x : m.extras)
+        if (x.role == "specular" && x.use == "specular-color" && x.slot.present) specExtra = true;
+    CHECK(specExtra);
+}
+
+// M1: a mask / specular layer on another UV than the diffuse is named.
+CM_TEST(vrchat, packed_layer_uv_differs_from_diffuse_warns) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(2449347);  // armor-mask
+    mat.diffuseTex = add_tex(model, solid(2, 2, {120, 60, 30, 255}, 1000));
+    add_layer(model, mat, "mask", add_tex(model, solid(2, 2, {200, 100, 50, 30}, 1001)), 1);
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK(any_warning(m, "mask layer uses UV1, the diffuse UV0"));
+
+    ModelMaterialCPU ws = mat_with_file(2348484);  // weapon-spec
+    ws.diffuseTex = mat.diffuseTex;
+    add_layer(model, ws, "specular", add_tex(model, solid(2, 2, {90, 90, 90, 77}, 2004)), 2);
+    MaterialMaps s = build(model, ws, BlendPreset::Cutout);
+    CHECK(any_warning(s, "specular layer uses UV2, the diffuse UV0"));
+
+    ModelMaterialCPU same = mat_with_file(2449347);
+    same.diffuseTex = mat.diffuseTex;
+    add_layer(model, same, "mask", 1, 0);
+    CHECK_FALSE(any_warning(build(model, same, BlendPreset::Cutout), "the diffuse UV"));
+}
+
+// I2: a supported material with no diffuse says so.
+CM_TEST(vrchat, missing_diffuse_warns) {
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(561567);
+    add_layer(model, mat, "glow", add_tex(model, solid(2, 2, {255, 64, 0, 255}, 2001)), 0);
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK_FALSE(m.baseColor.present);
+    CHECK(any_warning(m, "no diffuse texture: BaseColor left out"));
+
+    ModelMaterialCPU silk = mat_with_file(2507831);  // unsupported: raw, no such warning
+    CHECK_FALSE(any_warning(build(model, silk, BlendPreset::Cutout), "no diffuse texture"));
+}
+
 // ------------------------------------------------------------- export folder --
 
 namespace {
@@ -777,6 +892,16 @@ CM_TEST(vrchat, materials_json_fields) {
     CHECK_NEAR(pan["u"].get<double>(), 0.25, 1e-6);
     CHECK_NEAR(pan["v"].get<double>(), -1.5, 1e-6);
     CHECK(any_of_warnings(r.warnings, "Plain: default profile"));
+    // M5: one warning for the default profile, naming the unknown clip too.
+    size_t plainDefault = 0;
+    for (const std::string& w : r.warnings)
+        if (w.rfind("Plain: ", 0) == 0 &&
+            (w.find("default profile used") != std::string::npos ||
+             w.find("clip unknown") != std::string::npos)) {
+            ++plainDefault;
+            CHECK(w.find("clip unknown") != std::string::npos);
+        }
+    CHECK_EQ(plainDefault, size_t{1});
 }
 
 CM_TEST(vrchat, distortion_strength_and_missing_packed) {

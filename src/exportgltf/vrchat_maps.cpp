@@ -128,11 +128,13 @@ public:
 
     MaterialMaps run() {
         out_.metalSource = out_.smoothSource = out_.reflectionSource = out_.specularSource = "none";
-        if (&profile_ == &default_profile())
+        if (isDefault_)
             out_.warnings.push_back("default profile used: AMAT " +
                                     std::to_string(mat_.materialFile) +
-                                    " is not in the shader table, channels read generically");
+                                    " is not in the shader table, channels read generically; "
+                                    "clip unknown: treated as not alpha-tested");
         collect_layers();
+        classify_default_alpha();
         if (const auto v = vec("speccp")) out_.specularTint = rgb(*v);
         if (const auto v = vec("envcr"))
             out_.reflectionTint = rgb(*v);
@@ -196,7 +198,10 @@ private:
     }
 
     void collect_layers() {
-        if (mat_.diffuseTex >= 0) diffuse_ = resolve("diffuse", mat_.diffuseTex, mat_.diffuseUv, 0);
+        if (mat_.diffuseTex >= 0)
+            diffuse_ = resolve("diffuse", mat_.diffuseTex, mat_.diffuseUv, 0);
+        else if (profile_.supported)
+            out_.warnings.push_back("no diffuse texture: BaseColor left out");
         if (mat_.normalTex >= 0) normal_ = resolve("normal", mat_.normalTex, mat_.normalUv, 0);
         for (const auto& x : mat_.extraTextures) {
             Layer l = resolve(x.role.empty() ? std::string("unnamed") : x.role, x.texIndex,
@@ -246,7 +251,42 @@ private:
         return std::nullopt;
     }
 
+    /// The default profile reads the diffuse alpha as shine only when that can
+    /// be right: on a blended preset it is opacity (I4), and a uniform alpha
+    /// carries no shine data at all (ruling R8). Profiled shaders are left alone.
+    void classify_default_alpha() {
+        if (!isDefault_ || !diffuse_.usable()) return;
+        const bool blended = blend_.nearest != BlendPreset::Opaque &&
+                             blend_.nearest != BlendPreset::Cutout;
+        if (blended) {
+            alphaIsOpacity_ = true;
+            out_.warnings.push_back(
+                "default profile on a blended preset: diffuse alpha kept as opacity, not shine");
+            return;
+        }
+        uint8_t a = 0;
+        if (uniform_alpha(diffuse_, a)) {
+            alphaUnused_ = true;
+            out_.warnings.push_back("diffuse alpha is uniform (" + std::to_string(a) +
+                                    "): read as unused, not shine (default profile)");
+        }
+    }
+
+    /// True when every texel of the layer has the same alpha (a placeholder always does).
+    static bool uniform_alpha(const Layer& l, uint8_t& value) {
+        if (l.placeholder) {
+            value = l.constant[3];
+            return true;
+        }
+        const auto& px = l.tex->rgba;
+        value = px[3];
+        for (size_t i = 7; i < px.size(); i += 4)
+            if (px[i] != value) return false;
+        return true;
+    }
+
     bool diffuse_has_shine() const {
+        if (alphaIsOpacity_ || alphaUnused_) return false;
         return diffuse_.usable() && (profile_.diffuseAlpha == AlphaUse::HolesAndShine ||
                                      profile_.diffuseAlpha == AlphaUse::Shine);
     }
@@ -289,7 +329,7 @@ private:
                 uint8_t outA = 255;
                 if (profile_.opacityTexture >= 0) {
                     if (opacity.usable()) outA = opacity.at(x, y, w, h, 0);
-                } else if (profile_.diffuseAlpha == AlphaUse::Intensity ||
+                } else if (alphaIsOpacity_ || profile_.diffuseAlpha == AlphaUse::Intensity ||
                            profile_.diffuseAlpha == AlphaUse::Opacity) {
                     outA = a;
                 } else if (profile_.clips) {
@@ -320,8 +360,9 @@ private:
     /// R metal, G smooth, B reflection mask, A specular mask.
     void build_packed() {
         const Layer* mask = reads_mask() ? find({"mask"}) : nullptr;
-        const Layer* spec =
-            profile_.specLayer == SpecLayer::GlossInAlpha ? find({"specular"}) : nullptr;
+        // Gloss (weapon-spec) or exponent/128 (legacy-spec): either way the
+        // specular layer's alpha is the smoothness.
+        const Layer* spec = profile_.specLayer != SpecLayer::None ? find({"specular"}) : nullptr;
         const bool shineGA = diffuse_has_shine();
         const bool shineB = diffuse_.usable() && profile_.diffuseAlpha == AlphaUse::ReflectionOnly;
 
@@ -346,7 +387,9 @@ private:
             out_.smoothSource = "mask." + channel_name(profile_.maskGloss);
         } else if (spec) {
             ch[1] = {Src::SpecA, 3, 0};
-            out_.smoothSource = "specular.A";
+            out_.smoothSource = profile_.specLayer == SpecLayer::ExponentInAlpha
+                                    ? "specular.A (exponent/128)"
+                                    : "specular.A";
         } else if (shineGA) {
             ch[1].src = Src::Shine;
             out_.smoothSource = "diffuseAlpha";
@@ -355,6 +398,7 @@ private:
             out_.smoothSource = "specstr";
         } else {
             ch[1].value = 128;
+            out_.smoothSource = "default";
         }
 
         if (shineB) {
@@ -374,11 +418,29 @@ private:
             out_.specularSource = "diffuseAlpha";
         } else {
             ch[3].value = 255;
+            out_.specularSource = "default";
         }
 
-        if (out_.metalSource == "none" && out_.smoothSource == "none" &&
-            out_.reflectionSource == "none" && out_.specularSource == "none")
-            return;  // nothing known: Poiyomi's slider defaults do as well
+        // Nothing read: Poiyomi's slider defaults do as well -- unless the
+        // default profile set the shine aside on purpose (R8 / blended), where
+        // the constants are the answer and the map records them.
+        const auto unread = [](const std::string& s) { return s == "none" || s == "default"; };
+        if (unread(out_.metalSource) && unread(out_.smoothSource) &&
+            unread(out_.reflectionSource) && unread(out_.specularSource) &&
+            !(alphaUnused_ || alphaIsOpacity_))
+            return;
+
+        // Packed follows the diffuse UV: a mask / specular layer on another one is misplaced.
+        if (diffuse_.usable()) {
+            const bool maskUsed = std::any_of(std::begin(ch), std::end(ch),
+                                              [](const Ch& k) { return k.src == Src::Mask; });
+            for (const Layer* l : {maskUsed ? mask : nullptr, spec})
+                if (l && l->uv != diffuse_.uv)
+                    out_.warnings.push_back(l->role + " layer uses UV" + std::to_string(l->uv) +
+                                            ", the diffuse UV" + std::to_string(diffuse_.uv) +
+                                            ": Packed follows the diffuse UV, its " + l->role +
+                                            " channels may be misplaced");
+        }
 
         // Packed takes the diffuse size; mask/specular channels are nearest-sampled.
         int w = 4, h = 4;
@@ -549,6 +611,9 @@ private:
     std::vector<Layer> layers_;
     std::vector<const Layer*> consumed_;
     std::vector<std::string> failedRoles_;  ///< roles of layers that failed to decode
+    const bool isDefault_ = &profile_ == &default_profile();
+    bool alphaIsOpacity_ = false;  ///< default profile, blended preset: alpha is opacity (I4)
+    bool alphaUnused_ = false;     ///< default profile, uniform alpha: no shine data (R8)
 };
 
 }  // namespace
