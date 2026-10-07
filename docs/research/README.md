@@ -49,6 +49,9 @@ names an address, that is `Gw2-64.exe` with ASLR disabled, imagebase
 | [gw2-granny-64bit.md](gw2-granny-64bit.md) | granny blobs are 32- **or** 64-bit. Read a 64-bit one as 32-bit and you get zero-length arrays, not an error -- animations silently came out 0.0 s long |
 | [gw2-cloth-system.md](gw2-cloth-system.md) | the Verlet/PBD cloth solver, reconstructed |
 | [gw2-particle-system.md](gw2-particle-system.md) | baked emitters in MODL cloudData/lightData |
+| [gw2-material-channels.md](gw2-material-channels.md) | what each channel of a model's textures means per shader (AMAT): the profile table the VRChat export is built on, plus a per-model survey. The same diffuse alpha is "interior weight" in one shader and "shine" in the next, so channels cannot be read without the AMAT |
+| [gw2-model-lods.md](gw2-model-lods.md) | index-buffer LODs inside one MODL, where the switch distances live (prp2 lod1/lod2, MODL lodOverride), and how to export them for a Unity LODGroup |
+| [poiyomi-10-importer.md](poiyomi-10-importer.md) | Poiyomi Toon 10 facts for the Unity importer: shader name, exact property names, presets, keywords and locking, and the editor APIs that build materials and a prefab |
 
 ## Maps
 
