@@ -12,6 +12,7 @@
 #include "castlemist/native/granny_anim.hpp"
 #include "castlemist/extract/model_types.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cctype>
@@ -203,6 +204,101 @@ CM_TEST(vrchat, profile_by_amat) {
     const ShaderProfile& as = profile_for(mat_with_file(2507831), 0);
     CHECK(as.name == "armor-silk");
     CHECK_FALSE(as.supported);
+}
+
+CM_TEST(vrchat, profile_by_amat_second_survey) {
+    // New profiles (docs/research/gw2-material-channels.md section 8.4).
+    const ShaderProfile& ps = profile_for(mat_with_file(1729747), 0);
+    CHECK(ps.name == "prop-spec");
+    CHECK(ps.supported);
+    CHECK(ps.clips);
+    CHECK(ps.diffuseAlpha == AlphaUse::HolesAndShine);
+    CHECK(ps.specLayer == SpecLayer::GlossInAlpha);
+    CHECK_FALSE(ps.glowOnUv2MaskOnUv0);
+
+    const ShaderProfile& uh = profile_for(mat_with_file(77876), 0);
+    CHECK(uh.name == "prop-unlit-holes");
+    CHECK(uh.clips);
+    CHECK(uh.diffuseAlpha == AlphaUse::Unused);
+
+    for (uint32_t id : {77598u, 189570u}) {
+        const ShaderProfile& dd = profile_for(mat_with_file(id), 0);
+        CHECK(dd.name == "prop-diffuse-only");
+        CHECK_FALSE(dd.clips);
+        CHECK(dd.diffuseAlpha == AlphaUse::Unused);
+    }
+
+    for (uint32_t id : {23507u, 19255u}) {
+        const ShaderProfile& fa = profile_for(mat_with_file(id), 0);
+        CHECK(fa.name == "fx-alpha");
+        CHECK(fa.supported);
+        CHECK(fa.diffuseAlpha == AlphaUse::Opacity);
+        CHECK_FALSE(fa.clips);
+        CHECK_FALSE(fa.premultiplyRgbByAlpha);
+    }
+
+    const ShaderProfile& ap = profile_for(mat_with_file(2329259), 0);
+    CHECK(ap.name == "armor-prism");
+    CHECK(ap.supported);
+    CHECK_FALSE(ap.clips);
+    CHECK(ap.diffuseAlpha == AlphaUse::Shine);
+    CHECK(ap.animatedGlowLayers);
+    CHECK(ap.maskMetal == Channel::None);
+
+    const ShaderProfile& cg = profile_for(mat_with_file(511663), 0);
+    CHECK(cg.name == "weapon-cutout-glow");
+    CHECK(cg.supported);
+    CHECK_FALSE(cg.clips);
+    CHECK(cg.diffuseAlpha == AlphaUse::Shine);
+
+    for (uint32_t id : {157432u, 3718974u, 15206u}) {
+        const ShaderProfile& fm = profile_for(mat_with_file(id), 0);
+        CHECK(fm.name == "fx-multiply");
+        CHECK_FALSE(fm.supported);
+    }
+
+    const ShaderProfile& fc = profile_for(mat_with_file(221571), 0);
+    CHECK(fc.name == "fx-cubemap");
+    CHECK_FALSE(fc.supported);
+
+    for (uint32_t id : {49659u, 63923u, 57026u}) {
+        const ShaderProfile& gr = profile_for(mat_with_file(id), 0);
+        CHECK(gr.name == "glass-refract");
+        CHECK_FALSE(gr.supported);
+    }
+
+    // More ids on existing profiles.
+    for (uint32_t id : {20041u, 62080u, 57752u, 16104u, 58654u}) {
+        const ShaderProfile& p = profile_for(mat_with_file(id), 0);
+        CHECK(p.name == "prop-lit");
+        CHECK(p.clips);
+        CHECK(p.diffuseAlpha == AlphaUse::HolesAndShine);
+    }
+    for (uint32_t id : {14084u, 27305u, 231183u, 75778u}) {
+        const ShaderProfile& p = profile_for(mat_with_file(id), 0);
+        CHECK(p.name == "prop-lit-noclip");
+        CHECK_FALSE(p.clips);
+    }
+    const ShaderProfile& lc = profile_for(mat_with_file(13361), 0);
+    CHECK(lc.name == "legacy-spec");
+    CHECK(lc.clips);
+    CHECK(lc.specLayer == SpecLayer::ExponentInAlpha);
+    CHECK(profile_for(mat_with_file(3423592), 0).name == "weapon-spec");
+    CHECK(profile_for(mat_with_file(1203843), 0).name == "weapon-glow");
+    CHECK(profile_for(mat_with_file(2212806), 0).name == "weapon-glow");
+    CHECK(profile_for(mat_with_file(87345), 0).name == "fx-soft-additive");
+    CHECK(profile_for(mat_with_file(1053007), 0).premultiplyRgbByAlpha);
+    CHECK(profile_for(mat_with_file(48767), 0).name == "fx-premultiplied");
+    CHECK(profile_for(mat_with_file(1171330), 0).name == "fx-premultiplied");
+    CHECK(profile_for(mat_with_file(977200), 0).name == "fx-fire");
+    CHECK_FALSE(profile_for(mat_with_file(1171331), 0).supported);
+}
+
+CM_TEST(vrchat, profile_table_has_no_duplicate_amat) {
+    std::vector<uint32_t> ids = all_profile_amats();
+    CHECK(ids.size() > 100);
+    std::sort(ids.begin(), ids.end());
+    CHECK(std::adjacent_find(ids.begin(), ids.end()) == ids.end());
 }
 
 CM_TEST(vrchat, profile_by_untagged_trait) {

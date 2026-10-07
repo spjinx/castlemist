@@ -32,7 +32,7 @@ std::vector<Entry> build_table() {
     std::vector<Entry> t;
 
     // weapon-glow: lit core, holes < 64, shine saturate(2a-1).
-    t.push_back({{561567, 511755, 510615}, make("weapon-glow", AlphaUse::HolesAndShine, true)});
+    t.push_back({{561567, 511755, 510615, 1203843, 2212806}, make("weapon-glow", AlphaUse::HolesAndShine, true)});
     // Same lit core, but the glow is an animated legendary effect (still supported;
     // the animated layers go out raw with a warning).
     {
@@ -45,7 +45,7 @@ std::vector<Entry> build_table() {
         ShaderProfile p = make("weapon-spec", AlphaUse::HolesAndShine, true);
         p.specLayer = SpecLayer::GlossInAlpha;
         p.glowOnUv2MaskOnUv0 = true;
-        t.push_back({{2348484}, p});
+        t.push_back({{2348484, 3423592}, p});
     }
 
     // legacy-spec: shine is reflection only; the spec layer's alpha is the exponent.
@@ -56,7 +56,7 @@ std::vector<Entry> build_table() {
 
         ShaderProfile clip = p;
         clip.clips = true;
-        t.push_back({{1891783}, clip});
+        t.push_back({{1891783, 13361}, clip});
 
         // On these the mask is R = glow gate (G = glow-perturb gate), not metal/gloss.
         clip.maskGlowGate = Channel::R;
@@ -64,11 +64,27 @@ std::vector<Entry> build_table() {
     }
 
     t.push_back({{13843, 13856, 13864, 14003, 31327, 32657, 34181, 44707, 44708, 72583, 27352,
-                  19911, 47468, 47469},
+                  19911, 47468, 47469,
+                  // second survey (note section 8.3/8.4), hand-read or identical opcode stream
+                  20041, 62080, 56795, 69668, 57606, 75035, 57714, 57752, 53237, 16104, 27303,
+                  57685, 60319, 58654},
                  make("prop-lit", AlphaUse::HolesAndShine, true)});
-    t.push_back({{15999, 54592, 57634, 57715, 27353},
+    t.push_back({{15999, 54592, 57634, 57715, 27353,
+                  14084, 23508, 73205, 73655, 84923, 27305, 76858, 23672, 54889, 231183, 57701,
+                  75778},
                  make("prop-lit-noclip", AlphaUse::Shine, false)});
     t.push_back({{54632}, make("subsurface-decal", AlphaUse::Shine, false)});
+
+    // Second survey (docs/research/gw2-material-channels.md section 8.4): new profiles
+    // that fit the existing fields.
+    // prop-spec: the weapon-spec layout without the glow (spec.A = gloss).
+    {
+        ShaderProfile p = make("prop-spec", AlphaUse::HolesAndShine, true);
+        p.specLayer = SpecLayer::GlossInAlpha;
+        t.push_back({{1729747}, p});
+    }
+    t.push_back({{77876}, make("prop-unlit-holes", AlphaUse::Unused, true)});
+    t.push_back({{77598, 189570}, make("prop-diffuse-only", AlphaUse::Unused, false)});
 
     {
         ShaderProfile p = make("armor-mask", AlphaUse::HolesAndShine, true);
@@ -100,14 +116,31 @@ std::vector<Entry> build_table() {
         ShaderProfile p = make("fx-soft-additive", AlphaUse::Intensity, false);
         p.premultiplyRgbByAlpha = true;
         t.push_back({{19092, 23497, 57224, 23496, 21471, 46460, 25489, 43029, 45993, 49624, 55650,
-                      55903, 882285, 217286},
+                      55903, 882285, 217286, 87345, 1053007},
                      p});
     }
-    t.push_back({{20760, 23408, 54721, 14196, 19116, 53260, 217998},
+    t.push_back({{20760, 23408, 54721, 14196, 19116, 53260, 217998, 48767, 1171330},
                  make("fx-premultiplied", AlphaUse::Intensity, false)});
-    t.push_back({{740364, 965703}, unsupported(make("fx-fire", AlphaUse::Unused, false))});
+    t.push_back({{740364, 965703, 977200, 1171331}, unsupported(make("fx-fire", AlphaUse::Unused, false))});
     t.push_back({{709206, 47396, 27304, 339341, 630598},
                  unsupported(make("fx-distort", AlphaUse::Unused, false))});
+
+    // fx-alpha: straight opacity in alpha (SrcA/InvSrcA), rgb not premultiplied.
+    t.push_back({{23507, 19255}, make("fx-alpha", AlphaUse::Opacity, false)});
+    // armor-prism: shine, animated flake/prism layers raw; mask G/R are layer weights.
+    {
+        ShaderProfile p = make("armor-prism", AlphaUse::Shine, false);
+        p.animatedGlowLayers = true;
+        t.push_back({{2329259}, p});
+    }
+    // weapon-cutout-glow (interim): the clip is on the cutout layer, which never cuts at rest.
+    t.push_back({{511663}, make("weapon-cutout-glow", AlphaUse::Shine, false)});
+    // Unsupported: need their own pass.
+    t.push_back({{157432, 3718974, 15206},
+                 unsupported(make("fx-multiply", AlphaUse::Unused, false))});
+    t.push_back({{221571}, unsupported(make("fx-cubemap", AlphaUse::Unused, false))});
+    t.push_back({{49659, 63923, 57026},
+                 unsupported(make("glass-refract", AlphaUse::Unused, false))});
     return t;
 }
 
@@ -122,6 +155,12 @@ bool is_src_alpha_blend(uint64_t renderState) {
 }
 
 }  // namespace
+
+std::vector<uint32_t> all_profile_amats() {
+    std::vector<uint32_t> ids;
+    for (const Entry& e : table()) ids.insert(ids.end(), e.amats.begin(), e.amats.end());
+    return ids;
+}
 
 const ShaderProfile& default_profile() {
     static const ShaderProfile p = [] {

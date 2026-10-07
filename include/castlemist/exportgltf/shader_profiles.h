@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace castlemist::exportgltf {
 
@@ -53,6 +54,9 @@ struct ShaderProfile {
 /// (materialId 0, flags 0, every extra texture role empty, SrcAlpha/InvSrcAlpha
 /// in `renderState`), else default_profile().
 const ShaderProfile& profile_for(const ModelMaterialCPU& mat, uint64_t renderState);
+
+/// Every AMAT fileId in the table, in table order, duplicates preserved (for integrity tests).
+std::vector<uint32_t> all_profile_amats();
 
 /// Name "default": Shine, no clip, nothing interpreted.
 const ShaderProfile& default_profile();
