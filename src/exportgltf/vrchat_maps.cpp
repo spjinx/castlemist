@@ -116,7 +116,8 @@ const char* extra_use(const std::string& role, const ShaderProfile& profile) {
     if (role == "decal") return "lerp-by-decal-alpha";
     if (role == "height") return "parallax";
     if (role == "specular") return "specular-color";
-    if (role == "mskptrb") return "uv-offset";  // 842652: offsets the mask's UV
+    // 842652: offsets the opacity mask's UV. Only where an opacity layer is read.
+    if (role == "mskptrb" && !profile.opacityRole.empty()) return "uv-offset";
     if (role == profile.maskRole && profile.maskSheen != Channel::None) return "sheen-in-B";
     return "";
 }
@@ -321,7 +322,9 @@ private:
                             ", UV" + std::to_string(diffuse_.uv) + ") is not colour here (" +
                             (profile_.diffuseUse.empty() ? std::string("unknown use")
                                                          : profile_.diffuseUse) +
-                            "): exported raw as an extra; BaseColor is the " + role + " layer";
+                            (diffuse_.real() ? "): exported raw as an extra"
+                                             : "): a placeholder, not exported") +
+                            "; BaseColor is the " + role + " layer";
             if (profile_.diffuseUse == "uv-offset") {
                 w += ", sampled at its plain UV: the offset";
                 if (const auto k = constant("paraper")) w += " (paraper " + std::to_string(*k) + ")";
@@ -401,7 +404,10 @@ private:
     void build_alpha_mask() {
         const bool opacity =
             !profile_.opacityRole.empty() && profile_.opacityChannel != Channel::None;
-        if (opacity && !profile_.cutoutRole.empty())
+        // A cutout layer that is missing or failed leaves the slot to the opacity layer.
+        const bool cutoutPresent =
+            !profile_.cutoutRole.empty() && find({profile_.cutoutRole.c_str()}) != nullptr;
+        if (opacity && cutoutPresent)
             // Review Focus 3: the cutout (a discard) outranks an opacity factor.
             out_.warnings.push_back("opacity (" + profile_.opacityRole + "." +
                                     channel_name(profile_.opacityChannel) +
@@ -494,9 +500,11 @@ private:
                 for (size_t i = 3; i < out_.baseColor.tex.rgba.size(); i += 4)
                     out_.baseColor.tex.rgba[i] =
                         static_cast<uint8_t>((out_.baseColor.tex.rgba[i] * v + 127) / 255);
-            out_.warnings.push_back(role + " layer is a placeholder with " + source + " = " +
-                                    std::to_string(v) +
-                                    "/255: the opacity is multiplied into the BaseColor alpha");
+            out_.warnings.push_back(
+                role + " layer is a placeholder with " + source + " = " + std::to_string(v) +
+                (out_.baseColor.present
+                     ? "/255: the opacity is multiplied into the BaseColor alpha"
+                     : "/255: no BaseColor to multiply it into, the opacity is lost"));
             return;
         }
         out_.alphaMask = grey_slot(*l, c);

@@ -1977,3 +1977,65 @@ CM_TEST(vrchat, materials_json_opacity_mask_and_glb_base_color) {
     CHECK(pbr.value("baseColorTexture", json::object()).value("index", -1) >= 0);
     CHECK_FALSE(pbr.value("baseColorTexture", json::object()).contains("texCoord"));
 }
+
+CM_TEST(vrchat, mskptrb_hint_only_with_an_opacity_layer) {
+    // A default-profile material (1195172 is not hand-read) keeps the raw use null.
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(1195172);
+    mat.diffuseTex = add_tex(model, solid(2, 2, {100, 100, 100, 255}, 1000));
+    add_layer(model, mat, "mskptrb", add_tex(model, solid(2, 2, {128, 128, 0, 255}, 57890)), 2);
+    MaterialMaps m = build(model, mat, BlendPreset::Fade);
+    const MaterialMaps::Extra* x = extra_named(m, "mskptrb");
+    CHECK(x != nullptr);
+    if (x) CHECK(x->use.empty());
+
+    ModelMaterialCPU axe = parallax_mat(model);
+    const MaterialMaps::Extra* y = extra_named(build(model, axe, BlendPreset::Fade), "mskptrb");
+    CHECK(y != nullptr);
+    if (y) CHECK(y->use == "uv-offset");
+}
+
+CM_TEST(vrchat, opacity_takes_alpha_mask_when_cutout_missing) {
+    ShaderProfile p;
+    p.name = "test-both";
+    p.diffuseAlpha = AlphaUse::Opacity;
+    p.cutoutRole = "cutout";
+    p.opacityRole = "mask";
+    p.opacityChannel = Channel::R;
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(1);
+    mat.diffuseTex = add_tex(model, solid(2, 2, {100, 100, 100, 255}, 1000));
+    add_layer(model, mat, "mask",
+              add_tex(model, tex_from(2, 1, {{50, 0, 0, 255}, {90, 0, 0, 255}}, 9001)), 2);
+    MaterialMaps m = build_material_maps(model, mat, blend_of(BlendPreset::Cutout), p);
+    CHECK(m.alphaMask.present);
+    CHECK(m.alphaMask.source == "mask.R");
+    CHECK(m.alphaMaskCutoff < 0.0f);
+    CHECK_FALSE(any_warning(m, "taken by the cutout layer"));
+    CHECK(any_warning(m, "no cutout layer"));
+
+    ModelMaterialCPU bad = mat;
+    add_layer(model, bad, "cutout", -1, 1);  // failed to decode
+    MaterialMaps b = build_material_maps(model, bad, blend_of(BlendPreset::Cutout), p);
+    CHECK(b.alphaMask.present);
+    CHECK(b.alphaMask.source == "mask.R");
+}
+
+CM_TEST(vrchat, parallax_placeholder_wording) {
+    ModelPreview model;
+    // A placeholder diffuse is not exported: the warning must not say it is.
+    ModelMaterialCPU flatDiffuse = parallax_mat(model);
+    flatDiffuse.diffuseTex = add_tex(model, solid(4, 4, {128, 128, 0, 255}, 57891));
+    MaterialMaps a = build(model, flatDiffuse, BlendPreset::Fade);
+    CHECK_FALSE(has_extra(a, "diffuse"));
+    CHECK(any_warning(a, "a placeholder, not exported"));
+    CHECK_FALSE(any_warning(a, "exported raw as an extra"));
+
+    // A placeholder mask with no BaseColor: nothing to multiply into.
+    ModelMaterialCPU none = parallax_mat(model, false, false);
+    add_layer(model, none, "mask", add_tex(model, solid(4, 4, {128, 0, 0, 255}, 9003)), 1);
+    MaterialMaps b = build(model, none, BlendPreset::Fade);
+    CHECK_FALSE(b.baseColor.present);
+    CHECK_FALSE(any_warning(b, "multiplied into the BaseColor alpha"));
+    CHECK(any_warning(b, "no BaseColor to multiply it into"));
+}
