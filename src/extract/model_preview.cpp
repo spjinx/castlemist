@@ -21,6 +21,46 @@
 namespace castlemist::extract {
 
 std::vector<uint8_t> load_modl_bytes_by_fileid(Gw2Dat& dat, uint32_t fileId); // defined below
+
+bool is_layer_role(const std::string& r) {
+    return r == "mask" || r == "decal" || r.rfind("glow", 0) == 0 || r == "detail";
+}
+
+std::set<uint32_t> layer_only_files(const std::vector<MaterialTextureSlot>& slots) {
+    std::set<uint32_t> files;
+    for (const auto& s : slots)
+        if (is_layer_role(s.role)) files.insert(s.fileId);
+    for (const auto& s : slots)
+        if (!is_layer_role(s.role)) files.erase(s.fileId);
+    return files;
+}
+
+void assign_texture_slots(ModelMaterialCPU& mat, const std::vector<MaterialTextureSlot>& slots,
+                          const std::set<uint32_t>& layerOnly,
+                          const std::function<int(uint32_t)>& texIndexOf) {
+    // The role that claimed the diffuse / normal file (nullptr: not yet claimed).
+    const std::string* diffuseRole = nullptr;
+    const std::string* normalRole = nullptr;
+    // A slot of the claimed file: the first non-layer slot claims it, a later
+    // slot with the same role merges; true when the slot was taken.
+    auto claim = [](const MaterialTextureSlot& s, const std::string*& role, uint8_t& uv) {
+        if (is_layer_role(s.role)) return false;
+        if (!role) {
+            role = &s.role;
+            uv = s.uv;
+            return true;
+        }
+        return *role == s.role;
+    };
+    for (const auto& s : slots) {
+        int ti = texIndexOf(s.fileId);
+        if (ti < 0) continue;
+        if (layerOnly.count(s.fileId) && ti == mat.diffuseTex) mat.diffuseTex = -1;
+        if (ti == mat.diffuseTex && claim(s, diffuseRole, mat.diffuseUv)) continue;
+        if (ti == mat.normalTex && claim(s, normalRole, mat.normalUv)) continue;
+        mat.extraTextures.push_back({ti, s.uv, s.fileId, s.role});
+    }
+}
 std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& modl_bytes, Gw2Dat& dat,
                                                    const nlohmann::json& tpl, bool want_game) {
     castlemist::model::Model model;
@@ -69,11 +109,6 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
         } catch (const std::exception&) { /* leave unresolved; info panel still shows the ref */ }
     }
 
-    // Texture roles (the material's token, up to its first '_': "mask",
-    // "decal", "glow", "glowmask", ...) that are layers over the base colour.
-    auto is_layer_role = [](const std::string& r) {
-        return r == "mask" || r == "decal" || r.rfind("glow", 0) == 0 || r == "detail";
-    };
     std::map<uint32_t, int> tex_cache; // fileId -> index into out->textures (-1 = tried, failed)
     auto get_texture = [&](uint32_t fileId) -> int {
         if (fileId == 0) return -1;
@@ -104,18 +139,24 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
         ModelMaterialCPU mat;
         mat.index = m.index;
         mat.materialFile = m.materialFile;
+        mat.materialId = m.materialId;
+        mat.materialFlags = m.materialFlags;
+        mat.sortLayer = m.sortLayer;
+        mat.sortOrder = m.sortOrder;
         {
             auto it = materialNameByIndex.find(m.index);
             if (it != materialNameByIndex.end()) mat.materialName = it->second;
         }
         mat.textureFileIds = m.textureFileIds();
-        // A texture the material names as a mask / decal / glow layer is never
-        // its base colour, even when it is the biggest one it has -- character
-        // armor and hair leave the real diffuse slot empty (fileId 0, filled
-        // from the composite atlas) and keep only those layers.
-        std::set<uint32_t> layerFiles;
+        // A texture the material names ONLY as a mask / decal / glow layer is
+        // never its base colour, even when it is the biggest one it has --
+        // character armor and hair leave the real diffuse slot empty (fileId 0,
+        // filled from the composite atlas) and keep only those layers. Roles are
+        // the material's token up to its first '_' ("mask", "decal", "glow", ...).
+        std::vector<MaterialTextureSlot> slots;
         for (const auto& t : m.textures)
-            if (is_layer_role(castlemist::model::detokenizeName64(t.token))) layerFiles.insert(t.fileId);
+            slots.push_back({t.fileId, castlemist::model::detokenizeName64(t.token), t.uvIndex});
+        const std::set<uint32_t> layerFiles = layer_only_files(slots);
         long bestDiffuseArea = -1, bestNormalArea = -1;
         for (uint32_t fid : mat.textureFileIds) {
             if (layerFiles.count(fid)) continue;
@@ -173,6 +214,8 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
             if (name.empty()) continue;
             if (name == "mtlness") mat.metallic = std::clamp(c.value[0], 0.0f, 1.0f);
             else if (name == "specstr") mat.roughness = 1.0f - std::clamp(c.value[0], 0.0f, 1.0f);
+            mat.namedConstantVectors.emplace_back(
+                name, std::array<float, 4>{c.value[0], c.value[1], c.value[2], c.value[3]});
             mat.namedConstants.emplace_back(std::move(name), c.value[0]);
         }
 
@@ -230,18 +273,11 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
         // raw material's own texture list (tex_cache maps its fileId back to
         // the resolved ModelPreview::textures index), since that's the only
         // place uvIndex survives; ModelTextureCPU (deduped by fileId, shared
-        // across materials) has nowhere per-material to keep it. Anything that
-        // isn't the winning diffuse/normal is a decal/detail/mask layer
-        // castlemist doesn't reconstruct -- kept as an ExtraTexture instead of
-        // silently dropped (see that struct's own doc comment).
-        for (const auto& t : m.textures) {
-            int ti = get_texture(t.fileId);
-            if (ti < 0) continue;
-            if (layerFiles.count(t.fileId) && ti == mat.diffuseTex) mat.diffuseTex = -1;  // see layerFiles
-            if (ti == mat.diffuseTex) { mat.diffuseUv = t.uvIndex; continue; }
-            if (ti == mat.normalTex) { mat.normalUv = t.uvIndex; continue; }
-            mat.extraTextures.push_back({ti, t.uvIndex, t.fileId, castlemist::model::detokenizeName64(t.token)});
-        }
+        // across materials) has nowhere per-material to keep it. Keyed by slot,
+        // not file: a file can be the diffuse AND the glow (AMAT 511663), so
+        // every slot that isn't the diffuse's / normal's own role is kept as an
+        // ExtraTexture instead of silently dropped (see that struct's doc comment).
+        assign_texture_slots(mat, slots, layerFiles, get_texture);
 
         out->materials.push_back(std::move(mat));
         if (want_game) out->gameMaterials.push_back(std::move(gm));

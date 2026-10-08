@@ -55,6 +55,22 @@ struct VrchatReport {
 VrchatReport export_vrchat(const character::CharacterManifest& manifest, const std::string& dat_path,
                            const std::string& out_dir, AssemblyOptions options, const VrchatOptions& vrc = {});
 
+struct VrchatModelReport {
+    bool ok = false;
+    std::string error;
+    std::string folder, glb, fbx, blender, blenderLog;  // fbx empty when Blender didn't run or failed
+    size_t materials = 0, clips = 0;
+    std::vector<std::string> warnings;
+};
+
+/// Writes the VRChat folder `<parentDir>/<safe_file_name(name)>` (.glb, Textures,
+/// materials.json) and then, via Blender in model mode, `<Name>.fbx` + `.blend`.
+/// `vrc.blender_exe == "-"` skips Blender. On a Blender failure the log is kept as
+/// `<Name> blender.log` (path in blenderLog); the folder is still written.
+VrchatModelReport export_vrchat_model(const ModelPreview& model, const std::string& parentDirUtf8,
+                                      const std::string& name, uint32_t modelFileId,
+                                      const VrchatOptions& vrc = {});
+
 /// The newest Blender under Program Files\Blender Foundation, or empty.
 std::string find_blender();
 

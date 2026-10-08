@@ -398,6 +398,18 @@ ComPtr<ID3D11ShaderResourceView> make_solid(uint8_t r, uint8_t g, uint8_t b, uin
     std::vector<uint8_t> px = {r, g, b, a};
     return make_srv(px, 1, 1);
 }
+// 1x1 single-channel FLOAT SRV, for stand-ins that have to hold a value past 1.0
+// -- the far scene depth for AMAT role 35 (see game_shader.cpp kRoleSceneDepth).
+ComPtr<ID3D11ShaderResourceView> make_solid_float(float v) {
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = 1; td.Height = 1; td.MipLevels = 1; td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_R32_FLOAT; td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_IMMUTABLE; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA sd{}; sd.pSysMem = &v; sd.SysMemPitch = sizeof(float);
+    ComPtr<ID3D11Texture2D> tex; ComPtr<ID3D11ShaderResourceView> out;
+    if (SUCCEEDED(g_dev->CreateTexture2D(&td, &sd, &tex))) g_dev->CreateShaderResourceView(tex.Get(), nullptr, &out);
+    return out;
+}
 // 1x1x6 constant-color CUBE SRV -- stand-in for the GLOBAL env cubemap (slot 13).
 // Must be an actual cube (the PS declares texturecube); a mismatched 2D samples
 // white -> mirror-white metals. Neutral grey gives believable reflections.

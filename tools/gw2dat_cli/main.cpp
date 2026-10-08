@@ -13,6 +13,9 @@
 //   parse    (--dat <path> (--index N | --file-id N) | --data <bin>) --template <json>
 //                                            [--max-depth D] [--max-nodes N] [--out <json>]
 //   sniff    --dat <path> (--index N | --file-id N)
+//   skybox   --dat <path> --file-id N --template <json> --out <dir> [--name NAME]
+//            [--size <face px>] [--equirect <width px>]
+//            -- a map's sky as Unity skybox images in <out>/<name> (default map_<fileId>)
 //   character (--key-name NAME | --key KEY) [--character NAME] [--tab N]
 //            [--out <json>] [--cmap <content_map.bin>]
 //            -- lists an account's characters, or resolves one character's
@@ -74,6 +77,8 @@
 #include "castlemist/character/manifest_json.h"
 #include "castlemist/db/index_db.h"
 #include "castlemist/extract/entry_extractor.h"
+#include "castlemist/exportgltf/gltf_export.h"
+#include "castlemist/exportgltf/sky_export.h"
 #include "castlemist/ripper/assemble.h"
 #include "castlemist/ripper/look.h"
 #include "castlemist/ripper/vrchat.h"
@@ -816,8 +821,10 @@ void cmd_model(const Args& a) {
     json tpl;
     try { tin >> tpl; } catch (const std::exception& ex) { fail(std::string("template JSON error: ") + ex.what()); }
 
-    // decompressed MODL bytes
+    // decompressed MODL bytes, and the model's file id (the built preview and
+    // the exports below load by file id, whichever way the entry was picked)
     std::vector<uint8_t> data;
+    uint32_t modelFileId = has(a, "file-id") ? static_cast<uint32_t>(to_u64(a.at("file-id"))) : 0;
     if (has(a, "data")) {
         data = read_file(a.at("data"));
     } else {
@@ -825,6 +832,10 @@ void cmd_model(const Args& a) {
         load_dat_file(dat, need(a, "dat"));
         uint32_t idx = 0;
         data = extract_bytes(dat, a, idx);
+        if (!modelFileId) {
+            std::vector<uint32_t> fids = get_by_file_id(dat, idx + 1);  // MFT index -> base id -> file ids
+            if (!fids.empty()) modelFileId = fids.front();
+        }
     }
 
     castlemist::model::Model model = castlemist::model::Extractor(data, tpl).extract();
@@ -934,9 +945,17 @@ void cmd_model(const Args& a) {
     }
     j["cloth"] = std::move(cloth);
     // The built preview's game-shader facts per material (alpha test, extra roles).
-    Gw2Dat pdat;
-    load_dat_file(pdat, need(a, "dat"));
-    if (auto pv = load_model_by_fileid(pdat, static_cast<uint32_t>(to_u64(a.at("file-id"))))) {
+    // Needs the archive and a file id: --data alone (a loose MODL) gets only the
+    // summary above.
+    std::shared_ptr<ModelPreview> pv;
+    if (has(a, "dat") && modelFileId) {
+        Gw2Dat pdat;
+        load_dat_file(pdat, a.at("dat"));
+        pv = load_model_by_fileid(pdat, modelFileId);
+    } else if (has(a, "glb") || has(a, "vrchat")) {
+        fail("--glb/--vrchat need --dat and the model's file id (pass --file-id with --data)");
+    }
+    if (pv) {
         json gm = json::array();
         for (const auto& g : pv->gameMaterials)
             gm.push_back(json{{"index", g.index}, {"ok", g.ok}, {"prepassCutout", g.prepassCutout}});
@@ -946,9 +965,26 @@ void cmd_model(const Args& a) {
             json r = json::array();
             for (const auto& ex : m.extraTextures)
                 r.push_back(json{{"role", ex.role}, {"fileId", ex.fileId}, {"uv", static_cast<int>(ex.uvIndex)}});
-            roles.push_back(json{{"index", m.index}, {"extras", r}, {"diffuse", m.diffuseTex}, {"normal", m.normalTex}});
+            roles.push_back(json{{"index", m.index}, {"extras", r}, {"diffuse", m.diffuseTex}, {"normal", m.normalTex},
+                                 {"diffuseUv", static_cast<int>(m.diffuseUv)}, {"normalUv", static_cast<int>(m.normalUv)}});
         }
         j["materialRoles"] = roles;
+        if (has(a, "glb")) {  // the same .glb the app's "Export glTF (Model)..." writes
+            auto r = castlemist::exportgltf::export_model_gltf(*pv, a.at("glb"));
+            j["glb"] = r.ok ? json(r.glbPath) : json{{"error", r.error}};
+        }
+        if (has(a, "vrchat")) {  // the VRChat folder: .glb, .fbx, .blend, Textures, materials.json
+            const uint32_t fid = modelFileId;
+            castlemist::ripper::VrchatOptions vo;  // [--blender <exe>|-] [--blender-script <py>]
+            if (has(a, "blender")) vo.blender_exe = a.at("blender");
+            if (has(a, "blender-script")) vo.script = a.at("blender-script");
+            auto r = castlemist::ripper::export_vrchat_model(*pv, a.at("vrchat"), "model_" + std::to_string(fid), fid, vo);
+            json v = {{"ok", r.ok}, {"folder", r.folder}, {"glb", r.glb}, {"fbx", r.fbx}, {"blender", r.blender},
+                      {"materials", r.materials}, {"clips", r.clips}, {"warnings", r.warnings}};
+            if (!r.ok) v["error"] = r.error;
+            if (!r.blenderLog.empty()) v["blenderLog"] = r.blenderLog;
+            j["vrchat"] = std::move(v);
+        }
     }
     // particle clouds + effect lights
     const auto& fx = model.effects;
@@ -1016,7 +1052,7 @@ void cmd_matcensus(const Args& a) {
     std::map<uint32_t, std::vector<uint8_t>> amat_cache;
 
     size_t models = 0, materials = 0, resolved = 0, byToken = 0, byHeuristic = 0;
-    size_t opaque = 0, blended = 0, noShader = 0, noAmat = 0;
+    size_t opaque = 0, blended = 0, noShader = 0, noAmat = 0, noRgb = 0;
     std::map<uint32_t, size_t> passHist, techHist;
     std::map<int, size_t> qualityHist;
 
@@ -1061,6 +1097,7 @@ void cmd_matcensus(const Args& a) {
             qualityHist[set.selectedQuality]++;
             if (set.tokenMatched) ++byToken; else ++byHeuristic;
             if (set.psIndex < 0) ++noShader;
+            else if (set.passFlags & 0x000Cu) ++noRgb;  // picked an effect that cannot paint
             else if (castlemist::model::isBlendState(set.renderState)) ++blended;
             else ++opaque;
         }
@@ -1077,7 +1114,7 @@ void cmd_matcensus(const Args& a) {
                       {"tokenMatchPct", pct(byToken, resolved)}};
     // The calibration target: a real frame's material pass is ~82% blend-disabled.
     j["draw"] = {{"opaque", opaque}, {"blended", blended}, {"noShader", noShader},
-                 {"blendedPct", pct(blended, opaque + blended)}};
+                 {"selectedNoRgb", noRgb}, {"blendedPct", pct(blended, opaque + blended)}};
     json th = json::object(); for (auto& kv : techHist) th[std::to_string(kv.first)] = kv.second;
     json ph = json::object(); for (auto& kv : passHist) ph[std::to_string(kv.first)] = kv.second;
     json qh = json::object(); for (auto& kv : qualityHist) qh[std::to_string(kv.first)] = kv.second;
@@ -1394,6 +1431,39 @@ void cmd_map(const Args& a) {
         j["zones"] = {{"placements", zones.size()}, {"uniqueModels", zu.size()}, {"sample", zs2}};
     }
     emit(j);
+}
+
+std::string utf8_arg(const char* flag);  // below: --flag value as UTF-8
+
+// Export a map's sky as Unity skybox images: <out>/<name>/sky.json plus
+// <mode>/baked/ (equirect + six faces) and <mode>/skybox/ (the stored cube).
+void cmd_skybox(const Args& a) {
+    namespace sky = castlemist::exportgltf::sky;
+    std::string tpl_path = need(a, "template");
+    std::ifstream tin(tpl_path, std::ios::binary);
+    if (!tin) fail("cannot open template: " + tpl_path);
+    json tpl;
+    try { tin >> tpl; } catch (const std::exception& ex) { fail(std::string("template JSON error: ") + ex.what()); }
+
+    uint32_t fileId = static_cast<uint32_t>(to_u64(need(a, "file-id")));
+    std::string out = utf8_arg("--out").empty() ? need(a, "out") : utf8_arg("--out");
+    std::string name = has(a, "name") ? utf8_arg("--name") : "map_" + std::to_string(fileId);
+
+    sky::SkyExportOptions opt;
+    if (has(a, "size")) opt.faceSize = static_cast<int>(to_u64(a.at("size")));
+    if (has(a, "equirect")) opt.equirectWidth = static_cast<int>(to_u64(a.at("equirect")));
+    if (opt.faceSize < 1 || opt.equirectWidth < 2) fail("--size and --equirect must be positive");
+
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    uint32_t idx = 0;
+    std::vector<uint8_t> data = extract_bytes(dat, a, idx);
+    sky::SkyInputs in = sky::load_sky_inputs(dat, data, tpl, fileId);
+    sky::SkyExportReport rep = sky::write_skybox(in, out, name, opt);
+    json j = sky::report_json(rep);
+    std::fputs(j.dump().c_str(), stdout);
+    std::fputc('\n', stdout);
+    if (!rep.ok) std::exit(1);
 }
 
 // Dump the skeleton + embedded animation of a MODL packfile (validation aid).
@@ -1838,6 +1908,14 @@ void cmd_users(const Args& a) {  // --sample-type T: the first few files of type
     namespace cmap = castlemist::cmap;
     ensure_cmap(a);
     if (!cmap::built()) fail("no content map: pass --cmap, or --dat with an index DB");
+    if (has(a, "content-type")) {  // the reverse: the files one content object uses
+        json files = json::array();
+        for (uint32_t f : cmap::resolve_all(static_cast<uint32_t>(to_u64(a.at("content-type"))),
+                                            static_cast<uint32_t>(to_u64(need(a, "content-id")))))
+            files.push_back(f);
+        emit({{"ok", true}, {"fileIds", files}});
+        return;
+    }
     std::vector<uint32_t> fids;
     if (has(a, "file-id")) fids.push_back(static_cast<uint32_t>(to_u64(a.at("file-id"))));
     if (has(a, "base-id")) {
@@ -2322,7 +2400,7 @@ void cmd_character_export(const Args& a) {
 int main(int argc, char** argv) {
     if (argc < 2) {
         fail("usage: gw2dat_cli <info|list|lookup|resolve|extract|texture|parse|sniff|"
-             "compress|decompress|encode-texture|scananim|character|character-export|"
+             "compress|decompress|encode-texture|scananim|map|skybox|character|character-export|"
              "character-assemble> [--flags]");
     }
     std::string cmd = argv[1];
@@ -2339,6 +2417,7 @@ int main(int argc, char** argv) {
         else if (cmd == "model") cmd_model(a);
         else if (cmd == "skel") cmd_skel(a);
         else if (cmd == "map") cmd_map(a);
+        else if (cmd == "skybox") cmd_skybox(a);
         else if (cmd == "scanpf") cmd_scanpf(a);
         else if (cmd == "scancloth") cmd_scancloth(a);
         else if (cmd == "scananim") cmd_scananim(a);

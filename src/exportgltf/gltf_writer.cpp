@@ -71,13 +71,15 @@ int GltfWriter::add_accessor(const void* data, size_t byteLength, int componentT
     return static_cast<int>(doc_["accessors"].size()) - 1;
 }
 
-int GltfWriter::add_or_reuse_texture(uint32_t fileId, const std::vector<uint8_t>& pngBytes) {
+int GltfWriter::add_or_reuse_texture(uint32_t fileId, const std::vector<uint8_t>& pngBytes,
+                                     const std::string& name) {
     // fileId 0 = generated in memory (a baked atlas), not a dat file: never shared.
     auto found = fileId ? textureByFileId_.find(fileId) : textureByFileId_.end();
     if (found != textureByFileId_.end()) return found->second;
 
     int bvIndex = add_buffer_view(pngBytes.data(), pngBytes.size(), 0);
     json image{{"bufferView", bvIndex}, {"mimeType", "image/png"}};
+    if (!name.empty()) image["name"] = name;
     doc_["images"].push_back(std::move(image));
     int imageIndex = static_cast<int>(doc_["images"].size()) - 1;
 

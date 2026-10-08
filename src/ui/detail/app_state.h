@@ -82,6 +82,8 @@ constexpr UINT_PTR ID_TOOLS_DECODE_TOKEN = 1015;   // token/filename-bytes decod
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL = 1016; // Export glTF... (single model, plain decoded textures)
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MAP = 1017;   // Export glTF... (whole map scene)
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL_ATLAS = 1018; // Export glTF... (single model, baked to a fresh UV atlas)
+constexpr UINT_PTR ID_FILE_EXPORT_VRCHAT_MODEL = 2185;     // Export for VRChat (Model)... (folder: glb, fbx, blend, Textures, materials.json)
+constexpr UINT_PTR ID_FILE_EXPORT_SKYBOX_MAP = 2186;       // Export Skybox (Map)... (folder: sky.json, <mode>/baked, <mode>/skybox)
 // Chat-link decoder popup controls.
 constexpr int ID_CL_INPUT = 2070;
 constexpr UINT_PTR ID_CL_DECODE = 2071;
@@ -244,6 +246,9 @@ constexpr UINT_PTR ID_CONTENT_LIST = 2059;   // master: content types
 constexpr UINT_PTR ID_CONTENT_CHILD = 2079;  // child: entries of the selected type
 constexpr UINT_PTR ID_LIGHT_PREPASS = 2060;
 constexpr UINT_PTR ID_ALPHA_TOGGLE = 2061;
+// Texture channel view: RGB, R, G, B, A (consecutive; castlemist::gfx::set_channel order).
+constexpr UINT_PTR ID_CHANNEL_RGB = 2180;
+constexpr UINT_PTR ID_CHANNEL_A = ID_CHANNEL_RGB + 4;
 constexpr UINT_PTR ID_SUBMESH_COMBO = 2062;
 constexpr UINT_PTR ID_LOD_COMBO = 2063;
 constexpr UINT_PTR ID_TEX_REDUCED = 2064;
@@ -318,6 +323,10 @@ constexpr UINT WM_APP_CONTENT_NAMES_DONE = WM_APP + 13;
 /// Download all game names: wparam = done, lparam = total; then done (wparam = ok).
 constexpr UINT WM_APP_NAMES_PROGRESS = WM_APP + 14;
 constexpr UINT WM_APP_NAMES_BULK_DONE = WM_APP + 15;
+/// "Export for VRChat (Model)" finished (lparam = heap VrchatModelReport*, owned by the handler).
+constexpr UINT WM_APP_VRCHAT_MODEL_DONE = WM_APP + 16;
+/// "Export Skybox (Map)" finished (lparam = heap SkyExportReport*, owned by the handler).
+constexpr UINT WM_APP_SKYBOX_EXPORT_DONE = WM_APP + 17;
 
 enum class MiddleTab { Compressed = 0, Decompressed = 1, Structure = 2, Preview = 3 };
 
@@ -435,6 +444,7 @@ struct AppState {
     HWND hwnd_rotate = nullptr;
     HWND hwnd_fit = nullptr;
     HWND hwnd_alpha = nullptr;
+    HWND hwnd_channel[5] = {};  // RGB, R, G, B, A
     /// The "Game 1:1" bgfx surface and its toolbar toggle. Both stay null when
     /// the build has no bgfx (castlemist::gw2bgfxview::available() == false).
     HWND hwnd_model_bgfx = nullptr;
@@ -670,6 +680,10 @@ void do_export_gltf_model(HWND hwnd);
 void do_export_gltf_model_atlas(HWND hwnd);
 void do_export_gltf_map(HWND hwnd);
 void on_gltf_export_done(HWND hwnd);
+void do_export_vrchat_model(HWND hwnd);
+void on_vrchat_model_done(HWND hwnd, LPARAM lparam);
+void do_export_skybox_map(HWND hwnd);
+void on_skybox_export_done(HWND hwnd, LPARAM lparam);
 void do_save_model_texture(HWND hwnd, uint32_t fileId);
 std::string combo_sel(HWND combo);
 void apply_filters();

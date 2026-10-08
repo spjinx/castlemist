@@ -81,6 +81,9 @@ used most:
 GW2_AUTOLOAD=291977 ./build/debug/bin/castlemist.exe
 ```
 
+Add `GW2_GAMESHOT=1` to also write `shot_game11.bmp` from the "Game 1:1" bgfx
+view; `GW2_ORBIT=yaw,pitch` (radians) turns both views the same way.
+
 Others, same shape: `GW2_GIZMOTEST=1` exercises gizmo hit-testing,
 `GW2_CLOTHTEST=1` dumps rest/draped/wind BMPs, `GW2_SCENE=181140
 GW2_SCENEGAME=1` loads a map with the game's own shaders, `GW2_AUDIOTEST=2861`

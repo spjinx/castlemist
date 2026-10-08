@@ -414,6 +414,7 @@ bool build_one_game_mat(const GameMaterial& c, const ModelPreview& model, GameMa
         if (s.slot < 0 || s.slot >= 16) continue;
         if (s.global == 2) g.srv[s.slot] = make_solid_cube(64);
         else if (s.global == 3) g.srv[s.slot] = make_solid(255, 255, 255, 255); // shadow map: unshadowed
+        else if (s.global == 4) g.srv[s.slot] = make_solid_float(kFarSceneDepth); // nothing behind the model
         // Light-buffer / other global engine textures: a dark-grey stand-in
         // (not white) so deferred albedo*lightBuffer terms don't blow out to a
         // flat "lamp". Tunable via GW2_GLOBALLIT (0..255, default 110).

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <tuple>
 #include <filesystem>
 #include <fstream>
@@ -11,6 +12,7 @@
 #include <unordered_map>
 
 #include "castlemist/character/key_store.h"
+#include "castlemist/exportgltf/vrchat_export.h"
 #include "castlemist/ripper/face_morphs.h"
 #include "castlemist/ripper/skeleton_merge.h"
 
@@ -305,37 +307,72 @@ std::string find_blender() {
 namespace {
 
 // Runs Blender headless on the conversion script; false + `log` on failure.
+// With `logPath`, Blender's stdout and stderr go to that file, and on failure
+// castlemist's reason is appended after them.
 bool run_blender(const std::string& blender, const std::string& script, const std::string& glb, const std::string& fbx,
-                 std::string& log) {
+                 std::string& log, const char* mode = nullptr, const std::string& logPath = {}) {
     std::wstring cmd = L"\"" + from_utf8(blender).wstring() + L"\" -b --factory-startup -P \"" +
                        from_utf8(script).wstring() + L"\" -- \"" + from_utf8(glb).wstring() + L"\" \"" +
                        from_utf8(fbx).wstring() + L"\"";
+    if (mode) cmd += L" --mode " + std::wstring(mode, mode + std::strlen(mode));
+
+    HANDLE out = INVALID_HANDLE_VALUE;
+    if (!logPath.empty()) {
+        SECURITY_ATTRIBUTES sa{};
+        sa.nLength = sizeof sa;
+        sa.bInheritHandle = TRUE;
+        out = CreateFileW(from_utf8(logPath).c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                          CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    }
+    const bool capture = out != INVALID_HANDLE_VALUE;
+    // The reason goes after whatever Blender wrote.
+    auto fail = [&](std::string why) {
+        log = std::move(why);
+        if (capture) {
+            const std::string line = "\r\n[castlemist] " + log + "\r\n";
+            DWORD written = 0;
+            SetFilePointer(out, 0, nullptr, FILE_END);
+            WriteFile(out, line.data(), static_cast<DWORD>(line.size()), &written, nullptr);
+            CloseHandle(out);
+        }
+        return false;
+    };
+
     STARTUPINFOW si{};
     si.cb = sizeof si;
     si.dwFlags = STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_HIDE;
+    if (capture) {
+        si.dwFlags |= STARTF_USESTDHANDLES;
+        si.hStdInput = nullptr;
+        si.hStdOutput = out;
+        si.hStdError = out;
+    }
     PROCESS_INFORMATION pi{};
     std::vector<wchar_t> buf(cmd.begin(), cmd.end());
     buf.push_back(0);
-    if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        log = "could not start Blender (" + std::to_string(GetLastError()) + ")";
-        return false;
-    }
+    if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, capture ? TRUE : FALSE, CREATE_NO_WINDOW, nullptr,
+                        nullptr, &si, &pi))
+        return fail("could not start Blender (" + std::to_string(GetLastError()) + ")");
     const DWORD w = WaitForSingleObject(pi.hProcess, 10 * 60 * 1000);
+    if (w != WAIT_OBJECT_0) TerminateProcess(pi.hProcess, 1);
     DWORD code = 1;
     GetExitCodeProcess(pi.hProcess, &code);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     std::error_code ec;
-    if (w != WAIT_OBJECT_0) {
-        log = "Blender timed out";
-        return false;
-    }
-    if (code != 0 || !fs::exists(from_utf8(fbx), ec)) {
-        log = "Blender exited with " + std::to_string(code) + " and no .fbx";
-        return false;
-    }
+    if (w != WAIT_OBJECT_0) return fail("Blender timed out");
+    if (code != 0 || !fs::exists(from_utf8(fbx), ec))
+        return fail("Blender exited with " + std::to_string(code) + " and no .fbx");
+    if (capture) CloseHandle(out);
     return true;
+}
+
+std::string default_script() {
+    wchar_t exe[MAX_PATH] = L"";
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    return to_utf8(character::find_castlemist_root(fs::path(exe).parent_path()) / "tools" / "blender" /
+                   "castlemist_vrchat.py");
 }
 
 std::string safe_name(std::string s) {
@@ -387,6 +424,53 @@ std::string write_vrchat_maps(const ModelPreview& model, const std::string& glb_
     return any ? to_utf8(dir) : std::string();
 }
 
+VrchatModelReport export_vrchat_model(const ModelPreview& model, const std::string& parentDirUtf8,
+                                      const std::string& name, uint32_t modelFileId, const VrchatOptions& vrc) {
+    VrchatModelReport r;
+    const std::string safe = exportgltf::safe_file_name(name);
+    const fs::path dir = from_utf8(parentDirUtf8) / from_utf8(safe);
+    const exportgltf::VrchatFolderResult f = exportgltf::write_vrchat_folder(model, to_utf8(dir), safe, modelFileId);
+    r.folder = f.folder.empty() ? to_utf8(dir) : f.folder;
+    r.glb = f.glb;
+    r.materials = f.materials;
+    r.clips = f.clips;
+    r.warnings = f.warnings;
+    if (!f.ok) {
+        r.error = f.error;
+        return r;
+    }
+    r.ok = true;
+    if (vrc.blender_exe == "-") {
+        r.blender = "Blender skipped (disabled)";
+        return r;
+    }
+    const std::string blender = vrc.blender_exe.empty() ? find_blender() : vrc.blender_exe;
+    const std::string script = vrc.script.empty() ? default_script() : vrc.script;
+    std::error_code ec;
+    if (blender.empty()) {
+        r.blender = "Blender not found -- open the .glb in Blender and run tools/blender/castlemist_vrchat.py --mode model";
+    } else if (!fs::exists(from_utf8(script), ec)) {
+        r.blender = "conversion script missing: " + script;
+    } else {
+        const std::string fbx = to_utf8(dir / from_utf8(safe + ".fbx"));
+        // Blender's own output lands in the log; a stale one from an earlier run never survives.
+        const fs::path logPath = dir / from_utf8(safe + " blender.log");
+        fs::remove(logPath, ec);
+        std::string log;
+        if (run_blender(blender, script, r.glb, fbx, log, "model", to_utf8(logPath))) {
+            r.fbx = fbx;
+            r.blender = blender;
+            fs::remove(logPath, ec);
+        } else {
+            r.blender = log;
+            if (!fs::exists(logPath, ec))  // the log could not be opened for Blender
+                std::ofstream(logPath, std::ios::binary) << log << '\n';
+            r.blenderLog = to_utf8(logPath);
+        }
+    }
+    return r;
+}
+
 VrchatReport export_vrchat(const character::CharacterManifest& manifest, const std::string& dat_path,
                            const std::string& out_dir, AssemblyOptions options, const VrchatOptions& vrc) {
     VrchatReport r;
@@ -407,12 +491,7 @@ VrchatReport export_vrchat(const character::CharacterManifest& manifest, const s
 
     const std::string blender = vrc.blender_exe.empty() ? find_blender() : vrc.blender_exe;
     std::string script = vrc.script;
-    if (script.empty()) {
-        wchar_t exe[MAX_PATH] = L"";
-        GetModuleFileNameW(nullptr, exe, MAX_PATH);
-        script = to_utf8(character::find_castlemist_root(fs::path(exe).parent_path()) / "tools" / "blender" /
-                         "castlemist_vrchat.py");
-    }
+    if (script.empty()) script = default_script();
     if (blender.empty()) {
         r.blender = "Blender not found -- open the .glb in Blender and run tools/blender/castlemist_vrchat.py";
     } else if (!fs::exists(from_utf8(script), ec)) {

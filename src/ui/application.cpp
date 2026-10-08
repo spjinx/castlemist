@@ -16,6 +16,7 @@
 
 #include "castlemist/core/env.h"
 #include "castlemist/core/text.h"
+#include "castlemist/render/gw2bgfx_view.h"
 #include "castlemist/ui/application.h"
 
 #include <algorithm>
@@ -597,6 +598,20 @@ int run(HINSTANCE hInstance, int cmd_show) {
                 castlemist::render::set_show_skeleton(false); // isolate the MESH
                 castlemist::render::set_animation(-1);
                 castlemist::render::save_screenshot(dump_path("shot_bind.bmp").c_str());
+                // Debug: GW2_GAMESHOT=1 also draws the entry on the "Game 1:1" bgfx
+                // surface (same GW2_ORBIT) and writes shot_game11.bmp.
+                if (std::getenv("GW2_GAMESHOT") && g_app->hwnd_model_bgfx &&
+                    castlemist::gw2bgfxview::initialize(g_app->hwnd_model_bgfx)) {
+                    castlemist::gw2bgfxview::on_resize(1000, 800);
+                    std::string gerr;
+                    if (castlemist::gw2bgfxview::set_model(g_app->data_gw2, idx, gerr)) {
+                        if (const char* ob = std::getenv("GW2_ORBIT")) {
+                            float y = 0, p = 0; sscanf(ob, "%f,%f", &y, &p); castlemist::gw2bgfxview::orbit(y, p);
+                        }
+                        castlemist::gw2bgfxview::save_screenshot(dump_path("shot_game11.bmp").c_str());
+                    }
+                    std::fprintf(stderr, "GAMESHOT: %s\n", castlemist::gw2bgfxview::last_status().c_str());
+                }
                 // Debug: GW2_GIZMOTEST exercises the Blender-style gizmo headlessly --
                 // draws each mode, applies a programmatic transform, and checks that
                 // hit-testing an axis tip returns that axis.

@@ -152,6 +152,11 @@ int skinned_draw_count();
 /// @brief Draws and presents one frame. Cheap no-op when no model is loaded.
 void render();
 
+/// @brief Renders until bgfx hands back the frame, and writes it to @p path as a
+///        32-bit BMP. The headless check behind `GW2_GAMESHOT`.
+/// @return False when the view is not initialised or no frame came back.
+bool save_screenshot(const char* path);
+
 /// @brief Bakes every material of the currently loaded model (see set_model())
 ///        into a flat UV-space texture, using this view's own real GW2
 ///        shaders/programs/textures, and writes the result into `model`'s

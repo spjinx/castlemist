@@ -81,6 +81,7 @@ castlemist_add_test(media
 castlemist_add_test(extract
     SOURCES test_extract_classify.cpp
             test_extract_summary.cpp
+            test_extract_material_slots.cpp
     DEPS    castlemist::extract
     PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/extract")
 
@@ -88,7 +89,7 @@ castlemist_add_test(extract
 # absent, so it is safe to leave enabled; GW2_TEST_DAT overrides the location.
 castlemist_add_test(dat
     SOURCES test_extract_dat.cpp
-    DEPS    castlemist::extract)
+    DEPS    castlemist::extract castlemist::exportgltf)
 set_tests_properties(dat PROPERTIES TIMEOUT 600)
 
 castlemist_add_test(sim
@@ -96,7 +97,7 @@ castlemist_add_test(sim
     DEPS    castlemist::sim)
 
 castlemist_add_test(exportgltf
-    SOURCES test_exportgltf_writer.cpp
+    SOURCES test_exportgltf_writer.cpp test_exportgltf_vrchat.cpp test_exportgltf_sky.cpp
     DEPS    castlemist::exportgltf ext::json
     PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/exportgltf")
 

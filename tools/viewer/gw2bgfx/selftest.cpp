@@ -18,6 +18,7 @@
 #include <cstdlib>
 
 #include "amat_effect.h"
+#include "amat_load.h"
 #include "bgfx_draw.h"
 #include "gr_fvf.h"
 #include "gr_token.h"
@@ -197,6 +198,45 @@ static void testDrawState() {
 // ---------------------------------------------------------------------------
 // Effect selection
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// DXBC resource declarations -- which texture registers are cubes. GW2's bgfx
+// blobs leave the per-sampler texInfo at 0, so the shader code is the only
+// place the dimension lives (Twilight's cubemap material crashed the debug
+// layer on a 2D view bound to a TextureCube register).
+// ---------------------------------------------------------------------------
+static void testDxbcResourceDimensions() {
+    auto put = [](std::vector<uint8_t>& b, uint32_t v) {
+        for (int i = 0; i < 4; ++i) b.push_back(uint8_t(v >> (8 * i)));
+    };
+    std::vector<uint32_t> shex = {
+        0x00000050u,                                   // ps_5_0
+        0u,                                            // length, patched below
+        0x58u | (3u << 11) | (4u << 24), 0x00107000u, 0u, 0x5555u,   // dcl_resource_texture2d t0
+        0x58u | (6u << 11) | (4u << 24), 0x00107000u, 1u, 0x5555u,   // dcl_resource_texturecube t1
+        0x80000000u | 0x45u | (5u << 24), 0x00000001u, 0x00100000u, 0u, 0u,  // sample with an extended token
+        0x3Eu | (1u << 24),                            // ret
+    };
+    shex[1] = (uint32_t)shex.size();
+    std::vector<uint8_t> dxbc = {'D', 'X', 'B', 'C'};
+    for (int i = 0; i < 16; ++i) dxbc.push_back(0);   // checksum
+    put(dxbc, 1);
+    const uint32_t chunkSize = (uint32_t)shex.size() * 4;
+    put(dxbc, 36 + 8 + chunkSize);                     // total size
+    put(dxbc, 1);                                      // chunk count
+    put(dxbc, 36);                                     // chunk offset
+    dxbc.insert(dxbc.end(), {'S', 'H', 'E', 'X'});
+    put(dxbc, chunkSize);
+    for (uint32_t t : shex) put(dxbc, t);
+
+    std::vector<uint8_t> blob = {'F', 'S', 'H', 11};   // DXBC embedded in a bgfx blob
+    blob.insert(blob.end(), dxbc.begin(), dxbc.end());
+    const auto dims = dxbcResourceDimensions(blob);
+    CHECK(dims.size() == 2, "got %zu declarations", dims.size());
+    CHECK(dims.count(0) && dims.at(0) == kDxbcTexture2D, "t0 should be 2D");
+    CHECK(dims.count(1) && dims.at(1) == kDxbcTextureCube, "t1 should be a cube");
+    CHECK(dxbcResourceDimensions({'F', 'S', 'H', 11}).empty(), "no DXBC -> no declarations");
+}
+
 static void testEffectSelection() {
     AmatPackage pkg;
     pkg.shaders.resize(8);
@@ -266,12 +306,48 @@ static void testEffectSelection() {
     CHECK(ns.ok && ns.variant == kVsPlain, "absent skinned -> plain, got %u", ns.variant);
 }
 
+// Every pass the client draws for one material, in pass order. A material can
+// paint nothing in pass 0 and everything in a later pass: AMAT 543769 (the
+// Holographic Dawn blade) has only depth/StencilId effects in pass 0 and its
+// additive glow in pass 1, both answering the opaque render-mode token. Drawing
+// pass 0 alone rendered the blade invisible. A pass that does not carry the
+// token is still skipped -- the default is pass-0-only.
+static void testPassEnumeration() {
+    AmatPackage pkg;
+    pkg.shaders.resize(8);
+    AmatTechnique tech;
+    tech.quality = 805394902u;
+    tech.passes.resize(3);
+    auto makeEffect = [](uint64_t token, uint32_t ps) {
+        AmatEffect e;
+        e.token = token;
+        e.pixelShaderIndex = ps;
+        e.vertexShaderVariants.push_back({kVsPlain, 1});
+        return e;
+    };
+    const uint64_t kOpaque = 0x914C6A8A883B1EEull;
+    tech.passes[0].effects.push_back(makeEffect(kOpaque, 3));
+    tech.passes[1].effects.push_back(makeEffect(kOpaque, 4));
+    tech.passes[2].effects.push_back(makeEffect(AmatTokenChain::kDefault, 5));
+    pkg.techniques.push_back(tech);
+
+    const auto passes = amatSelectPasses(pkg, 0, kOpaque, kVsPlain);
+    CHECK(passes.size() == 2, "expected passes 0 and 1, got %zu", passes.size());
+    if (passes.size() == 2) {
+        CHECK(passes[0].first == 0 && passes[0].second.pixelShaderIndex == 3, "pass 0 first");
+        CHECK(passes[1].first == 1 && passes[1].second.pixelShaderIndex == 4, "pass 1 second");
+    }
+    CHECK(amatSelectPasses(pkg, 5, kOpaque, kVsPlain).empty(), "bad technique -> nothing");
+}
+
 int main() {
     testToken();
     testFvf();
     testVsVariant();
     testDrawState();
     testEffectSelection();
+    testPassEnumeration();
+    testDxbcResourceDimensions();
 
     if (g_fail == 0) std::printf("gw2bgfx selftest: all checks passed\n");
     else             std::printf("gw2bgfx selftest: %d FAILED\n", g_fail);

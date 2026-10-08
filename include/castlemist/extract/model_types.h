@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -122,6 +123,16 @@ struct ModelMaterialCPU {
     ///        from). Used to name exported glTF materials when materialName
     ///        below is empty.
     uint32_t materialFile = 0;
+    /// @brief Material::materialId (gw2model.hpp): the built-in shader selector
+    ///        (0..57, 58 = custom). 0 together with materialFlags == 0 is one of
+    ///        the traits of the legacy "untagged" shaders (shader_profiles.h).
+    uint32_t materialId = 0;
+    /// @brief Material::materialFlags (gw2model.hpp), verbatim.
+    uint32_t materialFlags = 0;
+    /// @brief Material::sortLayer / sortOrder (gw2model.hpp), verbatim: the
+    ///        material's draw-order hints (0 when the file has no such field).
+    uint32_t sortLayer = 0;
+    uint32_t sortOrder = 0;
     /// @brief ModelMeshDataV66.materialName -- an artist-authored label (e.g.
     ///        "MetalBladeMat"), read straight off whichever mesh uses this
     ///        material (model_preview.cpp; the field lives per-mesh in the
@@ -153,6 +164,10 @@ struct ModelMaterialCPU {
     ///        real numbers are still there to hand-tune in Blender even where
     ///        castlemist doesn't know what to do with them itself.
     std::vector<std::pair<std::string, float>> namedConstants;
+    /// @brief The same constants with all four components (namedConstants keeps
+    ///        only the first): colour constants such as `speccp`/`envcr`/`envcp`
+    ///        carry an RGB tint plus a scalar in w. Same order as namedConstants.
+    std::vector<std::pair<std::string, std::array<float, 4>>> namedConstantVectors;
 
     /// @brief A material texture that isn't diffuseTex or normalTex -- a
     ///        decal/detail/mask layer the real shader samples through its own
@@ -174,7 +189,8 @@ struct ModelMaterialCPU {
     /// @brief Every other texture this material references. Cleared by a
     ///        successful atlas bake (gw2bgfx_view.cpp) -- baking already folds
     ///        whatever these contribute into the one output texture, so
-    ///        exporting them again afterward would be redundant, stale data.
+    ///        exporting them again afterward would be redundant, stale data --
+    ///        except the glow layers, which the export makes its emissive.
     std::vector<ExtraTexture> extraTextures;
 
     /// @brief Real bgfx blend-state word, carried over from game-shader extraction.
@@ -209,7 +225,9 @@ struct GameShaderUniform {
 struct GameSamplerCPU {
     int slot = 0;      ///< The t#/s# register the pixel shader binds this texture to.
     int gameTex = -1;  ///< Index into ModelPreview::textures, or -1 for a global stand-in.
-    int global = 0;    ///< 0 = material texture, 1 = white 1x1, 2 = grey env cubemap.
+    /// 0 = material texture, 1 = grey 1x1 (light buffer / other), 2 = grey env
+    /// cubemap, 3 = white shadow map, 4 = far scene depth (role 35, see game_shader.cpp).
+    int global = 0;
 };
 
 /// @brief A per-material constant written straight into the shader cbuffer.

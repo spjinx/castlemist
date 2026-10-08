@@ -54,6 +54,12 @@ void set_rotation(int quarter_turns);
 void set_alpha_aware(bool on);
 bool alpha_aware();
 
+/// Which channel the preview shows: 0 = RGB (honouring set_alpha_aware), or
+/// 1/2/3/4 = R/G/B/A alone as opaque greyscale -- for reading mask, shine and
+/// metal data. Out-of-range values mean RGB.
+void set_channel(int channel);
+int channel();
+
 void render();
 
 } // namespace castlemist::gfx

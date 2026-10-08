@@ -16,7 +16,9 @@
 
 #include "nlohmann/json.hpp"
 
+#include "castlemist/exportgltf/blend_mode.h"
 #include "castlemist/exportgltf/gltf_export.h"
+#include "castlemist/exportgltf/shader_profiles.h"
 
 namespace castlemist::exportgltf {
 
@@ -99,8 +101,10 @@ public:
     /// @brief Embeds a PNG (already-encoded bytes) as an image + texture,
     ///        deduped by fileId so a shared map export never re-embeds the
     ///        same texture twice. Returns the *texture* index (what a
-    ///        material's textureInfo references).
-    int add_or_reuse_texture(uint32_t fileId, const std::vector<uint8_t>& pngBytes);
+    ///        material's textureInfo references). `name` becomes the image's
+    ///        glTF name -- what Blender calls the image, and the file name
+    ///        "Unpack Resources" writes it out as.
+    int add_or_reuse_texture(uint32_t fileId, const std::vector<uint8_t>& pngBytes, const std::string& name = {});
 
     int add_node(nlohmann::json node);           ///< Pushes to `nodes`, returns its index.
     /// @brief Appends `childIndex` to an already-added node's `children` list
@@ -134,6 +138,11 @@ private:
 bool write_model_textures(GltfWriter& w, const std::vector<ModelTextureCPU>& textures,
                           std::vector<int>& texIndices);
 
+/// @brief PNG bytes for an already-decoded texture; empty when it has no
+///        pixels or encoding fails. Lets callers write files through a UTF-8
+///        `std::filesystem::path` (save_texture_png takes a narrow path).
+std::vector<uint8_t> encode_png(const ModelTextureCPU& tex);
+
 /// @brief Bakes and embeds an emissive texture for an "effect" (additive/glow)
 ///        material: the diffuse texture's own bright regions (luminance-
 ///        thresholded, matching castlemist's reconstruction shader's glow
@@ -146,6 +155,22 @@ bool write_model_textures(GltfWriter& w, const std::vector<ModelTextureCPU>& tex
 int bake_effect_emissive_texture(GltfWriter& w, const ModelTextureCPU& diffuse);
 
 // ==================================================================== materials ==
+
+/// @brief The exported name of a material: the artist's materialName, else
+///        `Mat_<amat fileId>`, else `Mat_<index>`.
+std::string material_name(const ModelMaterialCPU& mat);
+
+/// @brief A material's shader profile and decoded blend -- the one decision
+///        both the .glb's alphaMode and materials.json read.
+struct MaterialShading {
+    const ShaderProfile* profile = nullptr;
+    BlendInfo blend;
+};
+MaterialShading material_shading(const ModelMaterialCPU& mat);
+
+/// @brief The glTF and Poiyomi alpha cutoff: every clipping GW2 shader
+///        discards on `saturate(2a) < 0.5`, i.e. a < 0.25.
+inline constexpr double kAlphaCutoff = 0.25;
 
 /// @brief One material as written to `materials[]`; index parallels `model.materials`.
 /// @return The glTF material index for each `ModelMaterialCPU`.

@@ -37,6 +37,7 @@ float g_pan_x = 0.0f;
 float g_pan_y = 0.0f;
 int g_rotation_quarters = 0; // 0-3, stored separately from the radians below for exact odd/even checks
 bool g_alpha_aware = true;    // true: checkerboard composite; false: raw RGB (ignore alpha)
+int g_channel = 0;            // 0 = RGB, 1-4 = R/G/B/A alone as greyscale
 
 struct ViewParams {
     float zoom;
@@ -44,7 +45,8 @@ struct ViewParams {
     float pan_y;
     float rotation; // radians
     float alpha_mode;
-    float pad[3];
+    float channel;
+    float pad[2];
 };
 
 constexpr float kPi = 3.14159265358979323846f;
@@ -59,7 +61,8 @@ cbuffer ViewParams : register(b0) {
     float panY;
     float rotation;
     float alphaMode;   // 1 = alpha-aware (checkerboard); 0 = raw RGB (ignore alpha)
-    float3 _pad;
+    float channel;     // 0 = RGB; 1-4 = R/G/B/A alone, as greyscale
+    float2 _pad;
 };
 
 struct VSOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; };
@@ -83,6 +86,12 @@ float4 PSMain(VSOut input) : SV_TARGET {
     float2 rotated = float2(centered.x * c - centered.y * s, centered.x * s + centered.y * c);
     float2 uv = 0.5 + rotated / max(zoom, 0.0001) + float2(panX, panY);
     float4 texel = tex0.Sample(samp0, uv);
+    // One channel alone (R/G/B/A), as opaque greyscale: how a mask, shine or
+    // metal map's data actually reads, with nothing composited over it.
+    if (channel > 0.5) {
+        float v = channel < 1.5 ? texel.r : channel < 2.5 ? texel.g : channel < 3.5 ? texel.b : texel.a;
+        return float4(v, v, v, 1.0);
+    }
     // Raw-RGB mode (alpha toggle off): show the colour channels as-is, ignoring
     // alpha. Useful for inspecting the RGB data of masks/data textures.
     if (alphaMode < 0.5)
@@ -223,7 +232,7 @@ void upload_view_cbuffer() {
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (SUCCEEDED(g_context->Map(g_view_cbuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
         ViewParams params{g_zoom, g_pan_x, g_pan_y, static_cast<float>(g_rotation_quarters) * (kPi * 0.5f),
-                          g_alpha_aware ? 1.0f : 0.0f, {0.0f, 0.0f, 0.0f}};
+                          g_alpha_aware ? 1.0f : 0.0f, static_cast<float>(g_channel), {0.0f, 0.0f}};
         std::memcpy(mapped.pData, &params, sizeof(params));
         g_context->Unmap(g_view_cbuffer.Get(), 0);
     }
@@ -422,6 +431,14 @@ void set_alpha_aware(bool on) {
 
 bool alpha_aware() {
     return g_alpha_aware;
+}
+
+void set_channel(int channel) {
+    g_channel = (channel >= 0 && channel <= 4) ? channel : 0;
+}
+
+int channel() {
+    return g_channel;
 }
 
 void render() {

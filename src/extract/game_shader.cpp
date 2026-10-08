@@ -68,9 +68,18 @@ void parse_bgfx(const std::vector<uint8_t>& d, std::vector<uint8_t>& dxbc,
 constexpr int kEnvCubeSlot = 13;
 // AMAT sampler `textureIndex` values >= this are engine-GLOBAL texture ROLES
 // (not indices into the material's own texture list): observed 33=env cube (slot
-// 13), 34=light buffer (slot 14), 35=slot 12, 37=shadow map (slot 15). Below this
-// the value is a direct index into the material's textures.
+// 13), 34=light buffer (slot 14), 35=scene depth (slot 12), 37=shadow map (slot
+// 15). Below this the value is a direct index into the material's textures.
 constexpr uint32_t kGlobalRoleBase = 33;
+// Role 35, read off the 2271 pixel shaders that sample it in a 1500-model census:
+// most linearise it as SCENE DEPTH (`d * ScreenDims.w - ScreenDims.z`, then minus
+// the pixel's own depth -- the soft-particle fade of every blended effect), the
+// rest use it as a STIPPLE dither compared against `|fxclr.x - fxclr.w|`. Offline
+// nothing sits behind the model, so the honest stand-in is "very far": the soft
+// fade reads fully visible, and with fxclr = 1 the stipple test gives the same
+// answer for any non-negative texel. The old grey made `d*h - w` negative, which
+// faded Holographic Dawn's whole blade (AMAT 543769 ps 58) to alpha 0.
+constexpr uint32_t kRoleSceneDepth = 35;
 
 // Traces a material's AMAT shader package (at baseId-1 of its filename texture),
 // picks a matched VS+PS via extractAmat, parses both bgfx blobs and resolves the
@@ -174,7 +183,8 @@ GameMaterial extract_game_material(Gw2Dat& dat, const nlohmann::json& tpl, const
     // simply skipped). Verified against the client Token::Decode (sub_140E3B360)
     // and the dat: MODL 143917 gloover/gloptrb/glofade/envcp/blint (and the sci-fi
     // material's slscale/holoclr/opacity/...) all resolve to real shader uniforms.
-    auto lc = [](std::string s) { for (char& ch : s) ch = (char)std::tolower((unsigned char)ch); return s; };
+    // Compared through canonicalTokenName23: a `q` in a uniform name is the `v`
+    // its token decodes to (AMAT 543769's `stafreq` <- MODL `stafrev`).
     auto bind_consts = [&](const std::vector<GameShaderUniform>& unis,
                            std::vector<GameConstOverride>& outc) {
         for (const auto& c : m.constants) {
@@ -182,7 +192,7 @@ GameMaterial extract_game_material(Gw2Dat& dat, const nlohmann::json& tpl, const
             if (nm.empty()) continue;
             for (const auto& u : unis) {
                 if (u.type == 0 || kEngineGlobalUniforms.count(u.name)) continue; // engine-filled
-                if (lc(u.name) != nm) continue;
+                if (castlemist::model::canonicalTokenName23(u.name) != nm) continue;
                 GameConstOverride ov; ov.byteOff = u.byteOff;
                 for (int k = 0; k < 4; ++k) ov.value[k] = c.value[k];
                 outc.push_back(ov);
@@ -206,6 +216,7 @@ GameMaterial extract_game_material(Gw2Dat& dat, const nlohmann::json& tpl, const
             // lit / other globals mid-grey) instead of a flat-white blob.
             if (b.textureIndex == 33 || b.textureSlot == kEnvCubeSlot) s.global = 2;      // env cubemap
             else if (b.textureIndex == 37 || b.textureSlot == 15) s.global = 3;           // shadow map -> white
+            else if (b.textureIndex == kRoleSceneDepth) s.global = 4;                    // scene depth -> far
             else s.global = 1;                                                            // light buffer / other -> grey
         } else if (b.textureIndex < m.textures.size()) {
             uint32_t fid = m.textures[b.textureIndex].fileId;

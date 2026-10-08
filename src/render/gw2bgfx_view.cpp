@@ -49,6 +49,7 @@ void set_playing(bool) {}
 bool is_playing() { return false; }
 int skinned_draw_count() { return 0; }
 void render() {}
+bool save_screenshot(const char*) { return false; }
 bool bake_model_textures(ModelPreview&) { return false; }
 bool bake_model_atlas(ModelPreview&, uint32_t, const std::set<uint32_t>*) { return false; }
 const std::string& last_status() { return kUnavailable; }
@@ -61,6 +62,7 @@ const std::string& last_status() { return kUnavailable; }
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <map>
 #include <set>
 #include <span>
@@ -72,6 +74,7 @@ const std::string& last_status() { return kUnavailable; }
 
 #include <xatlas.h>
 
+#include "castlemist/extract/entry_extractor.h"
 #include "castlemist/format/struct_template.h"
 #include "castlemist/native/cmp_decompress_method0.hpp"
 #include "castlemist/native/granny_pose.hpp"
@@ -171,7 +174,26 @@ struct Callback : public bgfx::CallbackI {
     uint32_t cacheReadSize(uint64_t) override { return 0; }
     bool cacheRead(uint64_t, void*, uint32_t) override { return false; }
     void cacheWrite(uint64_t, const void*, uint32_t) override {}
-    void screenShot(const char*, uint32_t, uint32_t, uint32_t, const void*, uint32_t, bool) override {}
+    /// Writes the BGRA backbuffer bgfx hands back as a 32-bit BMP. Only ever
+    /// requested by save_screenshot(), the headless GW2_GAMESHOT hook.
+    void screenShot(const char* path, uint32_t w, uint32_t h, uint32_t pitch, const void* data, uint32_t,
+                    bool yflip) override {
+        shotDone = true;
+        FILE* f = std::fopen(path, "wb");
+        if (!f) return;
+        const uint32_t row = w * 4, img = row * h;
+        uint8_t hdr[54] = {'B', 'M'};
+        auto put32 = [&](int at, uint32_t v) { for (int i = 0; i < 4; ++i) hdr[at + i] = uint8_t(v >> (8 * i)); };
+        put32(2, 54 + img); put32(10, 54); put32(14, 40); put32(18, w);
+        put32(22, uint32_t(-int32_t(h)));  // negative height: rows top-down
+        hdr[26] = 1; hdr[28] = 32; put32(34, img);
+        std::fwrite(hdr, 1, sizeof hdr, f);
+        const uint8_t* px = static_cast<const uint8_t*>(data);
+        for (uint32_t y = 0; y < h; ++y)
+            std::fwrite(px + size_t(yflip ? h - 1 - y : y) * pitch, 1, row, f);
+        std::fclose(f);
+    }
+    bool shotDone = false;
     void captureBegin(uint32_t, uint32_t, uint32_t, bgfx::TextureFormat::Enum, bool) override {}
     void captureEnd() override {}
     void captureFrame(const void*, uint32_t) override {}
@@ -191,6 +213,9 @@ struct Draw {
     /// ModelMaterialCPU::index uses, so bake_model_textures() can group draws
     /// by material and write results back into the right exporter slot.
     uint32_t materialIndex = 0;
+    /// The AMAT pass this draw is: 0 for most, 1+ for a material that also
+    /// paints in a later pass (see the load loop). The bakes read pass 0 only.
+    uint32_t passIndex = 0;
     /// A CPU-side copy of this geoset's raw vertex bytes (in `layout`'s
     /// format), kept only so bake_model_textures() can build a UV-remapped
     /// copy later -- render() itself only ever touches `vb`. Discarded nowhere
@@ -257,9 +282,16 @@ struct State {
     /// Owned textures, by fileId, so a model swap can free them. The 1x1
     /// stand-ins are tracked separately and outlive individual models.
     std::map<uint32_t, bgfx::TextureHandle> texByFileId;
+    /// Handles in texByFileId that are cubemaps (DDS cube files), so a draw can
+    /// match each texture to the dimension its sampler declares.
+    std::set<uint16_t> cubeTextures;
     bgfx::TextureHandle texWhite = BGFX_INVALID_HANDLE;
     bgfx::TextureHandle texCube = BGFX_INVALID_HANDLE;
     bgfx::TextureHandle texLightBuf = BGFX_INVALID_HANDLE;
+    /// AMAT role 35 (gSs12): scene depth for the soft-particle fade, or a
+    /// stipple dither. One R32F texel holding a far depth -- see
+    /// game_shader.cpp kRoleSceneDepth for why that is right for both readers.
+    bgfx::TextureHandle texFarDepth = BGFX_INVALID_HANDLE;
     /// bgfx dedupes uniforms by name internally, but the host still needs a
     /// handle per name to call setUniform. Kept for the device's lifetime.
     std::map<std::string, bgfx::UniformHandle> uniforms;
@@ -377,6 +409,7 @@ void destroyDraws() {
     for (auto& kv : g.texByFileId)
         if (bgfx::isValid(kv.second) && kv.second.idx != g.texWhite.idx) bgfx::destroy(kv.second);
     g.texByFileId.clear();
+    g.cubeTextures.clear();
 
     // The rig belongs to the model, not the device: drop it with the draws so a
     // model swap cannot leave the next one posed by the previous one's clips, or
@@ -518,6 +551,9 @@ bool initialize(HWND target_window) {
         lightBuf->data[0] = lightBuf->data[1] = lightBuf->data[2] = 64; // ~0.25 * 255
         lightBuf->data[3] = 255;
         g.texLightBuf = bgfx::createTexture2D(1, 1, false, 1, bgfx::TextureFormat::RGBA8, 0, lightBuf);
+        const float farDepth = 1.0e6f;
+        g.texFarDepth = bgfx::createTexture2D(1, 1, false, 1, bgfx::TextureFormat::R32F, 0,
+                                              bgfx::copy(&farDepth, sizeof farDepth));
     }
 
     bx::mtxIdentity(g.rot);
@@ -537,12 +573,23 @@ void shutdown() {
     if (bgfx::isValid(g.texWhite)) bgfx::destroy(g.texWhite);
     if (bgfx::isValid(g.texCube)) bgfx::destroy(g.texCube);
     if (bgfx::isValid(g.texLightBuf)) bgfx::destroy(g.texLightBuf);
+    if (bgfx::isValid(g.texFarDepth)) bgfx::destroy(g.texFarDepth);
     g.texWhite = BGFX_INVALID_HANDLE;
     g.texCube = BGFX_INVALID_HANDLE;
     g.texLightBuf = BGFX_INVALID_HANDLE;
+    g.texFarDepth = BGFX_INVALID_HANDLE;
     bgfx::shutdown();
     g.inited = false;
     g.hwnd = nullptr;
+}
+
+bool save_screenshot(const char* path) {
+    if (!g.inited || !path) return false;
+    g_callback.shotDone = false;
+    bgfx::requestScreenShot(BGFX_INVALID_HANDLE, path);
+    // The backbuffer is read back a frame or two after the request.
+    for (int i = 0; i < 6 && !g_callback.shotDone; ++i) render();
+    return g_callback.shotDone;
 }
 
 void on_resize(int width, int height) {
@@ -767,49 +814,32 @@ bool set_model(Gw2Dat& dat, uint32_t mft_index, std::string& error) {
     g.distMul = 3.0f;
     buildWorld();
 
-    // Textures. base - 1: get_by_base_id returns a 1-based baseId, so reading
-    // `base` lands on the next archive entry -- which parses as a neighbouring
-    // ATEX just often enough to bind the wrong image silently.
-    // Header-only peek at one MFT row's atex, for the resolution-pair check.
-    auto peekAtex = [&](size_t row, int& w, int& h, std::string& fmt) -> bool {
-        if (row >= dat.mft_data_list.size()) return false;
-        try {
-            std::vector<uint8_t> b = decomp(dat, (uint32_t)row);
-            if (b.size() >= 4 && b[0] == 0x43) b[0] = 0x41;   // CTEX -> ATEX alias
-            castlemist::atex::Texture t = castlemist::atex::parse(b.data(), b.size());
-            w = t.width; h = t.height; fmt = t.fmt_name;
-            return w > 0 && h > 0;
-        } catch (const std::exception&) { return false; }
-    };
-
-    // GW2 ships most textures as a PAIR of adjacent MFT rows: a reduced member
-    // at baseId B-1 and the full one at B, same format, exactly double the
-    // dimensions. Which member a material's fileId names is NOT consistent, so a
-    // loader that takes the row verbatim samples the half-size copy on some
-    // materials and the full one on others.
-    //
-    // The D3D views already resolve this (texture_source.cpp resolve_res_index,
-    // defaulting to full). This surface did not, which is why the same model can
-    // come out softer here than in "Full" / "Shader".
-    auto fullResRow = [&](size_t row) -> size_t {
-        int w0, h0; std::string f0;
-        if (!peekAtex(row, w0, h0, f0)) return row;
-        int w1, h1; std::string f1;
-        // A double-size sibling one row above => this row is the reduced member.
-        if (peekAtex(row + 1, w1, h1, f1) && f1 == f0 && w1 == 2 * w0 && h1 == 2 * h0)
-            return row + 1;
-        return row;
-    };
-
+    // Textures. Which archive row to load is the same decision the D3D views
+    // make (texture_entry, texture_source.cpp): GW2 ships most textures as a
+    // reduced/full PAIR, and the full copy is the entry holding fileId F+1 --
+    // not merely the next archive row. Pairing by row order alone once loaded
+    // an unrelated double-size texture as Frostfang's decal and painted the
+    // axe black and red here while the D3D views drew it correctly.
     auto loadTexture = [&](uint32_t fileId) -> bgfx::TextureHandle {
         auto it = g.texByFileId.find(fileId);
         if (it != g.texByFileId.end()) return it->second;
         bgfx::TextureHandle h = BGFX_INVALID_HANDLE;
-        uint32_t base = get_by_base_id(dat, fileId);
-        if (base && base - 1 < dat.mft_data_list.size()) {
+        const size_t row = texture_entry(dat, fileId, /*full=*/true);
+        if (row < dat.mft_data_list.size()) {
             try {
-                const size_t row = fullResRow(base - 1);
                 std::vector<uint8_t> bytes = decomp(dat, (uint32_t)row);
+                // A plain DDS in the archive -- the material cubemaps (Twilight's
+                // 221582/221585 are DXT1 cubes) ship this way, not as ATEX.
+                // bimg parses the container, cube faces and mips included.
+                if (bytes.size() >= 4 && std::memcmp(bytes.data(), "DDS ", 4) == 0) {
+                    bgfx::TextureInfo info{};
+                    h = bgfx::createTexture(bgfx::copy(bytes.data(), (uint32_t)bytes.size()),
+                                            BGFX_SAMPLER_MIN_ANISOTROPIC | BGFX_SAMPLER_MAG_ANISOTROPIC, 0, &info);
+                    if (bgfx::isValid(h) && info.cubeMap) g.cubeTextures.insert(h.idx);
+                    if (!bgfx::isValid(h)) h = g.texWhite;
+                    g.texByFileId[fileId] = h;
+                    return h;
+                }
                 if (bytes.size() >= 4 && bytes[0] == 0x43) bytes[0] = 0x41;
                 castlemist::atex::Texture t = castlemist::atex::parse(bytes.data(), bytes.size());
                 castlemist::atex::Image im = castlemist::atex::decode(t, 0);
@@ -938,86 +968,114 @@ bool set_model(Gw2Dat& dat, uint32_t mft_index, std::string& error) {
         const uint32_t variant =
             vsVariantFromMeshFlags(skinned ? (GR_FVF_WEIGHTS | GR_FVF_GROUP) : 0u, 0u, false);
 
-        // Pass 0 is the one that paints; later passes need a depth prepass we
-        // do not run.
-        AmatSelection sel = amatSelectEffect(pkg, tech, 0, effectToken, variant);
-        if (!sel.ok) { ++skipped; continue; }
+        // One draw per pass the client draws, in pass order -- not pass 0 alone.
+        // A material may paint nothing in pass 0: AMAT 543769 (Holographic Dawn's
+        // blade) keeps only depth/StencilId effects there (write mask A, then 0
+        // under its material flags) and its glow is pass 1. Pass 0 still lays
+        // the depth the later pass tests against, so both are drawn; a pass the
+        // material opts out of fails selection and is skipped.
+        bool drew = false;
+        for (const auto& [passIdx, sel] : amatSelectPasses(pkg, tech, effectToken, variant)) {
+            const AmatShaderBinary& vsBin = pkg.shaders[sel.vertexShaderIndex].dx11Shader;
+            const AmatShaderBinary& psBin = pkg.shaders[sel.pixelShaderIndex].dx11Shader;
 
-        const AmatShaderBinary& vsBin = pkg.shaders[sel.vertexShaderIndex].dx11Shader;
-        const AmatShaderBinary& psBin = pkg.shaders[sel.pixelShaderIndex].dx11Shader;
+            bgfx::ShaderHandle vsh = bgfx::createShader(bgfx::copy(vsBin.data.data(), (uint32_t)vsBin.data.size()));
+            bgfx::ShaderHandle fsh = bgfx::createShader(bgfx::copy(psBin.data.data(), (uint32_t)psBin.data.size()));
+            if (!bgfx::isValid(vsh) || !bgfx::isValid(fsh)) continue;
 
-        bgfx::ShaderHandle vsh = bgfx::createShader(bgfx::copy(vsBin.data.data(), (uint32_t)vsBin.data.size()));
-        bgfx::ShaderHandle fsh = bgfx::createShader(bgfx::copy(psBin.data.data(), (uint32_t)psBin.data.size()));
-        if (!bgfx::isValid(vsh) || !bgfx::isValid(fsh)) { ++skipped; continue; }
+            Draw d;
+            d.program = bgfx::createProgram(vsh, fsh, true);
+            if (!bgfx::isValid(d.program)) continue;
 
-        Draw d;
-        d.program = bgfx::createProgram(vsh, fsh, true);
-        if (!bgfx::isValid(d.program)) { ++skipped; continue; }
+            d.vsU = parseBgfxBlobUniforms(vsBin.data);
+            d.psU = parseBgfxBlobUniforms(psBin.data);
+            for (const auto& u : d.vsU) uniformFor(u);
+            for (const auto& u : d.psU) uniformFor(u);
 
-        d.vsU = parseBgfxBlobUniforms(vsBin.data);
-        d.psU = parseBgfxBlobUniforms(psBin.data);
-        for (const auto& u : d.vsU) uniformFor(u);
-        for (const auto& u : d.psU) uniformFor(u);
+            // Which registers the pixel shader declares as cubes -- read from its
+            // DXBC, since GW2's blobs leave the uniform texInfo at 0.
+            const auto psDims = dxbcResourceDimensions(psBin.data);
+            for (const auto& s : psBin.samplers) {
+                bgfx::TextureHandle h;
+                if (s.textureIndex < mat->textures.size()) h = loadTexture(mat->textures[s.textureIndex].fileId);
+                else if (s.textureIndex == 35)             h = g.texFarDepth;   // scene depth / stipple
+                else if (s.textureSlot == 13)              h = g.texCube;
+                else if (s.textureSlot == 14)              h = g.texLightBuf; // gSs14: see texLightBuf's own doc comment
+                else                                       h = g.texWhite;
+                // Match the view to what the shader declares at this register: a
+                // TextureCube slot only ever gets a cube (the stand-in grey cube
+                // when the material's own failed to load), a 2D slot never gets
+                // one. A 2D view on a cube slot is an error the debug layer stops on.
+                auto dim = psDims.find(s.textureSlot);
+                // An undeclared register (scan found nothing) keeps whatever it had.
+                const bool slotIsCube = dim != psDims.end() && dim->second == kDxbcTextureCube;
+                const bool slotIsFlat = dim != psDims.end() && dim->second != kDxbcTextureCube;
+                const bool texIsCube = h.idx == g.texCube.idx || g.cubeTextures.count(h.idx) != 0;
+                if (slotIsCube && !texIsCube) h = g.texCube;
+                else if (slotIsFlat && texIsCube) h = g.texWhite;
+                d.textures.emplace_back((uint8_t)s.textureSlot, h);
+            }
 
-        for (const auto& s : psBin.samplers) {
-            bgfx::TextureHandle h;
-            if (s.textureIndex < mat->textures.size()) h = loadTexture(mat->textures[s.textureIndex].fileId);
-            else if (s.textureSlot == 13)              h = g.texCube;
-            else if (s.textureSlot == 14)              h = g.texLightBuf; // gSs14: see texLightBuf's own doc comment
-            else                                       h = g.texWhite;
-            d.textures.emplace_back((uint8_t)s.textureSlot, h);
+            // MODL material constants bind by NAME: the token32 decodes straight to
+            // the uniform's name (base-23, not a hash). Keyed by the shader's own
+            // spelling, matched through canonicalTokenName23 -- a `q` in a uniform
+            // name decodes as `v` (`stafreq` <- MODL `stafrev`).
+            for (const auto& cst : mat->constants) {
+                const std::string name = tokenDecode32(cst.name);
+                if (name.empty()) continue;
+                const Vec4 v{{cst.value[0], cst.value[1], cst.value[2], cst.value[3]}};
+                d.matConsts[name] = v;
+                for (const auto* us : {&d.vsU, &d.psU})
+                    for (const auto& u : *us)
+                        if (mdl::canonicalTokenName23(u.name) == name) d.matConsts[u.name] = v;
+            }
+
+            GrSurfaceState surf;
+            surf.materialToken = effectToken;
+            // NOT mat->materialFlags. That is ModelMaterialDataV*::materialFlags, a
+            // file-format field; GrSurfaceState::materialFlags is the runtime word
+            // *(surface->material + 28), which BgfxDraw_ComputeDepthState reads as a
+            // state override mask (0x200 = force DEPTH_TEST_GREATER, 0x800 = kill
+            // the RGB write mask). Feeding the file field in reads 0xA08 on every
+            // material of some models: nothing is drawn at all. Zero means "no
+            // overrides", which for pass 0 is LEQUAL + depth write + RGB|A.
+            surf.materialFlags = 0;
+            d.state = grComposeDrawState(*sel.effect, passIdx, surf).state;
+
+            // The same composition with the engine's two-sided bit, for
+            // State::forceTwoSided. Composing it rather than masking the cull field
+            // out of `d.state` afterwards keeps this on the client's own path:
+            // BgfxShader_SelectEffect (0x140BFDC40) guards the cull OR with
+            // `(materialFlags & 0x4000) == 0` and ORs `effect.renderState` in
+            // unconditionally afterwards, so masking would also strip any cull bits
+            // that came from renderState -- which the client would have kept.
+            // 0x4000 touches nothing else: neither grWriteMask (0x800 / 0x400) nor
+            // grComputeDepthState (0x80 / 0x100 / 0x200 / 0x1000 / 0x2000) reads it.
+            GrSurfaceState surfTwoSided = surf;
+            surfTwoSided.materialFlags = 0x4000u;
+            d.stateTwoSided = grComposeDrawState(*sel.effect, passIdx, surfTwoSided).state;
+
+            d.skinned = skinned;
+            d.rigidBone = rigidBone;
+            // Only the vertex-indexed path reads the slot table; a rigid draw has
+            // its bone in rigidBone and must not also upload a palette.
+            if (skinned) { d.boneSlots = boneSlots; ++g.skinnedDraws; }
+            else if (rigidBone >= 0) ++g.rigidDraws;
+
+            d.materialIndex = gs.materialIndex;
+            d.passIndex = passIdx;
+            d.vertexBytes = gs.vertexBytes;
+            d.layout = layout;
+
+            const bgfx::Memory* vmem = bgfx::copy(gs.vertexBytes.data(), (uint32_t)gs.vertexBytes.size());
+            d.vb = bgfx::createVertexBuffer(vmem, layout);
+            const bgfx::Memory* imem = bgfx::copy(gs.indices.data(), (uint32_t)(gs.indices.size() * 2));
+            d.ib = bgfx::createIndexBuffer(imem);
+            d.indexCount = (uint32_t)gs.indices.size();
+            g.draws.push_back(std::move(d));
+            drew = true;
         }
-
-        // MODL material constants bind by NAME: the token32 decodes straight to
-        // the uniform's name (base-23, not a hash).
-        for (const auto& cst : mat->constants) {
-            std::string name = tokenDecode32(cst.name);
-            if (!name.empty())
-                d.matConsts[name] = Vec4{{cst.value[0], cst.value[1], cst.value[2], cst.value[3]}};
-        }
-
-        GrSurfaceState surf;
-        surf.materialToken = effectToken;
-        // NOT mat->materialFlags. That is ModelMaterialDataV*::materialFlags, a
-        // file-format field; GrSurfaceState::materialFlags is the runtime word
-        // *(surface->material + 28), which BgfxDraw_ComputeDepthState reads as a
-        // state override mask (0x200 = force DEPTH_TEST_GREATER, 0x800 = kill
-        // the RGB write mask). Feeding the file field in reads 0xA08 on every
-        // material of some models: nothing is drawn at all. Zero means "no
-        // overrides", which for pass 0 is LEQUAL + depth write + RGB|A.
-        surf.materialFlags = 0;
-        d.state = grComposeDrawState(*sel.effect, 0, surf).state;
-
-        // The same composition with the engine's two-sided bit, for
-        // State::forceTwoSided. Composing it rather than masking the cull field
-        // out of `d.state` afterwards keeps this on the client's own path:
-        // BgfxShader_SelectEffect (0x140BFDC40) guards the cull OR with
-        // `(materialFlags & 0x4000) == 0` and ORs `effect.renderState` in
-        // unconditionally afterwards, so masking would also strip any cull bits
-        // that came from renderState -- which the client would have kept.
-        // 0x4000 touches nothing else: neither grWriteMask (0x800 / 0x400) nor
-        // grComputeDepthState (0x80 / 0x100 / 0x200 / 0x1000 / 0x2000) reads it.
-        GrSurfaceState surfTwoSided = surf;
-        surfTwoSided.materialFlags = 0x4000u;
-        d.stateTwoSided = grComposeDrawState(*sel.effect, 0, surfTwoSided).state;
-
-        d.skinned = skinned;
-        d.rigidBone = rigidBone;
-        // Only the vertex-indexed path reads the slot table; a rigid draw has
-        // its bone in rigidBone and must not also upload a palette.
-        if (skinned) { d.boneSlots = std::move(boneSlots); ++g.skinnedDraws; }
-        else if (rigidBone >= 0) ++g.rigidDraws;
-
-        d.materialIndex = gs.materialIndex;
-        d.vertexBytes = gs.vertexBytes;
-        d.layout = layout;
-
-        const bgfx::Memory* vmem = bgfx::copy(gs.vertexBytes.data(), (uint32_t)gs.vertexBytes.size());
-        d.vb = bgfx::createVertexBuffer(vmem, layout);
-        const bgfx::Memory* imem = bgfx::copy(gs.indices.data(), (uint32_t)(gs.indices.size() * 2));
-        d.ib = bgfx::createIndexBuffer(imem);
-        d.indexCount = (uint32_t)gs.indices.size();
-        g.draws.push_back(std::move(d));
+        if (!drew) ++skipped;
     }
 
     if (g.draws.empty()) {
@@ -1074,12 +1132,32 @@ void render() {
     float worldView[16];
     bx::mtxMul(worldView, g.world, view);
 
+    // Park the model where the client parks its Equipment Preview: 10 000 units
+    // down Z (gw2-preview-render.md, `translate(0, y, z*0.85 - 10000)`), with the
+    // view taking the inverse so WorldView -- and every pixel of a shader that
+    // does not read absolute world position -- is unchanged. The ones that do
+    // read it need this: AMAT 543769's hologram fades out within ~24 units of
+    // z = 0, which at the origin was the whole blade. Everything the shaders see
+    // as world space (World, the skin palette, View, ViewProjection, the camera)
+    // moves together; `worldView` above is already the parked product.
+    float world[16];
+    {
+        float park[16], unpark[16], v[16];
+        bx::mtxTranslate(park, 0.0f, 0.0f, -10000.0f);
+        bx::mtxTranslate(unpark, 0.0f, 0.0f, 10000.0f);
+        bx::mtxMul(world, g.world, park);
+        bx::mtxMul(v, unpark, view);
+        std::memcpy(view, v, sizeof view);
+        bx::mtxMul(viewProj, view, proj);
+    }
+    const float parkedEye[3] = {eye[0], eye[1], eye[2] - 10000.0f};
+
     // GW2's shaders want the transpose of what bx builds: bx is row-vector
     // (`v * M`), GW2's HLSL multiplies `mul(M, v)`. Uploaded as bx builds them,
     // every vertex lands off screen.
     float viewProjT[16], worldT[16], worldViewT[16], viewT[16];
     bx::mtxTranspose(viewProjT, viewProj);
-    bx::mtxTranspose(worldT, g.world);
+    bx::mtxTranspose(worldT, world);
     bx::mtxTranspose(worldViewT, worldView);
     // The SKINNED vertex shader asks for `View`, where the plain one asks for
     // `World` -- both at cbuffer offset 160. It was not in the fed set at all, so
@@ -1142,7 +1220,7 @@ void render() {
         if (posed && d.rigidBone >= 0 && d.rigidBone < (int)g.pose.size()) {
             float sk[16], dw[16], dwv[16];
             castlemist::granny::skinMatrix(g.poseBones[d.rigidBone], g.pose[d.rigidBone], sk);
-            bx::mtxMul(dw, sk, g.world);
+            bx::mtxMul(dw, sk, world);
             bx::mtxMul(dwv, dw, view);
             bx::mtxTranspose(drawWorldT, dw);
             bx::mtxTranspose(drawWorldViewT, dwv);
@@ -1195,11 +1273,11 @@ void render() {
                         // under the trackball instead of pinned in place.
                         float combined[16];
                         if (!posed || bone < 0 || bone >= (int)g.pose.size()) {
-                            std::memcpy(combined, g.world, sizeof combined);
+                            std::memcpy(combined, world, sizeof combined);
                         } else {
                             float sk[16];
                             castlemist::granny::skinMatrix(g.poseBones[bone], g.pose[bone], sk);
-                            bx::mtxMul(combined, sk, g.world);
+                            bx::mtxMul(combined, sk, world);
                         }
                         // Transposed last, because GW2's HLSL multiplies
                         // mul(M, v) -- the same reason World/ViewProjection go up
@@ -1210,8 +1288,16 @@ void render() {
                     continue;
                 }
                 if (u.name == "CameraPosition") {
-                    const float v[4] = {eye[0], eye[1], eye[2], 1.0f};
+                    const float v[4] = {parkedEye[0], parkedEye[1], parkedEye[2], 1.0f};
                     bgfx::setUniform(h, v);
+                    continue;
+                }
+                // (1/w, 1/h, w, h), reciprocals first -- measured, see
+                // gw2-engine-uniform-values.md. Left unset it was zero, which
+                // zeroed every screen-space fetch and every soft-particle depth.
+                if (u.name == "ScreenDims") {
+                    const float sd[4] = {1.0f / float(g.width), 1.0f / float(g.height), float(g.width), float(g.height)};
+                    bgfx::setUniform(h, sd);
                     continue;
                 }
                 if (u.name == "Time") {
@@ -1292,7 +1378,8 @@ bool bake_model_textures(ModelPreview& model) {
     // several geosets (common -- Jormag's hide materials span multiple) bakes
     // all of them into the same target.
     std::map<uint32_t, std::vector<const Draw*>> byMaterial;
-    for (const Draw& d : g.draws) byMaterial[d.materialIndex].push_back(&d);
+    for (const Draw& d : g.draws)
+        if (d.passIndex == 0) byMaterial[d.materialIndex].push_back(&d);
 
     // Snapshot every diffuseTex an in-use material references BEFORE any
     // baking starts. GW2 materials that share one diffuseTex are not
@@ -1608,7 +1695,8 @@ bool bake_model_atlas(ModelPreview& model, uint32_t resolution, const std::set<u
     // (missing AMAT, DXBC failed to compile, ...) have no entry and are left
     // completely untouched below -- same fallback as bake_model_textures.
     std::map<uint32_t, const Draw*> repDraw;
-    for (const Draw& d : g.draws) repDraw.try_emplace(d.materialIndex, &d);
+    for (const Draw& d : g.draws)
+        if (d.passIndex == 0) repDraw.try_emplace(d.materialIndex, &d);
 
     // model.meshes indices grouped by material, source of truth for both the
     // new UV unwrap and the exported geometry (g.draws can be missing entries
@@ -1939,7 +2027,18 @@ bool bake_model_atlas(ModelPreview& model, uint32_t resolution, const std::set<u
         // them again via occlusionTexture (material_export.cpp) would be
         // stale, redundant data pointing at UV0-relative channels that no
         // longer apply once this material's geometry has a brand new UV.
-        mat->extraTextures.clear();
+        // Except the glow: the bake leaves it out of the diffuse, and it is
+        // the export's emissive (material_export.cpp). A glowmask on another
+        // UV set still lines up -- only UV0 is replaced -- and the "glow"
+        // beside it then only lends its colour, wherever it samples.
+        bool keptMask = std::any_of(mat->extraTextures.begin(), mat->extraTextures.end(), [](const auto& ex) {
+            return ex.role == "glowmask" && ex.uvIndex != 0;
+        });
+        std::erase_if(mat->extraTextures, [&](const auto& ex) {
+            if (ex.role == "glowmask") return ex.uvIndex == 0;
+            if (ex.role == "glow") return ex.uvIndex == 0 && !keptMask;
+            return true;
+        });
 
         // Carry the original normal map along too, remapped into this SAME
         // new UV layout -- the real shader already consumed it to light the

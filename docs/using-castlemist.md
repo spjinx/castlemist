@@ -103,7 +103,9 @@ copy any of it.
 | Export Compressed / Decompressed... | save the selected entry's raw bytes |
 | Export glTF (Model)... | the selected model as `.glb` with its textures |
 | Export glTF (Model, Baked UV Atlas)... | the same, with all materials baked into one atlas texture |
+| Export for VRChat (Model)... | the selected model as a folder for Unity/VRChat: `.glb`, `.fbx` + `.blend` (needs Blender), `Textures` (Poiyomi-ready PNGs) and `materials.json`; the name you type becomes the folder name |
 | Export glTF (Map)... | the selected map scene as `.glb` |
+| Export Skybox (Map)... | the selected map's sky as a folder of PNGs: `sky.json`, and per sky mode (`day`, `night`, `mode2`, `mode3`) `baked/equirect.png` + six `baked/` faces, plus `skybox/` faces when the map stores its own cube; the name you type becomes the folder name |
 
 ### Tools
 
@@ -134,9 +136,13 @@ gw2dat_cli sniff   --dat $dat --base-id 477426
 # Save it
 gw2dat_cli extract --dat $dat --base-id 477426 --out model.bin       # decompressed bytes
 gw2dat_cli texture --dat $dat --base-id 46403  --out icon.png        # decoded texture
+gw2dat_cli model   --dat $dat --file-id 1766522 --template dumps\packfile\gw2_packfile.json --glb dagger.glb
+gw2dat_cli model   --dat $dat --file-id 1766522 --template dumps\packfile\gw2_packfile.json --vrchat out   # folder out\model_1766522 for VRChat
+gw2dat_cli skybox  --dat $dat --file-id 187611  --template dumps\packfile\gw2_packfile.json --out skies    # folder skies\map_187611 (--name, --size <face px>)
 
 # What uses a file, with names and chat links (needs the content map; --names goes online)
 gw2dat_cli users --file-id 1200313 --names
+gw2dat_cli users --content-type 66 --content-id 7562                 # the reverse: a skin's files
 
 # Characters (API key saved in the Character Ripper)
 gw2dat_cli character --key-name main                                  # list characters
@@ -144,6 +150,10 @@ gw2dat_cli character --key-name main --character "Name" --out m.json  # fetch on
 gw2dat_cli character-assemble --manifest m.json --dat $dat --out char.glb
 gw2dat_cli character-vrchat   --manifest m.json --dat $dat --out avatar.fbx
 ```
+
+In Unity, put a skybox export on a `Skybox/Panoramic` material with
+`<mode>/baked/equirect.png`, or on `Skybox/6 Sided` with the six faces
+(`baked/` or `skybox/`); `sky.json` lists which face goes in which slot.
 
 `gw2index.exe` builds the index from the command line
 (getting-started §6), and the `mcp\` folder exposes the archive and the index to

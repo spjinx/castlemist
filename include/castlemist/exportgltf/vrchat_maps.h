@@ -1,0 +1,98 @@
+/// @file
+/// @brief Poiyomi-ready texture maps for one model material, built in memory
+///        from its decoded layers, blend and shader profile.
+///
+/// The rules are the "3. Map building" table of
+/// docs/superpowers/specs/2026-10-07-vrchat-model-export-design.md; the
+/// per-profile channel meanings come from docs/research/gw2-material-channels.md
+/// section 4. Nothing here touches the disk: the VRChat export writes the maps.
+/// @ingroup exportgltf
+
+#pragma once
+
+#include "castlemist/exportgltf/blend_mode.h"
+#include "castlemist/exportgltf/shader_profiles.h"
+#include "castlemist/extract/model_types.h"
+
+#include <array>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace castlemist::exportgltf {
+
+/// One output map. `present == false` means it was not built (no source, a
+/// layer that failed to decode, or a 4x4 placeholder that stands for a constant).
+struct MapSlot {
+    ModelTextureCPU tex;     ///< RGBA8 pixels (`tex.fileId` is the source's fileId).
+    uint8_t uv = 0;          ///< UV set the map samples.
+    uint32_t fileId = 0;     ///< Source dat fileId (0 when built from several sources).
+    std::string source;      ///< What it was built from: "diffuse", "glow", "mask.A", ...
+    bool present = false;
+};
+
+/// Every map and recorded value of one material.
+struct MaterialMaps {
+    MapSlot baseColor, normal, packed, emissionMap, emissionMask, emissionBaked, distortion;
+    /// The decal layer on its own UV: RGB = decal.rgb, A = how much decal covers
+    /// the diffuse (DecalOverDiffuse: saturate(2a) [x mask]; DiffuseOverDecal: 1 - a).
+    MapSlot decal;
+    /// "decal-over-diffuse" / "diffuse-over-decal" when `decal` is present, else empty.
+    std::string decalMode;
+    /// The decal mask channel as greyscale on the mask's own UV, when that UV is
+    /// not the decal's (19910: decalmask on UV2): the decal's A must be multiplied
+    /// by it in the shader. `decalMaskChannel` names the source channel ("R").
+    MapSlot decalMask;
+    std::string decalMaskChannel;
+    /// Opacity or cutout on its own UV set, greyscale in RGB (A 255): the shader
+    /// multiplies the BaseColor alpha by it (opacity) or discards below
+    /// `alphaMaskCutoff` (cutout layer: 511663 `cutout.R x cutout.A`, 53858
+    /// `cutout.R`). Its `source` names the formula.
+    MapSlot alphaMask;
+    float alphaMaskCutoff = -1.0f;  ///< -1 = opacity, not a cutoff
+    /// A view-angle rim glow (1465623): described, not mapped. `color` is the average
+    /// of the ramp's brighter half (texel bytes / 255, no sRGB decode); the gate is a
+    /// greyscale `mask` map or, for a placeholder, `maskConstant` (0-1). `scroll` is
+    /// the raw `voffset`. The ramp itself ships as the extra "ramp" (use "rim-ramp").
+    struct Rim {
+        bool present = false;
+        std::array<float, 3> color = {1, 1, 1};
+        MapSlot mask;
+        std::optional<float> maskConstant;
+        std::string maskSource;  ///< "mask.R"
+        std::optional<float> scroll;
+    } rim;
+    /// A world-normal projector overlay (77238: moss/snow): the layer as its own map,
+    /// described, not baked. `falloff` is `prjfall` (x, y); coverage is `saturate(2a)`.
+    /// A 4x4 placeholder layer sets `projectorConstant` (RGBA bytes) instead of the map.
+    MapSlot projector;
+    std::optional<std::array<float, 2>> projectorFalloff;
+    std::optional<std::array<uint8_t, 4>> projectorConstant;
+    /// A layer kept raw, by role, with a hint of how the game uses it ("detail-multiply2x", ...).
+    struct Extra { std::string role, use; MapSlot slot; };
+    std::vector<Extra> extras;
+    /// Where each packed channel came from, e.g. "mask.R", "diffuseAlpha",
+    /// "specular.A", "conduct", "mtlness", "specstr", "envcr", "none".
+    std::string metalSource, smoothSource, reflectionSource, specularSource;
+    /// The emission colour, peak 1: the glow map's average colour (or a placeholder
+    /// glow's constant), x a uniform glowmask; for a decal glow, `glowcol x 2`
+    /// normalised (BelowHalf, white without glowcol) or white (AboveHalf).
+    std::array<float, 3> emissionColor = {1, 1, 1};
+    /// Multiplier over emissionColor: 1, except a decal glow's `glowcol x 2`,
+    /// whose peak lands here so the colour keeps its hue at peak 1.
+    float emissionStrength = 1.0f;
+    std::optional<std::array<float, 3>> specularTint, reflectionTint;  ///< speccp / envcr|envcp RGB
+    std::vector<std::string> warnings;
+};
+
+/// Build the maps of `mat` (one of `model.materials`) for Poiyomi.
+MaterialMaps build_material_maps(const ModelPreview& model, const ModelMaterialCPU& mat,
+                                 const BlendInfo& blend, const ShaderProfile& profile);
+
+/// The average colour of a glow texture, scaled so its brightest channel is 1:
+/// the hue the glow paints its mask with, at full strength. White when the
+/// texture is missing or black. Shared with the glTF material export.
+std::array<double, 3> glow_colour(const ModelPreview& model, int texIndex);
+
+}  // namespace castlemist::exportgltf

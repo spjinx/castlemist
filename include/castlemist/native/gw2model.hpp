@@ -15,6 +15,7 @@
 #ifndef GW2MODEL_HPP
 #define GW2MODEL_HPP
 
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -653,6 +654,22 @@ inline std::string decodeToken23(uint32_t token) {
     return out;
 }
 
+/// @brief A name as its token would decode: lowercase, with `q` read as `v`.
+///
+/// The engine's alphabet carries `v` in the slot alphabetical order gives `q`
+/// ("...p v r s t u w x y"), and its encoder sends both letters to that digit.
+/// A shader uniform spelled with `q` therefore shares its token with the MODL
+/// constant that feeds it, yet ::decodeToken23 can only give back `v`: AMAT
+/// 543769's `stafreq` is fed by token 0xB628D31D, which decodes to `stafrev`.
+/// Compare names through this, never raw, or every `q` uniform stays unbound.
+inline std::string canonicalTokenName23(std::string name) {
+    for (char& ch : name) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        if (ch == 'q') ch = 'v';
+    }
+    return name;
+}
+
 /// @brief Rank an AMAT technique's quality token; higher is better.
 ///
 /// `techniques[]` are QUALITY LEVELS, not passes (selector `sub_140BFBFD0`
@@ -1221,6 +1238,233 @@ public:
         else out.fillIntensity = 0;
         out.lightCount = (int)lights.size();
         out.present = true;
+        return out;
+    }
+
+    // Map sky: what the `env` chunk's dataGlobal stores about the global sky, as
+    // fileIds and raw parameters -- no decoding, no maths (docs/research/gw2-sky.md
+    // says what they mean). Same template walk as parseMapEnv: env -> dataGlobal
+    // -> PackMapEnvDataGlobalV* -> skyModeTex[] / skyModeCubeTex[] / starFile /
+    // clouds->layers[] / skyCards->cards[] / sky. A field the resolved version
+    // lacks keeps its default: skyModeCubeTex only exists from env v76, so older
+    // maps come back with every cube face 0.
+    struct MapSkyCardAttr {                  // PackMapEnvDataSkyCardAttributesV*
+        uint32_t texture = 0;
+        float azimuth = 0, latitude = 0, density = 0, hazeDensity = 0, minHaze = 0,
+              lightIntensity = 0, brightness = 0, speed = 0;
+        float scale[2] = {0, 0};
+        float textureUV[4] = {0, 0, 1, 1};
+        uint8_t flags = 0;
+    };
+    struct MapSkyCard {                      // PackMapEnvDataSkyCardV*
+        std::string name;
+        uint32_t flags = 0;
+        float location[3] = {0, 0, 0};
+        MapSkyCardAttr day, night;
+        uint32_t materialFile = 0;               // material->filename, 0 if none
+    };
+    struct MapSkyCloudAttr { float brightness = 0, density = 0, haze = 0, lightIntensity = 0,
+                             velocity[2] = {0, 0}, fadeWidth = 0, fadeEnd = 0; };
+    struct MapSkyCloudLayer {                // PackMapEnvDataLayerV*
+        std::string name;
+        uint32_t texture = 0;
+        float altitude = 0, cutOut = 0, depth = 0, extent = 0, scale = 0;
+        std::vector<MapSkyCloudAttr> attributes; // one per preset, as stored
+    };
+    struct MapSkyMode {
+        uint32_t ne = 0, sw = 0, top = 0;        // skyModeTex[i]
+        uint32_t cube[6] = {0, 0, 0, 0, 0, 0};   // skyModeCubeTex[i], stored order E, W, N, S, B, T
+        bool hasPanorama() const { return ne && sw && top; }
+        bool hasCube() const {                   // all six non-zero
+            for (uint32_t f : cube) if (!f) return false;
+            return true;
+        }
+    };
+    struct MapSkyParams {                        // PackMapEnvDataSky*
+        uint8_t flags = 0;
+        float dayBrightness = 0, dayHazeBottom = 0, dayHazeDensity = 0, dayHazeFalloff = 0,
+              dayLightIntensity = 0, dayStarDensity = 0,
+              nightBrightness = 0, nightHazeBottom = 0, nightHazeDensity = 0, nightHazeFalloff = 0,
+              nightLightIntensity = 0, nightStarDensity = 0, verticalOffset = 0;
+    };
+    struct MapSky {
+        bool present = false;                    // env chunk + dataGlobal found
+        uint16_t envVersion = 0;
+        std::vector<MapSkyMode> modes;           // index = sky mode; max(len(skyModeTex), len(skyModeCubeTex))
+        uint32_t starFile = 0;
+        std::vector<MapSkyCloudLayer> clouds;
+        std::vector<MapSkyCard> cards;
+        MapSkyParams params;
+    };
+
+    MapSky parseMapSky() {
+        MapSky out;
+        std::string root; uint16_t ver = 0;
+        size_t env = findChunk("env", &root, &ver);
+        if (!env || root.empty()) return out;
+        size_t off; json f;
+        if (!fieldOffset(root, "dataGlobal", off, f)) return out;
+        size_t g = follow(env + off);
+        if (!g) return out;
+        std::string gt = resolveVariant("PackMapEnvDataGlobal", ver);
+        if (gt.empty()) return out;
+        out.present = true;
+        out.envVersion = ver;
+
+        // Nested type names come from the field itself (element/target/type), so
+        // every version's own layout is used.
+        auto subType = [](const json& fj, const char* key) -> std::string {
+            return (fj.contains(key) && fj[key].is_object()) ? fj[key].value("struct", std::string()) : std::string();
+        };
+        // filename field -> fileId (0 if absent from this version or null)
+        auto fileAt = [&](const std::string& t, const char* name, size_t base) -> uint32_t {
+            size_t o; json fj;
+            return fieldOffset(t, name, o, fj) ? decodeFilenameAt(base + o) : 0;
+        };
+        // wchar_ptr field -> string ("" if absent or null)
+        auto nameAt = [&](const std::string& t, const char* name, size_t base) -> std::string {
+            size_t o; json fj;
+            return fieldOffset(t, name, o, fj) ? readWString(follow(base + o)) : std::string();
+        };
+        // array_ptr field -> element type, base, count, stride. A count that
+        // would run past the file is garbage: treated as empty.
+        struct Arr { std::string type; size_t base = 0; uint32_t n = 0; int size = 0; };
+        auto arrayField = [&](const std::string& t, const char* name, size_t base) -> Arr {
+            Arr a; size_t o; json fj;
+            if (!fieldOffset(t, name, o, fj)) return a;
+            a.type = subType(fj, "element");
+            a.size = typeSize(a.type);
+            a.base = arrayAt(base + o, a.n);
+            if (!a.base || a.size <= 0 || a.base + (uint64_t)a.n * a.size > n_) a.n = 0;
+            return a;
+        };
+        // ptr field -> target struct start (0 if absent or null), its type in `tt`
+        auto ptrField = [&](const std::string& t, const char* name, size_t base, std::string& tt) -> size_t {
+            size_t o; json fj;
+            if (!fieldOffset(t, name, o, fj)) return 0;
+            tt = subType(fj, "target");
+            return tt.empty() ? 0 : follow(base + o);
+        };
+        auto rdFloat4 = [&](const std::string& t, const char* name, size_t base, float o4[4]) {
+            size_t a; json fj;
+            if (fOff(t, name, base, a, fj)) for (int k = 0; k < 4; ++k) o4[k] = rdf(a + 4 * k);
+        };
+
+        // Each section in its own try: one bad section doesn't drop the others.
+        try {
+            static const char* kCube[6] = {"texPathE", "texPathW", "texPathN", "texPathS", "texPathB", "texPathT"};
+            Arr tex = arrayField(gt, "skyModeTex", g);
+            Arr cube = arrayField(gt, "skyModeCubeTex", g);
+            out.modes.resize(std::max(tex.n, cube.n));
+            for (uint32_t i = 0; i < tex.n; ++i) {
+                size_t e = tex.base + (size_t)i * tex.size;
+                out.modes[i].ne = fileAt(tex.type, "texPathNE", e);
+                out.modes[i].sw = fileAt(tex.type, "texPathSW", e);
+                out.modes[i].top = fileAt(tex.type, "texPathT", e);
+            }
+            for (uint32_t i = 0; i < cube.n; ++i) {
+                size_t e = cube.base + (size_t)i * cube.size;
+                for (int k = 0; k < 6; ++k) out.modes[i].cube[k] = fileAt(cube.type, kCube[k], e);
+            }
+        } catch (const std::exception&) {}
+
+        try { out.starFile = fileAt(gt, "starFile", g); } catch (const std::exception&) {}
+
+        try {
+            std::string ct;
+            size_t c = ptrField(gt, "clouds", g, ct);
+            Arr layers = c ? arrayField(ct, "layers", c) : Arr{};
+            for (uint32_t i = 0; i < layers.n; ++i) {
+                size_t e = layers.base + (size_t)i * layers.size;
+                const std::string& lt = layers.type;
+                MapSkyCloudLayer l;
+                l.name = nameAt(lt, "name", e);
+                l.texture = fileAt(lt, "texture", e);
+                l.altitude = rdFloat1(lt, "altitude", e);
+                l.cutOut = rdFloat1(lt, "cutOut", e);
+                l.depth = rdFloat1(lt, "depth", e);
+                l.extent = rdFloat1(lt, "extent", e);
+                l.scale = rdFloat1(lt, "scale", e);
+                Arr at = arrayField(lt, "attributes", e);
+                for (uint32_t k = 0; k < at.n; ++k) {
+                    size_t ae = at.base + (size_t)k * at.size;
+                    MapSkyCloudAttr a;
+                    a.brightness = rdFloat1(at.type, "brightness", ae);
+                    a.density = rdFloat1(at.type, "density", ae);
+                    a.haze = rdFloat1(at.type, "haze", ae);
+                    a.lightIntensity = rdFloat1(at.type, "lightIntensity", ae);
+                    rdFloat2(at.type, "velocity", ae, a.velocity);
+                    a.fadeWidth = rdFloat1(at.type, "fadeWidth", ae);
+                    a.fadeEnd = rdFloat1(at.type, "fadeEnd", ae);
+                    l.attributes.push_back(a);
+                }
+                out.clouds.push_back(std::move(l));
+            }
+        } catch (const std::exception&) {}
+
+        try {
+            // day/night are inline structs (kind "struct", type in "type").
+            auto readAttr = [&](const std::string& t, const char* name, size_t base, MapSkyCardAttr& a) {
+                size_t o; json fj;
+                if (!fieldOffset(t, name, o, fj)) return;
+                std::string at = fj.value("type", std::string());
+                size_t s = base + o;
+                a.texture = fileAt(at, "texture", s);
+                a.azimuth = rdFloat1(at, "azimuth", s);
+                a.latitude = rdFloat1(at, "latitude", s);
+                a.density = rdFloat1(at, "density", s);
+                a.hazeDensity = rdFloat1(at, "hazeDensity", s);
+                a.minHaze = rdFloat1(at, "minHaze", s);
+                a.lightIntensity = rdFloat1(at, "lightIntensity", s);
+                a.brightness = rdFloat1(at, "brightness", s);
+                a.speed = rdFloat1(at, "speed", s);
+                rdFloat2(at, "scale", s, a.scale);
+                rdFloat4(at, "textureUV", s, a.textureUV);
+                size_t fa; json ffj;
+                if (fOff(at, "flags", s, fa, ffj)) a.flags = rd8(fa);
+            };
+            std::string sct;
+            size_t sc = ptrField(gt, "skyCards", g, sct);
+            Arr cards = sc ? arrayField(sct, "cards", sc) : Arr{};
+            for (uint32_t i = 0; i < cards.n; ++i) {
+                size_t e = cards.base + (size_t)i * cards.size;
+                const std::string& ct = cards.type;
+                MapSkyCard c;
+                c.name = nameAt(ct, "name", e);
+                c.flags = rdDword(ct, "flags", e);
+                size_t la; json lfj;
+                if (fOff(ct, "location", e, la, lfj)) for (int k = 0; k < 3; ++k) c.location[k] = rdf(la + 4 * k);
+                readAttr(ct, "day", e, c.day);
+                readAttr(ct, "night", e, c.night);
+                std::string mt;
+                size_t m = ptrField(ct, "material", e, mt);
+                if (m) c.materialFile = decodeFilename(mt, m);
+                out.cards.push_back(std::move(c));
+            }
+        } catch (const std::exception&) {}
+
+        try {
+            std::string st;
+            size_t s = ptrField(gt, "sky", g, st);
+            if (s) {
+                MapSkyParams& p = out.params;
+                size_t fa; json ffj;
+                if (fOff(st, "flags", s, fa, ffj)) p.flags = rd8(fa);
+                p.dayBrightness = rdFloat1(st, "dayBrightness", s);
+                p.dayHazeBottom = rdFloat1(st, "dayHazeBottom", s);
+                p.dayHazeDensity = rdFloat1(st, "dayHazeDensity", s);
+                p.dayHazeFalloff = rdFloat1(st, "dayHazeFalloff", s);
+                p.dayLightIntensity = rdFloat1(st, "dayLightIntensity", s);
+                p.dayStarDensity = rdFloat1(st, "dayStarDensity", s);
+                p.nightBrightness = rdFloat1(st, "nightBrightness", s);
+                p.nightHazeBottom = rdFloat1(st, "nightHazeBottom", s);
+                p.nightHazeDensity = rdFloat1(st, "nightHazeDensity", s);
+                p.nightHazeFalloff = rdFloat1(st, "nightHazeFalloff", s);
+                p.nightLightIntensity = rdFloat1(st, "nightLightIntensity", s);
+                p.nightStarDensity = rdFloat1(st, "nightStarDensity", s);
+                p.verticalOffset = rdFloat1(st, "verticalOffset", s);
+            }
+        } catch (const std::exception&) {}
         return out;
     }
 
@@ -1823,7 +2067,11 @@ public:
                         // blend disabled, mask 15), so drop the blend nibbles and let
                         // the effect be what it really is: opaque.
                         if (psh.alphaIsConstant && blendReadsSrcAlpha(rstate)) rstate &= ~kBgfxBlendMask;
-                        if (spf & kAmatPassNoColor) { /* depth-only pass */ }
+                        // 0x8 (no RGB) paints nothing visible either: what is left of
+                        // the mask is alpha, a StencilId. AMAT 543769 (the Holographic
+                        // Dawn blade) fills its whole pass 0 with 0x9 effects and
+                        // paints only in pass 1; taking one of them drew it invisible.
+                        if (spf & (kAmatPassNoColor | kAmatPassNoRGB)) { /* depth / stencil pass */ }
                         else if (psh.samplesSlot0 && (psh.hasShLighting || !psh.writesNormalEncode))
                             cands.push_back({ps, vs, rstate, spf, ns, psh.hasShLighting, isBlendState(rstate), etok, qrank});
                         if (getenv("AMATDBG")) std::fprintf(stderr,

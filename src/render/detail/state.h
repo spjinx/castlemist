@@ -202,6 +202,12 @@ inline ComPtr<ID3D11Buffer> g_postCB;
 // clamped on write.
 inline constexpr float kLightBufferDecode = 1.0f;   // the "LightBuffer" uniform
 inline constexpr float kLightBufferEncode = 1.0f;   // light-pass output scale
+/// Scene depth the role-35 stand-in reports: far enough that `d * ScreenDims.w -
+/// ScreenDims.z` clears any model's own depth, so soft-particle fades read 1.
+inline constexpr float kFarSceneDepth = 1.0e6f;
+/// Where the game parks its Equipment Preview model in world space (gw2-preview-
+/// render.md): 10 000 units down Z, clear of the map and of sea level at z = 0.
+inline constexpr Vec3 kPreviewPark = {0.0f, 0.0f, -10000.0f};
 
 inline bool  g_post_ready = false;
 // The final composite is now a PLAIN COPY, exactly like the game's: its own last
@@ -507,6 +513,7 @@ ComPtr<ID3D11ShaderResourceView> make_srv(const std::vector<uint8_t>& px, int w,
 ComPtr<ID3D11ShaderResourceView> make_srv_half(const std::vector<uint8_t>& px, int w, int h);
 ComPtr<ID3D11ShaderResourceView> make_solid(uint8_t r, uint8_t g, uint8_t b, uint8_t a);
 ComPtr<ID3D11ShaderResourceView> make_solid_cube(uint8_t level);
+ComPtr<ID3D11ShaderResourceView> make_solid_float(float v);
 LONGLONG now_qpc();
 
 // game_material.cpp

@@ -31,14 +31,18 @@ HMENU build_menu() {
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_GLTF_MODEL, L"Export &glTF (Model)...");
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_GLTF_MODEL_ATLAS,
                 L"Export glTF (Model, &Baked UV Atlas)...");
+    AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_VRCHAT_MODEL, L"Export for &VRChat (Model)...");
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_GLTF_MAP, L"Export glTF (&Map)...");
+    AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_SKYBOX_MAP, L"Export S&kybox (Map)...");
     AppendMenuW(g_file_menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXIT, L"E&xit");
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_COMPRESSED, MF_GRAYED | MF_DISABLED);
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_DECOMPRESSED, MF_GRAYED | MF_DISABLED);
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MODEL, MF_GRAYED | MF_DISABLED);
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MODEL_ATLAS, MF_GRAYED | MF_DISABLED);
+    EnableMenuItem(g_file_menu, ID_FILE_EXPORT_VRCHAT_MODEL, MF_GRAYED | MF_DISABLED);
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MAP, MF_GRAYED | MF_DISABLED);
+    EnableMenuItem(g_file_menu, ID_FILE_EXPORT_SKYBOX_MAP, MF_GRAYED | MF_DISABLED);
 
     HMENU tools_menu = CreatePopupMenu();
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DECODE_LINK, L"&Decode Chat Link... ([&...])");
@@ -575,6 +579,13 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             CreateWindowExW(0, L"BUTTON", L"Alpha", WS_CHILD | BS_AUTOCHECKBOX | BS_PUSHLIKE, 0, 0, 0, 0, hwnd,
                              reinterpret_cast<HMENU>(ID_ALPHA_TOGGLE), g_hinstance, nullptr);
         SendMessageW(g_app->hwnd_alpha, BM_SETCHECK, castlemist::gfx::alpha_aware() ? BST_CHECKED : BST_UNCHECKED, 0);
+        // Channel view: one radio group of push buttons -- RGB, or one channel as greyscale.
+        static const wchar_t* const kChannelLabels[5] = {L"RGB", L"R", L"G", L"B", L"A"};
+        for (int c = 0; c < 5; ++c)
+            g_app->hwnd_channel[c] = CreateWindowExW(
+                0, L"BUTTON", kChannelLabels[c], WS_CHILD | BS_AUTORADIOBUTTON | BS_PUSHLIKE | (c == 0 ? WS_GROUP : 0),
+                0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(ID_CHANNEL_RGB + c), g_hinstance, nullptr);
+        SendMessageW(g_app->hwnd_channel[castlemist::gfx::channel()], BM_SETCHECK, BST_CHECKED, 0);
 
         // Model preview surface (its own D3D device/swapchain) + mode buttons.
         g_app->hwnd_model = CreateWindowExW(WS_EX_CLIENTEDGE, kModelClassName, L"",
@@ -1158,6 +1169,12 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     case WM_APP_GLTF_EXPORT_DONE:
         on_gltf_export_done(hwnd);
         return 0;
+    case WM_APP_VRCHAT_MODEL_DONE:
+        on_vrchat_model_done(hwnd, lparam);
+        return 0;
+    case WM_APP_SKYBOX_EXPORT_DONE:
+        on_skybox_export_done(hwnd, lparam);
+        return 0;
     case WM_APP_CMAP_DONE:
         on_main_cmap_done(hwnd);
         return 0;
@@ -1242,11 +1259,17 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         case ID_FILE_EXPORT_GLTF_MODEL:
             do_export_gltf_model(hwnd);
             return 0;
+        case ID_FILE_EXPORT_VRCHAT_MODEL:
+            do_export_vrchat_model(hwnd);
+            return 0;
         case ID_FILE_EXPORT_GLTF_MODEL_ATLAS:
             do_export_gltf_model_atlas(hwnd);
             return 0;
         case ID_FILE_EXPORT_GLTF_MAP:
             do_export_gltf_map(hwnd);
+            return 0;
+        case ID_FILE_EXPORT_SKYBOX_MAP:
+            do_export_skybox_map(hwnd);
             return 0;
         case ID_FILE_EXIT:
             DestroyWindow(hwnd);
@@ -1271,6 +1294,14 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             return 0;
         case ID_ALPHA_TOGGLE:
             castlemist::gfx::set_alpha_aware(SendMessageW(g_app->hwnd_alpha, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            castlemist::gfx::render();
+            return 0;
+        case ID_CHANNEL_RGB:
+        case ID_CHANNEL_RGB + 1:
+        case ID_CHANNEL_RGB + 2:
+        case ID_CHANNEL_RGB + 3:
+        case ID_CHANNEL_A:
+            castlemist::gfx::set_channel(static_cast<int>(LOWORD(wparam) - ID_CHANNEL_RGB));
             castlemist::gfx::render();
             return 0;
         case ID_SUBMESH_COMBO:

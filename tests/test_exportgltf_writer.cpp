@@ -373,6 +373,55 @@ CM_TEST(exportgltf, effect_material_gets_baked_emissive_texture) {
     CHECK(starts_with_png_signature(g.bin.data() + bv["byteOffset"].get<size_t>(), bv["byteLength"].get<size_t>()));
 }
 
+/// @brief The quad with a weapon-style glow: a tiling "glow" colour texture on
+///        UV0 and a "glowmask" saying where it shows, on UV2 (Forged Dagger).
+ModelPreview make_glowmask_quad() {
+    ModelPreview mp = make_static_quad();
+    ModelTextureCPU glow;  // flat orange
+    glow.fileId = 7;
+    glow.width = glow.height = 2;
+    for (int i = 0; i < 4; ++i) glow.rgba.insert(glow.rgba.end(), {200, 100, 0, 255});
+    ModelTextureCPU mask;
+    mask.fileId = 8;
+    mask.width = mask.height = 2;
+    mask.rgba.assign(2 * 2 * 4, 255);
+    mp.textures.push_back(glow);
+    mp.textures.push_back(mask);
+    mp.materials[0].extraTextures = {{1, 0, 7, "glow"}, {2, 2, 8, "glowmask"}};
+    return mp;
+}
+
+CM_TEST(exportgltf, glowmask_is_the_emissive_map_tinted_by_the_glow) {
+    ModelPreview model = make_glowmask_quad();
+    fs::path dir = make_temp_dir("glowmask");
+    fs::path glbPath = dir / "dagger.glb";
+    CHECK(export_model_gltf(model, glbPath.string()).ok);
+
+    ParsedGlb g = parse_glb(read_bytes(glbPath));
+    const json& material = g.doc["materials"][0];
+    CHECK(material.contains("emissiveTexture"));
+    int texIdx = material["emissiveTexture"]["index"].get<int>();
+    int imgIdx = g.doc["textures"][static_cast<size_t>(texIdx)]["source"].get<int>();
+    CHECK_EQ(g.doc["images"][static_cast<size_t>(imgIdx)]["name"].get<std::string>(), std::string("8"));
+    CHECK_EQ(material["emissiveTexture"]["texCoord"].get<int>(), 2);
+    std::vector<double> f = material["emissiveFactor"].get<std::vector<double>>();
+    CHECK_NEAR(f[0], 1.0, 1e-6);  // the glow's colour, brightest channel at 1
+    CHECK_NEAR(f[1], 0.5, 1e-6);
+    CHECK_NEAR(f[2], 0.0, 1e-6);
+    CHECK(g.doc["meshes"][0]["primitives"][0]["attributes"].contains("TEXCOORD_2"));
+}
+
+CM_TEST(exportgltf, embedded_images_are_named_after_their_file_id) {
+    ModelPreview model = make_effect_quad();
+    fs::path dir = make_temp_dir("names");
+    fs::path glbPath = dir / "named.glb";
+    CHECK(export_model_gltf(model, glbPath.string()).ok);
+
+    ParsedGlb g = parse_glb(read_bytes(glbPath));
+    CHECK_EQ(g.doc["images"][0]["name"].get<std::string>(), std::string("42"));
+    CHECK_EQ(g.doc["images"][1]["name"].get<std::string>(), std::string("42_emissive"));
+}
+
 CM_TEST(exportgltf, skinning_weights_sum_to_vertex_count) {
     ModelPreview model = make_skinned_quad();
     fs::path dir = make_temp_dir("skin");

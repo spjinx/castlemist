@@ -125,6 +125,7 @@ void layout_children(int client_w, int client_h) {
     ShowWindow(g_app->hwnd_rotate, show_still ? SW_SHOW : SW_HIDE);
     ShowWindow(g_app->hwnd_fit, show_still ? SW_SHOW : SW_HIDE);
     ShowWindow(g_app->hwnd_alpha, show_still ? SW_SHOW : SW_HIDE);
+    for (HWND h : g_app->hwnd_channel) ShowWindow(h, show_still ? SW_SHOW : SW_HIDE);
     ShowWindow(g_app->hwnd_video_play, show_video ? SW_SHOW : SW_HIDE);
     ShowWindow(g_app->hwnd_video_stop, show_video ? SW_SHOW : SW_HIDE);
     ShowWindow(g_app->hwnd_video_loop, show_video ? SW_SHOW : SW_HIDE);
@@ -283,6 +284,13 @@ void layout_children(int client_w, int client_h) {
                 place_button(g_app->hwnd_rotate, 2);
                 place_button(g_app->hwnd_fit, 3);
                 place_button(g_app->hwnd_alpha, 4);
+                constexpr int kChannelW = 36;
+                int cx = pane_x + kGap + (kButtonW + kGap) * 5 + kGap;
+                for (int c = 0; c < 5; ++c) {
+                    const int w = c == 0 ? kChannelW + 8 : kChannelW;
+                    MoveWindow(g_app->hwnd_channel[c], cx, content_y + 3, w, kButtonH, TRUE);
+                    cx += w;
+                }
             }
             MoveWindow(g_app->hwnd_preview, pane_x, surface_y, pane_w, surface_h, TRUE);
             layout_video_subtitle();
