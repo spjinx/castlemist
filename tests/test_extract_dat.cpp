@@ -630,6 +630,48 @@ CM_TEST(mapsky, no_env_chunk) {
     CHECK(s.modes.empty());
 }
 
+// gw2-sky.md §7.1: F0 = 3072 * max(3, round(trn.swapDistance / 3072)), 24576
+// without a trn chunk. Values from the §7.1 table.
+CM_TEST(mapsky, sky_distance_from_trn) {
+    CHECK_EQ(map_sky(187611).skyDistance, 36864.0f);
+    CHECK_EQ(map_sky(3264516).skyDistance, 70656.0f);
+    CHECK_EQ(map_sky(3134778).skyDistance, 24576.0f);
+}
+
+// gw2-sky.md §8.2: starFile 187544 is a PF packfile with chunk STAR v0 --
+// S = 0.125, 1699 stars of {e0, e1, u0, u1, v0, v1}, atlas fileId 187543.
+CM_TEST(mapstars, star_file_187544) {
+    if (!ensure_template()) SKIP("no gw2_packfile.json struct template");
+    std::vector<uint8_t> bytes = packfile_by_file_id(187544);
+    auto st = castlemist::model::Extractor(bytes, *castlemist::tpl::get()).parseStars();
+    CHECK(st.present);
+    CHECK_EQ(st.scale, 0.125f);
+    CHECK_EQ(st.stars.size(), size_t{1699});
+    CHECK_EQ(st.atlas, 187543u);
+    float e1min = 10, e1max = -10, e0min = 10, e0max = -10;
+    bool rectsOk = true;
+    for (const auto& s : st.stars) {
+        e0min = std::min(e0min, s.e0); e0max = std::max(e0max, s.e0);
+        e1min = std::min(e1min, s.e1); e1max = std::max(e1max, s.e1);
+        rectsOk = rectsOk && s.u0 >= 0 && s.u1 <= 1 && s.v0 >= 0 && s.v1 <= 1 && s.u1 > s.u0 && s.v1 > s.v0;
+    }
+    // §8.2: e0 in [-1.557, 4.702], e1 in [0, 1.549].
+    CHECK_NEAR(e0min, -1.557f, 1e-3f);
+    CHECK_NEAR(e0max, 4.702f, 1e-3f);
+    CHECK_NEAR(e1min, 0.0f, 1e-3f);
+    CHECK_NEAR(e1max, 1.549f, 1e-3f);
+    CHECK(rectsOk);
+}
+
+// A map packfile has no STAR chunk.
+CM_TEST(mapstars, no_star_chunk) {
+    if (!ensure_template()) SKIP("no gw2_packfile.json struct template");
+    std::vector<uint8_t> bytes = packfile_by_file_id(187611);
+    auto st = castlemist::model::Extractor(bytes, *castlemist::tpl::get()).parseStars();
+    CHECK_FALSE(st.present);
+    CHECK(st.stars.empty());
+}
+
 
 // ---- skybox export, end to end (load_sky_inputs -> write_skybox) ----
 
