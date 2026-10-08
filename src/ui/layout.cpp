@@ -156,6 +156,7 @@ void layout_children(int client_w, int client_h) {
     ShowWindow(g_app->hwnd_anim_combo, show_anim ? SW_SHOW : SW_HIDE);
     ShowWindow(g_app->hwnd_anim_play, show_anim ? SW_SHOW : SW_HIDE);
     ShowWindow(g_app->hwnd_tex_fullres, (show_model && !show_map) ? SW_SHOW : SW_HIDE);
+    ShowWindow(g_app->hwnd_armor_dyes, (show_model && !show_map && g_app->armor_pristine) ? SW_SHOW : SW_HIDE);
     ShowWindow(g_app->hwnd_light_toggle, (show_model && !show_map) ? SW_SHOW : SW_HIDE);
     ShowWindow(g_app->hwnd_effects_toggle, (show_model && !show_map) ? SW_SHOW : SW_HIDE);
     ShowWindow(g_app->hwnd_cloth_toggle, (show_model && !show_map && castlemist::render::has_cloth()) ? SW_SHOW : SW_HIDE);
@@ -332,6 +333,7 @@ void layout_children(int client_w, int client_h) {
                     tb.push_back({g_app->hwnd_anim_play, 56, kButtonH, 0});
                 }
                 tb.push_back({g_app->hwnd_tex_fullres, 90, kButtonH, 0});
+                if (g_app->armor_pristine) tb.push_back({g_app->hwnd_armor_dyes, 56, kButtonH, 0});
                 tb.push_back({g_app->hwnd_light_toggle, 70, kButtonH, 0});
                 tb.push_back({g_app->hwnd_submesh_combo, 190, comboH, 0});
                 tb.push_back({g_app->hwnd_lod_combo, 90, comboH, 0});

@@ -641,6 +641,10 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             CreateWindowExW(0, L"BUTTON", L"Full-res tex", WS_CHILD | BS_AUTOCHECKBOX | BS_PUSHLIKE, 0, 0, 0, 0, hwnd,
                              reinterpret_cast<HMENU>(ID_TEX_FULLRES), g_hinstance, nullptr);
         SendMessageW(g_app->hwnd_tex_fullres, BM_SETCHECK, BST_CHECKED, 0);
+        // Armor dye channels (the rebuilt atlas is re-baked in place).
+        g_app->hwnd_armor_dyes =
+            CreateWindowExW(0, L"BUTTON", L"Dyes", WS_CHILD, 0, 0, 0, 0, hwnd,
+                             reinterpret_cast<HMENU>(ID_ARMOR_DYES), g_hinstance, nullptr);
         // Light pre-pass toggle (Shader mode): real deferred directional lighting
         // vs the flat light-buffer stand-in. Defaults ON to match the renderer.
         g_app->hwnd_light_toggle =
@@ -1582,6 +1586,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                 update_audio_info(audio_selected_index());
                 update_audio_seek_ui(true);
             }
+            return 0;
+        case ID_ARMOR_DYES:
+            open_dye_dialog(hwnd);
             return 0;
         case ID_TEX_FULLRES: {
             bool full = SendMessageW(g_app->hwnd_tex_fullres, BM_GETCHECK, 0, 0) == BST_CHECKED;

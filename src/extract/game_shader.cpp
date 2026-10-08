@@ -167,6 +167,9 @@ GameMaterial extract_game_material(Gw2Dat& dat, const nlohmann::json& tpl, const
             std::fprintf(stderr, "    const token=0x%08x name='%s' val=[%.3f %.3f %.3f %.3f]\n",
                          c.name, nm.c_str(), c.value[0], c.value[1], c.value[2], c.value[3]);
         }
+        for (size_t i = 0; i < m.textures.size(); ++i)
+            std::fprintf(stderr, "    texture[%zu] fileId=%u token=0x%llx uv=%u\n", i, m.textures[i].fileId,
+                         (unsigned long long)m.textures[i].token, (unsigned)m.textures[i].uvIndex);
     }
     if (vsIdx < 0 || psIdx < 0 || vsIdx >= (int)set.shaders.size() || psIdx >= (int)set.shaders.size()) return out;
 
@@ -207,6 +210,9 @@ GameMaterial extract_game_material(Gw2Dat& dat, const nlohmann::json& tpl, const
     bind_consts(out.psUniforms, out.psConsts);
 
     for (const auto& b : set.shaders[psIdx].samplers) {
+        if (std::getenv("GW2_MATDBG"))
+            std::fprintf(stderr, "    sampler slot=%u textureIndex=%u (material has %zu textures)\n",
+                         (unsigned)b.textureSlot, (unsigned)b.textureIndex, m.textures.size());
         if (b.textureSlot >= 16) continue;
         GameSamplerCPU s;
         s.slot = static_cast<int>(b.textureSlot);
@@ -220,6 +226,10 @@ GameMaterial extract_game_material(Gw2Dat& dat, const nlohmann::json& tpl, const
             else s.global = 1;                                                            // light buffer / other -> grey
         } else if (b.textureIndex < m.textures.size()) {
             uint32_t fid = m.textures[b.textureIndex].fileId;
+            if (fid == 0) {
+                const std::string role = castlemist::model::detokenizeName64(m.textures[b.textureIndex].token);
+                s.atlas = role == "diffuse" ? 1 : role == "normal" ? 2 : 0;
+            }
             s.gameTex = fid ? get_tex(fid) : -1;
             if (s.gameTex < 0) s.global = 1; // texture failed to decode -> grey, not white
         } else {

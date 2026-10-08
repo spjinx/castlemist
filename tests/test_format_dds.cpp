@@ -133,3 +133,77 @@ CM_TEST(dds, rejects_an_unrecognized_fourcc) {
     auto f = make_dds("XXXX", 64, 64);
     CHECK_FALSE(castlemist::dds::parse_dds(f.data(), f.size()).has_value());
 }
+
+namespace {
+
+/// @brief A legacy (no FourCC) uncompressed 32-bit DDS with the given masks
+///        and pixel bytes, as GW2's star atlas 187543 is stored
+///        (docs/research/gw2-sky.md §8.2: A8R8G8B8, one mip).
+std::vector<uint8_t> make_rgb32_dds(uint32_t w, uint32_t h, uint32_t r, uint32_t g, uint32_t b, uint32_t a,
+                                    const std::vector<uint8_t>& pixels) {
+    std::vector<uint8_t> f;
+    f.insert(f.end(), {'D', 'D', 'S', ' '});
+    put32(f, 124);
+    put32(f, 0x0000100F);          // flags (caps, height, width, pitch, pixelformat)
+    put32(f, h);
+    put32(f, w);
+    put32(f, w * 4);               // pitch
+    put32(f, 0);
+    put32(f, 1);
+    for (int i = 0; i < 11; ++i) put32(f, 0);
+    put32(f, 32);
+    put32(f, a ? 0x41u : 0x40u);   // DDPF_RGB (| DDPF_ALPHAPIXELS)
+    put32(f, 0);                   // no FourCC
+    put32(f, 32);
+    put32(f, r);
+    put32(f, g);
+    put32(f, b);
+    put32(f, a);
+    put32(f, 0x1000);
+    for (int i = 0; i < 4; ++i) put32(f, 0);
+    f.insert(f.end(), pixels.begin(), pixels.end());
+    return f;
+}
+
+} // namespace
+
+// A8R8G8B8 stores each texel as bytes B, G, R, A; the decode gives R, G, B, A
+// with row 0 the first stored row.
+CM_TEST(dds, decodes_a8r8g8b8_to_rgba8) {
+    const std::vector<uint8_t> px = {
+        10, 20, 30, 40,    50, 60, 70, 80,      // row 0: (B,G,R,A) texels
+        90, 100, 110, 120, 130, 140, 150, 160,  // row 1
+    };
+    auto f = make_rgb32_dds(2, 2, 0x00FF0000u, 0x0000FF00u, 0x000000FFu, 0xFF000000u, px);
+    uint32_t w = 0, h = 0;
+    std::vector<uint8_t> rgba;
+    CHECK(castlemist::dds::decode_rgba8(f.data(), f.size(), w, h, rgba));
+    CHECK_EQ(w, 2u);
+    CHECK_EQ(h, 2u);
+    const std::vector<uint8_t> want = {30, 20, 10, 40, 70, 60, 50, 80, 110, 100, 90, 120, 150, 140, 130, 160};
+    CHECK(rgba == want);
+}
+
+// A8B8G8R8 is already R, G, B, A in memory; X8R8G8B8 has no alpha (opaque).
+CM_TEST(dds, decodes_rgba_order_and_missing_alpha) {
+    const std::vector<uint8_t> px = {1, 2, 3, 4};
+    auto abgr = make_rgb32_dds(1, 1, 0x000000FFu, 0x0000FF00u, 0x00FF0000u, 0xFF000000u, px);
+    uint32_t w = 0, h = 0;
+    std::vector<uint8_t> rgba;
+    CHECK(castlemist::dds::decode_rgba8(abgr.data(), abgr.size(), w, h, rgba));
+    CHECK(rgba == (std::vector<uint8_t>{1, 2, 3, 4}));
+    auto xrgb = make_rgb32_dds(1, 1, 0x00FF0000u, 0x0000FF00u, 0x000000FFu, 0, px);
+    CHECK(castlemist::dds::decode_rgba8(xrgb.data(), xrgb.size(), w, h, rgba));
+    CHECK(rgba == (std::vector<uint8_t>{3, 2, 1, 255}));
+}
+
+// Block-compressed or short files are not decoded (BCn has its own GPU path).
+CM_TEST(dds, decode_rgba8_rejects_bcn_and_truncated_pixels) {
+    uint32_t w = 0, h = 0;
+    std::vector<uint8_t> rgba;
+    auto bc = make_dds("DXT1", 4, 4);
+    CHECK_FALSE(castlemist::dds::decode_rgba8(bc.data(), bc.size(), w, h, rgba));
+    auto shortf = make_rgb32_dds(2, 2, 0x00FF0000u, 0x0000FF00u, 0x000000FFu, 0xFF000000u,
+                                 std::vector<uint8_t>(12, 0));
+    CHECK_FALSE(castlemist::dds::decode_rgba8(shortf.data(), shortf.size(), w, h, rgba));
+}

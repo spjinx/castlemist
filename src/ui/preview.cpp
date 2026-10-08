@@ -14,6 +14,7 @@
 #include "castlemist/format/strs_view.h"
 #include "castlemist/format/struct_template.h"
 #include "castlemist/render/gw2bgfx_view.h"
+#include "castlemist/ripper/armor_preview.h"
 
 namespace castlemist::ui {
 
@@ -174,6 +175,31 @@ void populate_struct_tree_if_visible() {
 // the main thread: either synchronously right after a same-thread extract
 // (there isn't one anymore, but kept generic) or from the WM_APP_EXTRACT_DONE
 // handler once a background result's generation is confirmed current.
+bool rebake_armor_dyes() {
+    if (!g_app || !g_app->armor_pristine || !g_app->current_entry.model || !g_app->dat_loaded) return false;
+    try {
+        const ModelPreview& pristine = *g_app->armor_pristine;
+        auto atlas = castlemist::ripper::build_armor_preview(g_app->data_gw2, g_app->current_mft_index, pristine,
+                                                             castlemist::ripper::preview_dyes(g_app->armor_dyes));
+        if (!atlas) return false;
+        // In place: the texture panel and the animation UI hold pointers to this
+        // model. Only what apply_armor_preview changes is put back first.
+        ModelPreview& model = *g_app->current_entry.model;
+        model.textures = pristine.textures;
+        model.materials = pristine.materials;
+        model.gameMaterials = pristine.gameMaterials;
+        castlemist::ripper::apply_armor_preview(model, *atlas);
+        castlemist::render::refresh_model_materials(model);
+        castlemist::gw2bgfxview::set_atlas_textures(&atlas->diffuse, atlas->normal ? &*atlas->normal : nullptr);
+        castlemist::texpanel::set_model(g_app->hwnd_tex_info, &model);
+    } catch (const std::exception&) {
+        return false;
+    }
+    if (g_app->hwnd_model) InvalidateRect(g_app->hwnd_model, nullptr, FALSE);
+    if (g_app->hwnd_model_bgfx) InvalidateRect(g_app->hwnd_model_bgfx, nullptr, FALSE);
+    return true;
+}
+
 void apply_extracted_entry(uint32_t mft_index, ExtractedEntry&& entry) {
     if (g_app == nullptr) {
         return;
@@ -221,7 +247,26 @@ void apply_extracted_entry(uint32_t mft_index, ExtractedEntry&& entry) {
         // usually hidden, and loading a model it is not showing costs a full
         // archive read and a pile of GPU uploads for nothing.
         g_app->bgfx_model_loaded = false;
+        castlemist::gw2bgfxview::set_atlas_textures(nullptr, nullptr);
+        g_app->armor_pristine.reset();
+        g_app->armor_channels = {};
         if (g_app->current_entry.model) {
+            // Character armor samples an atlas the game composites at runtime;
+            // without a stand-in it previews flat white in every mode.
+            if (g_app->dat_loaded && mft_index != UINT32_MAX) {
+                try {
+                    ModelPreview& model = *g_app->current_entry.model;
+                    if (auto atlas = castlemist::ripper::build_armor_preview(
+                            g_app->data_gw2, mft_index, model, castlemist::ripper::preview_dyes(g_app->armor_dyes))) {
+                        g_app->armor_pristine = std::make_shared<ModelPreview>(model);
+                        g_app->armor_channels = atlas->channels;
+                        castlemist::ripper::apply_armor_preview(model, *atlas);
+                        castlemist::gw2bgfxview::set_atlas_textures(&atlas->diffuse,
+                                                                    atlas->normal ? &*atlas->normal : nullptr);
+                    }
+                } catch (const std::exception&) { /* preview as authored */ }
+            }
+            dye_dialog_model_changed();
             castlemist::render::set_model(*g_app->current_entry.model);
             // set_model hands the surface to the model but leaves any loaded map
             // standing behind it. "Fly" is a map-only view, so fall back to a

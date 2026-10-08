@@ -115,6 +115,13 @@ struct ModelMaterialCPU {
     ///        (the old behaviour) is what made those materials export misaligned.
     uint8_t diffuseUv = 0;
     uint8_t normalUv = 0;
+    /// @brief The UV channel of the material's `diffuse` / `normal` slot when that
+    ///        slot names fileId 0, else -1. Character armor does this: the game
+    ///        fills the slot at runtime with the character's composited armor
+    ///        atlas, which the archive never stores (ripper::apply_armor_preview
+    ///        builds a stand-in).
+    int8_t atlasDiffuseUv = -1;
+    int8_t atlasNormalUv = -1;
     std::vector<uint32_t> textureFileIds; ///< Every texture the material references (for the info panel).
     /// @brief fileId of the material's own .amat/GRMT file (0 if none) --
     ///        Material::materialFile (gw2model.hpp). A stable, unique-per-
@@ -228,6 +235,9 @@ struct GameSamplerCPU {
     /// 0 = material texture, 1 = grey 1x1 (light buffer / other), 2 = grey env
     /// cubemap, 3 = white shadow map, 4 = far scene depth (role 35, see game_shader.cpp).
     int global = 0;
+    /// 1 / 2 when this is the material's `diffuse` / `normal` slot naming fileId 0:
+    /// the composited armor atlas (see ModelMaterialCPU::atlasDiffuseUv).
+    int atlas = 0;
 };
 
 /// @brief A per-material constant written straight into the shader cbuffer.
