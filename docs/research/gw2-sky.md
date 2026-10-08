@@ -172,16 +172,25 @@ the cube.
 Round 2 traced the size call: the EnvContext constructor `0x140c40d40` calls
 slot 2 with its own float argument `F0` (`0x140c413a9..0x140c413af`; `xmm6`
 holds `F0` from `0x140c40d6f` to the call), so `R = 0.4·F0` and
-`e = 25 / F0`. `F0` itself is a runtime value (§7), so the exact `e` is still
-**UNPROVEN**. Measured instead: the seam error is lowest when each texture is
-read **1 texel** in from its edge. (1 texel of 512 would mean `F0 ≈ 12800`.
-That is a consistency check, not a measurement of `F0`.)
+`e = 25 / F0`. Round 3 derived `F0` from the map's terrain data (§7.1):
+`F0 = 3072 · max(3, round(swapDistance / 3072))`, which is 36864 for 187611,
+so **`e = 25/36864 = 6.8e-4` = 0.35 texel of 512 (PROVEN from code + data)**.
+The seam measurement below prefers a larger inset. A finer re-run (scratch
+`inset.py`: edge strips read with D3D bilinear, pixel = uv·512 − 0.5, clamp)
+gives mean seam error 4.30 for every inset ≤ 0.5 texel (they all read the
+outermost texel), 2.68 at 1.0, a minimum of **2.10 at 1.4 texels**, 2.27 at
+2.0. **The two do not agree.** The derived 0.35 texel sits in the flat region,
+the same as inset 0. The textures appear to be authored with about 1.4 texels
+of edge overlap that the game does not remove, so the game itself shows the
+seams that inset 0 shows. The table below is the round-1 measurement.
 
 | inset (texels) | 0 | 1 | 2 | 3 | 5 | 10 | 20 |
 |---|---|---|---|---|---|---|---|
 | mean seam diff, 6 seams | 3.97 | **2.07** | 2.82 | 3.58 | 5.04 | 8.26 | 13.57 |
 
-Use `e = 1 / W` (W = texture width) and mark it as measured, not derived.
+Round 1 recommended `e = 1 / W` (measured, not derived). To match the game, use
+the derived `e = 25 / F0` (§7.1). Use `1.4 / W` only to hide the authored seams
+on purpose, and say so in `warnings`.
 
 **Seam check** (187611 mode 0, inset 0; columns = seam, control):
 
@@ -317,10 +326,10 @@ systems, traced in round 2 (§7–§11).
 | base hemicube (NE/SW/T) | **PROVEN** | §2 projection, §5 colour maths | — |
 | horizon haze | formula **PROVEN**, input `FogColorFar` **UNPROVEN** | §5 | `FogColorFar` is an engine global; none of the sky draws sets it (§11) |
 | sun glow inside the base pass | formula **PROVEN**, inputs **PARTIAL** | §5; round 2: sun direction = `EnvContext+0x4f0`, sun colour = `EnvContext+0x4e4`, copied once per frame and handed to every sky layer (§7) | who writes `EnvContext+0x4e4..0x4f8`; the SH globals `shRed/Green/Blue` |
-| stars (`starFile`, `*StarDensity`) | **PARTIAL**: file, placement, UV, colour, blend **PROVEN**; angular size needs `F0`; twinkle phase not reproducible | §8 | `F0` (§7); the per-vertex RNG and the `Time` uniform for twinkle |
-| sky cards (texture cards) | **PARTIAL**: direction, UV, day/night, colour, blend **PROVEN**; angular size needs `F`; haze/sun inputs as for the base | §9 | `F` (§7); `FogColorFar`, SH, sun colour (§11) |
+| stars (`starFile`, `*StarDensity`) | **PROVEN** except the twinkle phase (size from `F0`, §7.1) | §8 | the per-vertex RNG and the `Time` uniform for twinkle |
+| sky cards (texture cards) | **PARTIAL**: direction, UV, size (`F` = `F0` at load, §7.1), day/night, colour, blend **PROVEN**; haze/sun inputs as for the base | §9 | `FogColorFar`, SH, sun colour (§11) |
 | sky cards (material cards) | **UNPROVEN** for baking | §9.6: AMAT, constants and textures are all resolvable statically | evaluating that AMAT's pixel shader (needs `Time`, `TimeOfDay`) |
-| cloud layers | **PARTIAL**: plane geometry, UV, attribute choice, colour maths, blend **PROVEN**; size needs `F`, look needs camera height and the engine fog uniforms | §10 | `F`, camera height, `FogParam0`/`FogColor*`, the cloud fade factor |
+| cloud layers | **PARTIAL**: plane geometry, size (`F`, §7.1), UV, attribute choice, colour maths, blend **PROVEN**; look needs camera height and the engine fog uniforms | §10 | camera height, `FogParam0`/`FogColor*`, the cloud fade factor |
 | layer order on the GPU | **UNPROVEN** | submission order and per-program state words (§7) | the bgfx sort key, or one frame capture |
 
 Data notes (187611 parsed with `gw2dat_cli parse`; 3264516 from round 1):
@@ -345,10 +354,10 @@ Data notes (187611 parsed with `gw2dat_cli parse`; 3264516 from round 1):
 | Layer | Bake? | Condition |
 |---|---|---|
 | base hemicube | yes | §2 + §5 (unchanged) |
-| stars | yes, with a stated `F0` | §8 formula; `F0` and twinkle `tw` go into `warnings` as assumed values |
-| texture sky cards | yes, with a stated `F` | §9 formula with `FogColorFar`-dependent haze and sun light dropped (see the reduced formula); warn when `hazeDensity·sky.HazeDensity`, `minHaze` or `lightIntensity·sky.LightIntensity` is non-zero |
+| stars | yes | §8 formula with `F0` from §7.1; twinkle `tw` goes into `warnings` as an assumed value |
+| texture sky cards | yes, `F = F0` (§7.1) | §9 formula with `FogColorFar`-dependent haze and sun light dropped (see the reduced formula); warn when `hazeDensity·sky.HazeDensity`, `minHaze` or `lightIntensity·sky.LightIntensity` is non-zero |
 | material sky cards | no | warn |
-| clouds | only with stated `F`, camera height, `cloudFade` and fog = 0 | §10 formula; all four go into `warnings` |
+| clouds | only with a stated camera height, `cloudFade` and fog = 0 (`F = F0`, §7.1) | §10 formula; those three go into `warnings` |
 
 Static frame: cloud scroll offsets and the card rotation accumulator both
 start at 0 when the map loads (§9.2, §10.2), so "time 0" = offset 0 is the
@@ -510,17 +519,80 @@ every layer.
 |---|---|---|---|
 | `t` (day weight) | `EnvContext+0x1050`, getter slot `0xc0` `0x140c431f0` | hemicube (callee `[rbp+0x60]`), stars `0x140c6fd09`, clouds `0x140ca41e7`, cards `0x140caa3de` | **PROVEN** shared; 1 = day, 0 = night |
 | `k` | `EnvContext+0x105c` | hemicube only (callee `[rbp+0x68]`) | value **UNPROVEN** (out-param of `0x140c58540`) |
-| `F` (sky distance) | `EnvContext+0x1058`, getter slot `0x80` `0x140c42a00`, setter slot `0x110` `0x140c43a10` | cloud plane size `0x140ca40e5`, card quad distance `0x140ca7320` | value **UNPROVEN** |
-| `F0` | constructor argument `xmm2` | `+0x1058 = F0` (`0x140c40f54`), hemicube size `R = 0.4·F0` (`0x140c413af`), star radius `0.5·F0` (`0x140c413b2..0x140c413d7`) | value **UNPROVEN**; the creator passes `svc(0x18)->vfunc 0x68()` (`0x140c5210b..0x140c5211a`) |
+| `F` (sky distance) | `EnvContext+0x1058`, getter slot `0x80` `0x140c42a00`, setter slot `0x110` `0x140c43a10` | cloud plane size `0x140ca40e5`, card quad distance `0x140ca7320` | **= `F0`** unless the setter runs (§7.1) |
+| `F0` | constructor argument `xmm2` | `+0x1058 = F0` (`0x140c40f54`), hemicube size `R = 0.4·F0` (`0x140c413af`), star radius `0.5·F0` (`0x140c413b2..0x140c413d7`) | **PROVEN**: `3072·max(3, round(swapDistance/3072))` from the map's `trn` chunk (§7.1) |
 | sun direction | `EnvContext+0x4f0..0x4f8`, copied to the frame at `0x140c451ff`/`0x140c45232` | every layer normalizes it into `sunDir.xyz` | source **UNPROVEN** |
 | sun colour | `EnvContext+0x4e4..0x4ec` (+ w = 1), copied at `0x140c45237..0x140c4526a` | `sunClr.rgb` of hemicube, cards, clouds | source **UNPROVEN** |
 | camera position | frame argument `[rbp+0x240]` | world translation of stars, cards and clouds; cloud plane centre | runtime |
 | `level` | frame argument `[rbp+0x248]` | clouds (`attributes[2]` switch), cards (flags 4 / 0x80) | meaning **UNPROVEN** |
 | sky params | per-frame copy of `PackMapEnvDataSkyV76` at `[rbp+0x70]` (flags, day ×6, night ×6, verticalOffset) | hemicube, stars, cards, clouds | **PROVEN** layout (§5) |
 
-`F0` and `F` start equal. Whether `F` changes after load (setter slot
-`0x110`) was not traced. The card quad is built once at map load
-(`0x140ca7280`), so cards use `F` as it was then.
+`F0` and `F` start equal. The card quad is built once at map load
+(`0x140ca7280`), so cards use `F` as it was then. Whether anything calls the
+setter later is §7.1.
+
+### 7.1 The sky distance `F0` (PROVEN)
+
+The chain, from the EnvContext back to the map file:
+
+1. The Environment component creator `0x140c520e0` asks its map for component
+   `0x18` (`[rcx]->vfunc 0x130(0x18)`, `0x140c520f8..0x140c5210b`), calls its
+   slot `0x68` (`0x140c52117`) and passes the float to the EnvContext
+   constructor as `xmm2` (`0x140c5216f`). The map-component table in
+   `.rdata` (one `{id, wchar* name, …, create, …}` record per component, e.g.
+   Environment at `0x141d5f898`) names id `0x18` **TerrainClient**
+   (`0x141d5fe48`, create `0x140c55690`) and id `0x17` **Terrain**
+   (`0x141d5d200`, create `0x140c36510`).
+2. TerrainClient (vtable `0x141d5fea0`, constructor `0x140c55800`) slot `0x68`
+   = `0x140ca2e30`: returns `(float)([+0x3f8] · [+0x364] · [+0x358])`.
+3. Those three ints belong to the TerrainClient sub-object at `+0x288`
+   (`+0xd0`, `+0xdc`, `+0x170`). `0x140c7d580` (called at `0x140c55993` with
+   the TerrainClient itself as the source) sets `+0xd0 = TC->vfunc 0x78()`,
+   `+0xdc = TC->vfunc 0x98()`, and `+0x170 = round(24576 / (a·b))`
+   (`0x141d5d878` = 24576). Then the TerrainClient creator reads the map's
+   `trn` chunk (`mov edx,0x6e7274` at `0x140c5571d`) and calls `0x140c7ed50`
+   with its float at +8 (`0x140c55734`), which sets
+   `+0x170 = max(3, round(value / (a·b)))` (`0x140c7ed50..0x140c7edbb`;
+   rounding helper `0x1409c1b10`). The `trn` chunk is `PackMapTerrainV15`
+   (`dims` dword2, then **`swapDistance`** float at +8).
+4. TC slots `0x78` and `0x98` forward to the Terrain component's interface
+   (`[TC+0x18]`, component `0x17`, stored at `0x140c5584f`) slots `0x90` and
+   `0xb0`. On the interface at Terrain+0x20 (vtable `0x141d5d258`) those read
+   `Terrain+0x1c8 = V` and `Terrain+0x1cc = 0xc00 / V` (written by the Terrain
+   constructor, `0x140c36680` and `0x140c36702..0x140c36710`). This is the only
+   interface whose slots there are plain integer getters; the primary vtable's
+   slot `0x90` returns a struct. So `a·b = (3072 div V)·V`, which is **3072**
+   whenever V divides 3072 (V = `verticesPerChunkSide`, 32 in the V15 maps
+   read).
+
+```
+F0 = 3072 · max(3, round(trn.swapDistance / 3072))     // 24576 if no trn chunk is read
+F  = F0 at load;  R_hemicube = 0.4·F0;  R_stars = 0.5·F0;  e = 25 / F0
+```
+
+It is a **map value, not a user setting.** No graphics option or camera
+far-plane value is on the path.
+
+| map (mapc fileId) | `trn.swapDistance` (`gw2dat_cli parse`) | `F0` | hemicube `e` (texels of 512) |
+|---|---|---|---|
+| 187611 | 36864 | 36864 | 0.35 |
+| 3134778 | 24576 | 24576 | 0.52 |
+| 3264516 | 70656 | 70656 | 0.18 |
+| 3194054 | 70656 | 70656 | 0.18 |
+
+All four swap distances are exact multiples of 3072, so `F0 = swapDistance`.
+
+**The setter.** `+0x1058` has only two writers in `0x140c00000..0x140e00000`:
+the constructor (`0x140c40f54`) and EnvContext slot `0x110` (`0x140c43a10`,
+which stores `xmm1` if it differs). A byte scan of all of `.text` for
+`call [reg+0x110]` found 308 sites; 10 load a float into `xmm1` first. Four of
+them are model-animation controls (`ModelAnimDeferredControl.cpp`,
+`ModelAnimSmartDeferredControl.cpp`), and none could be tied to an EnvContext
+receiver. Most likely the setter is never called, so `F = F0` for the whole
+session, but that is **not proven**. The second sky object (`EnvContext+0x9b8`,
+created at `0x140c458ad` as a hemicube or, via `0x140c68aa0`, the
+`skyModeCubeTex` renderer) is also sized from `+0x1058`
+(`0x140c458f7..0x140c45909`).
 
 **Submission order** inside `0x140c43f80`: for each environment, the cloud
 wrapper (`0x140c633c0` → cloud draw `0x140ca4050`) and the card wrapper
@@ -659,8 +731,8 @@ radiance = base(d) + add          // base = §5 hemicube output, before the 8-bi
 ```
 
 `tw` is not reproducible; bake `tw = 0` (the steady part) and say so in
-`warnings`. `R` needs `F0`: the star size is **UNPROVEN** until `F0` is known
-(§7); direction, UV, colour and blend are **PROVEN**.
+`warnings`. `R = 0.5·F0` with `F0` from §7.1, so the star size is **PROVEN**
+too (187611: `R` = 18432, the largest star's half-size 41.5 → 0.13°).
 
 ---
 
@@ -702,7 +774,7 @@ by `(day.speed, night.speed)` whose entry is created with value 0
 (`0x140c430d9`). It is not used for flag-8 cards (`0x140caa86c`). **Static
 frame: spin = 0** (the value at map load).
 
-### 9.3 Quad, size and textureUV (PROVEN; size needs F)
+### 9.3 Quad, size and textureUV (PROVEN)
 
 `0x140ca7280` builds 4 vertices (stride 0x54, FVF `0xff0079`) at distance
 `F = EnvContext+0x1058` with half-size 1000 (`0x141923c4c`), normalizes them
@@ -726,7 +798,8 @@ whole texture upright and unmirrored (left = +Y = `eL`, top = −Z = up). Scale:
 at least 1e-6), applied to local Y and Z (`0x140caa840..0x140caa86c`,
 `0x140caab97..0x140caabde`). Flags 8+0x10 together divide the scale by the
 distance to `location` and multiply by 25000 (`0x140caa7d5..0x140caa83c`).
-Angular half-size: `tan = 1000·s / F`. **F is UNPROVEN (§7).**
+Angular half-size: `tan = 1000·s / F`, `F = F0` (§7.1). 187611 card 0 (day
+scale 3.22, `F0` = 36864): half-size `atan(0.0874)` = 5.0°.
 
 ### 9.4 Colour and blend (PROVEN; inputs as §11)
 
@@ -827,7 +900,7 @@ which effect the sky path selects. Not done: **leave material cards out**.
 | draw | `0x140ca4050` | World, attribute choice, uniforms below |
 | blend | AMAT of blob `0x141d72f80` | **SRC_ALPHA, INV_SRC_ALPHA**; second sampler is engine texture 35 in slot 12 (`ssNoiseDepth`, the scene depth) |
 
-### 10.2 Geometry and UV (PROVEN; size needs F)
+### 10.2 Geometry and UV (PROVEN)
 
 Mesh `0x140ca3290`: an 11×11 grid on `z = 0`, `x, y ∈ [−0.5, 0.5]` step 0.1,
 `uv = (x + 0.5, y + 0.5)`, vertex colour (all 4 bytes)
@@ -896,8 +969,20 @@ dst  = rgb·a + dst·(1 − a)
 
 ### 10.5 Sampler formula
 
-Needs `F`, a camera position `cam` (only `cam.z` changes the shape; `cam.xy`
-shifts the texture phase), `fog` and the §11 globals. With no scene geometry
+Needs `F` (= `F0`, §7.1), a camera position `cam` (only `cam.z` changes the
+shape; `cam.xy` shifts the texture phase), `fog` and the §11 globals.
+**Camera height (round 3, PARTIAL).** The cloud code applies no clamp and no
+relative offset. The plane sits at the absolute world height
+`z = −L.altitude` (World row 3), the vertical fade and the parallax/lighting
+direction come from the engine's `CameraPosition` uniform in VS 1645 (the
+render camera), and only the plane centre (`cam.xy`) and the
+`attributes[2]` switch (`cam.z > level`) use the frame argument. That argument
+is the 5th argument of EnvContext slot `0x50` (`[rbp+0x240]` = entry+0x28 in
+`0x140c43f80`). The frame function also takes a second position as `r8` and
+tests its `.z > level` (`0x140c44096..0x140c440ae`). Which of the two is the
+camera and which the player was not traced. A bake must pick an absolute
+camera z in map units (up = −z). The code offers no "sky camera" height to
+copy. With no scene geometry
 `soft = 1` (assumption: the depth buffer holds the far plane).
 
 ```
@@ -917,8 +1002,8 @@ for each layer L, back to front (order UNPROVEN; farthest first is the safe choi
 
 The plane only covers directions whose hit point is within `F·m` of the camera,
 so a cloud layer never reaches the horizon. **PARTIAL**: everything above is
-from code, but `F`, `cam.z`, `fog` (engine fog uniforms), `cloudFade` and the
-lighting globals are runtime values.
+from code (`F` included, §7.1), but `cam.z`, `fog` (engine fog uniforms),
+`cloudFade` and the lighting globals are runtime values.
 
 ---
 
@@ -943,11 +1028,14 @@ lighting globals are runtime values.
 
 Static work still possible:
 
-1. `k` (modes 2/3): decompile `0x140c58540`, which writes `EnvContext+0x105c`
-   through its last argument (`0x140c44e55`).
-2. `F0`: follow `svc(0x18)->vfunc 0x68` at `0x140c52111..0x140c5211a` (the
-   value the EnvContext constructor receives), and find the callers of
-   EnvContext slot `0x110` (`0x140c43a10`).
+1. `k` (modes 2/3): `0x140c58540` is a weighted accumulator. It adds
+   `(1 − weight)·x` of each environment's values (`x` from the recursive
+   `0x140c60c00`, out-param `[rbp+0x38]`), then divides by the total weight.
+   So `k` is a zone-blended per-environment scalar, but which env field `x`
+   is was not traced. Next: the leaf case of `0x140c60c00`.
+2. `F`: done (§7.1). Still open: whether anything calls EnvContext slot
+   `0x110` (`0x140c43a10`). 10 float-passing `call [reg+0x110]` sites need
+   their receivers identified.
 3. Layer order: decode the 5th/6th arguments of `0x140aab1f0` (state word and
    the value asserted `< 0x10`) into the bgfx sort key (`0x140aaa2c0`,
    `0x140aa9fd0`).
@@ -960,13 +1048,13 @@ Static work still possible:
 
 Runtime captures that would settle the rest (one map, day and night):
 
-7. `EnvContext+0x1058` (`F`), `EnvContext+0x9d0` (star radius) and hemicube
-   `this+0xd8` (R) — one float settles the hemicube inset, star size, card
-   size and cloud plane size. Read at the star draw `0x140c6fcd0` (`rcx+0x10`)
-   or the card draw `0x140caa330` (`[rcx+0x10]` → `+0x1058`).
+7. (Confirmation only.) `EnvContext+0x1058` should equal the map's
+   `trn.swapDistance` rounded to 3072 (§7.1). A mismatch would mean the slot
+   `0x110` setter runs.
 8. `EnvContext+0x1050` (`t`) and `+0x105c` (`k`) in each sky mode.
 9. At the cloud draw `0x140ca4050`: the 8 arguments (sun direction, sun
-   colour, camera, `level`, `xmm3` = `cloudFade`), and the engine uniforms
+   colour, camera position (which object?), `level`, `xmm3` = `cloudFade`),
+   and the engine uniforms
    `FogColorFar`, `FogColorNearMinusFar`, `FogParam0`, `shRed/Green/Blue`,
    `Time`, `TimeOfDay` as they stand for the sky pass.
 10. `0x140d65440` return value (program C, which also hides flag-2 cards).
