@@ -20,8 +20,10 @@
 
 #include "castlemist/extract/entry_extractor.h"
 #include "castlemist/format/struct_template.h"
+#include "castlemist/native/cmp_decompress_method0.hpp"
 #include "castlemist/native/gw2model.hpp"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -94,6 +96,26 @@ ExtractedEntry extract_base(uint32_t base_id) {
     Gw2Dat& dat = shared_dat();
     if (base_id == 0 || base_id - 1 >= dat.mft_data_list.size()) SKIP("baseId out of range for this dat");
     return extract_entry(dat, base_id - 1);
+}
+
+/// @brief The decompressed packfile for a fileId, without building a preview.
+///
+/// extract_entry() would build a whole map scene for a mapc; the sky tests only
+/// need the bytes. Skips when the fileId is not in this dat.
+std::vector<uint8_t> packfile_by_file_id(uint32_t file_id) {
+    Gw2Dat& dat = shared_dat();
+    uint32_t base = get_by_base_id(dat, file_id);
+    if (base == 0 || base > dat.mft_data_list.size()) SKIP("fileId not in this dat");
+    const MftData& e = dat.mft_data_list[base - 1];
+    std::vector<uint8_t> raw = read_entry_bytes(dat.file_info.file_path, e);
+    return e.compression_flag ? castlemist::cmp::decompress_entry(raw) : raw;
+}
+
+/// @brief parseMapSky() on a map fileId (skips without the dat or template).
+castlemist::model::Extractor::MapSky map_sky(uint32_t file_id) {
+    if (!ensure_template()) SKIP("no gw2_packfile.json struct template");
+    std::vector<uint8_t> bytes = packfile_by_file_id(file_id);
+    return castlemist::model::Extractor(bytes, *castlemist::tpl::get()).parseMapSky();
 }
 
 } // namespace
@@ -529,4 +551,77 @@ CM_TEST(dat, hologram_blade_draws_its_glow_pass_with_every_constant_bound) {
         if (off < 0 || !bound) std::fprintf(stderr, "  uniform %s: off=%d bound=%d\n", want, off, (int)bound);
         CHECK(off >= 0 && bound);
     }
+}
+
+// ---- map sky (env chunk -> PackMapEnvDataGlobalV*) ----
+
+// 187611: a panorama sky. Four sky modes, mode 3 repeating mode 0, one star
+// texture and four cloud layers; no cube faces (its env is v76, which has the
+// skyModeCubeTex array, but every entry is null).
+CM_TEST(mapsky, panorama_map_187611) {
+    auto s = map_sky(187611);
+    CHECK(s.present);
+    CHECK_EQ(s.modes.size(), size_t{4});
+    if (s.modes.size() < 4) return;
+    CHECK_EQ(s.modes[0].ne, 187554u);
+    CHECK_EQ(s.modes[0].sw, 187556u);
+    CHECK_EQ(s.modes[0].top, 187558u);
+    CHECK(s.modes[0].hasPanorama());
+    CHECK_EQ(s.modes[3].ne, 187554u);
+    CHECK_EQ(s.starFile, 187544u);
+    CHECK_FALSE(s.modes[0].hasCube());
+    CHECK_EQ(s.clouds.size(), size_t{4});
+    if (!s.clouds.empty()) CHECK_EQ(s.clouds[0].texture, 186345u);
+}
+
+// 3264516: one of three maps with a real cube sky, in modes 0-1 only.
+CM_TEST(mapsky, cube_map_3264516) {
+    auto s = map_sky(3264516);
+    CHECK(s.present);
+    CHECK(s.modes.size() >= size_t{3});
+    if (s.modes.size() < 3) return;
+    CHECK(s.modes[0].hasCube());
+    CHECK_EQ(s.modes[0].cube[0], 3263205u);  // E
+    CHECK_EQ(s.modes[0].cube[1], 3263207u);  // W
+    CHECK_EQ(s.modes[0].cube[2], 3263209u);  // N
+    CHECK_EQ(s.modes[0].cube[3], 3263211u);  // S
+    CHECK_EQ(s.modes[0].cube[4], 3263213u);  // B
+    CHECK_EQ(s.modes[0].cube[5], 3263215u);  // T
+    CHECK(s.modes[1].hasCube());
+    CHECK_FALSE(s.modes[2].hasCube());
+}
+
+// Sky cards (sun, moons, planets) are textured; a card read from the wrong
+// offset shows up as a NaN/inf placement.
+CM_TEST(mapsky, sky_cards_have_textures) {
+    size_t textured = 0;
+    for (uint32_t id : {187611u, 3264516u}) {
+        auto s = map_sky(id);
+        for (const auto& c : s.cards) {
+            if (!c.day.texture) continue;
+            ++textured;
+            CHECK(std::isfinite(c.day.azimuth));
+            CHECK(std::isfinite(c.day.latitude));
+        }
+    }
+    CHECK(textured > 0);
+}
+
+// env v75 and older have no skyModeCubeTex: the parse still finds the sky and
+// leaves the cube faces empty. 184799 is a v75 map in the index this was
+// written against; a newer dat may have moved it on, so skip in that case.
+CM_TEST(mapsky, missing_fields_stay_empty) {
+    auto s = map_sky(184799);
+    if (s.envVersion >= 76) SKIP("map 184799 is no longer an old-env map on this dat");
+    CHECK(s.present);
+    CHECK(!s.modes.empty());
+    for (const auto& m : s.modes)
+        for (uint32_t f : m.cube) CHECK_EQ(f, 0u);
+}
+
+// A model packfile has no env chunk.
+CM_TEST(mapsky, no_env_chunk) {
+    auto s = map_sky(2163020);  // Holographic Dawn, used above
+    CHECK_FALSE(s.present);
+    CHECK(s.modes.empty());
 }
