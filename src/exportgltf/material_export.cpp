@@ -183,10 +183,22 @@ std::vector<int> write_materials(GltfWriter& w, const ModelPreview& model, const
         // from the diffuse texture's own bright regions -- see
         // bake_effect_emissive_texture()'s comment for why this (not a
         // Blender node script) is what actually survives into Poiyomi.
-        if (mat.isEffect && mat.diffuseTex >= 0 && mat.diffuseTex < static_cast<int>(model.textures.size())) {
-            int emissiveTexIdx = bake_effect_emissive_texture(w, model.textures[static_cast<size_t>(mat.diffuseTex)]);
+        // With a baseColorRole the colour is that layer (on its own UV); the diffuse
+        // is not colour (842652: a UV-offset map) and is never baked as glow.
+        int bakeTex = -1;
+        uint8_t bakeUv = 0;
+        if (colourLayer) {
+            bakeTex = colourLayer->texIndex;
+            bakeUv = colourLayer->uvIndex;
+        } else if (colourRole.empty()) {
+            bakeTex = mat.diffuseTex;
+        }
+        if (mat.isEffect && bakeTex >= 0 && bakeTex < static_cast<int>(model.textures.size())) {
+            int emissiveTexIdx = bake_effect_emissive_texture(w, model.textures[static_cast<size_t>(bakeTex)]);
             if (emissiveTexIdx >= 0) {
-                material["emissiveTexture"] = {{"index", emissiveTexIdx}};
+                json ref{{"index", emissiveTexIdx}};
+                if (bakeUv != 0) ref["texCoord"] = bakeUv;
+                material["emissiveTexture"] = std::move(ref);
                 material["emissiveFactor"] = {1.0, 1.0, 1.0};
             }
         }

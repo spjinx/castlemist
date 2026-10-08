@@ -1979,6 +1979,54 @@ CM_TEST(vrchat, materials_json_opacity_mask_and_glb_base_color) {
     CHECK_FALSE(pbr.value("baseColorTexture", json::object()).contains("texCoord"));
 }
 
+CM_TEST(vrchat, glb_effect_emissive_bakes_colour_layer) {
+    // An effect material whose colour is the parallax layer: the .glb's glow bake comes
+    // from that layer on its own UV, never from the UV-offset "diffuse" (57890).
+    ModelPreview model = glow_quad();
+    ModelMaterialCPU axe = parallax_mat(model);
+    for (auto& x : axe.extraTextures)
+        if (x.role == "parallax") x.uvIndex = 1;
+    axe.index = 1;
+    axe.materialName = "Axe";
+    axe.isEffect = true;
+    axe.hasRenderState = true;
+    axe.renderState = 0x6565000;
+    model.materials.push_back(axe);
+    model.meshes.push_back(quad_mesh(1));
+
+    fs::path dir = fresh_dir("effectemissive");
+    VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Axe", 1);
+    CHECK(r.ok);
+    json g = glb_json(dir / "Axe.glb");
+    const json& mat = g["materials"][1];
+    CHECK(mat.contains("emissiveTexture"));
+    const json em = mat.value("emissiveTexture", json::object());
+    CHECK(em.value("texCoord", 0) == 1);
+    const int tex = em.value("index", -1);
+    CHECK(tex >= 0);
+    if (tex >= 0) {
+        const int img = g["textures"][static_cast<size_t>(tex)]["source"].get<int>();
+        const std::string name = g["images"][static_cast<size_t>(img)].value("name", "");
+        CHECK(name == "842653_emissive");
+        CHECK(name != "57890_emissive");
+    }
+
+    // No colour layer: no bake from the UV-offset map either.
+    ModelPreview bare = glow_quad();
+    ModelMaterialCPU none = parallax_mat(bare, false, true);
+    none.index = 1;
+    none.materialName = "Axe";
+    none.isEffect = true;
+    none.hasRenderState = true;
+    none.renderState = 0x6565000;
+    bare.materials.push_back(none);
+    bare.meshes.push_back(quad_mesh(1));
+    fs::path dir2 = fresh_dir("effectemissive_none");
+    CHECK(write_vrchat_folder(bare, dir2.string(), "Axe", 1).ok);
+    json g2 = glb_json(dir2 / "Axe.glb");
+    CHECK_FALSE(g2["materials"][1].contains("emissiveTexture"));
+}
+
 CM_TEST(vrchat, mskptrb_hint_only_with_an_opacity_layer) {
     // A default-profile material (1195172 is not hand-read) keeps the raw use null.
     ModelPreview model;
