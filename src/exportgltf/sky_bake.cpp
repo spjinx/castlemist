@@ -76,8 +76,14 @@ struct Hemicube {
 
     /// Inset e = 1.4/W: the seam measurement's best fit (§2). The game's own
     /// inset is 25/F0 (§2, §7.1), which leaves the textures' authored ~1.4-texel
-    /// edge overlap visible as seams; this hides them on purpose (warned).
+    /// edge overlap visible; on top of this inset the face boundaries are
+    /// cross-faded (kFadeTexels, warned in sky.json).
     static float inset(const Image& img) { return 1.4f / img.width; }
+
+    /// Half-width of the cross-fade band at each face boundary, in texels of
+    /// the face's own texture. Not from the game (it draws the overlap as-is):
+    /// the user's choice of a seamless export.
+    static constexpr float kFadeTexels = 2.0f;
 
     /// Face lookups, gw2-sky.md §2.
     Rgba side_upper(const Image& img, float u, float v) const {   // faces 1 (east) / 3 (west)
@@ -89,7 +95,38 @@ struct Hemicube {
         return lookup(img, u, v, img.height / 2, img.height - 1);
     }
 
-    /// §2 inverse projection: GW2 sky direction -> texel colour.
+    enum Face { East, West, North, South, Top };
+
+    /// One face's §2 formula at direction (x, y, up), also a little past the
+    /// face's own edges (the lookups clamp), so a neighbour can be sampled at
+    /// the same direction. Below the horizon the side faces repeat their
+    /// horizon row (U = 0).
+    Rgba sample(Face f, float x, float y, float up) const {
+        if (f == Top) {
+            const float a = inset(t), b = 1.0f - a;
+            const float X = x / up, Y = y / up;
+            return lookup(t, a + (b - a) * (1 + X) / 2, a + (b - a) * (1 + Y) / 2);
+        }
+        if (f == East || f == West) {          // upper halves
+            const float ax = std::fabs(x), Y = y / ax, U = up > 0 ? up / ax : 0;
+            const Image& img = f == East ? ne : sw;
+            const float a = inset(img), b = 1.0f - a;
+            const float u = f == East ? a + (b - a) * (1 - Y) / 2    // face 1, east
+                                      : a + (b - a) * (1 + Y) / 2;   // face 3, west
+            return side_upper(img, u, a + (0.5f - a) * (1 - U));
+        }
+        const float ay = std::fabs(y), X = x / ay, U = up > 0 ? up / ay : 0;   // lower halves, rotated 180°
+        const Image& img = f == North ? ne : sw;
+        const float a = inset(img), b = 1.0f - a;
+        const float u = f == North ? a + (b - a) * (1 - X) / 2       // face 0, north
+                                   : a + (b - a) * (1 + X) / 2;      // face 2, south
+        return side_lower(img, u, 0.5f + (b - 0.5f) * U);
+    }
+
+    /// §2 inverse projection: GW2 sky direction -> premultiplied texel colour
+    /// (rgb * a). Near a face boundary the owning face and its neighbour are
+    /// both sampled at d and blended linearly by the distance to the edge
+    /// (texels of the owner), weight 0.5 on the edge itself.
     Rgba base(const float d[3]) const {
         float x = d[0], y = d[1];
         const float up = -d[2];
@@ -99,37 +136,71 @@ struct Hemicube {
             ax = 1;
         }
         const float m = std::max(ax, ay);
+
+        // Owner face, and each boundary within the band: (neighbour, distance in texels).
+        Face own;
+        struct Edge { Face f; float dist; };
+        Edge edges[3];
+        int ne_ = 0;
+        auto edge = [&](Face f, float dist) {
+            if (dist < kFadeTexels) edges[ne_++] = Edge{f, std::max(dist, 0.0f)};
+        };
         if (up > 0 && up >= m) {               // top cap, face 4, texture T
-            const float a = inset(t), b = 1.0f - a;
+            own = Top;
+            const float k = (1 - 2 * inset(t)) * t.width / 2;   // texels per unit of X / Y
             const float X = x / up, Y = y / up;
-            return lookup(t, a + (b - a) * (1 + X) / 2, a + (b - a) * (1 + Y) / 2);
-        }
-        // Side face; below the horizon the skirt repeats the horizon row.
-        const float U = up > 0 ? up / m : 0;   // 0 at horizon .. 1 at cube edge
-        if (ax >= ay) {                        // east / west, upper halves
-            const float Y = y / ax;
+            if (std::fabs(X) >= std::fabs(Y)) edge(X > 0 ? East : West, (1 - std::fabs(X)) * k);
+            else                              edge(Y > 0 ? North : South, (1 - std::fabs(Y)) * k);
+            // the second-nearest edge too, for the corners
+            if (std::fabs(X) >= std::fabs(Y)) edge(Y > 0 ? North : South, (1 - std::fabs(Y)) * k);
+            else                              edge(X > 0 ? East : West, (1 - std::fabs(X)) * k);
+        } else if (ax >= ay) {                 // east / west
+            own = x > 0 ? East : West;
             const Image& img = x > 0 ? ne : sw;
-            const float a = inset(img), b = 1.0f - a;
-            const float u = x > 0 ? a + (b - a) * (1 - Y) / 2    // face 1, east
-                                  : a + (b - a) * (1 + Y) / 2;   // face 3, west
-            return side_upper(img, u, a + (0.5f - a) * (1 - U));
+            const float a = inset(img);
+            const float Y = y / ax;
+            edge(Y > 0 ? North : South, (1 - std::fabs(Y)) * (1 - 2 * a) * img.width / 2);
+            if (up > 0) edge(Top, (1 - up / ax) * (0.5f - a) * img.height);
+        } else {                               // north / south
+            own = y > 0 ? North : South;
+            const Image& img = y > 0 ? ne : sw;
+            const float a = inset(img);
+            const float X = x / ay;
+            edge(X > 0 ? East : West, (1 - std::fabs(X)) * (1 - 2 * a) * img.width / 2);
+            if (up > 0) edge(Top, (1 - up / ay) * (0.5f - a) * img.height);
         }
-        const float X = x / ay;                // north / south, lower halves (rotated 180°)
-        const Image& img = y > 0 ? ne : sw;
-        const float a = inset(img), b = 1.0f - a;
-        const float u = y > 0 ? a + (b - a) * (1 - X) / 2        // face 0, north
-                              : a + (b - a) * (1 + X) / 2;       // face 2, south
-        return side_lower(img, u, 0.5f + (b - 0.5f) * U);
+
+        auto premul = [](Rgba c) { return Rgba{c.r * c.a, c.g * c.a, c.b * c.a, c.a}; };
+        Rgba out = premul(sample(own, x, y, up));
+        if (ne_ == 0) return out;
+        // Neighbour weight 0.5 at the edge falling to 0 at kFadeTexels inside;
+        // the owner keeps the product of what each edge leaves it.
+        float w[3], sum = 0, keep = 1;
+        for (int i = 0; i < ne_; ++i) {
+            w[i] = 0.5f * (1 - edges[i].dist / kFadeTexels);
+            sum += w[i];
+            keep *= 1 - w[i];
+        }
+        Rgba acc{out.r * keep, out.g * keep, out.b * keep, out.a * keep};
+        for (int i = 0; i < ne_; ++i) {
+            if (w[i] <= 0) continue;
+            const float k = (1 - keep) * w[i] / sum;
+            const Rgba c = premul(sample(edges[i].f, x, y, up));
+            acc.r += c.r * k;
+            acc.g += c.g * k;
+            acc.b += c.b * k;
+            acc.a += c.a * k;
+        }
+        return acc;
     }
 
     /// §5 with LightIntensity and HazeDensity left out: tex.rgb * tex.a *
     /// Brightness, before the 8-bit clamp (§8.5 adds the stars to this).
     void radiance(const float g[3], float out[3]) const {
-        const Rgba c = base(g);
-        const float k = c.a * brightness;
-        out[0] = c.r * k;
-        out[1] = c.g * k;
-        out[2] = c.b * k;
+        const Rgba c = base(g);   // already rgb * a
+        out[0] = c.r * brightness;
+        out[1] = c.g * brightness;
+        out[2] = c.b * brightness;
     }
 };
 
@@ -317,8 +388,8 @@ BakeResult make_sky_sampler(const Extractor::MapSky& sky, size_t modeIndex, cons
     // §5: Brightness = dayBrightness (modes 0, 2) / nightBrightness (modes 1, 3).
     cube.brightness = day ? p.dayBrightness : p.nightBrightness;
     res.layers.push_back("base");
-    res.warnings.push_back("seams: 1.4-texel inset hides the textures' authored overlap; "
-                           "the game uses 25/F0 (gw2-sky.md §2)");
+    res.warnings.push_back("seams cross-faded over 2 texels; the game draws the authored overlap as-is "
+                           "(gw2-sky.md §2)");
 
     // §8: stars. The draw hides the mesh while StarDensity is 0 (§8.1).
     const float starDensity = day ? p.dayStarDensity : p.nightStarDensity;

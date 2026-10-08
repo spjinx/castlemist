@@ -13,6 +13,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -265,8 +266,8 @@ bool has_warning(const BakeResult& r, const std::string& needle) {
 
 float max_channel(const Rgb& c) { return std::max({c.r, c.g, c.b}); }
 
-/// The note every baked mode carries about its hemicube inset (gw2-sky.md §2).
-bool is_seam_note(const std::string& w) { return w.rfind("seams:", 0) == 0; }
+/// The note every baked mode carries about its seam cross-fade (gw2-sky.md §2).
+bool is_seam_note(const std::string& w) { return w.rfind("seams cross-faded", 0) == 0; }
 
 /// Warnings other than the seam note.
 std::vector<std::string> other_warnings(const BakeResult& r) {
@@ -341,9 +342,9 @@ CM_TEST(skybake, missing_base_is_not_ok) {
         BakeResult r = make_sky_sampler(sky, 0, tex);
         CHECK(r.ok);
         CHECK(r.layers == std::vector<std::string>{"base"});
-        // gw2-sky.md §2: the 1.4-texel inset is a choice, and says so.
+        // gw2-sky.md §2: the seam cross-fade is a choice, and says so.
         CHECK_EQ(r.warnings.size(), size_t(1));
-        CHECK(any_warning(r, "seams: 1.4-texel inset", "25/F0 (gw2-sky.md §2)"));
+        CHECK(any_warning(r, "seams cross-faded over 2 texels", "authored overlap as-is (gw2-sky.md §2)"));
         CHECK_NEAR(r.radiance(up).r, 1.0f, 1e-6f);
     }
 }
@@ -429,6 +430,94 @@ CM_TEST(skybake, panorama_seams_are_continuous) {
     CHECK(worst_step < 0.05f);
     CHECK(worst_err < 0.03f);
     CHECK(worst_below < 1e-6f);
+}
+
+namespace {
+
+/// Like direction_texture, but the colour is 0.5 + 0.4 d + @p offset, so
+/// neighbouring faces deliberately disagree by the offset difference.
+Image offset_direction_texture(Tex t, int size, float offset) {
+    Image img = solid(size, 0, 0, 0, 255);
+    for (int y = 0; y < size; ++y)
+        for (int x = 0; x < size; ++x) {
+            float d[3];
+            forward_dir(t, (x + 0.5f) / size, (y + 0.5f) / size, size, d);
+            normalize3(d);
+            uint8_t* p = &img.rgba[(static_cast<size_t>(y) * size + x) * 4];
+            for (int i = 0; i < 3; ++i)
+                p[i] = static_cast<uint8_t>(std::lround(std::clamp(0.5f + 0.4f * d[i] + offset, 0.0f, 1.0f) * 255));
+        }
+    return img;
+}
+
+/// Equirect seam metric (as seam2.py): the largest colour step next to a seam
+/// over the median step a few pixels either side. Vertical seams at Unity
+/// azimuth 45/135/225/315 deg (elevation 5..40), top-cap seams at elevation 45
+/// deg over the side-face centres (azimuth 0/90/180/270).
+float worst_seam_ratio(const Image& eq) {
+    const int W = eq.width, H = eq.height;
+    auto px = [&](int x, int y) {
+        x = ((x % W) + W) % W;
+        return &eq.rgba[(static_cast<size_t>(y) * W + x) * 4];
+    };
+    auto diff = [](const uint8_t* a, const uint8_t* b) {
+        return (std::abs(a[0] - b[0]) + std::abs(a[1] - b[1]) + std::abs(a[2] - b[2])) / 3.0f;
+    };
+    auto col_x = [&](float azDeg) {
+        const float phi = azDeg * kDegToRad;
+        float u = (phi + 3.14159265f / 2) / (2 * 3.14159265f);
+        u -= std::floor(u);
+        return static_cast<int>(std::lround(u * W));
+    };
+    auto median = [](std::vector<float> v) {
+        std::sort(v.begin(), v.end());
+        return v[v.size() / 2];
+    };
+    float worst = 0;
+    const int r0 = static_cast<int>((90 - 40) / 180.0f * H), r1 = static_cast<int>((90 - 5) / 180.0f * H);
+    for (float az : {45.0f, 135.0f, 225.0f, 315.0f}) {
+        const int c = col_x(az);
+        auto step = [&](int k) {
+            float s = 0;
+            for (int y = r0; y < r1; ++y) s += diff(px(c + k, y), px(c + k - 1, y));
+            return s / (r1 - r0);
+        };
+        std::vector<float> ref;
+        for (int k = 4; k <= 24; ++k) { ref.push_back(step(k)); ref.push_back(step(-k)); }
+        worst = std::max(worst, std::max({step(-1), step(0), step(1)}) / median(ref));
+    }
+    const int r = static_cast<int>(std::lround((90 - 45) / 180.0f * H));
+    for (float az : {0.0f, 90.0f, 180.0f, 270.0f}) {
+        const int c = col_x(az);
+        auto step = [&](int k) {
+            float s = 0;
+            for (int x = c - 20; x <= c + 20; ++x) s += diff(px(x, r + k), px(x, r + k - 1));
+            return s / 41;
+        };
+        std::vector<float> ref;
+        for (int k = 4; k <= 24; ++k) { ref.push_back(step(k)); ref.push_back(step(-k)); }
+        worst = std::max(worst, std::max({step(-1), step(0), step(1)}) / median(ref));
+    }
+    return worst;
+}
+
+} // namespace
+
+CM_TEST(skybake, mismatched_face_edges_are_cross_faded) {
+    // The textures' authored edges disagree (§2 seam table); the bake
+    // cross-fades them over 2 texels either side of each face boundary.
+    constexpr int kSize = 32;
+    MapSky sky = one_mode_sky();
+    TextureMap tex;
+    tex[kNE] = offset_direction_texture(Tex::NE, kSize, 0.006f);
+    tex[kSW] = offset_direction_texture(Tex::SW, kSize, -0.006f);
+    tex[kT] = offset_direction_texture(Tex::T, kSize, 0.0f);
+    BakeResult r = make_sky_sampler(sky, 0, tex);
+    CHECK(r.ok);
+    const float ratio = worst_seam_ratio(render_equirect(r.radiance, 512, 256));
+    std::printf("      worst seam step / in-face step: %.2f\n", ratio);
+    CHECK(ratio < 1.5f);
+    CHECK(any_warning(r, "seams cross-faded over 2 texels", "gw2-sky.md §2"));
 }
 
 CM_TEST(skybake, panorama_texel_maps_to_its_direction) {
@@ -1141,7 +1230,7 @@ CM_TEST(skyexport, sky_json_lists_baked_star_and_card_sources) {
     CHECK_EQ(night["sources"]["stars"]["atlas"].get<int>(), int(kAtlas));
     CHECK(day["sources"]["cards"] == nlohmann::json::array({kCardDay}));
     CHECK(night["sources"]["cards"] == nlohmann::json::array({kCardNight}));
-    CHECK(any_contains(day["warnings"], "seams: 1.4-texel inset"));
+    CHECK(any_contains(day["warnings"], "seams cross-faded over 2 texels"));
     CHECK(any_contains(night["warnings"], "layer order"));
     fs::remove_all(parent);
 }
