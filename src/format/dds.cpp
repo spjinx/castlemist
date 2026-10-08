@@ -233,4 +233,39 @@ std::optional<DdsInfo> parse_dds(const uint8_t* data, size_t size) {
     return std::nullopt;
 }
 
+bool decode_rgba8(const uint8_t* data, size_t size, uint32_t& width, uint32_t& height, std::vector<uint8_t>& rgba) {
+    const std::optional<DdsInfo> info = parse_dds(data, size);
+    if (!info) return false;
+    bool bgra = false, opaque = false;
+    switch (info->dxgi_format) {
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: bgra = true; break;
+    case DXGI_FORMAT_B8G8R8X8_UNORM: bgra = opaque = true; break;
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: break;
+    default: return false;
+    }
+    // parse_dds maps a legacy 32-bit layout to B8G8R8A8 / R8G8B8A8 by its colour
+    // masks alone; an X8 layout (no alpha mask) is opaque.
+    DdsHeader header;
+    std::memcpy(&header, data + sizeof(uint32_t), sizeof(header));
+    if (header.pixel_format.four_cc != FOURCC_DX10 && header.pixel_format.a_bit_mask == 0) opaque = true;
+
+    const size_t count = static_cast<size_t>(info->width) * info->height;
+    if (info->data_offset + count * 4 > size) return false;
+    width = info->width;
+    height = info->height;
+    rgba.resize(count * 4);
+    const uint8_t* src = data + info->data_offset;
+    for (size_t i = 0; i < count; ++i) {
+        const uint8_t* s = src + i * 4;
+        uint8_t* d = &rgba[i * 4];
+        d[0] = bgra ? s[2] : s[0];
+        d[1] = s[1];
+        d[2] = bgra ? s[0] : s[2];
+        d[3] = opaque ? 255 : s[3];
+    }
+    return true;
+}
+
 } // namespace castlemist::dds

@@ -15,7 +15,9 @@
 #ifndef GW2MODEL_HPP
 #define GW2MODEL_HPP
 
+#include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -1295,6 +1297,12 @@ public:
         std::vector<MapSkyCloudLayer> clouds;
         std::vector<MapSkyCard> cards;
         MapSkyParams params;
+        // Sky distance F0 (docs/research/gw2-sky.md §7.1): the EnvContext
+        // constructor's argument, from the map's `trn` chunk as
+        // 3072 * max(3, round(swapDistance / 3072)); 24576 with no trn chunk.
+        // Sizes the hemicube (0.4 F0), the star sphere (0.5 F0) and the sky
+        // card quads (F = F0 at load).
+        float skyDistance = 24576.0f;
     };
 
     MapSky parseMapSky() {
@@ -1465,6 +1473,54 @@ public:
                 p.verticalOffset = rdFloat1(st, "verticalOffset", s);
             }
         } catch (const std::exception&) {}
+
+        // gw2-sky.md §7.1: TerrainClient hands the EnvContext
+        // (float)(3072 * max(3, round(trn.swapDistance / 3072))); the 3072 is
+        // (3072 div V) * V for V = verticesPerChunkSide (32 in the maps read).
+        // Without a trn chunk the count keeps its default round(24576 / 3072).
+        try {
+            std::string tr; uint16_t tv = 0;
+            size_t trn = findChunk("trn", &tr, &tv);
+            size_t so; json sf;
+            if (trn && !tr.empty() && fieldOffset(tr, "swapDistance", so, sf)) {
+                const float swap = rdf(trn + so);
+                if (std::isfinite(swap))
+                    out.skyDistance = 3072.0f * std::max(3.0f, std::round(swap / 3072.0f));
+            }
+        } catch (const std::exception&) {}
+        return out;
+    }
+
+    // Star field of a sky's `starFile` (docs/research/gw2-sky.md §8.2): a PF
+    // packfile whose chunk `STAR` (v0) the game reads as
+    //   +0 float S (size scale), +4 array_ptr of 24-byte stars, then a filename
+    //   (the atlas texture, a plain DDS).
+    // The template carries no STAR chunk, so this is an explicit reader of that
+    // layout; the array_ptr and filename take this file's pointer size.
+    struct MapStar { float e0 = 0, e1 = 0, u0 = 0, u1 = 0, v0 = 0, v1 = 0; };  // azimuth, elevation (rad), atlas rect
+    struct MapStars {
+        bool present = false;                    // STAR chunk found
+        float scale = 0;                         // S
+        uint32_t atlas = 0;                      // atlas texture fileId, 0 if none
+        std::vector<MapStar> stars;
+    };
+
+    MapStars parseStars() {
+        MapStars out;
+        size_t c = findChunk("STAR");
+        if (!c) return out;
+        out.present = true;
+        out.scale = rdf(c);
+        uint32_t n = 0;
+        size_t base = arrayAt(c + 4, n);
+        if (base && base + (uint64_t)n * 24 <= n_) {
+            out.stars.reserve(n);
+            for (uint32_t i = 0; i < n; ++i) {
+                size_t e = base + (size_t)i * 24;
+                out.stars.push_back({rdf(e), rdf(e + 4), rdf(e + 8), rdf(e + 12), rdf(e + 16), rdf(e + 20)});
+            }
+        }
+        out.atlas = decodeFilenameAt(c + 4 + 4 + ptr_);
         return out;
     }
 
