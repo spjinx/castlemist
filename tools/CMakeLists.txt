@@ -87,7 +87,7 @@ if (CASTLEMIST_HAVE_BGFX)
 
     castlemist_add_tool(gw2bgfx_selftest
         SOURCES viewer/gw2bgfx/selftest.cpp
-        DEPS    gw2bgfx_core)
+        DEPS    gw2bgfx_core castlemist::native)
 
     # gw2bgfx_probe -- runs the faithful path over a real model and reports what
     # the client would do, without rendering. Checks the two things that have

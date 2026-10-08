@@ -9,6 +9,10 @@
 
 #pragma once
 
+#include <map>
+#include <cstring>
+#include <string>
+#include <algorithm>
 #include "amat_effect.h"
 
 #include "castlemist/native/gw2model.hpp"
@@ -161,9 +165,62 @@ inline std::vector<BgfxBlobUniform> parseBgfxBlobUniforms(const std::vector<uint
         u.num = blob[p++];
         u.regIndex = u16at(p); p += 2;
         u.regCount = u16at(p); p += 2;
-        if (info.version >= 8)  p += 2;   // texInfo
+        if (info.version >= 8)  p += 2;   // texInfo (always 0 in GW2's blobs; see dxbcResourceDimensions)
         if (info.version >= 10) p += 2;   // texFormat
         out.push_back(std::move(u));
+    }
+    return out;
+}
+
+
+/// @brief DXBC resource dimensions (`D3D10_SB_RESOURCE_DIMENSION`), the two this
+///        renderer needs to tell apart.
+constexpr uint8_t kDxbcTexture2D = 3;
+constexpr uint8_t kDxbcTextureCube = 6;
+
+/// @brief The texture registers a shader declares (`dcl_resource tN`), each with
+///        its dimension, read from the DXBC inside a bgfx blob (or a bare DXBC).
+///
+/// GW2's bgfx blobs leave the uniform table's texInfo at 0, so this is the only
+/// place the shader says which registers are cubes. Walks the SHEX/SHDR token
+/// stream: opcode in bits 0-10, instruction length in bits 24-30 (customdata
+/// carries its length in the next token), extended-opcode tokens chained by
+/// bit 31; dcl_resource (0x58) keeps its dimension in bits 11-15 and the
+/// register in the token after its operand token. Empty when there is no DXBC.
+inline std::map<uint32_t, uint8_t> dxbcResourceDimensions(const std::vector<uint8_t>& blob) {
+    std::map<uint32_t, uint8_t> out;
+    auto u32 = [&](size_t at) -> uint32_t {
+        return at + 4 <= blob.size()
+                   ? uint32_t(blob[at]) | uint32_t(blob[at + 1]) << 8 | uint32_t(blob[at + 2]) << 16 |
+                         uint32_t(blob[at + 3]) << 24
+                   : 0u;
+    };
+    size_t dx = std::string::npos;
+    for (size_t k = 0; k + 4 <= blob.size(); ++k)
+        if (blob[k] == 'D' && blob[k + 1] == 'X' && blob[k + 2] == 'B' && blob[k + 3] == 'C') { dx = k; break; }
+    if (dx == std::string::npos || dx + 32 > blob.size()) return out;
+    const uint32_t chunks = u32(dx + 28);
+    for (uint32_t c = 0; c < chunks && c < 64; ++c) {
+        const size_t chunk = dx + u32(dx + 32 + 4 * c);
+        if (chunk + 8 > blob.size()) break;
+        const bool shader = !std::memcmp(&blob[chunk], "SHEX", 4) || !std::memcmp(&blob[chunk], "SHDR", 4);
+        if (!shader) continue;
+        const size_t begin = chunk + 8, end = std::min(blob.size(), begin + u32(chunk + 4));
+        size_t at = begin + 8;  // version token, length token
+        while (at + 4 <= end) {
+            const uint32_t tok = u32(at);
+            const uint32_t opcode = tok & 0x7FFu;
+            uint32_t len = (tok >> 24) & 0x7Fu;
+            if (opcode == 0x35u) len = u32(at + 4);  // customdata: length in the next token
+            if (len == 0) break;
+            if (opcode == 0x58u) {
+                size_t op = at + 4;
+                for (uint32_t ext = tok; (ext & 0x80000000u) && op + 4 <= end; op += 4) ext = u32(op);
+                if (op + 8 <= end) out[u32(op + 4)] = uint8_t((tok >> 11) & 0x1Fu);
+            }
+            at += size_t(len) * 4;
+        }
+        break;
     }
     return out;
 }

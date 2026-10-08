@@ -61,6 +61,7 @@ const std::string& last_status() { return kUnavailable; }
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <map>
 #include <set>
 #include <span>
@@ -258,6 +259,9 @@ struct State {
     /// Owned textures, by fileId, so a model swap can free them. The 1x1
     /// stand-ins are tracked separately and outlive individual models.
     std::map<uint32_t, bgfx::TextureHandle> texByFileId;
+    /// Handles in texByFileId that are cubemaps (DDS cube files), so a draw can
+    /// match each texture to the dimension its sampler declares.
+    std::set<uint16_t> cubeTextures;
     bgfx::TextureHandle texWhite = BGFX_INVALID_HANDLE;
     bgfx::TextureHandle texCube = BGFX_INVALID_HANDLE;
     bgfx::TextureHandle texLightBuf = BGFX_INVALID_HANDLE;
@@ -378,6 +382,7 @@ void destroyDraws() {
     for (auto& kv : g.texByFileId)
         if (bgfx::isValid(kv.second) && kv.second.idx != g.texWhite.idx) bgfx::destroy(kv.second);
     g.texByFileId.clear();
+    g.cubeTextures.clear();
 
     // The rig belongs to the model, not the device: drop it with the draws so a
     // model swap cannot leave the next one posed by the previous one's clips, or
@@ -782,6 +787,18 @@ bool set_model(Gw2Dat& dat, uint32_t mft_index, std::string& error) {
         if (row < dat.mft_data_list.size()) {
             try {
                 std::vector<uint8_t> bytes = decomp(dat, (uint32_t)row);
+                // A plain DDS in the archive -- the material cubemaps (Twilight's
+                // 221582/221585 are DXT1 cubes) ship this way, not as ATEX.
+                // bimg parses the container, cube faces and mips included.
+                if (bytes.size() >= 4 && std::memcmp(bytes.data(), "DDS ", 4) == 0) {
+                    bgfx::TextureInfo info{};
+                    h = bgfx::createTexture(bgfx::copy(bytes.data(), (uint32_t)bytes.size()),
+                                            BGFX_SAMPLER_MIN_ANISOTROPIC | BGFX_SAMPLER_MAG_ANISOTROPIC, 0, &info);
+                    if (bgfx::isValid(h) && info.cubeMap) g.cubeTextures.insert(h.idx);
+                    if (!bgfx::isValid(h)) h = g.texWhite;
+                    g.texByFileId[fileId] = h;
+                    return h;
+                }
                 if (bytes.size() >= 4 && bytes[0] == 0x43) bytes[0] = 0x41;
                 castlemist::atex::Texture t = castlemist::atex::parse(bytes.data(), bytes.size());
                 castlemist::atex::Image im = castlemist::atex::decode(t, 0);
@@ -931,12 +948,26 @@ bool set_model(Gw2Dat& dat, uint32_t mft_index, std::string& error) {
         for (const auto& u : d.vsU) uniformFor(u);
         for (const auto& u : d.psU) uniformFor(u);
 
+        // Which registers the pixel shader declares as cubes -- read from its
+        // DXBC, since GW2's blobs leave the uniform texInfo at 0.
+        const auto psDims = dxbcResourceDimensions(psBin.data);
         for (const auto& s : psBin.samplers) {
             bgfx::TextureHandle h;
             if (s.textureIndex < mat->textures.size()) h = loadTexture(mat->textures[s.textureIndex].fileId);
             else if (s.textureSlot == 13)              h = g.texCube;
             else if (s.textureSlot == 14)              h = g.texLightBuf; // gSs14: see texLightBuf's own doc comment
             else                                       h = g.texWhite;
+            // Match the view to what the shader declares at this register: a
+            // TextureCube slot only ever gets a cube (the stand-in grey cube
+            // when the material's own failed to load), a 2D slot never gets
+            // one. A 2D view on a cube slot is an error the debug layer stops on.
+            auto dim = psDims.find(s.textureSlot);
+            // An undeclared register (scan found nothing) keeps whatever it had.
+            const bool slotIsCube = dim != psDims.end() && dim->second == kDxbcTextureCube;
+            const bool slotIsFlat = dim != psDims.end() && dim->second != kDxbcTextureCube;
+            const bool texIsCube = h.idx == g.texCube.idx || g.cubeTextures.count(h.idx) != 0;
+            if (slotIsCube && !texIsCube) h = g.texCube;
+            else if (slotIsFlat && texIsCube) h = g.texWhite;
             d.textures.emplace_back((uint8_t)s.textureSlot, h);
         }
 
