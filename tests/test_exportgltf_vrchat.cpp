@@ -1746,7 +1746,9 @@ CM_TEST(vrchat, materials_json_alpha_mask_entry) {
     json doc = read_json(dir / "materials.json");
     const json& h = *material_named(doc, "Hammer");
     CHECK(h["preset"] == "Cutout");
-    CHECK(h["alphaCutoffIsDefault"] == false);
+    // 511663 discards on the cutout layer only (cutoff 0.5 in the alphaMask): the
+    // BaseColor's 0.25 was never disassembled for it.
+    CHECK(h["alphaCutoffIsDefault"] == true);
     json am = h["maps"].value("alphaMask", json());
     if (!am.is_object()) am = json::object();
     CHECK(am.value("file", json()) == "Textures/Hammer - AlphaMask.png");
@@ -1756,6 +1758,7 @@ CM_TEST(vrchat, materials_json_alpha_mask_entry) {
     CHECK_NEAR(am.value("cutoff", json(-9.0)).get<double>(), 0.5, 1e-6);
     for (const json& x : h["maps"]["extras"]) CHECK(x["role"] != "cutout");
     const json& blade = *material_named(doc, "Blade");
+    CHECK(blade["alphaCutoffIsDefault"] == false);  // 561567 clips on its diffuse alpha
     CHECK(blade["maps"].contains("alphaMask"));
     CHECK(blade["maps"].value("alphaMask", json(1)).is_null());
     // The .glb keeps the BaseColor alpha test: MASK.

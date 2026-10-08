@@ -276,8 +276,9 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
             {"exact", blend.exact},
             {"blend", blend_json(mat, blend)},
             {"alphaCutoff", kAlphaCutoff},
-            // Only clipping shaders were disassembled to this threshold.
-            {"alphaCutoffIsDefault", !alpha_tested(profile)},
+            // Only shaders clipping on the diffuse alpha were disassembled to this
+            // threshold; a cutout layer's 0.5 lives in maps.alphaMask.cutoff.
+            {"alphaCutoffIsDefault", !profile.clips},
             {"renderQueueOffset", mat.sortLayer},  // draw order from the material's sort layer
             {"sortOrder", mat.sortOrder},           // raw
             {"cull", mat.isEffect ? "Off" : "Back"},
