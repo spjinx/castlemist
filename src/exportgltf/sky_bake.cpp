@@ -377,6 +377,13 @@ BakeResult make_sky_sampler(const Extractor::MapSky& sky, size_t modeIndex, cons
             continue;
         }
         if (!at.texture || at.density == 0) continue;   // nothing drawn (§9.5)
+        // §9.4: h = saturate(... + minHaze) lifts the card toward FogColorFar,
+        // which is UNPROVEN; the reduced form would draw it un-hazed.
+        if (at.minHaze > 0) {
+            res.warnings.push_back(ci + " minHaze > 0: haze-dominated, FogColorFar UNPROVEN (gw2-sky.md §9.4); "
+                                   "not baked");
+            continue;
+        }
         if (card.flags & 0x8) {   // §9.2: aims at `location` from the camera
             res.warnings.push_back(ci + " aims at its location (flag 8), which needs the camera; "
                                    "not baked (gw2-sky.md §9.2)");

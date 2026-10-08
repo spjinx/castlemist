@@ -800,6 +800,28 @@ CM_TEST(skybake, sky_card_day_and_night_attributes_follow_mode) {
     }
 }
 
+CM_TEST(skybake, haze_dominated_cards_are_left_out_and_warned) {
+    // §9.4: minHaze lifts the haze weight h toward FogColorFar (UNPROVEN); the
+    // reduced form would draw such a card un-hazed, so it stays out.
+    TextureMap tex;
+    MapSky sky = card_sky(tex, 0.0f, 0.2f, 1.0f);
+    tex[kCardDay] = solid(8, 255, 255, 255, 255);
+    float g[3], u[3];
+    card_centre(0.0f, 0.2f * kPi / 2, g);
+    to_unity(g, u);
+    sky.cards[0].day.minHaze = 0.73f;
+    BakeResult r = make_sky_sampler(sky, 0, tex);
+    CHECK(r.layers == std::vector<std::string>{"base"});
+    CHECK(any_warning(r, "card 0", "minHaze > 0: haze-dominated, FogColorFar UNPROVEN (gw2-sky.md §9.4)"));
+    CHECK_EQ(r.radiance(u).r, 0.0f);
+    CHECK(r.cardTextures.empty());
+    sky.cards[0].day.minHaze = 0.0f;
+    r = make_sky_sampler(sky, 0, tex);
+    CHECK(r.layers == (std::vector<std::string>{"base", "cards"}));
+    CHECK_NEAR(r.radiance(u).r, 1.0f, 1e-4f);
+    CHECK_FALSE(any_warning(r, "minHaze"));
+}
+
 CM_TEST(skybake, material_cards_are_left_out_and_warned) {
     TextureMap tex;
     MapSky sky = card_sky(tex, 0.0f, 0.2f, 1.0f);
