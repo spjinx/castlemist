@@ -244,3 +244,85 @@ CM_TEST(world_dat, terrain_props_sit_on_terrain) {
         CHECK(rule > 2 * mirrorEW);
     }
 }
+
+// ---- terrain materials (docs/research/gw2-world-frame.md §4) ----
+
+#include <cstring>
+#include <tuple>
+
+// §4: every chunk resolves; the first 16 chunks' colour textures equal
+// T3D's; every chunk's blend pages are the PIMG pages the reference's
+// pickerPage names.
+//
+// The reference `textures` is T3D's first half of loResMaterial.texIndexArray
+// (TerrainRenderer.ts:362-363): the four colour textures, then the "blend"
+// page reference, which has no filename (T3D records 0). §4.1 binds by token,
+// so textureFileIds is the four colour textures; the test checks the fifth
+// reference entry is that page reference (0) rather than dropping it unseen.
+CM_TEST(world_dat, terrain_materials_match_reference) {
+    for (uint32_t id : kTestMaps) {
+        nlohmann::json ref = world_ref(id);
+        if (!ensure_template()) SKIP("no struct template");
+        std::vector<uint8_t> bytes = packfile_by_file_id(id);
+        castlemist::model::Extractor ex(bytes, *castlemist::tpl::get());
+        std::vector<std::string> warnings;
+        castlemist::world::Terrain T = castlemist::world::build_terrain(ex.parseTerrain(), warnings);
+        auto mats = ex.parseTerrainMaterials();
+        CHECK(mats.present);
+        CHECK_EQ(mats.chunks.size(), T.chunks.size());
+        castlemist::world::resolve_terrain_materials(T, mats, shared_dat(), *castlemist::tpl::get(), warnings);
+        for (const auto& w : warnings) std::printf("    map %u warning: %s\n", id, w.c_str());
+
+        // The terrain's paged image, read independently of resolve_terrain_materials.
+        std::vector<uint8_t> pbytes = packfile_by_file_id(mats.pimgFileId);
+        auto pimg = castlemist::model::Extractor(pbytes, *castlemist::tpl::get()).parsePagedImage();
+        CHECK(pimg.present);
+        auto page = [&](uint32_t layer, uint32_t px, uint32_t py) -> const castlemist::model::Extractor::MapPagedImage::Page* {
+            for (const auto& p : pimg.strippedPages)
+                if (p.layer == layer && p.coord[0] == px && p.coord[1] == py) return &p;
+            return nullptr;
+        };
+
+        size_t unresolved = 0, noPage = 0, solid = 0;
+        for (const auto& c : T.chunks) {
+            unresolved += !c.material.resolved;
+            const auto* p0 = page(0, (uint32_t)c.cx / 4, (uint32_t)c.cy / 4);
+            const auto* p1 = page(1, (uint32_t)c.cx / 4, (uint32_t)c.cy / 4);
+            CHECK(p0 && p1);
+            if (!p0 || !p1) continue;
+            // A page with no file is a solid-colour page (Spirit Vale); its colour is kept.
+            for (auto [pg, fid, sc] : {std::tuple{p0, c.material.pickerFileId, c.material.pickerSolid},
+                                       std::tuple{p1, c.material.picker2FileId, c.material.picker2Solid}}) {
+                if (pg->fileId) { noPage += fid != pg->fileId; continue; }
+                ++solid;
+                noPage += fid != 0 || std::memcmp(sc, pg->solidColor, 4) != 0;
+                CHECK((pg->solidColor[0] | pg->solidColor[1] | pg->solidColor[2] | pg->solidColor[3]) != 0);
+            }
+            CHECK_NEAR(c.material.pickerScale, 0.25, 1e-6);
+            CHECK_NEAR(c.material.pickerOffset[0], (c.cx % 4) * 0.25, 1e-6);
+            CHECK_NEAR(c.material.pickerOffset[1], (c.cy % 4) * 0.25, 1e-6);
+        }
+        std::printf("    map %u: %zu chunks, %zu unresolved, %zu chunk pages solid-colour\n", id, T.chunks.size(),
+                    unresolved, solid);
+        CHECK_EQ(unresolved, size_t(0));
+        CHECK_EQ(noPage, size_t(0));
+
+        const auto& rm = ref["terrainMaterials"];
+        CHECK_EQ(rm.size(), size_t(16));
+        for (const auto& r : rm) {
+            const size_t k = r["chunk"].get<size_t>();
+            if (k >= T.chunks.size()) { CHECK(k < T.chunks.size()); continue; }
+            const auto& c = T.chunks[k];
+            std::vector<uint32_t> want = r["textures"].get<std::vector<uint32_t>>();
+            CHECK_EQ(want.size(), size_t(5));
+            if (want.size() != 5) continue;
+            CHECK_EQ(want[4], uint32_t(0));   // the "blend" page reference
+            want.pop_back();
+            CHECK(c.material.textureFileIds == want);
+            // The reference page is T3D's [floor(cx/4), floor(cy/4)] for chunk k.
+            const auto* p0 = page(0, r["pickerPage"][0].get<uint32_t>(), r["pickerPage"][1].get<uint32_t>());
+            CHECK(p0 != nullptr);
+            if (p0 && p0->fileId) CHECK_EQ(c.material.pickerFileId, p0->fileId);
+        }
+    }
+}

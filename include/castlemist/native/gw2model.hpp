@@ -1517,6 +1517,183 @@ public:
         return out;
     }
 
+    /// @brief `trn.materials` -> the terrain's texture table and per-chunk
+    ///        materials (docs/research/gw2-world-frame.md §4).
+    ///
+    /// Read by template field name, version-agnostic: nested struct names come
+    /// from each field's own `target` / `element` / `type`.
+    struct MapTerrainMaterials {
+        bool present = false;
+        /// One `texFileArray` entry, as stored.
+        struct Tex {
+            uint32_t token = 0;          ///< `tokenName` (base-23 Token: "color", "blend", "normal", ...)
+            uint32_t flags = 0;          ///< the first `flags` field (dword)
+            uint32_t fileId = 0;         ///< `filename`; 0 for a paged-image page reference
+            uint32_t coord[2] = {0, 0};  ///< the second `flags` field (dword2): page-image coord, in chunks (§4.2)
+            uint32_t layer = 0;          ///< `layer`: paged-image layer (0xFFFFFFFF for a texture file)
+        };
+        std::vector<uint32_t> texFileIds;  ///< materials.texFileArray[].filename (0 kept)
+        std::vector<Tex> texFiles;         ///< the same entries in full
+        struct Chunk {
+            uint32_t materialFileId = 0;          ///< loResMaterial.materialFile
+            std::vector<uint32_t> texIndices;     ///< loResMaterial.texIndexArray
+            uint32_t hiMaterialFileId = 0;        ///< hiResMaterial.materialFile
+            std::vector<uint32_t> hiTexIndices;   ///< hiResMaterial.texIndexArray
+            uint8_t tiling[3] = {0, 0, 0};        ///< `tiling`, as stored (meaning UNPROVEN, §4.4)
+            int tilingCount = 0;                  ///< bytes of `tiling` this version has (1 or 3)
+            bool hasUvData = false;               ///< `uvData` pointer is non-null
+        };
+        std::vector<Chunk> chunks;  ///< per terrain chunk, chunk order (index = cy * chunksX + cx)
+        uint32_t pimgFileId = 0;    ///< materials.pagedImage: the terrain's paged image (PIMG) file
+    };
+
+    MapTerrainMaterials parseTerrainMaterials() {
+        MapTerrainMaterials out;
+        std::string root; uint16_t ver = 0;
+        size_t trn = findChunk("trn", &root, &ver);
+        if (!trn || root.empty()) return out;
+        auto sub = [](const json& fj, const char* key) -> std::string {
+            return (fj.contains(key) && fj[key].is_object()) ? fj[key].value("struct", std::string()) : std::string();
+        };
+        size_t off; json f;
+        if (!fieldOffset(root, "materials", off, f)) return out;
+        const std::string mt = sub(f, "target");
+        const size_t m = follow(trn + off);
+        if (!m || mt.empty()) return out;
+        out.present = true;
+        if (fieldOffset(mt, "pagedImage", off, f)) out.pimgFileId = decodeFilenameAt(m + off);
+
+        // texFileArray
+        if (fieldOffset(mt, "texFileArray", off, f)) {
+            const std::string tt = sub(f, "element");
+            const int ts = typeSize(tt);
+            uint32_t n = 0; size_t base = arrayAt(m + off, n);
+            if (!base || ts <= 0 || base + (uint64_t)n * ts > n_) n = 0;
+            // The template names two fields of this struct `flags`: a dword, then
+            // a dword2 that holds the page coord (§4.2). Find each by name + kind.
+            auto named = [&](const char* name, const char* kind, size_t& o) {
+                if (!types_->contains(tt)) return false;
+                size_t at = 0;
+                for (const auto& fj : (*types_)[tt]["fields"]) {
+                    if (fj.value("name", std::string()) == name && fj.value("kind", std::string()) == kind) { o = at; return true; }
+                    at += fieldSize(fj);
+                }
+                return false;
+            };
+            size_t oTok = 0, oFl = 0, oFn = 0, oCo = 0, oLa = 0;
+            const bool hTok = named("tokenName", "dword", oTok), hFl = named("flags", "dword", oFl),
+                       hFn = named("filename", "filename", oFn), hCo = named("flags", "dword2", oCo),
+                       hLa = named("layer", "dword", oLa);
+            for (uint32_t i = 0; i < n; ++i) {
+                const size_t e = base + (size_t)i * ts;
+                MapTerrainMaterials::Tex t;
+                if (hTok) t.token = rd32(e + oTok);
+                if (hFl) t.flags = rd32(e + oFl);
+                if (hFn) t.fileId = decodeFilenameAt(e + oFn);
+                if (hCo) { t.coord[0] = rd32(e + oCo); t.coord[1] = rd32(e + oCo + 4); }
+                if (hLa) t.layer = rd32(e + oLa);
+                out.texFileIds.push_back(t.fileId);
+                out.texFiles.push_back(t);
+            }
+        }
+
+        // materials[] (one per chunk): tiling, hiResMaterial, loResMaterial, uvData
+        if (fieldOffset(mt, "materials", off, f)) {
+            const std::string ct = sub(f, "element");
+            const int cs = typeSize(ct);
+            uint32_t n = 0; size_t base = arrayAt(m + off, n);
+            if (!base || cs <= 0 || base + (uint64_t)n * cs > n_) n = 0;
+            auto readMat = [&](size_t e, const char* name, uint32_t& file, std::vector<uint32_t>& idx) {
+                size_t o; json fj;
+                if (!fieldOffset(ct, name, o, fj)) return;
+                const std::string at = fj.value("type", std::string());
+                size_t fo; json ff;
+                if (fieldOffset(at, "materialFile", fo, ff)) file = decodeFilenameAt(e + o + fo);
+                if (fieldOffset(at, "texIndexArray", fo, ff)) {
+                    uint32_t k = 0; size_t ib = arrayAt(e + o + fo, k);
+                    if (!ib || ib + 4ull * k > n_) k = 0;
+                    for (uint32_t j = 0; j < k; ++j) idx.push_back(rd32(ib + 4u * j));
+                }
+            };
+            out.chunks.reserve(n);
+            for (uint32_t i = 0; i < n; ++i) {
+                const size_t e = base + (size_t)i * cs;
+                MapTerrainMaterials::Chunk c;
+                readMat(e, "loResMaterial", c.materialFileId, c.texIndices);
+                readMat(e, "hiResMaterial", c.hiMaterialFileId, c.hiTexIndices);
+                size_t o; json fj;
+                if (fieldOffset(ct, "tiling", o, fj)) {
+                    c.tilingCount = fj.value("kind", std::string()) == "array" ? std::min(3, fj.value("count", 0)) : 1;
+                    for (int k = 0; k < c.tilingCount; ++k) c.tiling[k] = d_[e + o + k];
+                }
+                if (fieldOffset(ct, "uvData", o, fj)) c.hasUvData = follow(e + o) != 0;
+                out.chunks.push_back(std::move(c));
+            }
+        }
+        return out;
+    }
+
+    /// @brief A PIMG paged image's `PGTB` table: its layers and stripped pages
+    ///        (docs/research/gw2-world-frame.md §4.2).
+    struct MapPagedImage {
+        bool present = false;
+        struct Layer { uint32_t strippedDims[2] = {0, 0}; uint32_t strippedFormat = 0; };
+        struct Page {
+            uint32_t layer = 0;
+            uint32_t coord[2] = {0, 0};   ///< page coord (pages, not chunks)
+            uint32_t fileId = 0;          ///< `filename`; 0 = no texture (see solidColor)
+            uint32_t flags = 0;
+            uint8_t solidColor[4] = {0, 0, 0, 0};
+        };
+        std::vector<Layer> layers;
+        std::vector<Page> strippedPages;
+    };
+
+    MapPagedImage parsePagedImage() {
+        MapPagedImage out;
+        std::string root; uint16_t ver = 0;
+        size_t p = findChunk("PGTB", &root, &ver);
+        if (!p || root.empty()) return out;
+        out.present = true;
+        auto sub = [](const json& fj) -> std::string {
+            return (fj.contains("element") && fj["element"].is_object()) ? fj["element"].value("struct", std::string())
+                                                                           : std::string();
+        };
+        size_t off; json f;
+        if (fieldOffset(root, "layers", off, f)) {
+            const std::string lt = sub(f);
+            const int ls = typeSize(lt);
+            uint32_t n = 0; size_t base = arrayAt(p + off, n);
+            if (!base || ls <= 0 || base + (uint64_t)n * ls > n_) n = 0;
+            for (uint32_t i = 0; i < n; ++i) {
+                const size_t e = base + (size_t)i * ls;
+                MapPagedImage::Layer l;
+                size_t o; json fj;
+                if (fieldOffset(lt, "strippedDims", o, fj)) { l.strippedDims[0] = rd32(e + o); l.strippedDims[1] = rd32(e + o + 4); }
+                if (fieldOffset(lt, "strippedFormat", o, fj)) l.strippedFormat = rd32(e + o);
+                out.layers.push_back(l);
+            }
+        }
+        if (fieldOffset(root, "strippedPages", off, f)) {
+            const std::string pt = sub(f);
+            const int ps = typeSize(pt);
+            uint32_t n = 0; size_t base = arrayAt(p + off, n);
+            if (!base || ps <= 0 || base + (uint64_t)n * ps > n_) n = 0;
+            for (uint32_t i = 0; i < n; ++i) {
+                const size_t e = base + (size_t)i * ps;
+                MapPagedImage::Page pg;
+                size_t o; json fj;
+                if (fieldOffset(pt, "layer", o, fj)) pg.layer = rd32(e + o);
+                if (fieldOffset(pt, "coord", o, fj)) { pg.coord[0] = rd32(e + o); pg.coord[1] = rd32(e + o + 4); }
+                if (fieldOffset(pt, "filename", o, fj)) pg.fileId = decodeFilenameAt(e + o);
+                if (fieldOffset(pt, "flags", o, fj)) pg.flags = rd32(e + o);
+                if (fieldOffset(pt, "solidColor", o, fj)) for (int k = 0; k < 4; ++k) pg.solidColor[k] = d_[e + o + k];
+                out.strippedPages.push_back(pg);
+            }
+        }
+        return out;
+    }
+
     // Map water: the rendered water-surface mesh(es) from the `watr` chunk --
     // distinct from the flat gameplay water-plane height parseMapCollision()
     // already reads out of `havk` (that one is a single number for physics;

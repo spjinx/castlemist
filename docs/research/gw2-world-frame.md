@@ -1,6 +1,6 @@
 ---
 name: gw2-world-frame
-description: "The frame WorldScene keeps a GW2 map in (map space as stored): axes, handedness, Z sign, units, map bounds, the terrain chunk layout, and the exact map -> Unity / map -> Blender conversions. Source of truth for castlemist::world and every later world export; anything unproven is marked UNPROVEN."
+description: "The frame WorldScene keeps a GW2 map in (map space as stored): axes, handedness, Z sign, units, map bounds, the terrain chunk layout, terrain materials and blend pages, and the exact map -> Unity / map -> Blender conversions. Source of truth for castlemist::world and every later world export; anything unproven is marked UNPROVEN."
 ---
 
 # GW2 world frame: axes, units, bounds
@@ -415,3 +415,208 @@ world layer and none of its rules returns:
   warning (§2);
 - heights more than 4000 from the median clamped to the median → no clamp;
   heights as stored.
+
+---
+
+## 4. Terrain materials and blend pages
+
+**Each terrain chunk `i` (`i = cy · chunksX + cx`, the index of §3 and of
+`Terrain::chunks`) has `trn.materials.materials[i]`. Its
+`loResMaterial.texIndexArray` indexes `trn.materials.texFileArray`, and each
+indexed entry's `tokenName` says what it is: four colour textures
+(`color`, `colorb`, `colorc`, `colord`), four normal maps (`normal` …
+`normald`), and two page references, `blend` and `modx`, into layers 0 and 1
+of the paged image `trn.materials.pagedImage`. A page covers 4 × 4 chunks;
+page-image row 0 is the page's north edge and column 0 its west edge. The
+ground-texture UV scale is UNPROVEN.** Implemented in
+`Extractor::parseTerrainMaterials` / `Extractor::parsePagedImage`
+(`include/castlemist/native/gw2model.hpp`) and `resolve_terrain_materials`
+(`src/world/terrain.cpp`).
+
+### Evidence base and how to reproduce it
+
+- **Template** (`dumps/packfile/gw2_packfile.json`): `trn` v14/v15 root
+  `PackMapTerrainV14`/`V15` → `materials` (`ptr` to
+  `PackMapTerrainMaterialsV14` = `{pagedImage: filename, constArray,
+  texFileArray: PackMapTerrainTexV14[], materials:
+  PackMapTerrrainChunkMaterialV14[], midFade, farFade}`). A chunk material is
+  `{tiling: byte[3], hiResMaterial, loResMaterial, faderMaterial:
+  PackMapTerrainMaterialV14, uvData: ptr PackMapTerrainChunkUVDataV14}`; a
+  material is `{materialFile, fvf, constIndexArray, texIndexArray}`; a tex
+  entry is `{tokenName: dword, flags: dword, filename, flags: dword2, layer:
+  dword}` (the template names two fields `flags`; the reader takes each by
+  name **and** kind). The PIMG file's chunk `PGTB` (v3,
+  `PagedImageTableDataV3`) has `layers[]` (`strippedDims`, `strippedFormat`)
+  and `strippedPages[]` (`layer`, `coord: dword2`, `filename`, `flags`,
+  `solidColor: byte4`).
+- **Inspection:** `gw2dat_cli parse --file-id 191000 --max-depth 8` (the map)
+  and `--file-id 190582` (its PIMG) show the fields above with real values.
+- **Tokens** decode with GW2's base-23 Token rule (`decode_token`,
+  `src/extract/game_shader.cpp:111-122`).
+- **Measurement program** (scratchpad, not committed): includes
+  `castlemist/native/gw2model.hpp`, `gw2_atex.hpp`, `castlemist/world/terrain.h`;
+  built with `g++ -std=c++20 -O2 -Iinclude
+  -Iexternal/nlohmann-json/single_include measure.cpp -Lbuild/debug/lib
+  -lcastlemist_world -lcastlemist_extract -lcastlemist_native -lcastlemist_core`,
+  run as `measure <Gw2.dat> <template> 192711 191000 1151420`. Per map it
+  calls `parseTerrain` + `build_terrain` (chunk grid), `parseTerrainMaterials`
+  and, on the PIMG file, `parsePagedImage`, and reports:
+  1. the decoded token sequence of every chunk's `loResMaterial.texIndexArray`,
+     what kind of entry each token names (filename or page reference), how many
+     indices are out of range;
+  2. for every page reference, whether `coord == (i % chunksX, i / chunksX)`
+     and whether `layer` is 0 for `blend`, 1 for `modx`;
+  3. whether `hiResMaterial.texIndexArray == loResMaterial.texIndexArray`, the
+     (hi, lo) `materialFile` pairs, the `tiling` bytes, non-null `uvData`;
+  4. the PIMG layers, the layer-0/1 page grid, every `n` with
+     `ceil(chunks / n) = page grid` on both axes, pages with no filename;
+  5. a seam test: every page of a layer decoded (`atex::decode`, mip 0, RGBA8);
+     for each pair of pages adjacent in `coord` (`(px, py)` and `(px, py+1)`,
+     `(px, py)` and `(px+1, py)`), the mean absolute RGBA difference between
+     page A's **last** row (column) and page B's **first**, and between A's
+     **first** and B's **last**; and, as a baseline, between adjacent rows
+     inside a page (every 7th row).
+- **In the repo:** `cm_test_world_dat terrain_materials_match_reference`
+  (T3D reference and PIMG pages) and `cm_test_world
+  terrain_material_index_out_of_range`.
+
+### 4.1 Which fields hold the materials; what `texIndexArray` holds
+
+Measured on every chunk of the three maps:
+
+| map | chunks | `texIndexArray` length | token sequence (`loResMaterial`) | out of range |
+|---|---|---|---|---|
+| Queensdale 192711 | 532 | 10 (all) | `color, colorb, colorc, colord, blend, modx, normal, normalb, normalc, normald` (532) | 0 |
+| Lion's Arch 191000 | 228 | 10 (all) | same (228) | 0 |
+| Spirit Vale 1151420 | 250 | 10 (all) | same (225); `color … colord, blend, modx, normal, normalc, normald, ramp` (25) | 0 |
+
+- `color`…`colord`, `normal`…`normald`, `ramp` are entries with a filename
+  (`flags = 1`, `layer = 0xFFFFFFFF`); `blend` and `modx` have **no filename**
+  (`flags = 4`) and are page references (§4.2).
+- **First half** (the five entries T3D reads, `TerrainRenderer.ts:362-363`):
+  the four colour textures and the `blend` page reference. T3D looks up the
+  fifth entry's filename and gets 0; the reference's `textures[4] = 0` is that.
+  **Second half:** the `modx` page reference and the normal maps (on 25
+  Spirit Vale chunks, `normal, normalc, normald, ramp`: no `normalb`, plus a
+  `ramp` texture). So the split is not "half and half" and the positions are
+  not fixed: castlemist binds by token, not position.
+  `TerrainMaterial::textureFileIds[k]` is the `color` / `colorb` / `colorc` /
+  `colord` texture (slot k, 0 if the chunk binds none), `normalFileIds[k]` the
+  matching normal map; `ramp` is not kept (one warning per map names it). On
+  all three maps slots 0-3 are also T3D's order, which the test checks
+  against the reference.
+- **Hi- vs lo-res.** `hiResMaterial.texIndexArray` equals
+  `loResMaterial.texIndexArray` on 532/532, 228/228 and 250/250 chunks. They
+  differ only in `materialFile`, a pair of consecutive AMAT files (hi = lo − 1):
+  (187794, 187795) on Queensdale and Lion's Arch; (184988, 184989) ×208,
+  (197590, 197591) ×11, (421455, 421456) ×25, (1151159, 1151160) ×6 on Spirit
+  Vale. So the textures and pages are the same at both levels; only the
+  shader differs. Which one the game draws when (presumably by distance) is
+  **UNPROVEN** and does not change the textures. `materialFileId` stores the
+  lo-res file, as T3D uses; `faderMaterial` (empty on Lion's Arch chunk 0) is
+  not read.
+
+### 4.2 The paged image and its pages
+
+- The `pimg` file is named by **`trn.materials.pagedImage`** (a `filename`):
+  Queensdale 191359, Lion's Arch 190582, Spirit Vale 1151141. T3D loads the
+  same field (`TerrainRenderer.ts:602-604`). (The map's own `trni` chunk,
+  `MapTerrainImg`, has null `tableData` / `pageData` on Lion's Arch.)
+- **Page references carry the chunk coordinate.** Every `blend` / `modx`
+  entry's second `flags` field (dword2) equals `(i % chunksX, i / chunksX)`
+  for the chunk `i` that binds it, and its `layer` is 0 for `blend` and 1 for
+  `modx`: 1064/1064, 456/456 and 500/500 references. This independently
+  confirms §3's chunk index (`cx = i % chunksX`, `cy = i / chunksX`) from
+  the material data, and that `materials[i]` belongs to `Terrain::chunks[i]`.
+- **Pages.** Two layers of 512 × 512 pages: layer 0 `DXT5` (`blend`), layer 1
+  `DXT1` (`modx`). `strippedPages[].coord` is in **pages**:
+
+  | map | chunks | layer 0 / 1 page grid | `n` with `ceil(chunks/n)` = grid | pages without a filename |
+  |---|---|---|---|---|
+  | 192711 | 28 × 19 | 7 × 5 / 7 × 5 | **4 only** | 0 of 70 |
+  | 191000 | 19 × 12 | 5 × 3 / 5 × 3 | **4 only** | 0 of 30 |
+  | 1151420 | 10 × 25 | 3 × 7 / 3 × 7 | **4 only** | 8 of 42 (all with non-zero `solidColor`) |
+
+  So a page holds 4 × 4 chunks (128 × 128 px each), and chunk `(cx, cy)`'s
+  page is `(⌊cx/4⌋, ⌊cy/4⌋)`, which is T3D's `pickerPage`
+  (`TerrainRenderer.ts:340-341`). castlemist **derives** `n` as the one value
+  that fits the page grid and warns (no pages) when none or several fit.
+  `pickerScale = 1/n`. A page with no filename is a solid-colour page (T3D
+  makes a 1 × 1 texture from `solidColor`, `TerrainRenderer.ts:283-290`):
+  `pickerFileId` is 0 and `pickerSolid` holds the stored 4 bytes (channel
+  order UNPROVEN). On Spirit Vale 128 chunk-layer pairs use such pages.
+- Layers above 1 (none on the test maps) and `rawPages` (empty) are not read.
+
+### 4.3 The chunk's sub-rect in its page: orientation
+
+T3D's V offset `0.75 − (cy % 4)/4` is in its own frame: three.js texture
+`v` with `flipY = true` (`MaterialUtils.ts:600`), so `v = 1` is the image's
+first stored row, and the chunk's PlaneGeometry has `v = 1` at its north edge
+(the edge §3 proves is row 0). The chunk then spans `v ∈ [0.75 − k/4, 1 − k/4]`,
+`k = cy % 4`: image rows `k/4 … (k+1)/4` from the top, north edge at `k/4`.
+That is a claim about T3D; the data says the same thing:
+
+*Seam test.* If page-image rows run north → south (the same way as `cy`, and
+page `coord.y`), the last row of page `(px, py)` continues into the first row
+of `(px, py + 1)`; if they ran south → north it would be the first row into
+the last. Likewise for columns west → east:
+
+| map / layer | adjacent rows inside a page | vertical seams: last→first / first→last | horizontal seams: last→first / first→last |
+|---|---|---|---|
+| 192711 / 0 | 6.90 | **2.76** / 77.61 (28) | **2.06** / 78.20 (30) |
+| 192711 / 1 | 2.48 | **2.16** / 54.38 | **1.90** / 17.51 |
+| 191000 / 0 | 6.09 | **3.51** / 82.78 (10) | **4.26** / 79.19 (12) |
+| 191000 / 1 | 1.04 | **0.47** / 9.11 | **0.62** / 46.44 |
+| 1151420 / 0 | 2.03 | **1.36** / 73.21 (14) | **1.78** / 82.62 (10) |
+| 1151420 / 1 | 0.37 | **0.51** / 26.18 | **0.80** / 41.17 |
+
+(mean absolute RGBA difference, 0-255; seam counts in brackets.) Across
+every seam, the "last → first" pairing is as smooth as neighbouring rows
+inside a page and the other is 4-100× rougher. Page-image rows run with
+`coord.y`, i.e. with `cy`, north → south (§3.3), and columns with `cx`,
+west → east.
+
+**Verdict, PROVEN:** `pickerOffset = ((cx % n)/n, (cy % n)/n)` in page-image
+UV with `u` from the first column (west) and `v` from the first stored row
+(north); the chunk spans `pickerOffset … pickerOffset + pickerScale`, its
+sample `(i, j)` (§3) at `pickerOffset + (i, j)/segments · pickerScale`. A
+renderer that puts the first stored row at GL `v = 0` uses this as is; one
+that flips (T3D) uses `1 − v`, which gives T3D's `0.75 − (cy % 4)/4` for the
+sub-rect's lower bound. How texels are inset at page edges (T3D's shader
+`edge` term) is not settled here.
+
+### 4.4 Ground-texture UV scale: UNPROVEN
+
+T3D hard-codes `uvScale = 8` with "TODO: READ FROM VO"
+(`TerrainRenderer.ts:405-406`). Candidates in the data:
+
+- `tiling` (byte[3], byte in v10): `[0, 8, 8]` on 512 / 532 Queensdale
+  chunks (`[0, 2, 2]` 8, `[0, 4, 4]` 6, `[0, 8, 2]` 6), 222 / 228 Lion's Arch
+  (`[0, 2, 2]` 3, `[0, 2, 8]` 3), Spirit Vale `[8, 8, 8]` 130, `[0, 8, 8]` 108,
+  `[0, 8, 4]` 12. The 8 matches T3D's constant, but there are three bytes for
+  four colour textures and nothing ties a byte to a texture or to a unit.
+- `uvData` (`translation`, `xScaleRange`, `yScaleRange`, `scaleSpeed`,
+  `rotation`): null on every Queensdale and Lion's Arch chunk, non-null on 36
+  Spirit Vale chunks; it looks like UV animation and was not decoded.
+- `constArray` is empty on Lion's Arch.
+
+**What would prove it:** the terrain AMAT's shader (e.g. 187795: `GRMT`
+`texCount 10`, 79 DX11 shaders in `BGFX`) disassembled to show how it scales
+the colour-texture UVs, and which constant/`tiling` byte feeds it; or the game
+code that reads `PackMapTerrrainChunkMaterial.tiling`. Until then
+`TerrainMaterial::uvScale = 0` ("unknown", not 8) and the `tiling` bytes are
+kept as stored in `TerrainMaterial::tiling`.
+
+### 4.5 What `resolve_terrain_materials` does
+
+Per chunk `i`: `materialFileId = loResMaterial.materialFile`; each
+`texIndexArray` entry by token (§4.1); `blend` / `modx` → the layer 0 / 1 page
+at the entry's coord / `n` (§4.2), offset as §4.3; `uvScale = 0`, `tiling`
+as stored (§4.4). `resolved = true` when every index is inside
+`texFileArray` and at least one colour texture is bound. Warnings (no
+exceptions) for: no `materials`; a chunk-count mismatch; no / unreadable
+PIMG; a page grid no `n` fits; a missing page; a page reference whose layer
+or coord is not the chunk's own; an index past `texFileArray` (names the
+chunk); a chunk with no colour texture; tokens not kept (`ramp`). On the three
+test maps every chunk resolves; the only warning is Spirit Vale's 25 `ramp`
+bindings.

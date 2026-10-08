@@ -215,3 +215,60 @@ CM_TEST(world, terrain_no_rect_warns) {
     for (const auto& w : warnings) found = found || w.find("no parm rect") != std::string::npos;
     CHECK(found);
 }
+
+// ---- terrain materials (docs/research/gw2-world-frame.md §4) ----
+
+namespace {
+
+/// @brief A GW2 Token (base-23, §4.1) for a material texture name.
+uint32_t token_of(const std::string& s) {
+    static const std::string kAlpha = "abcdefghiklmnopvrstuwxy";
+    uint32_t v = 0, p = 1;
+    for (char c : s) { v += (uint32_t)kAlpha.find(c) * p; p *= 23; }
+    return v + 0x30000000u;
+}
+
+} // namespace
+
+// §4.1: a chunk whose texIndexArray points past texFileArray is left
+// unresolved and named in a warning; its neighbour still resolves.
+CM_TEST(world, terrain_material_index_out_of_range) {
+    castlemist::model::Extractor::MapTerrain t;
+    t.present = true;
+    t.dimX = 4; t.dimY = 2; t.vertsPerChunkSide = 2;
+    t.rect[0] = 0; t.rect[1] = 0; t.rect[2] = 200; t.rect[3] = 100; t.hasRect = true;
+    t.heights.assign(50, 1.0f);
+    std::vector<std::string> warnings;
+    auto terr = castlemist::world::build_terrain(t, warnings);
+    CHECK_EQ(terr.chunks.size(), size_t(2));
+    if (terr.chunks.size() != 2) return;
+
+    castlemist::model::Extractor::MapTerrainMaterials m;
+    m.present = true;
+    const char* names[] = {"color", "colorb", "colorc", "colord"};
+    for (int k = 0; k < 4; ++k) {
+        castlemist::model::Extractor::MapTerrainMaterials::Tex tx;
+        tx.token = token_of(names[k]);
+        tx.flags = 1;
+        tx.fileId = 11 + k;
+        tx.layer = 0xFFFFFFFFu;
+        m.texFiles.push_back(tx);
+        m.texFileIds.push_back(tx.fileId);
+    }
+    m.chunks.resize(2);
+    m.chunks[0].materialFileId = 7;
+    m.chunks[0].texIndices = {0, 1, 2, 3};
+    m.chunks[1].materialFileId = 7;
+    m.chunks[1].texIndices = {0, 1, 2, (uint32_t)m.texFileIds.size()};
+
+    Gw2Dat dat;   // never read: the map has no paged image
+    warnings.clear();
+    castlemist::world::resolve_terrain_materials(terr, m, dat, nlohmann::json::object(), warnings);
+    CHECK(terr.chunks[0].material.resolved);
+    CHECK(terr.chunks[0].material.textureFileIds == std::vector<uint32_t>({11, 12, 13, 14}));
+    CHECK_EQ(terr.chunks[0].material.materialFileId, uint32_t(7));
+    CHECK_FALSE(terr.chunks[1].material.resolved);
+    bool named = false;
+    for (const auto& w : warnings) named = named || w.find("chunk 1 ") != std::string::npos;
+    CHECK(named);
+}

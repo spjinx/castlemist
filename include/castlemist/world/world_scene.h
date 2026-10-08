@@ -12,14 +12,28 @@
 
 namespace castlemist::world {
 
-/// @brief The textures and blend pages one terrain chunk is painted with.
+/// @brief The textures and blend pages one terrain chunk is painted with
+///        (docs/research/gw2-world-frame.md §4).
 struct TerrainMaterial {
     bool resolved = false;
-    std::vector<uint32_t> textureFileIds;   ///< ground textures, dat order
-    uint32_t materialFileId = 0;            ///< the chunk's terrain material (shader) file
-    uint32_t pickerFileId = 0, picker2FileId = 0;  ///< blend pages (layer 0 / 1); 0 = none
-    float pickerOffset[2] = {0, 0};         ///< this chunk's sub-rect in its page
-    float pickerScale = 0.25f;              ///< page covers 4x4 chunks
+    /// Ground colour textures bound to the material tokens "color", "colorb",
+    /// "colorc", "colord" (slots 0-3, dat order on every test map); 0 where the
+    /// chunk binds none.
+    std::vector<uint32_t> textureFileIds;
+    /// Normal maps bound to "normal", "normalb", "normalc", "normald" (slot k
+    /// pairs with textureFileIds[k]); 0 where the chunk binds none.
+    std::vector<uint32_t> normalFileIds;
+    uint32_t materialFileId = 0;            ///< loResMaterial.materialFile (the terrain shader, AMAT)
+    uint32_t pickerFileId = 0, picker2FileId = 0;  ///< blend pages: PIMG layer 0 ("blend") / 1 ("modx"); 0 = none
+    /// Stored `solidColor` of the layer 0 / 1 page when that page has no file
+    /// (byte order as stored, channel meaning UNPROVEN); zero otherwise.
+    uint8_t pickerSolid[4] = {0, 0, 0, 0}, picker2Solid[4] = {0, 0, 0, 0};
+    /// This chunk's sub-rect in its page, in page-image UV: u from the image's
+    /// first column (west edge), v from its first stored row (north edge).
+    float pickerOffset[2] = {0, 0};
+    float pickerScale = 0.25f;              ///< sub-rect size: 1 / chunks per page side (4 on every test map)
+    float uvScale = 0;                      ///< ground-texture tiling per chunk; 0 = unknown (UNPROVEN, §4.4)
+    uint8_t tiling[3] = {0, 0, 0};          ///< the chunk's `tiling` bytes as stored (meaning UNPROVEN, §4.4)
 };
 
 /// @brief One heightfield chunk (layout: docs/research/gw2-world-frame.md §3).

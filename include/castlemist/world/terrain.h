@@ -12,8 +12,11 @@
 /// @ingroup world
 #pragma once
 
+#include "castlemist/native/gw2dat.h"
 #include "castlemist/native/gw2model.hpp"
 #include "castlemist/world/world_scene.h"
+
+#include <nlohmann/json.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -50,5 +53,20 @@ Terrain build_terrain(const castlemist::model::Extractor::MapTerrain& t, std::ve
 ///        chunk (or the terrain is not present); true otherwise. Points on the
 ///        terrain's outer edge are inside.
 float terrain_height_at(const Terrain& t, float x, float y, bool* inside = nullptr);
+
+/// @brief Fill every chunk's TerrainMaterial from `trn.materials` and the
+///        terrain's paged image (docs/research/gw2-world-frame.md §4).
+///
+/// `m.chunks[i]` belongs to `t.chunks[i]` (both index cy * chunksX + cx). Each
+/// `texIndices` entry is bound by its texture's token: "color".."colord" ->
+/// textureFileIds, "normal".."normald" -> normalFileIds, "blend" / "modx" ->
+/// the layer 0 / 1 page of the PIMG file `m.pimgFileId` (read from @p dat with
+/// @p tpl), at the entry's coord (in chunks) divided by the chunks per page.
+/// A chunk with an index past `texFiles` stays `resolved = false`; it and
+/// anything else that cannot be resolved (no PIMG, a missing page, a page
+/// grid no chunks-per-page fits) is reported in @p warnings. Never throws for
+/// bad map data.
+void resolve_terrain_materials(Terrain& t, const castlemist::model::Extractor::MapTerrainMaterials& m, Gw2Dat& dat,
+                               const nlohmann::json& tpl, std::vector<std::string>& warnings);
 
 } // namespace castlemist::world
