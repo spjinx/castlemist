@@ -72,6 +72,7 @@ const std::string& last_status() { return kUnavailable; }
 
 #include <xatlas.h>
 
+#include "castlemist/extract/entry_extractor.h"
 #include "castlemist/format/struct_template.h"
 #include "castlemist/native/cmp_decompress_method0.hpp"
 #include "castlemist/native/granny_pose.hpp"
@@ -767,48 +768,19 @@ bool set_model(Gw2Dat& dat, uint32_t mft_index, std::string& error) {
     g.distMul = 3.0f;
     buildWorld();
 
-    // Textures. base - 1: get_by_base_id returns a 1-based baseId, so reading
-    // `base` lands on the next archive entry -- which parses as a neighbouring
-    // ATEX just often enough to bind the wrong image silently.
-    // Header-only peek at one MFT row's atex, for the resolution-pair check.
-    auto peekAtex = [&](size_t row, int& w, int& h, std::string& fmt) -> bool {
-        if (row >= dat.mft_data_list.size()) return false;
-        try {
-            std::vector<uint8_t> b = decomp(dat, (uint32_t)row);
-            if (b.size() >= 4 && b[0] == 0x43) b[0] = 0x41;   // CTEX -> ATEX alias
-            castlemist::atex::Texture t = castlemist::atex::parse(b.data(), b.size());
-            w = t.width; h = t.height; fmt = t.fmt_name;
-            return w > 0 && h > 0;
-        } catch (const std::exception&) { return false; }
-    };
-
-    // GW2 ships most textures as a PAIR of adjacent MFT rows: a reduced member
-    // at baseId B-1 and the full one at B, same format, exactly double the
-    // dimensions. Which member a material's fileId names is NOT consistent, so a
-    // loader that takes the row verbatim samples the half-size copy on some
-    // materials and the full one on others.
-    //
-    // The D3D views already resolve this (texture_source.cpp resolve_res_index,
-    // defaulting to full). This surface did not, which is why the same model can
-    // come out softer here than in "Full" / "Shader".
-    auto fullResRow = [&](size_t row) -> size_t {
-        int w0, h0; std::string f0;
-        if (!peekAtex(row, w0, h0, f0)) return row;
-        int w1, h1; std::string f1;
-        // A double-size sibling one row above => this row is the reduced member.
-        if (peekAtex(row + 1, w1, h1, f1) && f1 == f0 && w1 == 2 * w0 && h1 == 2 * h0)
-            return row + 1;
-        return row;
-    };
-
+    // Textures. Which archive row to load is the same decision the D3D views
+    // make (texture_entry, texture_source.cpp): GW2 ships most textures as a
+    // reduced/full PAIR, and the full copy is the entry holding fileId F+1 --
+    // not merely the next archive row. Pairing by row order alone once loaded
+    // an unrelated double-size texture as Frostfang's decal and painted the
+    // axe black and red here while the D3D views drew it correctly.
     auto loadTexture = [&](uint32_t fileId) -> bgfx::TextureHandle {
         auto it = g.texByFileId.find(fileId);
         if (it != g.texByFileId.end()) return it->second;
         bgfx::TextureHandle h = BGFX_INVALID_HANDLE;
-        uint32_t base = get_by_base_id(dat, fileId);
-        if (base && base - 1 < dat.mft_data_list.size()) {
+        const size_t row = texture_entry(dat, fileId, /*full=*/true);
+        if (row < dat.mft_data_list.size()) {
             try {
-                const size_t row = fullResRow(base - 1);
                 std::vector<uint8_t> bytes = decomp(dat, (uint32_t)row);
                 if (bytes.size() >= 4 && bytes[0] == 0x43) bytes[0] = 0x41;
                 castlemist::atex::Texture t = castlemist::atex::parse(bytes.data(), bytes.size());

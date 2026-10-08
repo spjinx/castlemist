@@ -209,6 +209,14 @@ bool decode_texture_rgba(Gw2Dat& dat, uint32_t file_id, ModelTextureCPU& out);
 ///        the fileId names, so the caller can tell the two apart.
 bool decode_texture_full(Gw2Dat& dat, uint32_t file_id, ModelTextureCPU& out, int* exact_width = nullptr);
 
+/// @brief The archive row (MFT index) to load for a fileId's texture: its
+///        full-resolution copy when `full` and GW2 ships one, its reduced copy
+///        when not `full`, else the fileId's own row. The pair is matched by
+///        consecutive fileIds (reduced F, full F+1) as well as format and
+///        double size -- never by archive order alone, which can put an
+///        unrelated texture next door. SIZE_MAX for an unknown fileId.
+size_t texture_entry(Gw2Dat& dat, uint32_t file_id, bool full);
+
 /// @brief The model at `file_id`, built against the already-open `dat` --
 ///        unlike extract_entry(), which reopens (re-parses) the whole dat for
 ///        every model it builds. nullptr if it isn't a model or fails to load.

@@ -224,3 +224,9 @@ using namespace castlemist::extract;
 // above but is reachable throughout this translation unit).
 void set_texture_full_res(bool full) { g_tex_full_res.store(full); }
 bool texture_full_res() { return g_tex_full_res.load(); }
+
+size_t texture_entry(Gw2Dat& dat, uint32_t file_id, bool full) {
+    const uint32_t base = get_by_base_id(dat, file_id);
+    if (base == 0 || base - 1 >= dat.mft_data_list.size()) return SIZE_MAX;
+    return resolve_res_index(dat, base - 1, full);
+}

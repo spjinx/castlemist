@@ -106,6 +106,28 @@ CM_TEST(dat, opens_and_reports_a_plausible_entry_count) {
     CHECK_FALSE(dat.file_info.file_path.empty());
 }
 
+// A texture's full-size copy is the entry holding fileId F+1 -- never just the
+// next archive row. Frostfang's decal 217977 (row 386566) sits beside row
+// 386567, an unrelated DXT5 at exactly double size (fileIds 127964/249923);
+// taking that row painted the axe black and red in the Game 1:1 view. Its real
+// full copy is fileId 217978 at row 386572.
+CM_TEST(dat, full_res_texture_entry_is_the_paired_file_not_the_next_row) {
+    Gw2Dat& dat = shared_dat();
+    CHECK_EQ(texture_entry(dat, 217977, /*full=*/true), size_t(386572));
+    CHECK_EQ(texture_entry(dat, 217977, /*full=*/false), size_t(386566));
+
+    // A real pair still resolves: 54619 is the reduced copy of a full one.
+    const size_t own = static_cast<size_t>(get_by_base_id(dat, 54619) - 1);
+    const size_t full = texture_entry(dat, 54619, /*full=*/true);
+    CHECK_NE(full, own);
+    bool pairedFile = false;
+    for (uint32_t f : get_by_file_id(dat, static_cast<uint32_t>(full + 1))) pairedFile |= (f == 54620);
+    CHECK(pairedFile);
+    CHECK_EQ(texture_entry(dat, 54619, /*full=*/false), own);
+
+    CHECK_EQ(texture_entry(dat, 0xFFFFFFF0u, true), SIZE_MAX);  // unknown fileId
+}
+
 CM_TEST(dat, decodes_atex_textures_to_rgba) {
     for (uint32_t base : {2871u, 807183u}) {
         ExtractedEntry e = extract_base(base);

@@ -32,6 +32,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "castlemist/extract/entry_extractor.h"
 #include "castlemist/native/cmp_decompress_method0.hpp"
 #include "castlemist/native/gw2_atex.hpp"
 #include "castlemist/native/gw2dat.h"
@@ -221,23 +222,19 @@ int main(int argc, char** argv) {
                                       (m.width == t.width && m.height == t.height)
                                           ? "" : "  <-- SMALLER THAN HEADER");
                     }
-                    // GW2 ships most textures as a PAIR of MFT rows: a reduced
-                    // member at baseId B-1 and the full one at B, same format,
-                    // exactly double the dimensions. Which member a material's
-                    // fileId lands on is not consistent, so a renderer that
-                    // takes the row verbatim samples the half-size copy on some
-                    // materials and the full one on others -- and half size
-                    // magnified over a preview viewport reads as "blurry".
+                    // GW2 ships most textures as a reduced/full PAIR. The pair is
+                    // matched by consecutive fileIds (texture_entry), not by
+                    // archive order -- the next row can be an unrelated texture
+                    // at exactly double size (Frostfang's decal 217977 sits
+                    // beside one), which is what the renderer must not load.
                     char sib[64] = "";
-                    { int w1, h1; std::string f1;
-                      size_t row = tb - 1;
-                      if (peekAtex(dat, row + 1, w1, h1, f1) && f1 == t.fmt_name
-                          && w1 == 2 * t.width && h1 == 2 * t.height)
-                          std::snprintf(sib, sizeof(sib), "  REDUCED -- full %dx%d at row %zu",
-                                        w1, h1, row + 1);
-                      else if (row >= 1 && peekAtex(dat, row - 1, w1, h1, f1) && f1 == t.fmt_name
-                               && t.width == 2 * w1 && t.height == 2 * h1)
-                          std::snprintf(sib, sizeof(sib), "  full (reduced sibling below)");
+                    { const size_t row = tb - 1;
+                      const size_t full = texture_entry(dat, tex.fileId, /*full=*/true);
+                      const size_t reduced = texture_entry(dat, tex.fileId, /*full=*/false);
+                      if (full != row && full != SIZE_MAX)
+                          std::snprintf(sib, sizeof(sib), "  REDUCED -- full copy at row %zu", full);
+                      else if (reduced != row && reduced != SIZE_MAX)
+                          std::snprintf(sib, sizeof(sib), "  full (reduced copy at row %zu)", reduced);
                     }
                     std::printf("%-10u %-6s %-10s %11s %5zu %s%s\n",
                                 tex.fileId, cc, t.fmt_name.c_str(), hdr, t.mips.size(), m0, sib);

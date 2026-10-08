@@ -95,12 +95,12 @@ if (CASTLEMIST_HAVE_BGFX)
     # material's effect was found by its own token or by the fallback.
     castlemist_add_tool(gw2bgfx_probe
         SOURCES viewer/gw2bgfx/probe.cpp
-        DEPS    gw2bgfx_core castlemist::native ext::json)
+        DEPS    gw2bgfx_core castlemist::native castlemist::extract ext::json)
 
     # gw2bgfx_viewer -- the renderer itself.
     castlemist_add_tool(gw2bgfx_viewer
         SOURCES viewer/gw2bgfx/viewer.cpp
-        DEPS    gw2bgfx_core castlemist::native ext::json)
+        DEPS    gw2bgfx_core castlemist::native castlemist::extract ext::json)
 
     if (CASTLEMIST_BUILD_TESTS)
         add_test(NAME gw2bgfx_selftest COMMAND gw2bgfx_selftest)
