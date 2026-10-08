@@ -22,6 +22,7 @@ namespace castlemist::core {
 /// |----------|--------|
 /// | `GW2_AUTOLOAD=<mftIdx>`  | select that entry at startup and screenshot it |
 /// | `GW2_GAMESHOT=1`         | with AUTOLOAD, also screenshot the "Game 1:1" view |
+/// | `GW2_DYES=id/mat,...`    | with AUTOLOAD, re-dye armor channels in place, screenshot |
 /// | `GW2_SCENE=<baseId>`     | load a map/scene instead of a single model |
 /// | `GW2_SCENEGAME=1`        | force game-shader materials on the loaded scene |
 /// | `GW2_AUDIOTEST=<mftIdx>` | probe/play an audio entry, log `audiotest.txt` |

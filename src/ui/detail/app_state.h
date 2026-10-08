@@ -14,6 +14,7 @@
 #include <windows.h>
 #include <commctrl.h>
 
+#include <array>
 #include <atomic>
 #include <memory>
 #include <optional>
@@ -35,6 +36,7 @@
 #include "castlemist/media/video_player.h"
 #include "castlemist/render/d3d_renderer.h"
 #include "castlemist/render/model_renderer.h"
+#include "castlemist/ripper/armor_preview.h"
 #include "castlemist/format/struct_template.h"
 #include "castlemist/native/BinaryParser.h"
 #include "castlemist/ui/hexview.h"
@@ -238,6 +240,7 @@ constexpr UINT_PTR ID_BAKESEL_NONE = 2141;    // "Select None" button
 constexpr UINT_PTR ID_BAKESEL_OK = 2142;      // "Bake Selected" button
 constexpr UINT_PTR ID_BAKESEL_CANCEL = 2143;  // cancels the export entirely
 constexpr UINT_PTR ID_TEX_FULLRES = 2055;
+constexpr UINT_PTR ID_ARMOR_DYES = 2195;    // "Dyes": the armor dye channels window
 constexpr UINT_PTR ID_AUDIO_PLAY = 2056;
 constexpr UINT_PTR ID_AUDIO_STOP = 2057;
 constexpr UINT_PTR ID_AUDIO_COMBO = 2058;
@@ -346,6 +349,13 @@ struct AppState {
     Gw2Dat data_gw2;
     ExtractedEntry current_entry;
     uint32_t current_mft_index = 0;
+    /// Armor dye channels the viewer bakes into armor's rebuilt atlas. Kept
+    /// across models, like a wardrobe's dye pick.
+    std::array<castlemist::ripper::DyeChoice, 4> armor_dyes{};
+    /// The current model as extracted, before its atlas stand-in was applied
+    /// (null when it isn't armor): re-dyeing rebuilds from it.
+    std::shared_ptr<ModelPreview> armor_pristine;
+    std::array<bool, 4> armor_channels{};  // which channels the current piece has
     bool dat_loaded = false;
 
     // Index-DB navigation (Stage 2). When an index is loaded, the list gains
@@ -455,6 +465,8 @@ struct AppState {
     HWND hwnd_anim_combo = nullptr;
     HWND hwnd_anim_play = nullptr;
     HWND hwnd_tex_fullres = nullptr;
+    HWND hwnd_armor_dyes = nullptr;   // "Dyes" button, shown for armor with a rebuilt atlas
+    HWND hwnd_dye_wnd = nullptr;      // the Dyes window, while open
     HWND hwnd_light_toggle = nullptr;
     HWND hwnd_effects_toggle = nullptr;
     HWND hwnd_cloth_toggle = nullptr;
@@ -764,6 +776,15 @@ void open_character_dialog(HWND owner);
 void open_character_keys_dialog(HWND owner, std::function<void()> on_changed);
 // look_dialog.cpp -- Character Ripper > Edit look...
 void open_look_dialog(HWND owner, const castlemist::character::CharacterManifest& manifest);
+
+// ---- dye_dialog.cpp -- the viewer's armor dye channels
+/// Opens (or raises) the Dyes window for the current armor model.
+void open_dye_dialog(HWND owner);
+/// Tells an open Dyes window the model changed (channels, enabled state).
+void dye_dialog_model_changed();
+/// Re-bakes the current armor model's atlas with g_app->armor_dyes and shows it
+/// in every view, without reloading the model. False when it isn't armor.
+bool rebake_armor_dyes();
 std::wstring utf8_to_wide(const std::string& s);
 std::string wide_to_utf8(const std::wstring& w);
 

@@ -25,6 +25,7 @@ bool initialize(HWND) { return false; }
 void shutdown() {}
 void on_resize(int, int) {}
 bool set_model(Gw2Dat&, uint32_t, std::string& error) { error = kUnavailable; return false; }
+void set_atlas_textures(const ModelTextureCPU*, const ModelTextureCPU*) {}
 void clear_model() {}
 bool has_model() { return false; }
 void orbit(float, float) {}
@@ -285,6 +286,9 @@ struct State {
     /// Handles in texByFileId that are cubemaps (DDS cube files), so a draw can
     /// match each texture to the dimension its sampler declares.
     std::set<uint16_t> cubeTextures;
+    /// set_atlas_textures(): the armor atlas stand-ins, uploaded on demand into
+    /// texByFileId (see atlasTexture in set_model).
+    std::optional<ModelTextureCPU> atlasDiffuse, atlasNormal;
     bgfx::TextureHandle texWhite = BGFX_INVALID_HANDLE;
     bgfx::TextureHandle texCube = BGFX_INVALID_HANDLE;
     bgfx::TextureHandle texLightBuf = BGFX_INVALID_HANDLE;
@@ -693,6 +697,37 @@ bool is_animating() {
 
 const std::string& last_status() { return g.status; }
 
+// texByFileId keys of the set_atlas_textures() stand-ins; no real fileId uses them.
+constexpr uint32_t kAtlasDiffuseKey = 0xFFFFFFF0u, kAtlasNormalKey = 0xFFFFFFF1u;
+
+// Fills every level of a mipped RGBA8 texture from level-0 pixels.
+static void uploadWithMips(bgfx::TextureHandle h, const ModelTextureCPU& src) {
+    std::vector<uint8_t> prev = src.rgba;
+    int pw = src.width, ph = src.height;
+    bgfx::updateTexture2D(h, 0, 0, 0, 0, (uint16_t)pw, (uint16_t)ph, bgfx::copy(prev.data(), (uint32_t)prev.size()));
+    for (uint8_t lvl = 1; pw > 1 || ph > 1; ++lvl) {
+        const int nw = pw > 1 ? pw >> 1 : 1, nh = ph > 1 ? ph >> 1 : 1;
+        std::vector<uint8_t> cur = boxHalve(prev, pw, ph);
+        bgfx::updateTexture2D(h, 0, lvl, 0, 0, (uint16_t)nw, (uint16_t)nh, bgfx::copy(cur.data(), (uint32_t)cur.size()));
+        prev = std::move(cur);
+        pw = nw; ph = nh;
+    }
+}
+
+void set_atlas_textures(const ModelTextureCPU* diffuse, const ModelTextureCPU* normal) {
+    // A stand-in the loaded model already samples is rewritten in place (a
+    // re-dye), so the draws keep their handles and nothing reloads.
+    auto refresh = [](uint32_t key, const std::optional<ModelTextureCPU>& old, const ModelTextureCPU* now) {
+        auto it = g.texByFileId.find(key);
+        if (!now || !old || it == g.texByFileId.end() || !bgfx::isValid(it->second)) return;
+        if (now->width == old->width && now->height == old->height) uploadWithMips(it->second, *now);
+    };
+    refresh(kAtlasDiffuseKey, g.atlasDiffuse, diffuse);
+    refresh(kAtlasNormalKey, g.atlasNormal, normal);
+    g.atlasDiffuse = diffuse ? std::optional<ModelTextureCPU>(*diffuse) : std::nullopt;
+    g.atlasNormal = normal ? std::optional<ModelTextureCPU>(*normal) : std::nullopt;
+}
+
 bool set_model(Gw2Dat& dat, uint32_t mft_index, std::string& error) {
     if (!g.inited) { error = "bgfx surface not initialised"; return false; }
     destroyDraws();
@@ -880,6 +915,27 @@ bool set_model(Gw2Dat& dat, uint32_t mft_index, std::string& error) {
         return h;
     };
 
+    // A `diffuse` / `normal` slot naming fileId 0 is the character armor atlas
+    // the game composites at runtime: the set_atlas_textures() stand-in, when
+    // there is one. Cached in texByFileId under keys no real fileId uses, so a
+    // model swap frees it with the rest.
+    auto atlasTexture = [&](uint64_t token) -> bgfx::TextureHandle {
+        const std::string role = castlemist::model::detokenizeName64(token);
+        const bool diffuse = role == "diffuse";
+        if (!diffuse && role != "normal") return BGFX_INVALID_HANDLE;
+        const std::optional<ModelTextureCPU>& src = diffuse ? g.atlasDiffuse : g.atlasNormal;
+        if (!src || src->width <= 0 || src->height <= 0) return BGFX_INVALID_HANDLE;
+        const uint32_t key = diffuse ? kAtlasDiffuseKey : kAtlasNormalKey;
+        auto it = g.texByFileId.find(key);
+        if (it != g.texByFileId.end()) return it->second;
+        bgfx::TextureHandle h = bgfx::createTexture2D((uint16_t)src->width, (uint16_t)src->height, true, 1,
+                                                      bgfx::TextureFormat::RGBA8,
+                                                      BGFX_SAMPLER_MIN_ANISOTROPIC | BGFX_SAMPLER_MAG_ANISOTROPIC);
+        if (bgfx::isValid(h)) uploadWithMips(h, *src);
+        g.texByFileId[key] = h;
+        return h;
+    };
+
     // Opaque render mode -- a render-mode token, not a material id, and the one
     // the paper-doll writes when not fading.
     const uint64_t effectToken = 0x914C6A8A883B1EEull;
@@ -996,8 +1052,12 @@ bool set_model(Gw2Dat& dat, uint32_t mft_index, std::string& error) {
             // DXBC, since GW2's blobs leave the uniform texInfo at 0.
             const auto psDims = dxbcResourceDimensions(psBin.data);
             for (const auto& s : psBin.samplers) {
-                bgfx::TextureHandle h;
-                if (s.textureIndex < mat->textures.size()) h = loadTexture(mat->textures[s.textureIndex].fileId);
+                bgfx::TextureHandle h = BGFX_INVALID_HANDLE;
+                if (s.textureIndex < mat->textures.size()) {
+                    const auto& mt = mat->textures[s.textureIndex];
+                    if (mt.fileId == 0) h = atlasTexture(mt.token);
+                    if (!bgfx::isValid(h)) h = loadTexture(mt.fileId);
+                }
                 else if (s.textureIndex == 35)             h = g.texFarDepth;   // scene depth / stipple
                 else if (s.textureSlot == 13)              h = g.texCube;
                 else if (s.textureSlot == 14)              h = g.texLightBuf; // gSs14: see texLightBuf's own doc comment

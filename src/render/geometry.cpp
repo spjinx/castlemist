@@ -54,6 +54,39 @@ void clear_model() {
     // is displaying when both are live.
 }
 
+// Reconstruction materials (indexed by material.index): textures + blend state.
+void build_materials(const ModelPreview& model) {
+    g_mats.clear();
+    uint32_t maxIdx = 0;
+    for (const auto& m : model.materials) maxIdx = std::max(maxIdx, m.index);
+    g_mats.resize(model.materials.empty() ? 0 : maxIdx + 1);
+    for (const auto& m : model.materials) {
+        MaterialGPU g;
+        for (int k = 0; k < 4; ++k) g.tint[k] = m.tint[k];
+        g.isEffect = m.isEffect;
+        g.kind = m.kind;
+        if (m.diffuseTex >= 0 && m.diffuseTex < static_cast<int>(model.textures.size())) {
+            const auto& t = model.textures[m.diffuseTex];
+            g.srv = make_srv(t.rgba, t.width, t.height);
+            g.srvReduced = make_srv_half(t.rgba, t.width, t.height);
+            g.cutout = t.hasCutout;
+        }
+        if (!m.isEffect && m.normalTex >= 0 && m.normalTex < static_cast<int>(model.textures.size())) {
+            const auto& t = model.textures[m.normalTex];
+            g.srvNormal = make_srv(t.rgba, t.width, t.height);
+            g.srvNormalReduced = make_srv_half(t.rgba, t.width, t.height);
+        }
+        if (m.hasRenderState) g.blend = make_blend_state_from_bgfx(m.renderState);
+        if (m.index < g_mats.size()) g_mats[m.index] = std::move(g);
+    }
+}
+
+void refresh_model_materials(const ModelPreview& model) {
+    if (!g_dev || !g_has_model) return;
+    build_materials(model);
+    build_game_materials(model);
+}
+
 // Animated world transform of a bone: p_model = lin * p_local + pos (column-vec).
 
 void set_model(const ModelPreview& model) {
@@ -65,6 +98,17 @@ void set_model(const ModelPreview& model) {
     // clips -- model_preview.cpp keeps those (see build_model_preview's mesh/
     // skeleton bail-out), so only bail here when there is truly nothing to show.
     if (!g_dev || (model.meshes.empty() && model.joints.empty())) return;
+
+    if (std::getenv("GW2_TEXDBG")) {
+        auto file_of = [&](int ti) {
+            return ti >= 0 && ti < static_cast<int>(model.textures.size()) ? model.textures[static_cast<size_t>(ti)].fileId : 0u;
+        };
+        for (const auto& mat : model.materials) {
+            std::fprintf(stderr, "[tex mat %u] diffuse=%u normal=%u", mat.index, file_of(mat.diffuseTex), file_of(mat.normalTex));
+            for (const auto& ex : mat.extraTextures) std::fprintf(stderr, " %s=%u", ex.role.c_str(), ex.fileId);
+            std::fprintf(stderr, "\n");
+        }
+    }
 
     std::vector<GVertex> verts;
     std::vector<uint32_t> indices;
@@ -122,29 +166,7 @@ void set_model(const ModelPreview& model) {
         sd.pSysMem = indices.data();
         if (FAILED(g_dev->CreateBuffer(&bd, &sd, &g_ib))) { clear_model(); return; }
 
-        // Materials (indexed by material.index).
-        uint32_t maxIdx = 0;
-        for (const auto& m : model.materials) maxIdx = std::max(maxIdx, m.index);
-        g_mats.resize(model.materials.empty() ? 0 : maxIdx + 1);
-        for (const auto& m : model.materials) {
-            MaterialGPU g;
-            for (int k = 0; k < 4; ++k) g.tint[k] = m.tint[k];
-            g.isEffect = m.isEffect;
-            g.kind = m.kind;
-            if (m.diffuseTex >= 0 && m.diffuseTex < static_cast<int>(model.textures.size())) {
-                const auto& t = model.textures[m.diffuseTex];
-                g.srv = make_srv(t.rgba, t.width, t.height);
-                g.srvReduced = make_srv_half(t.rgba, t.width, t.height);
-                g.cutout = t.hasCutout;
-            }
-            if (!m.isEffect && m.normalTex >= 0 && m.normalTex < static_cast<int>(model.textures.size())) {
-                const auto& t = model.textures[m.normalTex];
-                g.srvNormal = make_srv(t.rgba, t.width, t.height);
-                g.srvNormalReduced = make_srv_half(t.rgba, t.width, t.height);
-            }
-            if (m.hasRenderState) g.blend = make_blend_state_from_bgfx(m.renderState);
-            if (m.index < g_mats.size()) g_mats[m.index] = std::move(g);
-        }
+        build_materials(model);
 
         // Keep the rest mesh + LOD0 topology for the live cloth sim (built lazily
         // when the Cloth toggle is switched on). A DYNAMIC buffer receives each

@@ -50,6 +50,12 @@ void on_resize(int width, int height);
 /// @return false and fills @p error if the entry is not a usable model.
 bool set_model(Gw2Dat& dat, uint32_t mft_index, std::string& error);
 
+/// @brief Stand-ins for the character armor atlas the game fills at runtime: a
+///        material `diffuse` / `normal` slot naming fileId 0 samples these
+///        instead of white. Taken by the next set_model(); nullptr clears one.
+///        See ripper::build_armor_preview.
+void set_atlas_textures(const ModelTextureCPU* diffuse, const ModelTextureCPU* normal);
+
 void clear_model();
 bool has_model();
 

@@ -717,6 +717,29 @@ int run(HINSTANCE hInstance, int cmd_show) {
                 // Real game (bgfx DXBC) shaders: bind pose first.
                 castlemist::render::set_mode(castlemist::render::RenderMode::GameShader);
                 castlemist::render::save_screenshot(dump_path("shot_shader.bmp").c_str());
+                // Debug: GW2_DYES="id/material,..." (up to four channels; material
+                // 0 cloth .. 3 fur) re-dyes armor in place, as the Dyes window does,
+                // and writes shot_dyed{,_shader,_game11}.bmp.
+                if (const char* dy = std::getenv("GW2_DYES")) {
+                    if (!castlemist::cmap::built()) castlemist::cmap::load(cmap_cache_path());
+                    std::string spec = dy;
+                    size_t ch = 0, at = 0;
+                    while (ch < 4 && at <= spec.size()) {
+                        const size_t end = std::min(spec.find(',', at), spec.size());
+                        unsigned id = 0, mat = 0;
+                        if (std::sscanf(spec.substr(at, end - at).c_str(), "%u/%u", &id, &mat) >= 1)
+                            g_app->armor_dyes[ch] = {id, static_cast<int>(mat)};
+                        ++ch;
+                        at = end + 1;
+                    }
+                    std::fprintf(stderr, "DYES: rebake=%d\n", rebake_armor_dyes() ? 1 : 0);
+                    castlemist::render::save_screenshot(dump_path("shot_dyed_shader.bmp").c_str());
+                    castlemist::render::set_mode(castlemist::render::RenderMode::Full);
+                    castlemist::render::save_screenshot(dump_path("shot_dyed.bmp").c_str());
+                    castlemist::render::set_mode(castlemist::render::RenderMode::GameShader);
+                    if (std::getenv("GW2_GAMESHOT") && castlemist::gw2bgfxview::has_model())
+                        castlemist::gw2bgfxview::save_screenshot(dump_path("shot_dyed_game11.bmp").c_str());
+                }
                 // Accurate Granny animation + original DXBC shaders together: play the
                 // first real motion clip and capture two distinct frames in Shader mode.
                 {
