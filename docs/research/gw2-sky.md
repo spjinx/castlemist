@@ -1,6 +1,6 @@
 ---
 name: gw2-sky
-description: "How GW2 draws its sky: the EnvHemicubeSkybox mesh behind skyModeTex NE/SW/T (a hemicube, not a panorama), the sky pixel shader's brightness/haze maths, which sky mode is day/night, the GW2 -> Unity axis map, and the Unity face mapping of skyModeCubeTex. Source of truth for the skybox baker; anything unproven is marked UNPROVEN."
+description: "How GW2 draws its sky: the EnvHemicubeSkybox mesh behind skyModeTex NE/SW/T (a hemicube, not a panorama), the sky pixel shader's brightness/haze maths, which sky mode is day/night, the GW2 -> Unity axis map, the Unity face mapping of skyModeCubeTex, and (round 2) the star field, sky cards and cloud layers with their sampler formulas and the frame inputs they share. Source of truth for the skybox baker; anything unproven is marked UNPROVEN."
 ---
 
 # GW2 sky: projection, layers and axes
@@ -36,6 +36,23 @@ proves; every layer marked **UNPROVEN** is left out of the bake and named in
   mean absolute RGB difference (0..255) between the edge texel strips that the
   derived geometry says meet. The control is the same pair with one strip
   reversed.
+- **Round 2 (stars, cards, clouds; same exe, same shader run).** Extra code
+  disassembled: `0x140aa0000..0x140ab0000` (graphics helpers) and
+  `0x140c00000..0x140e00000` (all of `Map\Environment`). Embedded program blobs
+  (`PF`/`AMAT`/`GRMT` packfiles in `.rdata`) were cut out of the exe at the
+  address and size each creation call passes (`0x140aab1f0(size, blob, …)`) and
+  read with `gw2dat_cli amat --data`, which reports each effect's bgfx render
+  state. Uniform ids set by the draws are GW2 base-23 Tokens
+  (`gw2-uniform-hash.md`), decoded by hand: `0x36262728` → `skypar[a]`,
+  `0x3ef90059` → `skyparb`, `0x3045e8da` → `sun[D]ir`, `0x304647e8` →
+  `sun[C]lr`, `0x36b8f56f` → `uv[T]rans`, `0x3044592b` → `cldPar[a]`,
+  `0x30a68f22` → `cldParb` (capitals are not in the alphabet; a trailing `a` is
+  a leading zero digit). The draws also run the token encoder `0x14029ab40` on
+  the literal names (`"uvTrans"` `0x141d74108`, `"cldPara"` `0x141d74110`,
+  `"cldParb"` `0x141d74118`, `"skypara"` `0x141d66dd0`, `"sunDir "`,
+  `"sunClr "`), so the name ↔ id pairs are proven both ways. Dat files were
+  read only through `gw2dat_cli` (`sniff`, `extract`, `parse`, `amat`); the
+  extracted star packfile and DDS were then parsed as plain files.
 
 ### The sky renderer object (EnvHemicubeSkybox)
 
@@ -152,9 +169,13 @@ horizon row stretched down. The texture's lower half is not the lower part of
 the cube.
 
 **Inset `e`:** `e = 10 / R`, `R = this+0xd8 = 0.4 × (vtable slot 2 argument)`.
-The caller that sets the size was not traced, so the exact `e` is
+Round 2 traced the size call: the EnvContext constructor `0x140c40d40` calls
+slot 2 with its own float argument `F0` (`0x140c413a9..0x140c413af`; `xmm6`
+holds `F0` from `0x140c40d6f` to the call), so `R = 0.4·F0` and
+`e = 25 / F0`. `F0` itself is a runtime value (§7), so the exact `e` is still
 **UNPROVEN**. Measured instead: the seam error is lowest when each texture is
-read **1 texel** in from its edge.
+read **1 texel** in from its edge. (1 texel of 512 would mean `F0 ≈ 12800`.
+That is a consistency check, not a measurement of `F0`.)
 
 | inset (texels) | 0 | 1 | 2 | 3 | 5 | 10 | 20 |
 |---|---|---|---|---|---|---|---|
@@ -220,8 +241,18 @@ The draw (`0x140c6de80`) receives two factors, both clamped to [0, 1]:
 
 - `t` (5th argument, `[rbp+0x60]`). It is the day/night lerp weight for every
   sky parameter: `value = night + (day − night)·t` (§5). So **t = 1 is day,
-  t = 0 is night**.
-- `k` (6th argument, `[rbp+0x68]`). Its meaning is **UNPROVEN**.
+  t = 0 is night**. Round 2: the caller passes `EnvContext+0x1050`
+  (`0x140c45424`, `0x140c45474`; it also passes the sun direction
+  `[rbp+0x48]` in `r9` and a pointer to the sun colour `[rbp+0x58]` on the
+  stack, which the callee reads as `[rbp+0x50]`; §7), and that is the same
+  field the stars,
+  clouds and cards read through EnvContext vtable slot `0xc0`
+  (`0x140c431f0: movss xmm0,[rcx+0x1050]`; vtable `0x141d5e590`). **One `t`
+  drives every sky layer.**
+- `k` (6th argument, `[rbp+0x68]`). Round 2: the caller passes
+  `EnvContext+0x105c` (`0x140c4543c`, `0x140c45481`), which the frame function
+  gets back as an out-parameter of `0x140c58540` (`0x140c44e55`). What it means
+  is still **UNPROVEN**.
 
 In steady state (no transition), `0x140c6e7a0` picks the mode
 (`0x140c6e9d9..0x140c6ea47`, calls into `0x140c6d4d0`):
@@ -245,56 +276,83 @@ the table. Neither says what `k` is.
 
 - Sky params (`PackMapEnvDataSky`): modes 0 and 2 use `day*`, modes 1 and 3
   use `night*` (t = 1 / t = 0). PROVEN by the lerps in §5.
-- Sky cards (`day` / `night` attributes): **UNPROVEN**. EnvSkyCards.cpp was
-  not traced. The obvious guess (same t) is not proven.
-- Cloud layers: each layer has 3 `attributes[]` (187611). The 3 lighting
-  presets are day/dusk/night but not always in that order
-  (`gw2-map-lighting.md`: map 181140 has its brightest rig at index 1). Which
-  `attributes[]` index a sky mode uses is **UNPROVEN**. It needs the cloud
-  draw (PS 1644 / VS 1645, uniforms `cldPara`, `cldParb`, `uvTrans`) traced to
-  the code that fills them.
+- Sky cards (`day` / `night` attributes): **PROVEN**, same `t`. The card draw
+  `0x140caa330` lerps every per-card value as `night + (day − night)·t`
+  (`0x140caa6fc..0x140caa7cf`; brightness, density, hazeDensity,
+  lightIntensity, minHaze, scale), and the direction helper `0x140ca6ec0`
+  does the same for azimuth and latitude (`0x140ca70f3..0x140ca7139`). The
+  texture switch `0x140ca9d00` binds the day texture and day program at
+  `t = 1`, the night ones at `t = 0`, and a two-texture cross-fade program in
+  between (§9).
+- Cloud layers: **PROVEN.** The import `0x140c87d20` asserts
+  `srcLayer->attributeCount == MAP_ENV_GROUP_TYPES` (3, `0x140c87e1a`) and
+  keeps all three sets. The draw `0x140ca4050` uses
+  `lerp(attributes[1], attributes[0], t)` (`0x140ca4300..0x140ca437b`), so
+  **`attributes[0]` is day and `attributes[1]` is night**. `attributes[2]`
+  replaces both, unblended, only when `camera.z > level`
+  (`0x140ca42cb..0x140ca42fb`), where `level` is a float the frame function
+  receives (`[rbp+0x248]`, §7). What that level is (water surface?) is
+  **UNPROVEN**. In 187611 every layer's `attributes[2]` is brightness 1,
+  density 1, lightIntensity 1, which fits an "alternate" set rather than a
+  third time of day. These 3 sets are not the 3 lighting presets of
+  `gw2-map-lighting.md`.
 
 **Table:** recommended output names: `mode0` → `day`, `mode1` → `night`;
-`mode2` and `mode3` keep their index names. Mode merging (spec) may treat two
-modes as the same attribute set only for the sky-param set (0/2 day, 1/3
-night).
+`mode2` and `mode3` keep their index names. Day (`t = 1`) takes every `day*` /
+`day.*` / `attributes[0]` value; night (`t = 0`) takes every `night*` /
+`night.*` / `attributes[1]` value, for the hemicube, stars, cards and clouds
+alike. Modes 2/3 differ from 0/1 only by `k`, which none of the round-2 layers
+read.
 
 ---
 
 ## 4. Layer order and blending
 
 The hemicube is one draw per face of program A (or C), so the "base" layer and
-its haze are a single pass. Every other layer is a separate system whose
-shaders are known but whose CPU-side parameter mapping was not traced.
+its haze are a single pass. Stars, sky cards and cloud layers are separate
+systems, traced in round 2 (§7–§11).
 
-| Layer | Status | What is known | What would prove it |
+| Layer | Status | What is known | What is missing |
 |---|---|---|---|
 | base hemicube (NE/SW/T) | **PROVEN** | §2 projection, §5 colour maths | — |
-| horizon haze | formula **PROVEN**, input `FogColorFar` **UNPROVEN** | §5 | where `FogColorFar` is filled (probably from the `haze` struct via `EnvContext_SetHazeColors`; not traced in this build) |
-| sun glow inside the base pass | formula **PROVEN**, inputs **UNPROVEN** | §5 (`sunClr.w` = LightIntensity) | the 4th/7th arguments of the draw (`rdi` = sun dir, `[rbp+0x50]` = colour) traced to the env light rig; the engine SH globals `shRed/Green/Blue` |
-| stars (`starFile`, `*StarDensity`) | **UNPROVEN** | `starFile` 187544 is not an ATEX (`gw2dat_cli texture`: "ATEX: bad magic"). `*StarDensity` (`+0x18`/`+0x30`) is not read by the hemicube draw. | the star renderer and the format of 187544 |
-| cloud layers | **UNPROVEN** | PS 1644 (`FogColorFar, ScreenDims, sh*, TexelOffset, uvTrans, cldPara, sunDir, sunClr`, samplers `ss0` + `ssNoiseDepth`) and VS 1645 (`uvTrans, cldPara, cldParb`, World/WVP) draw them as world-placed geometry | the code that turns `PackMapEnvDataLayer` fields into `cldPara`/`cldParb`/`uvTrans` and the mesh |
-| sky cards | **UNPROVEN** | PS 1670–1680 (`skypara, skyparb, sunDir, sunClr`, some with `TimeOfDay`, `fxclr`, `StencilId`), VS 1673/1677/1681 (`World, WorldViewProjection`). EnvSkyCards.cpp code at `0x140ca8b6b`, `0x140caa97f` | that code: azimuth/latitude → World, `scale` → size, `textureUV` convention, blend state |
+| horizon haze | formula **PROVEN**, input `FogColorFar` **UNPROVEN** | §5 | `FogColorFar` is an engine global; none of the sky draws sets it (§11) |
+| sun glow inside the base pass | formula **PROVEN**, inputs **PARTIAL** | §5; round 2: sun direction = `EnvContext+0x4f0`, sun colour = `EnvContext+0x4e4`, copied once per frame and handed to every sky layer (§7) | who writes `EnvContext+0x4e4..0x4f8`; the SH globals `shRed/Green/Blue` |
+| stars (`starFile`, `*StarDensity`) | **PARTIAL**: file, placement, UV, colour, blend **PROVEN**; angular size needs `F0`; twinkle phase not reproducible | §8 | `F0` (§7); the per-vertex RNG and the `Time` uniform for twinkle |
+| sky cards (texture cards) | **PARTIAL**: direction, UV, day/night, colour, blend **PROVEN**; angular size needs `F`; haze/sun inputs as for the base | §9 | `F` (§7); `FogColorFar`, SH, sun colour (§11) |
+| sky cards (material cards) | **UNPROVEN** for baking | §9.6: AMAT, constants and textures are all resolvable statically | evaluating that AMAT's pixel shader (needs `Time`, `TimeOfDay`) |
+| cloud layers | **PARTIAL**: plane geometry, UV, attribute choice, colour maths, blend **PROVEN**; size needs `F`, look needs camera height and the engine fog uniforms | §10 | `F`, camera height, `FogParam0`/`FogColor*`, the cloud fade factor |
+| layer order on the GPU | **UNPROVEN** | submission order and per-program state words (§7) | the bgfx sort key, or one frame capture |
 
-Data notes for whoever traces the cards (from parseMapSky on character-fetch):
+Data notes (187611 parsed with `gw2dat_cli parse`; 3264516 from round 1):
 
-- `textureUV` is stored as four floats. Most cards on 187611 hold
-  `(0, 1, 1, 0)` and one holds `(0, 0.279, 0.732, 0.459)`. That reads like
-  `(u0, v0, u1, v1)` with V running bottom-up (a V-flip), but that is a reading
-  of the data, not a proof. **UNPROVEN.**
+- `textureUV` is `(uLeft, uRight, 1 − vTop, 1 − vBottom)`, **PROVEN** from the
+  card mesh builder (§9.3). `(0, 1, 1, 0)` is the whole texture upright;
+  `(0, 0.279, 0.732, 0.459)` (187611 card 1, drawn at night only: day density 0) is the atlas rectangle
+  u 0..0.279, v 0.268..0.541.
 - 3264516: one card has a day texture (186341, 64² DXT5). Four have texture 0
-  and material fileId 3135800, so a material draws them, not a texture. A
-  material-driven card can't be baked without the AMAT pipeline for that
-  material. **UNPROVEN, leave out.**
+  and material fileId 3135800, so a material draws them, not a texture (§9.6).
+  **Leave material cards out of the bake.**
+- 187611 card 0 (day latitude 0.41, scale 3.2, texture 186341) has
+  `flags = 2`, the flag that hides a card while program C (the scattering
+  program with its own sun disc) is active (§9.4). That fits a sun card.
 - 3264516 `sky.verticalOffset = −100000`. In the draw that becomes a world
   translation of `−verticalOffset` along z (§1 item 4). It moves the hemicube
   origin, which changes the view only through the VS horizon clamp. A sky at
   infinity is unaffected. **For a bake, ignore verticalOffset.**
 
-**Table:** bake order = base hemicube only (§2 + §5). Stars, clouds and cards
-go into `warnings` as UNPROVEN, and haze and sun glow too (missing inputs).
-For a static frame, scroll offset = 0 is moot because no scrolling layer is
-baked.
+**Table:** what the baker may add now.
+
+| Layer | Bake? | Condition |
+|---|---|---|
+| base hemicube | yes | §2 + §5 (unchanged) |
+| stars | yes, with a stated `F0` | §8 formula; `F0` and twinkle `tw` go into `warnings` as assumed values |
+| texture sky cards | yes, with a stated `F` | §9 formula with `FogColorFar`-dependent haze and sun light dropped (see the reduced formula); warn when `hazeDensity·sky.HazeDensity`, `minHaze` or `lightIntensity·sky.LightIntensity` is non-zero |
+| material sky cards | no | warn |
+| clouds | only with stated `F`, camera height, `cloudFade` and fog = 0 | §10 formula; all four go into `warnings` |
+
+Static frame: cloud scroll offsets and the card rotation accumulator both
+start at 0 when the map loads (§9.2, §10.2), so "time 0" = offset 0 is the
+game's own initial state, not a guess. Twinkle has no such zero (§8.4).
 
 ---
 
@@ -316,9 +374,11 @@ confirmed by its use as −z translation.
 | sunClr (`0x304647e8`) | colour.r | .g | .b | LightIntensity |
 
 Each value is `lerp(night, day, t)`. ¹ HazeFalloff uses weight `1 − sqrt(1 − t)`
-instead of t; at t ∈ {0, 1} that is the same endpoint. Which hash is which
+instead of t; at t ∈ {0, 1} that is the same endpoint. Which id is which
 name: the register `.w` uses match the shader (`skypara.w` is the cross-fade in
-PS 1619, `sunDir.w` scales the texture). The hash function itself was not run.
+PS 1619, `sunDir.w` scales the texture), and round 2 decoded the ids: they are
+base-23 Tokens, not hashes (`0x36262728` → `skypar[a]`, `0x3045e8da` →
+`sun[D]ir`, `0x304647e8` → `sun[C]lr`; Evidence base).
 
 **Formula** (PS 1617, line by line; `tex` = `t0` at the mesh uv):
 
@@ -439,17 +499,477 @@ above. 3194054 points at the same faces as 3264516.
 
 ---
 
+## 7. Shared frame inputs (EnvContext)
+
+All four sky systems hang off one EnvContext object (constructor `0x140c40d40`,
+vtable `0x141d5e590`, 0x13a8 bytes allocated at `0x140c5213c`). Its per-frame
+function is vtable slot `0x50` = `0x140c43f80`, which hands the same inputs to
+every layer.
+
+| Input | Where it lives | Who reads it | Status |
+|---|---|---|---|
+| `t` (day weight) | `EnvContext+0x1050`, getter slot `0xc0` `0x140c431f0` | hemicube (callee `[rbp+0x60]`), stars `0x140c6fd09`, clouds `0x140ca41e7`, cards `0x140caa3de` | **PROVEN** shared; 1 = day, 0 = night |
+| `k` | `EnvContext+0x105c` | hemicube only (callee `[rbp+0x68]`) | value **UNPROVEN** (out-param of `0x140c58540`) |
+| `F` (sky distance) | `EnvContext+0x1058`, getter slot `0x80` `0x140c42a00`, setter slot `0x110` `0x140c43a10` | cloud plane size `0x140ca40e5`, card quad distance `0x140ca7320` | value **UNPROVEN** |
+| `F0` | constructor argument `xmm2` | `+0x1058 = F0` (`0x140c40f54`), hemicube size `R = 0.4·F0` (`0x140c413af`), star radius `0.5·F0` (`0x140c413b2..0x140c413d7`) | value **UNPROVEN**; the creator passes `svc(0x18)->vfunc 0x68()` (`0x140c5210b..0x140c5211a`) |
+| sun direction | `EnvContext+0x4f0..0x4f8`, copied to the frame at `0x140c451ff`/`0x140c45232` | every layer normalizes it into `sunDir.xyz` | source **UNPROVEN** |
+| sun colour | `EnvContext+0x4e4..0x4ec` (+ w = 1), copied at `0x140c45237..0x140c4526a` | `sunClr.rgb` of hemicube, cards, clouds | source **UNPROVEN** |
+| camera position | frame argument `[rbp+0x240]` | world translation of stars, cards and clouds; cloud plane centre | runtime |
+| `level` | frame argument `[rbp+0x248]` | clouds (`attributes[2]` switch), cards (flags 4 / 0x80) | meaning **UNPROVEN** |
+| sky params | per-frame copy of `PackMapEnvDataSkyV76` at `[rbp+0x70]` (flags, day ×6, night ×6, verticalOffset) | hemicube, stars, cards, clouds | **PROVEN** layout (§5) |
+
+`F0` and `F` start equal. Whether `F` changes after load (setter slot
+`0x110`) was not traced. The card quad is built once at map load
+(`0x140ca7280`), so cards use `F` as it was then.
+
+**Submission order** inside `0x140c43f80`: for each environment, the cloud
+wrapper (`0x140c633c0` → cloud draw `0x140ca4050`) and the card wrapper
+(`0x140c635a0` → card draw `0x140caa330`), at `0x140c45296`/`0x140c452d4` and
+in the loop `0x140c45370..0x140c453f6`; then the program-C flag is pushed to
+the hemicube (`0x140c453fc..0x140c45421`, vtable slot 3); then the two
+hemicube objects (`+0x9b0`, `+0x9b8`, `0x140c45465`, `0x140c454ae`); then the
+stars (`0x140c454bf`). bgfx sorts draws before submitting them, so this is not
+proven to be the GPU order. The program creation calls pass different state
+words and sort-like arguments (`0x140aab1f0` 5th/6th arguments: hemicube
+`0x4086400`/3, stars `0x86000`/3, cards `0xc086000`/3, clouds `0x86000`/10),
+and decoding them was not done. **Layer order: UNPROVEN.** The order that
+fits the blend states is hemicube (opaque) → stars (additive) → cards → clouds
+(both alpha-blended), but that is an assumption.
+
+---
+
+## 8. Stars
+
+### 8.1 Code
+
+| What | Where | Finding |
+|---|---|---|
+| star object | `EnvContext+0x9c0`; `+0x8` = EnvContext (`0x1405d0510`, called at `0x140c412ed`), `+0x10` = radius `0.5·F0`, `+0x20` = material | |
+| load | `0x140c6fa90` | opens `starFile` as a packfile (`0x140de65b0`), takes chunk `'STAR'` (`mov edx,0x52415453` at `0x140c6fb17`), builds the mesh (`0x140c6ee10`), loads the chunk's texture (`0x140a763f0`), makes the program from blob `0x141d66df0` (size `0xa64`, PS 1624 + VS 1623) |
+| mesh | `0x140c6ee10` | 4 vertices + 6 indices per star; vertex = `{float3 pos, u32 colour, half2 uv}` |
+| draw | `0x140c6fcd0` | `skypara = (HazeBottom, HazeFalloff, HazeDensity, StarDensity)`, all `lerp(night, day, t)` (HazeFalloff with weight `1 − sqrt(1 − t)`); hides the mesh when StarDensity = 0 (`0x140c6fd3b..0x140c6fd48`); World = translate(camera) only (`0x140c6fe13..0x140c6fe20`) |
+| blend | AMAT of blob `0x141d66df0` | render state `0x2222000` = **ONE, ONE** (additive), default and transparent effect alike |
+
+### 8.2 `starFile` format
+
+`starFile` 187544 is a **`PF` packfile with container and chunk `STAR`**
+(`gw2dat_cli sniff`: `containerType "STAR"`, 40844 bytes), not a texture,
+which is why `gw2dat_cli texture` rejected it with "ATEX: bad magic". The
+loader opens it with the generic packfile reader. Chunk `STAR` v0, layout as
+the loader reads it (`0x140c6fb32..0x140c6fb67`):
+
+| offset | type | meaning | 187544 |
+|---|---|---|---|
+| +0 | float | `S`, size scale | 0.125 |
+| +4 | u32 | star count | 1699 |
+| +8 | ptr | star array, 24 bytes each | |
+| +0x10 (file +0xc) | filename | atlas texture | fileId **187543** |
+
+Star = 6 floats `{e0, e1, u0, u1, v0, v1}`: `e0` azimuth and `e1` elevation in
+radians (187544: e0 ∈ [−1.557, 4.702], e1 ∈ [0, 1.549], none below the
+horizon), and the star's rectangle in the atlas (every star has its own
+rectangle; 1699 distinct). The texture reference is the filename words
+`(0xdf96, 0x0102)`, i.e. fileId `0xff00·(0x102−0x100) + (0xdf96−0x100) + 1 =
+187543` (castlemist's `content_schema.cpp` formula). The atlas 187543 is a
+plain **DDS** (`gw2dat_cli sniff`: magic `DDS `), 256², one mip,
+uncompressed A8R8G8B8 (masks R `0xff0000`, G `0xff00`, B `0xff`,
+A `0xff000000`), 262272 bytes; castlemist's ATEX decoder does not read it, a
+DDS reader does. v = 0 is the first row.
+
+### 8.3 Placement (PROVEN)
+
+The mesh builder puts each star in the plane `x = R` (R = star radius), with
+corners (`0x140c6f0ac..0x140c6f1ca`, constant 2500 at `0x141b8bf6c`):
+
+```
+hu = 2500 · S · (u1 − u0);   hv = 2500 · S · (v1 − v0)
+(R, +hu, −hv) → (u0, v0)     (R, +hu, +hv) → (u0, v1)
+(R, −hu, −hv) → (u1, v0)     (R, −hu, +hv) → (u1, v1)
+```
+
+scales all four corners to length R (`0x140c6f219..0x140c6f2b4`; equal
+lengths, so the quad stays planar), then applies `M2 · M1` with
+`M1 = rot(axis (0,−1,0), e1)` and `M2 = rot(axis (0,0,1), e0)`
+(`0x1409cb0e0` builds both; `0x140c6f2bf..0x140c6f423` applies them as
+`p' = M·p` with the rows it builds). Worked out:
+
+```
+c(e0,e1)  = ( cos e1·cos e0, −cos e1·sin e0, −sin e1 )   // star centre (local +X)
+eL(e0)    = ( sin e0,  cos e0, 0 )                       // local +Y: the u0 side
+eD(e0,e1) = ( sin e1·cos e0, −sin e1·sin e0, cos e1 )    // local +Z: the v1 side (down)
+```
+
+So `e1` is elevation above the horizon (up = −Z) and `e0 = 0` points east,
+growing toward **south** (clockwise seen from above). That is the opposite
+turn to the sky cards (§9.2), and both are read straight from their own code.
+Check: at `e0 = e1 = 0` the star faces east, `eL` = north = the viewer's left
+in the §1 frame, `eD` = down, so the sprite is upright and unmirrored.
+
+### 8.4 Colour (PROVEN except the twinkle phase)
+
+VS 1623: `o1.xyz = normalize(World·pos)` = direction `d`;
+`o1.w = tw` (twinkle) from the vertex colour and `Time`:
+
+```
+p   = (col.r + col.g + col.b) + Time.xz · col.a     // two phases (col in 0..1)
+q   = frac(p)·2 − 1
+q   = frac(q · 2.223)·2 − 1
+tw  = (|q.x|²·(3 − 2|q.x|)) · (|q.y|²·(3 − 2|q.y|))
+```
+
+The colours are pseudo-random bytes from an RNG seeded with 1337
+(`0x140c6f303`: `0x140e1e260(rng, 0x539)`), `r,g,b = rand·255`,
+`a = rand·128·(1 − min(500·S²·(u1−u0)(v1−v0), 1))` (`0x140c6f0a2`,
+`0x140c6f428..0x140c6f49e`, constants 500 `0x14192c3e8`, 255 `0x14192ab7c`,
+128 `0x1419357f4`). The RNG (`0x140e1e6a0`) and the `Time` value were not
+decoded, so the phase of a given frame is **UNPROVEN**; `tw ∈ [0, 1]`.
+
+PS 1624 (lines in order) with `T = atlas(u, v)`:
+
+```
+f    = saturate((|d.z| − skypara.x) / skypara.y)        // HazeBottom, HazeFalloff
+att  = 1 − (1 − f²(3 − 2f)) · skypara.z                 // 1 − horizon-haze weight of §5
+B    = 2 · T.rgb²
+rgb' = B + (2/3) · (B.r + B.g + B.b) · T.a · tw
+out  = att · skypara.w · (rgb', T.a)                    // skypara.w = StarDensity
+dst += out                                              // ONE, ONE
+```
+
+### 8.5 Sampler formula
+
+Inputs: `starFile` STAR chunk (S, stars), atlas DDS, `StarDensity`,
+`HazeBottom/HazeFalloff/HazeDensity` for the mode (day: `day*`, night:
+`night*`), and `R = 0.5·F0`.
+
+```
+add(d) = 0
+for each star (e0, e1, u0, u1, v0, v1):
+    x = dot(d, c);  if (x <= 0) continue
+    a = dot(d, eL) / x;   b = dot(d, eD) / x
+    au = hu / R;  av = hv / R                    // tangent half-extents
+    if (|a| > au || |b| > av) continue
+    u = u0 + (u1 − u0) · (1 − a/au) / 2
+    v = v0 + (v1 − v0) · (1 + b/av) / 2
+    T = atlas(u, v)
+    B = 2·T.rgb²
+    add += B + (2/3)·(B.r+B.g+B.b)·T.a·tw
+f   = saturate((|d.z| − HazeBottom) / HazeFalloff)
+add *= (1 − (1 − f²(3−2f))·HazeDensity) · StarDensity
+radiance = base(d) + add          // base = §5 hemicube output, before the 8-bit clamp
+```
+
+`tw` is not reproducible; bake `tw = 0` (the steady part) and say so in
+`warnings`. `R` needs `F0`: the star size is **UNPROVEN** until `F0` is known
+(§7); direction, UV, colour and blend are **PROVEN**.
+
+---
+
+## 9. Sky cards
+
+### 9.1 Code
+
+| What | Where | Finding |
+|---|---|---|
+| import | `0x140c899c0` | packfile card (`PackMapEnvDataSkyCardV78`, 0xca bytes packed) → 0x468-byte card, fields copied as is (`0x140c89b30..0x140c89c34`) **when the import transform is identity** (`0x140c8b1d0` tests the 3×4 matrix). Otherwise (`0x140c89f04..0x140c8a0ff`) the day azimuth/latitude are read as degrees (×0.0174533), rotated through that matrix and written back in degrees (×57.2958) into **both** the day and the night slots. Which maps take that path is **UNPROVEN**; the formulas below are for the identity path |
+| init | `0x140ca8460` | 0x4e0-byte runtime card per entry; latitude is **multiplied by π/2** (`0x141d8ab20` = 1.5708; day `0x140ca8577`, night `0x140ca876a`), azimuth is copied as is; texture cards get the quad from `0x140ca7280`, material cards (non-empty material path) get `0x140ca7740` |
+| per-frame texture/program | `0x140ca9d00` | `t = 1`: day texture + program `0x141d84d30` (PS 1670 + VS 1673); `t = 0`: night texture + program `0x141d86b70` (PS 1674 + VS 1677); `0 < t < 1`: both textures + program `0x141d889b0` (PS 1678–1680 + VS 1681, cross-fade); material cards: `0x140ca9970` |
+| direction | `0x140ca6ec0` | `az = lerp(night.azimuth, day.azimuth, t)`, `lat = lerp(night.latitude, day.latitude, t)` (already ×π/2); flag 8 cards aim at `location` instead (`0x140ca6eca..0x140ca70eb`) |
+| draw | `0x140caa330` | World and uniforms below |
+| blend | AMAT of the three card blobs | render state `0x10006565000` = **SRC_ALPHA, INV_SRC_ALPHA** (bit 40 also set) |
+
+### 9.2 Direction (PROVEN)
+
+World = `translate(camera) · rot(axis (0,0,−1), az + spin) · rot(axis (0,−1,0), lat)
+· scale(1, sx, sy)` (`0x140caab38..0x140caabde`; `0x140aa4a50` builds the
+rotation with the same row layout as `0x1409cb0e0`; `0x140aa5eb0` shows the
+matrix stack multiplies new transforms on the right). The lens-flare code
+places the flare at exactly this direction with explicit trig
+(`0x140caa8d9..0x140caa963`: `x = cos az·cos lat`, `y = sin az·cos lat`,
+`z = −sin lat`, times 25000 `0x141d8ab24`), and flag-8 cards invert it with
+`lat = asin(−dz)`, `az = atan2`-style (`0x140ca6ff7..0x140ca70e7`). So:
+
+```
+az  = azimuth + spin        // radians; spin = 0 at load (below)
+lat = latitude · π/2        // stored 0..1 = horizon..zenith
+c   = ( cos lat·cos az,  cos lat·sin az, −sin lat )   // card centre
+eL  = ( −sin az,  cos az, 0 )                          // local +Y: uLeft side
+eD  = ( sin lat·cos az,  sin lat·sin az,  cos lat )    // local +Z: bottom side
+```
+
+`az = 0` is east, growing toward **north** (counter-clockwise seen from
+above). `spin` comes from EnvContext slot `0xa8` (`0x140c42eb0`): a table keyed
+by `(day.speed, night.speed)` whose entry is created with value 0
+(`0x140c430d9`). It is not used for flag-8 cards (`0x140caa86c`). **Static
+frame: spin = 0** (the value at map load).
+
+### 9.3 Quad, size and textureUV (PROVEN; size needs F)
+
+`0x140ca7280` builds 4 vertices (stride 0x54, FVF `0xff0079`) at distance
+`F = EnvContext+0x1058` with half-size 1000 (`0x141923c4c`), normalizes them
+to length F, and writes two UV sets: the first from the **night**
+`textureUV`, the second from the **day** `textureUV` (call site
+`0x140ca8b0a..0x140ca8b15`: `rdx = night UV` at card+0x200, `r8 = day UV` at
+card+0x118, which the import filled from packfile offsets `+0x7d` and `+0x2c`).
+The day program's VS 1673 reads `TEXCOORD1`, the night program's VS 1677 reads
+`TEXCOORD0`, which matches.
+
+| vertex | local position | uv from `textureUV = (x, y, z, w)` |
+|---|---|---|
+| 0 | (F, +1000, −1000) | (x, 1 − z) |
+| 1 | (F, +1000, +1000) | (x, 1 − w) |
+| 2 | (F, −1000, −1000) | (y, 1 − z) |
+| 3 | (F, −1000, +1000) | (y, 1 − w) |
+
+So **`textureUV = (uLeft, uRight, 1 − vTop, 1 − vBottom)`**: `(0,1,1,0)` is the
+whole texture upright and unmirrored (left = +Y = `eL`, top = −Z = up). Scale:
+`sx = lerp(night.scale.x, day.scale.x, t)`, `sy` likewise (each clamped to
+at least 1e-6), applied to local Y and Z (`0x140caa840..0x140caa86c`,
+`0x140caab97..0x140caabde`). Flags 8+0x10 together divide the scale by the
+distance to `location` and multiply by 25000 (`0x140caa7d5..0x140caa83c`).
+Angular half-size: `tan = 1000·s / F`. **F is UNPROVEN (§7).**
+
+### 9.4 Colour and blend (PROVEN; inputs as §11)
+
+Uniforms (`0x140caac0b..0x140caacea`; card values are `lerp(night, day, t)`,
+sky values as in §5):
+
+| uniform | .x | .y | .z | .w |
+|---|---|---|---|---|
+| `skypara` | sky HazeBottom | sky HazeFalloff | card.hazeDensity · sky HazeDensity | card.minHaze |
+| `skyparb` | card.density · cardFade | card.brightness | 0 | 0 |
+| `sunDir` | normalize(sun direction) | | | 0 |
+| `sunClr` | sun colour r | g | b | card.lightIntensity · sky LightIntensity |
+
+`cardFade` = `EnvEnvironment+0xa40` (× `1 − blend` while two environments
+blend, `0x140c635bf..0x140c63631`), written by EnvEnvironment vtable slot
+`0xd0` (`0x140c62160`) as `enabled ? value : 0`. Its steady value is
+**UNPROVEN** (expected 1).
+
+PS 1670 (= PS 1674), with `d` = camera→card direction (VS 1673 outputs
+`World3x3·pos`, not its negative) and `T = tex(uv)`:
+
+```
+g    = ((1 − d.z) + sunDir.z·d.z) · (dot(sunDir, d)·0.25 + 0.75)²
+amb  = ( dot((−d,1), shRed), dot((−d,1), shGreen), dot((−d,1), shBlue) )
+C    = lerp(amb, sunClr.rgb, g)
+X    = C·T + lum(T)²·(C + T − 2·C·T)        // lum = dot(T.rgb, (0.3,0.59,0.11))
+M    = 0.5·X + 0.5·T
+G    = lerp(M, X, g)
+col  = T + sunClr.w·(G − T)
+e    = saturate(−d.z)                        // elevation sine
+f    = saturate((e − skypara.x) / skypara.y)
+h    = saturate((1 − f²(3 − 2f))·skypara.z + skypara.w)
+rgb  = lerp(col, FogColorFar.rgb, h) · skyparb.y
+a    = T.a · skyparb.x
+dst  = rgb·a + dst·(1 − a)                   // SRC_ALPHA, INV_SRC_ALPHA
+```
+
+Visibility (`0x140caa623..0x140caa6b9`): nothing is drawn while
+`EnvSkyCards+0x60 == 0`; flag 2 hides the card while program C is active
+(`0x140d65440`, the same flag that switches the hemicube to its sun-disc
+program); flag 4 hides it when `camera.z >= level`, flag 0x80 when
+`camera.z < level`.
+
+### 9.5 Sampler formula (texture cards)
+
+For the mode (day: `t = 1`, `day.*` and the day texture; night: `t = 0`,
+`night.*` and the night texture), skip cards with a material, `density = 0`,
+flag 0x80, or flag 2 if program C is assumed on; flag 8 cards need `location`
+and the camera (not baked).
+
+```
+x = dot(d, c);  if (x <= 0) miss
+a = dot(d, eL) / x;   b = dot(d, eD) / x
+tu = 1000·scale.x / F;   tv = 1000·scale.y / F
+if (|a| > tu || |b| > tv) miss
+s  = (1 − a/tu) / 2;   r = (1 + b/tv) / 2           // 0..1 left→right, top→bottom
+u  = UV.x + (UV.y − UV.x)·s
+v  = (1 − UV.z) + ((1 − UV.w) − (1 − UV.z))·r
+T  = tex(u, v)
+(rgb, a) = §9.4
+dst = rgb·a + dst·(1 − a)
+```
+
+Reduced form the baker can use without the missing globals: when
+`card.lightIntensity·sky.LightIntensity = 0`, `col = T`; when also
+`card.hazeDensity·sky.HazeDensity = 0` and `minHaze = 0`, `h = 0`, so
+`rgb = T.rgb·brightness`, `a = T.a·density` (with `cardFade = 1`). Otherwise
+the result needs `FogColorFar` / SH / sun colour (§11) and the card goes into
+`warnings`. 187611 card 2 (`minHaze = 0.73`) and card 1 at night
+(`lightIntensity 0.88`) are examples that need them.
+
+### 9.6 Material cards (UNPROVEN for baking)
+
+A material card's runtime data is `PackMapEnvDataSkyCardMaterialV47`:
+`filename` (an AMAT), `constants[]` (`token`, `float4`), `textures[]`
+(`filename`, `textureUV`), `textureAnimation`, `flipbook`. `0x140ca9970` loads
+every texture, builds the program from the AMAT through `0x140aab550` with
+state `0xc086000`, and sets each constant by its token unless the token is in
+a 7-entry reserved table at `0x1427f1550` (`0x140ca9b29..0x140ca9b85`). All of
+this is resolvable offline: `gw2dat_cli amat --file-id 3135800` reads the
+3264516 card material (19 shaders, chosen PS has samplers 0–2, render state
+SRC_ALPHA/INV_SRC_ALPHA), and its PS uniforms are `FogColorFar, Time,
+TimeOfDay, AlphaRef, norpan, norscaa, norapow, norscab, norbpow, alphaov,
+difclbd, difclad, difcolb, difcola, skypara, skyparb`. Baking one means
+evaluating that PS on the CPU with a chosen `Time`/`TimeOfDay`, plus knowing
+which effect the sky path selects. Not done: **leave material cards out**.
+
+---
+
+## 10. Cloud layers
+
+### 10.1 Code
+
+| What | Where | Finding |
+|---|---|---|
+| import | `0x140c87d20` (`0x140c87df0..0x140c87ed2`) | layer → 0x70 bytes: altitude, `attributes[0..2]` (brightness, density, haze, lightIntensity, velocity), cutOut, depth, extent, fadeEnd, fadeWidth (fade values of the **last** attribute set win), scale, texture |
+| setup | `0x140ca3830` | one shared mesh `0x140ca3290(0.5, 10)`; per layer texture (or a default) and program from blob `0x141d72f80` (size `0x1184`, PS 1644 + VS 1645); scroll offsets zeroed (`0x140ca3aa1`) |
+| draw | `0x140ca4050` | World, attribute choice, uniforms below |
+| blend | AMAT of blob `0x141d72f80` | **SRC_ALPHA, INV_SRC_ALPHA**; second sampler is engine texture 35 in slot 12 (`ssNoiseDepth`, the scene depth) |
+
+### 10.2 Geometry and UV (PROVEN; size needs F)
+
+Mesh `0x140ca3290`: an 11×11 grid on `z = 0`, `x, y ∈ [−0.5, 0.5]` step 0.1,
+`uv = (x + 0.5, y + 0.5)`, vertex colour (all 4 bytes)
+`255·(1 − min(r/0.5, 1)⁴)` with `r = sqrt(x² + y²)` (`powf` `0x140e58450`,
+exponent 4 `0x14192ce20`). It is a **flat plane with a round soft edge**, not
+a dome.
+
+World (`0x140ca4244..0x140ca42c6`, set straight on the material with
+`0x140a86f20`):
+
+```
+m  = 0.5925 + 0.4075 · L.extent              // 0x141d74124, 0x141d74120
+Sw = 2 · F · m                                // F = EnvContext+0x1058, ×2 at 0x140ca40fe
+World = [ Sw 0 0 cam.x ; 0 Sw 0 cam.y ; 0 0 1 −L.altitude ]
+```
+
+So the layer is a horizontal square of half-size `F·m`, centred under the
+camera, at height `L.altitude` above z = 0 (world, not camera-relative in z).
+`uvTrans = (cam.x/Sw + scroll.x, cam.y/Sw + scroll.y, m·L.scale, brightness)`
+and VS 1645 does `uv = (meshUV + uvTrans.xy)·uvTrans.z`, which comes out as
+
+```
+u = P.x · L.scale / (2F) + (0.5 + scroll.x) · m · L.scale
+v = P.y · L.scale / (2F) + (0.5 + scroll.y) · m · L.scale
+```
+
+for a world point `P` on the plane: the texture is anchored to the world and
+tiles every `2F / L.scale` units. `scroll += velocity·dt / Sw` each frame
+(`0x140ca4380..0x140ca43b1`) and starts at 0.
+
+### 10.3 Attributes and uniforms (PROVEN)
+
+`A = lerp(attributes[1], attributes[0], t)`, or `attributes[2]` when
+`camera.z > level` (§3).
+
+| uniform | .x | .y | .z | .w |
+|---|---|---|---|---|
+| `uvTrans` | as above | | `m · L.scale` | A.brightness |
+| `cldPara` | L.depth | A.density · cloudFade | A.haze | L.cutOut |
+| `cldParb` | L.fadeEnd | L.fadeEnd + L.fadeWidth | 0 | 0 |
+| `sunDir` | normalize(sun direction) | | | 0 |
+| `sunClr` | sun colour r | g | b | A.lightIntensity · sky LightIntensity |
+
+`cloudFade` = `EnvEnvironment+0x970` (wrapper `0x140c633df..0x140c63451`,
+written by EnvEnvironment slot `0xc8` = `0x140c61640` as
+`enabled ? value : 0`); steady value **UNPROVEN** (expected 1).
+
+### 10.4 Shaders
+
+VS 1645: `n = normalize(camera − P)` (= −d); vertical fade
+`vf = saturate((|cam.z − P.z| − cldParb.x) / cldParb.y)²`; fog
+`fz = saturate(viewZ·FogParam0.x + FogParam0.y)`,
+`fog = min((1 − fz)·FogColorNearMinusFar.w + FogColorFar.w, fz) · cldPara.z`.
+PS 1644:
+
+```
+a0   = tex(uv).a
+uv2  = uv + (a0 − 0.5)·cldPara.x·n.xy           // parallax by depth
+T    = tex(uv2)
+g, amb, C, X, M, G, col: as §9.4 with d replaced by n (= −d), sunClr.w as above
+rgb  = lerp(col, FogColorFar.rgb, fog) · uvTrans.w
+soft = smoothstep(saturate((sceneDepth − pixelDepth) / cldPara.w))
+a    = vertexAlpha · cldPara.y · T.a · soft · vf
+dst  = rgb·a + dst·(1 − a)
+```
+
+### 10.5 Sampler formula
+
+Needs `F`, a camera position `cam` (only `cam.z` changes the shape; `cam.xy`
+shifts the texture phase), `fog` and the §11 globals. With no scene geometry
+`soft = 1` (assumption: the depth buffer holds the far plane).
+
+```
+for each layer L, back to front (order UNPROVEN; farthest first is the safe choice):
+    if (d.z == 0) continue
+    s = (−L.altitude − cam.z) / d.z;  if (s <= 0) continue
+    P = cam + s·d
+    xl = (P.x − cam.x) / Sw;  yl = (P.y − cam.y) / Sw
+    if (|xl| > 0.5 || |yl| > 0.5) continue
+    va = 1 − min(sqrt(xl² + yl²)/0.5, 1)⁴     // game: per-vertex, linear per 0.1 cell
+    uv = ((xl + 0.5) + cam.x/Sw, (yl + 0.5) + cam.y/Sw) · m·L.scale   // scroll = 0
+    n  = −d
+    (rgb, a) = §10.4 with vertexAlpha = va, soft = 1,
+               vf = saturate((|cam.z + L.altitude| − fadeEnd)/(fadeEnd + fadeWidth))²
+    dst = rgb·a + dst·(1 − a)
+```
+
+The plane only covers directions whose hit point is within `F·m` of the camera,
+so a cloud layer never reaches the horizon. **PARTIAL**: everything above is
+from code, but `F`, `cam.z`, `fog` (engine fog uniforms), `cloudFade` and the
+lighting globals are runtime values.
+
+---
+
+## 11. Haze and sun-glow inputs
+
+- `FogColorFar`: no sky draw sets it (hemicube §5; stars, cards and clouds set
+  only the uniforms listed in §8–§10), so it is an engine-global uniform set
+  by the fog/haze system. Its writer was not found. **UNPROVEN.** The clouds
+  also need `FogParam0` and the `.w` of `FogColorNearMinusFar`/`FogColorFar`.
+- `shRed/Green/Blue`: engine globals, not set by any sky draw. **UNPROVEN.**
+- Sun direction and colour: **PARTIAL.** Every sky layer gets them from
+  `EnvContext+0x4f0..0x4f8` and `EnvContext+0x4e4..0x4ec` through the frame
+  function (§7). No direct stores to those offsets were found in
+  `Map\Environment` (`0x140c00000..0x140e00000`), so they are probably filled
+  by a block copy of the interpolated light rig. Not traced.
+- `TimeOfDay`, `Time`: engine globals (cross-fade card program, material
+  cards, star twinkle). **UNPROVEN.**
+
+---
+
 ## Open items (what would close each UNPROVEN)
 
-1. Mode `k` factor (modes 2/3): trace the caller of vtable slot 5
-   (`0x140c6de80`) back to where its 6th argument comes from.
-2. Exact UV inset `e = 10 / R`: trace the call to vtable slot 2
-   (`0x140c6d430`).
-3. `FogColorFar`, `shRed/Green/Blue` and sun colour for the sky draw: trace the
-   draw's arguments and the engine globals. That would let the bake add haze
-   and sun glow.
-4. Program C activation flag (`0x140d65440`).
-5. Stars, clouds, sky cards: trace EnvSkyCards.cpp (`0x140ca8b6b`,
-   `0x140caa97f`), the cloud draw (PS 1644 / VS 1645), and the star renderer
-   and the format of `starFile`.
-6. Render target format and the sky's path through exposure/tonemap.
+Static work still possible:
+
+1. `k` (modes 2/3): decompile `0x140c58540`, which writes `EnvContext+0x105c`
+   through its last argument (`0x140c44e55`).
+2. `F0`: follow `svc(0x18)->vfunc 0x68` at `0x140c52111..0x140c5211a` (the
+   value the EnvContext constructor receives), and find the callers of
+   EnvContext slot `0x110` (`0x140c43a10`).
+3. Layer order: decode the 5th/6th arguments of `0x140aab1f0` (state word and
+   the value asserted `< 0x10`) into the bgfx sort key (`0x140aaa2c0`,
+   `0x140aa9fd0`).
+4. Star twinkle: decompile the RNG `0x140e1e260`/`0x140e1e6a0` (seed 1337) to
+   get each vertex's colour; the phase then needs only `Time`.
+5. Material cards: run the AMAT's PS on the CPU (castlemist has the AMAT
+   reader and token decoder); find which effect `0x140aab550` picks.
+6. Sun direction/colour writers: find the block copy into
+   `EnvContext+0x4e4..0x4f8`.
+
+Runtime captures that would settle the rest (one map, day and night):
+
+7. `EnvContext+0x1058` (`F`), `EnvContext+0x9d0` (star radius) and hemicube
+   `this+0xd8` (R) — one float settles the hemicube inset, star size, card
+   size and cloud plane size. Read at the star draw `0x140c6fcd0` (`rcx+0x10`)
+   or the card draw `0x140caa330` (`[rcx+0x10]` → `+0x1058`).
+8. `EnvContext+0x1050` (`t`) and `+0x105c` (`k`) in each sky mode.
+9. At the cloud draw `0x140ca4050`: the 8 arguments (sun direction, sun
+   colour, camera, `level`, `xmm3` = `cloudFade`), and the engine uniforms
+   `FogColorFar`, `FogColorNearMinusFar`, `FogParam0`, `shRed/Green/Blue`,
+   `Time`, `TimeOfDay` as they stand for the sky pass.
+10. `0x140d65440` return value (program C, which also hides flag-2 cards).
+11. GPU order of the hemicube, star, card and cloud draws (one frame capture).
+12. Render target format and the sky's path through exposure/tonemap
+    (unchanged from round 1).
