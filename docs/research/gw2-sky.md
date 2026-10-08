@@ -341,9 +341,14 @@ Data notes (187611 parsed with `gw2dat_cli parse`; 3264516 from round 1):
 - 3264516: one card has a day texture (186341, 64² DXT5). Four have texture 0
   and material fileId 3135800, so a material draws them, not a texture (§9.6).
   **Leave material cards out of the bake.**
-- 187611 card 0 (day latitude 0.41, scale 3.2, texture 186341) has
-  `flags = 2`, the flag that hides a card while program C (the scattering
-  program with its own sun disc) is active (§9.4). That fits a sun card.
+- 187611 global card 0 (`dataGlobal->skyCards`, read by `parseMapSky`):
+  day latitude 0.41, day scale 5.09, texture 186341, `flags = 0`. *Correction:*
+  an earlier revision cited "flags = 2, scale 3.2" for this card; those values
+  belong to the sun card of `dataLocalArray[2].skyCards`, a zone sky. Zones
+  carry their own sky cards (`dataLocalArray[n].skyCards`); flag 2 there is
+  the flag that hides a card while program C (the scattering program with its
+  own sun disc) is active (§9.4), which fits a sun card. The skybox exporter
+  reads the global sky only (spec), so zone cards are not baked.
 - 3264516 `sky.verticalOffset = −100000`. In the draw that becomes a world
   translation of `−verticalOffset` along z (§1 item 4). It moves the hemicube
   origin, which changes the view only through the VS horizon clamp. A sky at
@@ -798,8 +803,10 @@ whole texture upright and unmirrored (left = +Y = `eL`, top = −Z = up). Scale:
 at least 1e-6), applied to local Y and Z (`0x140caa840..0x140caa86c`,
 `0x140caab97..0x140caabde`). Flags 8+0x10 together divide the scale by the
 distance to `location` and multiply by 25000 (`0x140caa7d5..0x140caa83c`).
-Angular half-size: `tan = 1000·s / F`, `F = F0` (§7.1). 187611 card 0 (day
-scale 3.22, `F0` = 36864): half-size `atan(0.0874)` = 5.0°.
+Angular half-size: `tan = 1000·s / F`, `F = F0` (§7.1). 187611 global card 0
+(day scale 5.09, `F0` = 36864): half-size `atan(0.138)` = 7.86°. (The scale
+3.22 / 5.0° an earlier revision gave here is the zone card of
+`dataLocalArray[2].skyCards`; see §4 data notes.)
 
 ### 9.4 Colour and blend (PROVEN; inputs as §11)
 

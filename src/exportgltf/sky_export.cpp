@@ -248,6 +248,8 @@ SkyExportReport write_skybox(const SkyInputs& in, const std::string& parentDir, 
         const std::string mname = mode_name(j);
         json mj = {{"name", mname}, {"aliasOf", nullptr}, {"sources", mode_sources(s, m)},
                    {"skyDistance", s.skyDistance}};
+        // "sun" is the env lighting rig's sun light (parseMapEnv), not the sun sky card:
+        // the game places cards by their own azimuth/latitude (gw2-sky.md §9.2), so the two need not coincide.
         mj["sun"] = (j == 0 && in.daySun.present) ? sun_json(in.daySun) : json(nullptr);
 
         if (has_content(m)) {
