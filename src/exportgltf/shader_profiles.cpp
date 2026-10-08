@@ -135,11 +135,13 @@ std::vector<Entry> build_table() {
         t.push_back({{1729747}, p});
     }
     // prop-metalmask (note section 8.3): the 561567 lit core; metal = metalmask.G
-    // (t2), mod x2 on UV1.
+    // (t2), mod x2 on UV1; spec/reflection tint lerp(envcr.x, 0.6*albedo+0.2,
+    // metalmask.G) (not mapped, warned).
     {
         ShaderProfile p = make("prop-metalmask", AlphaUse::HolesAndShine, true);
         p.maskRole = "metalmask";
         p.maskMetal = Channel::G;
+        p.maskTintsReflection = Channel::G;
         t.push_back({{3121953}, p});
     }
     t.push_back({{77876}, make("prop-unlit-holes", AlphaUse::Unused, true)});

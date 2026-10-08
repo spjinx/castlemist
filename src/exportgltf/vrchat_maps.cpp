@@ -340,6 +340,7 @@ private:
             out_.warnings.push_back(std::move(w));
         }
         const Layer* l = find({role.c_str()});
+        colourLayer_ = l;
         if (!l) {
             // A failed decode already warned in resolve(); say what is lost either way.
             out_.warnings.push_back((failed(role.c_str()) ? role + " layer failed to decode"
@@ -406,19 +407,20 @@ private:
     /// as a greyscale alphaMask, cutoff 0.5. A placeholder is a constant: it
     /// either never cuts (no map) or cuts the whole material (BaseColor A = 0).
     void build_alpha_mask() {
-        const bool opacity =
-            !profile_.opacityRole.empty() && profile_.opacityChannel != Channel::None;
-        // A cutout layer that is missing or failed leaves the slot to the opacity layer.
-        const bool cutoutPresent =
-            !profile_.cutoutRole.empty() && find({profile_.cutoutRole.c_str()}) != nullptr;
-        if (opacity && cutoutPresent)
+        build_cutout_mask();
+        if (profile_.opacityRole.empty() || profile_.opacityChannel == Channel::None) return;
+        // A cutout that is missing, failed or a placeholder leaves the slot to the opacity.
+        if (out_.alphaMask.present)
             // Review Focus 3: the cutout (a discard) outranks an opacity factor.
             out_.warnings.push_back("opacity (" + profile_.opacityRole + "." +
                                     channel_name(profile_.opacityChannel) +
                                     ") not mapped: the alphaMask slot is taken by the cutout "
                                     "layer (" + profile_.cutoutRole + ")");
-        else if (opacity)
+        else
             build_opacity_mask();
+    }
+
+    void build_cutout_mask() {
         if (profile_.cutoutRole.empty()) return;
         const std::string& role = profile_.cutoutRole;
         const bool rxa = profile_.cutoutChannels == CutoutChannels::RxA;
@@ -445,7 +447,10 @@ private:
                     out_.baseColor.tex.rgba[i] = 0;
             out_.warnings.push_back(role + " layer is a placeholder with " + source + " = " +
                                     std::to_string(v) + "/255 < 0.5: it cuts the whole "
-                                    "material (BaseColor alpha 0)");
+                                    "material" +
+                                    (out_.baseColor.present
+                                         ? " (BaseColor alpha 0)"
+                                         : " (no BaseColor to carry it: the cut is lost)"));
             return;
         }
 
@@ -462,11 +467,14 @@ private:
         out_.alphaMaskCutoff = 0.5f;
 
         const auto fade = constant("cutfade");
+        // Only R x A (511663) or a cutfade constant make it a dissolve; 53858 is not one.
         if (neverCuts)
             out_.warnings.push_back(
-                source + " >= 0.5 on every texel: the cutout never cuts at rest, it is a "
-                "dissolve" + (fade ? " driven by cutfade (" + std::to_string(*fade) + ")"
-                                   : std::string()));
+                source + " >= 0.5 on every texel: the cutout never cuts at rest" +
+                (rxa || fade ? ", it is a dissolve" +
+                                   (fade ? " driven by cutfade (" + std::to_string(*fade) + ")"
+                                         : std::string())
+                             : std::string()));
         if (fade && *fade != 1.0f)
             out_.warnings.push_back("cutfade (" + std::to_string(*fade) +
                                     ") not baked into the alphaMask");
@@ -607,6 +615,35 @@ private:
             out_.specularSource = "default";
         }
 
+        // The profile reads the mask but there is none (a failed decode already
+        // warned in resolve()): say which Packed channels fell back to what.
+        if (reads_mask() && !mask && !failed(profile_.maskRole.c_str())) {
+            const auto from = [](const std::string& s) {
+                return s == "none" || s == "default" ? std::string(" left at the default")
+                                                     : " from " + s;
+            };
+            std::string lost;
+            if (profile_.maskMetal != Channel::None)
+                lost += "metal (" + profile_.maskRole + "." + channel_name(profile_.maskMetal) +
+                        ")" + from(out_.metalSource);
+            if (profile_.maskGloss != Channel::None)
+                lost += (lost.empty() ? "" : ", ") + std::string("smoothness (") +
+                        profile_.maskRole + "." + channel_name(profile_.maskGloss) + ")" +
+                        from(out_.smoothSource);
+            if (!lost.empty())
+                out_.warnings.push_back("no " + profile_.maskRole + " layer: " + lost);
+        }
+        // 3121953: spec/reflection tint = lerp(envcr.x, 0.6*albedo+0.2, metalmask.G).
+        if (profile_.maskTintsReflection != Channel::None) {
+            const std::string c =
+                profile_.maskRole + "." + channel_name(profile_.maskTintsReflection);
+            const bool inPackedR =
+                ch[0].src == Src::Mask && profile_.maskMetal == profile_.maskTintsReflection;
+            out_.warnings.push_back("specular/reflection tint lerp(envcr, 0.6*albedo+0.2, " + c +
+                                    ") not mapped" +
+                                    (inPackedR ? " (Packed.R holds " + c + ")" : std::string()));
+        }
+
         // Nothing read: Poiyomi's slider defaults do as well -- unless the
         // default profile set the shine aside on purpose (R8 / blended), where
         // the constants are the answer and the map records them.
@@ -616,21 +653,26 @@ private:
             !(alphaUnused_ || alphaIsOpacity_))
             return;
 
-        // Packed follows the diffuse UV: a mask / specular layer on another one is misplaced.
-        if (diffuse_.usable()) {
+        // Packed follows the base colour's UV (the diffuse, or the baseColorRole layer):
+        // a mask / specular layer on another one is misplaced.
+        const Layer* base = !profile_.baseColorRole.empty() ? colourLayer_
+                            : diffuse_.usable()             ? &diffuse_
+                                                            : nullptr;
+        if (base) {
             const bool maskUsed = std::any_of(std::begin(ch), std::end(ch),
                                               [](const Ch& k) { return k.src == Src::Mask; });
             for (const Layer* l : {maskUsed ? mask : nullptr, spec})
-                if (l && l->uv != diffuse_.uv)
+                if (l && l->uv != base->uv)
                     out_.warnings.push_back(l->role + " layer uses UV" + std::to_string(l->uv) +
-                                            ", the diffuse UV" + std::to_string(diffuse_.uv) +
-                                            ": Packed follows the diffuse UV, its " + l->role +
+                                            ", the " + base->role + " UV" +
+                                            std::to_string(base->uv) + ": Packed follows the " +
+                                            base->role + " UV, its " + l->role +
                                             " channels may be misplaced");
         }
 
-        // Packed takes the diffuse size; mask/specular channels are nearest-sampled.
+        // Packed takes the base colour's size; mask/specular channels are nearest-sampled.
         int w = 4, h = 4;
-        for (const Layer* l : std::initializer_list<const Layer*>{&diffuse_, mask, spec})
+        for (const Layer* l : std::initializer_list<const Layer*>{base, mask, spec})
             if (l && l->real()) { w = l->tex->width; h = l->tex->height; break; }
 
         ModelTextureCPU t = blank(w, h, 0);
@@ -648,7 +690,7 @@ private:
                     }
                 }
             }
-        const uint8_t uv = diffuse_.usable() ? diffuse_.uv : mask ? mask->uv : spec ? spec->uv : 0;
+        const uint8_t uv = base ? base->uv : mask ? mask->uv : spec ? spec->uv : 0;
         out_.packed = slot_of(std::move(t), uv, 0, "packed");
         if (mask) consumed_.push_back(mask);
     }
@@ -807,6 +849,14 @@ private:
             return;
         }
         const ModelTextureCPU& d = *diffuse_.tex;
+        bool glows = false;
+        for (size_t i = 3; i < d.rgba.size(); i += 4)
+            if (d.rgba[i] > 128) { glows = true; break; }
+        if (!glows) {
+            out_.warnings.push_back("no self-illumination texels (diffuse alpha never above "
+                                    "0.5): no emission maps");
+            return;
+        }
         ModelTextureCPU m = blank(d.width, d.height, d.fileId);
         for (size_t i = 0; i + 3 < m.rgba.size(); i += 4) {
             m.rgba[i] = m.rgba[i + 1] = m.rgba[i + 2] = shine(d.rgba[i + 3]);
@@ -950,8 +1000,10 @@ private:
                 mapped_.push_back(mask);
             }
         }
-        std::string w = "rim ramp is a view-angle lookup, ramp(N.V, " + out_.rim.maskSource +
-                        " + voffset) x " + out_.rim.maskSource +
+        const std::string& gate = out_.rim.maskSource;
+        std::string w = "rim ramp is a view-angle lookup, " +
+                        (gate.empty() ? std::string("ramp(N.V, voffset)")
+                                      : "ramp(N.V, " + gate + " + voffset) x " + gate) +
                         ": described in materials.json (rim), not mapped as emission";
         if (out_.rim.scroll) w += " (voffset " + std::to_string(*out_.rim.scroll) + ")";
         out_.warnings.push_back(std::move(w));
@@ -981,7 +1033,8 @@ private:
         if (fall) out_.projectorFalloff = std::array<float, 2>{(*fall)[0], (*fall)[1]};
         out_.warnings.push_back(
             "projector blends by world-up facing: not baked (described in materials.json "
-            "(projector): weight = falloff constant (prjfall/prkfall) x saturate(2a) of the projector layer)");
+            "(projector): weight = smoothstep(falloff constant (prjfall/prkfall)) x saturate(2a) "
+            "of the projector layer)");
     }
 
     void build_extras() {
@@ -1028,6 +1081,7 @@ private:
         check("decalMask", out_.decalMask);
         check("alphaMask", out_.alphaMask);
         check("projector", out_.projector);
+        check("rimMask", out_.rim.mask);
         for (const auto& x : out_.extras) check("extra", x.slot);
     }
 
@@ -1037,6 +1091,7 @@ private:
     const ShaderProfile& profile_;
     MaterialMaps out_;
     Layer diffuse_, normal_;
+    const Layer* colourLayer_ = nullptr;  ///< the baseColorRole layer (may be a placeholder)
     std::vector<Layer> layers_;
     std::vector<const Layer*> consumed_;
     std::vector<const Layer*> mapped_;      ///< fully mapped layers: never an extra

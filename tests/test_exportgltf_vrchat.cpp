@@ -500,6 +500,10 @@ CM_TEST(vrchat, mask_role_reads_named_layer) {
     CHECK(m.packed.present);
     CHECK_EQ(px(m.packed.tex, 9, 0), 180);
     CHECK(m.metalSource == "metalmask.G");
+    // The spec/reflection tint lerp by metalmask.G is not mapped: said.
+    CHECK(profile_for(mat, 0).maskTintsReflection == Channel::G);
+    CHECK(any_warning(m, "specular/reflection tint lerp(envcr, 0.6*albedo+0.2, metalmask.G) not "
+                         "mapped (Packed.R holds metalmask.G)"));
 
     // A hand-built profile reading metalmask.G: same result, metalmask is no extra.
     ShaderProfile p;
@@ -514,6 +518,36 @@ CM_TEST(vrchat, mask_role_reads_named_layer) {
     CHECK_EQ(px(m2.packed.tex, 9, 0), 180);
     CHECK(m2.metalSource == "metalmask.G");
     for (const auto& e : m2.extras) CHECK(e.role != "metalmask");
+    CHECK_FALSE(any_warning(m2, "reflection tint"));  // field off: no warning
+}
+
+CM_TEST(vrchat, mask_role_layer_missing_warns) {
+    // prop-metalmask without its metalmask layer: metal falls to conduct (1.5 -> 255,
+    // fully chrome). Said, once.
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(3121953);
+    mat.diffuseTex = add_tex(model, solid(8, 8, {120, 60, 30, 255}, 1000));
+    mat.namedConstants = {{"conduct", 1.5f}};
+    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    CHECK(m.metalSource == "conduct");
+    CHECK_EQ(std::count_if(m.warnings.begin(), m.warnings.end(),
+                           [](const std::string& w) {
+                               return w.find("no metalmask layer: metal (metalmask.G) from "
+                                             "conduct") != std::string::npos;
+                           }),
+             1);
+
+    // Failed to decode: resolve already said so; no second "no layer" warning.
+    ModelMaterialCPU bad = mat;
+    add_layer(model, bad, "metalmask", -1, 0);
+    MaterialMaps b = build(model, bad, BlendPreset::Cutout);
+    CHECK(any_warning(b, "metalmask layer (fileId 4242) failed to decode"));
+    CHECK_FALSE(any_warning(b, "no metalmask layer"));
+
+    // Present: no warning.
+    ModelMaterialCPU ok = mat;
+    add_layer(model, ok, "metalmask", add_tex(model, solid(2, 2, {10, 180, 50, 30}, 1001)), 0);
+    CHECK_FALSE(any_warning(build(model, ok, BlendPreset::Cutout), "no metalmask layer"));
 }
 
 CM_TEST(vrchat, weapon_glow_emission) {
@@ -1164,6 +1198,20 @@ CM_TEST(vrchat, opacity_and_glow_splits_alpha) {
     CHECK(any_warning(m, "diffade"));
 }
 
+CM_TEST(vrchat, opacity_and_glow_without_bright_texels) {
+    // No alpha above half: nothing self-illuminates, so no emission maps.
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(44709);
+    mat.diffuseTex = add_tex(
+        model, tex_from(3, 1, {{10, 20, 30, 0}, {10, 20, 30, 64}, {10, 20, 30, 128}}, 1000));
+    MaterialMaps m = build(model, mat, BlendPreset::Fade);
+    CHECK(m.baseColor.present);
+    CHECK_FALSE(m.emissionMask.present);
+    CHECK_FALSE(m.emissionMap.present);
+    CHECK_FALSE(m.emissionBaked.present);
+    CHECK(any_warning(m, "no self-illumination texels"));
+}
+
 CM_TEST(vrchat, opacity_and_glow_with_glow_layer_warns) {
     ModelPreview model;
     ModelMaterialCPU mat = mat_with_file(44709);
@@ -1679,6 +1727,15 @@ CM_TEST(vrchat, cutout_layer_with_diffuse_holes) {
     CHECK(any_warning(m, "alphaMask (cutout.R) uses UV2"));
     // The game multiplies the two before one test: splitting them is an approximation.
     CHECK(any_warning(m, "cutout.R x saturate(2a)"));
+
+    // Never cuts at rest, but 53858 (cutout.R, no cutfade) is no dissolve.
+    ModelMaterialCPU rest = mat_with_file(53858);
+    rest.diffuseTex = mat.diffuseTex;
+    add_layer(model, rest, "cutout",
+              add_tex(model, tex_from(2, 1, {{200, 0, 0, 40}, {150, 0, 0, 255}}, 8008)), 2);
+    MaterialMaps r = build(model, rest, BlendPreset::Cutout);
+    CHECK_EQ(count_warnings(r, "never cuts at rest"), size_t{1});
+    CHECK_FALSE(any_warning(r, "dissolve"));
 }
 
 CM_TEST(vrchat, cutout_layer_missing_warns) {
@@ -1723,7 +1780,39 @@ CM_TEST(vrchat, cutout_placeholder_is_constant) {
     CHECK_FALSE(c.alphaMask.present);
     for (int i = 0; i < 4; ++i) CHECK_EQ(px(c.baseColor.tex, i, 3), 0);
     CHECK_EQ(count_warnings(c, "cuts the whole material"), size_t{1});
+    CHECK(any_warning(c, "BaseColor alpha 0"));
     CHECK_FALSE(has_extra(c, "cutout"));
+
+    // No BaseColor: the warning must not claim its alpha was zeroed.
+    ModelMaterialCPU bare = mat_with_file(511663);
+    add_layer(model, bare, "cutout", add_tex(model, solid(4, 4, {100, 0, 0, 255}, 8009)), 1);
+    MaterialMaps b = build(model, bare, BlendPreset::Cutout);
+    CHECK_FALSE(b.baseColor.present);
+    CHECK_EQ(count_warnings(b, "cuts the whole material"), size_t{1});
+    CHECK_FALSE(any_warning(b, "BaseColor alpha 0"));
+}
+
+CM_TEST(vrchat, cutout_placeholder_leaves_alpha_mask_to_opacity) {
+    // A placeholder cutout >= 0.5 writes no alphaMask: the opacity layer gets the slot
+    // and nothing says it was taken.
+    ShaderProfile p;
+    p.name = "test-both";
+    p.diffuseAlpha = AlphaUse::Opacity;
+    p.cutoutRole = "cutout";
+    p.opacityRole = "mask";
+    p.opacityChannel = Channel::R;
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(1);
+    mat.diffuseTex = add_tex(model, solid(2, 2, {100, 100, 100, 255}, 1000));
+    add_layer(model, mat, "cutout", add_tex(model, solid(4, 4, {255, 0, 0, 255}, 8010)), 1);
+    add_layer(model, mat, "mask",
+              add_tex(model, tex_from(2, 1, {{50, 0, 0, 255}, {90, 0, 0, 255}}, 9001)), 2);
+    MaterialMaps m = build_material_maps(model, mat, blend_of(BlendPreset::Cutout), p);
+    CHECK(m.alphaMask.present);
+    CHECK(m.alphaMask.source == "mask.R");
+    CHECK(m.alphaMaskCutoff < 0.0f);
+    CHECK_FALSE(any_warning(m, "taken by the cutout"));
+    CHECK_FALSE(has_extra(m, "mask"));
 }
 
 CM_TEST(vrchat, materials_json_alpha_mask_entry) {
@@ -2030,6 +2119,39 @@ CM_TEST(vrchat, glb_effect_emissive_bakes_colour_layer) {
     CHECK_FALSE(g2["materials"][1].contains("emissiveTexture"));
 }
 
+CM_TEST(vrchat, packed_follows_base_color_layer) {
+    // With a baseColorRole, Packed takes the colour layer's UV and size, not the diffuse's.
+    ShaderProfile p;
+    p.name = "test-colour-role";
+    p.diffuseAlpha = AlphaUse::Opacity;
+    p.baseColorRole = "parallax";
+    p.diffuseUse = "uv-offset";
+    p.maskMetal = Channel::R;
+    ModelPreview model;
+    ModelMaterialCPU mat = mat_with_file(1);
+    mat.diffuseTex = add_tex(model, solid(2, 2, {128, 128, 0, 255}, 57890));
+    mat.diffuseUv = 3;
+    add_layer(model, mat, "parallax", add_tex(model, solid(8, 8, {10, 20, 30, 255}, 842653)), 0);
+    add_layer(model, mat, "mask", add_tex(model, solid(2, 2, {200, 0, 0, 255}, 9001)), 0);
+    MaterialMaps m = build_material_maps(model, mat, blend_of(BlendPreset::Fade), p);
+    CHECK(m.packed.present);
+    CHECK_EQ(m.packed.uv, 0);
+    CHECK_EQ(m.packed.tex.width, 8);
+    CHECK(m.metalSource == "mask.R");
+    CHECK_FALSE(any_warning(m, "Packed follows"));  // mask and colour share UV0
+}
+
+CM_TEST(vrchat, profile_table_base_color_role_excludes_diffuse_alpha_readers) {
+    // build_packed's ReflectionOnly shine and build_alpha_glow read the castlemist
+    // diffuse; with a baseColorRole that is not colour, so no profile may combine them.
+    for (uint32_t id : all_profile_amats()) {
+        const ShaderProfile& p = profile_for(mat_with_file(id), 0);
+        if (p.baseColorRole.empty()) continue;
+        CHECK(p.diffuseAlpha != AlphaUse::OpacityAndGlow);
+        CHECK(p.diffuseAlpha != AlphaUse::ReflectionOnly);
+    }
+}
+
 CM_TEST(vrchat, mskptrb_hint_only_with_an_opacity_layer) {
     // A default-profile material (1195172 is not hand-read) keeps the raw use null.
     ModelPreview model;
@@ -2187,6 +2309,28 @@ CM_TEST(vrchat, rim_ramp_missing_warns) {
     CHECK(b.baseColor.present);
 }
 
+CM_TEST(vrchat, rim_warning_wording_and_mask_uv) {
+    // No rimMaskChannel: the warning names no gate (no empty "x :").
+    ShaderProfile p = profile_for(mat_with_file(1465623), 0);
+    p.rimMaskChannel = Channel::None;
+    ModelPreview model;
+    ModelMaterialCPU mat = rim_mat(model);
+    MaterialMaps m = build_material_maps(model, mat, blend_of(BlendPreset::Cutout), p);
+    CHECK(m.rim.present);
+    CHECK(any_warning(m, "ramp(N.V, voffset): described in materials.json"));
+    CHECK_FALSE(any_warning(m, "x :"));
+    CHECK_FALSE(any_warning(m, "(N.V,  +"));
+
+    // A real rim mask on UV2 is checked like every other map.
+    ModelMaterialCPU uv2 = rim_mat(model);
+    uv2.extraTextures.pop_back();  // drop the placeholder mask
+    add_layer(model, uv2, "mask",
+              add_tex(model, tex_from(2, 1, {{10, 0, 0, 255}, {200, 0, 0, 255}}, 1459279)), 2);
+    MaterialMaps n = build(model, uv2, BlendPreset::Cutout);
+    CHECK(n.rim.mask.present);
+    CHECK(any_warning(n, "rimMask (mask.R) uses UV2"));
+}
+
 CM_TEST(vrchat, rim_ramp_in_materials_json) {
     ModelPreview model = glow_quad();
     ModelMaterialCPU rib = rim_mat(model);
@@ -2277,6 +2421,7 @@ CM_TEST(vrchat, projector_layer_described) {
     CHECK_FALSE(has_extra(m, "projector"));  // consumed, not an extra
     CHECK(has_extra(m, "mod"));
     CHECK(any_warning(m, "projector blends by world-up facing: not baked"));
+    CHECK(any_warning(m, "weight = smoothstep(falloff constant (prjfall/prkfall)) x saturate(2a)"));
 
     // No prjfall: falloff unknown (null), still described.
     ModelMaterialCPU none = projector_mat(model);

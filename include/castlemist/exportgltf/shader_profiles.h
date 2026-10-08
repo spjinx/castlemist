@@ -77,6 +77,9 @@ struct ShaderProfile {
     /// The layer role the maskMetal/maskGloss/maskSheen/maskGlow/maskGlowGate channels
     /// read ("mask" on armor; 3121953 reads "metalmask").
     std::string maskRole = "mask";
+    /// A maskRole channel that lerps the specular/reflection tint from `envcr` toward
+    /// `0.6 * albedo + 0.2` (3121953: metalmask.G). Not mapped, warned.
+    Channel maskTintsReflection = Channel::None;
     SpecLayer specLayer = SpecLayer::None;
     int opacityTexture = -1;               ///< index into textureFileIds whose R is opacity (legacy-untagged: 2)
     bool premultiplyRgbByAlpha = false;
