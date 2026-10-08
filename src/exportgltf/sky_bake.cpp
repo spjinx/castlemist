@@ -421,9 +421,11 @@ BakeResult make_sky_sampler(const Extractor::MapSky& sky, size_t modeIndex, cons
             res.warnings.push_back("sky cards: flag-2 cards hide while program C is on, which is UNPROVEN; "
                                    "baked as shown (gw2-sky.md §9.4)");
     }
-    if (res.layers.size() > 1)
-        res.warnings.push_back("layer order: hemicube->stars->cards inferred from blend states, UNPROVEN "
-                               "(gw2-sky.md §7)");
+    if (res.layers.size() > 1) {
+        std::string order = "hemicube";
+        for (size_t i = 1; i < res.layers.size(); ++i) order += "->" + res.layers[i];
+        res.warnings.push_back("layer order: " + order + " inferred from blend states, UNPROVEN (gw2-sky.md §7)");
+    }
 
     res.radiance = [sky_out](const float dir[3]) { return sky_out->radiance(dir); };
     res.ok = true;
