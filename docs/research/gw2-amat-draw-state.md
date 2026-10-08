@@ -242,6 +242,32 @@ CONSERVATIVE_RASTER), so it is a fork addition whose meaning is still open.
 | `0x8000` | depth bias -65 |
 | `0x40000` | with instancing, ORs `0x2000000000000` |
 
+## Materials that paint only in a later pass
+
+Not every material paints in pass 0. AMAT 543769 (the Holographic Dawn blade,
+model fileId 2163020) fills its whole pass 0 with depth/StencilId effects
+(`0x9` = no RGB, `0x5` = no colour) and draws the hologram in pass 1: an
+additive `ONE / INV_SRC_COLOR` glow with `0xC051` (force LEQUAL, no depth
+write, no alpha write, depth bias). The opaque render-mode token selects an
+effect in both passes, so the client draws both. A viewer that keeps only pass
+0, or takes a no-RGB effect as the colour shader, draws the blade invisible.
+Census (1500 models / 3168 materials): 11 materials carry a second pass.
+
+Three more things that glow needs, each general:
+
+- **AMAT role 35 (slot 12) is scene depth.** Of the 2271 pixel shaders that
+  sample it in the same census, most linearise it (`d * ScreenDims.w -
+  ScreenDims.z`, minus the pixel's own depth) for a soft-particle fade; the
+  rest use it as a stipple dither against `|fxclr.x - fxclr.w|`. Offline the
+  stand-in is a far depth: the fade reads 1, and with `fxclr = 1` the stipple
+  test gives the same answer as before.
+- **`q` and `v` share a token digit.** The alphabet puts `v` where `q` would
+  sit, so the uniform `stafreq` is fed by a MODL constant that decodes to
+  `stafrev`. Compare names through `canonicalTokenName23`.
+- **Absolute world position matters.** ps 58 fades within ~24 units of
+  `z = 0`. The client parks its preview 10 000 units down Z
+  ([[gw2-preview-render]]); both castlemist views now do the same.
+
 ## Consequence: the vertex buffer needs no repacking
 
 `GrFvf_CreateVertexLayout` (`0x140B9D110`) asserts at BgfxBuffer.cpp:755 that

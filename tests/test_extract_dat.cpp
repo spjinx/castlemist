@@ -493,3 +493,40 @@ CM_TEST(dat, texture_full_prefers_the_high_res_copy) {
     CHECK_EQ(base.width, 512);
     CHECK_EQ(exact_w, 512);
 }
+
+// Holographic Dawn (greatsword skin 8813, model fileId 2163020). Its blade
+// material's AMAT (543769) paints in TWO passes: pass 0 is all depth/StencilId
+// effects (shaderPassFlags 0x9 = no RGB write, or 0x5 = no colour at all) and the
+// hologram itself is pass 1, an additive ONE/INV_SRC_COLOR glow. Picking a pass-0
+// effect as the material's colour shader drew the blade with RGB masked off --
+// invisible in Shader mode. The glow's alpha is a soft-particle fade against the
+// scene depth, and its two `st?freq` constants only bind when the q/v token alias
+// is honoured.
+CM_TEST(dat, hologram_blade_draws_its_glow_pass_with_every_constant_bound) {
+    if (!ensure_template()) SKIP("no gw2_packfile.json struct template");
+    auto pv = load_model_by_fileid(shared_dat(), 2163020);
+    if (!pv) SKIP("model 2163020 did not build on this dat");
+
+    const GameMaterial* blade = nullptr;
+    for (const auto& g : pv->gameMaterials) if (g.index == 0) blade = &g;
+    CHECK(blade != nullptr);
+    if (!blade) return;
+    CHECK(blade->ok);
+    CHECK_EQ(blade->shaderPassFlags & 0x000Cu, 0u);              // can write RGB
+    CHECK_NE((blade->renderState >> 12) & 0xFFFFu, 0ull);        // and blends
+
+    // Its alpha is a soft-particle fade against the scene depth at slot 12 (AMAT
+    // role 35). A grey stand-in made that fade 0 everywhere; it has to read far.
+    bool farDepth = false;
+    for (const auto& smp : blade->samplers) farDepth |= (smp.slot == 12 && smp.global == 4);
+    CHECK(farDepth);
+
+    for (const char* want : {"ghotint", "stafreq", "stbfreq", "stnthr", "stint", "depdist"}) {
+        int off = -1;
+        for (const auto& u : blade->psUniforms) if (u.name == want) off = u.byteOff;
+        bool bound = false;
+        for (const auto& c : blade->psConsts) bound |= (c.byteOff == off);
+        if (off < 0 || !bound) std::fprintf(stderr, "  uniform %s: off=%d bound=%d\n", want, off, (int)bound);
+        CHECK(off >= 0 && bound);
+    }
+}

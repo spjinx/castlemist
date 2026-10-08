@@ -225,7 +225,9 @@ struct GameShaderUniform {
 struct GameSamplerCPU {
     int slot = 0;      ///< The t#/s# register the pixel shader binds this texture to.
     int gameTex = -1;  ///< Index into ModelPreview::textures, or -1 for a global stand-in.
-    int global = 0;    ///< 0 = material texture, 1 = white 1x1, 2 = grey env cubemap.
+    /// 0 = material texture, 1 = grey 1x1 (light buffer / other), 2 = grey env
+    /// cubemap, 3 = white shadow map, 4 = far scene depth (role 35, see game_shader.cpp).
+    int global = 0;
 };
 
 /// @brief A per-material constant written straight into the shader cbuffer.

@@ -1048,7 +1048,7 @@ void cmd_matcensus(const Args& a) {
     std::map<uint32_t, std::vector<uint8_t>> amat_cache;
 
     size_t models = 0, materials = 0, resolved = 0, byToken = 0, byHeuristic = 0;
-    size_t opaque = 0, blended = 0, noShader = 0, noAmat = 0;
+    size_t opaque = 0, blended = 0, noShader = 0, noAmat = 0, noRgb = 0;
     std::map<uint32_t, size_t> passHist, techHist;
     std::map<int, size_t> qualityHist;
 
@@ -1093,6 +1093,7 @@ void cmd_matcensus(const Args& a) {
             qualityHist[set.selectedQuality]++;
             if (set.tokenMatched) ++byToken; else ++byHeuristic;
             if (set.psIndex < 0) ++noShader;
+            else if (set.passFlags & 0x000Cu) ++noRgb;  // picked an effect that cannot paint
             else if (castlemist::model::isBlendState(set.renderState)) ++blended;
             else ++opaque;
         }
@@ -1109,7 +1110,7 @@ void cmd_matcensus(const Args& a) {
                       {"tokenMatchPct", pct(byToken, resolved)}};
     // The calibration target: a real frame's material pass is ~82% blend-disabled.
     j["draw"] = {{"opaque", opaque}, {"blended", blended}, {"noShader", noShader},
-                 {"blendedPct", pct(blended, opaque + blended)}};
+                 {"selectedNoRgb", noRgb}, {"blendedPct", pct(blended, opaque + blended)}};
     json th = json::object(); for (auto& kv : techHist) th[std::to_string(kv.first)] = kv.second;
     json ph = json::object(); for (auto& kv : passHist) ph[std::to_string(kv.first)] = kv.second;
     json qh = json::object(); for (auto& kv : qualityHist) qh[std::to_string(kv.first)] = kv.second;

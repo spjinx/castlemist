@@ -24,6 +24,7 @@
 
 #pragma once
 
+#include <utility>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -283,5 +284,20 @@ AmatSelection amatSelectEffect(const AmatPackage& pkg,
                                uint32_t passIndex,
                                uint64_t materialToken,
                                uint32_t variant);
+
+/// @brief Every pass the client draws for one material, in pass order.
+///
+/// `BgfxDraw_MeshDrawLoop` issues one draw per pass in the surface's range,
+/// each through ::amatSelectEffect, and a pass whose selection fails is
+/// skipped -- that is how a material opts out. Drawing pass 0 alone is wrong
+/// for any material that paints later: AMAT 543769 (the Holographic Dawn
+/// blade) has only depth/StencilId effects in pass 0, and its glow is pass 1.
+///
+/// @return (pass index, selection) for each pass that selects; empty when the
+///         technique index is out of range.
+std::vector<std::pair<uint32_t, AmatSelection>> amatSelectPasses(const AmatPackage& pkg,
+                                                                 int techniqueIndex,
+                                                                 uint64_t materialToken,
+                                                                 uint32_t variant);
 
 } // namespace gw2bgfx

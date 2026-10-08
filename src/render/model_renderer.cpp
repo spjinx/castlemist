@@ -46,20 +46,33 @@ void render_game(ID3D11Buffer* vbUse) {
     Mat4 mvp = mul(model, vp);
     Mat4 wv = mul(model, view);
 
+    // Park the model where the game parks its own preview: 10 000 units down Z,
+    // away from the map (gw2-preview-render.md, `translate(0, y, z*0.85 - 10000)`).
+    // The view takes the inverse, so WorldView, WVP and every pixel of a
+    // position-independent shader are unchanged. What it fixes is the shaders that
+    // read ABSOLUTE world position: AMAT 543769's hologram fades out within ~24
+    // units of z = 0 (sea level), and at the origin that was the whole blade.
+    // Game-shader uniforms only: the reconstruction fallback below keeps `model`.
+    const Vec3 park = kPreviewPark;
+    const Mat4 gWorld = mul(model, translate(park));
+    const Mat4 gView = mul(translate({-park.x, -park.y, -park.z}), view);
+    const Mat4 gVp = mul(gView, proj);
+    const Vec3 gEye = {eye.x + park.x, eye.y + park.y, eye.z + park.z};
+
     // bgfx uniforms are column-major -> store the transpose of each row-major matrix.
     auto pM = [&](const char* n, const Mat4& m) {
         Mat4 t{};
         for (int i = 0; i < 4; i++) for (int j = 0; j < 4; j++) t.m[i * 4 + j] = m.m[j * 4 + i];
         g_game_vals[n] = std::vector<float>(t.m, t.m + 16);
     };
-    pM("World", model); pM("ViewProjection", vp); pM("WorldViewProjection", mvp); pM("WorldView", wv);
+    pM("World", gWorld); pM("ViewProjection", gVp); pM("WorldViewProjection", mvp); pM("WorldView", wv);
     // GW2's SKINNED vertex shaders declare `View` where the plain ones declare
     // `World` (same cbuffer offset). This path prefers a variant that does not
     // read `grbones`, so it normally binds the plain one -- but a material whose
     // every variant is skinned falls back to one that does, and then `View` was
     // simply never supplied. Feeding it costs nothing and removes the hole.
-    pM("View", view);
-    g_game_vals["CameraPosition"] = std::vector<float>{eye.x, eye.y, eye.z, 1};
+    pM("View", gView);
+    g_game_vals["CameraPosition"] = std::vector<float>{gEye.x, gEye.y, gEye.z, 1};
     // ScreenDims = (1/w, 1/h, w, h) -- RECIPROCALS FIRST. Measured directly in the
     // capture: a 1344x756 frame binds (0.000744, 0.001323, 1344, 756) (sample1 eid
     // 1650, cb0[3]).

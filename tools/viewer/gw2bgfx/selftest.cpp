@@ -306,12 +306,47 @@ static void testEffectSelection() {
     CHECK(ns.ok && ns.variant == kVsPlain, "absent skinned -> plain, got %u", ns.variant);
 }
 
+// Every pass the client draws for one material, in pass order. A material can
+// paint nothing in pass 0 and everything in a later pass: AMAT 543769 (the
+// Holographic Dawn blade) has only depth/StencilId effects in pass 0 and its
+// additive glow in pass 1, both answering the opaque render-mode token. Drawing
+// pass 0 alone rendered the blade invisible. A pass that does not carry the
+// token is still skipped -- the default is pass-0-only.
+static void testPassEnumeration() {
+    AmatPackage pkg;
+    pkg.shaders.resize(8);
+    AmatTechnique tech;
+    tech.quality = 805394902u;
+    tech.passes.resize(3);
+    auto makeEffect = [](uint64_t token, uint32_t ps) {
+        AmatEffect e;
+        e.token = token;
+        e.pixelShaderIndex = ps;
+        e.vertexShaderVariants.push_back({kVsPlain, 1});
+        return e;
+    };
+    const uint64_t kOpaque = 0x914C6A8A883B1EEull;
+    tech.passes[0].effects.push_back(makeEffect(kOpaque, 3));
+    tech.passes[1].effects.push_back(makeEffect(kOpaque, 4));
+    tech.passes[2].effects.push_back(makeEffect(AmatTokenChain::kDefault, 5));
+    pkg.techniques.push_back(tech);
+
+    const auto passes = amatSelectPasses(pkg, 0, kOpaque, kVsPlain);
+    CHECK(passes.size() == 2, "expected passes 0 and 1, got %zu", passes.size());
+    if (passes.size() == 2) {
+        CHECK(passes[0].first == 0 && passes[0].second.pixelShaderIndex == 3, "pass 0 first");
+        CHECK(passes[1].first == 1 && passes[1].second.pixelShaderIndex == 4, "pass 1 second");
+    }
+    CHECK(amatSelectPasses(pkg, 5, kOpaque, kVsPlain).empty(), "bad technique -> nothing");
+}
+
 int main() {
     testToken();
     testFvf();
     testVsVariant();
     testDrawState();
     testEffectSelection();
+    testPassEnumeration();
     testDxbcResourceDimensions();
 
     if (g_fail == 0) std::printf("gw2bgfx selftest: all checks passed\n");

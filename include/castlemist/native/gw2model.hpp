@@ -15,6 +15,7 @@
 #ifndef GW2MODEL_HPP
 #define GW2MODEL_HPP
 
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -651,6 +652,22 @@ inline std::string decodeToken23(uint32_t token) {
     std::string out;
     while (v) { out.push_back(kAlpha[v % 23]); v /= 23; }
     return out;
+}
+
+/// @brief A name as its token would decode: lowercase, with `q` read as `v`.
+///
+/// The engine's alphabet carries `v` in the slot alphabetical order gives `q`
+/// ("...p v r s t u w x y"), and its encoder sends both letters to that digit.
+/// A shader uniform spelled with `q` therefore shares its token with the MODL
+/// constant that feeds it, yet ::decodeToken23 can only give back `v`: AMAT
+/// 543769's `stafreq` is fed by token 0xB628D31D, which decodes to `stafrev`.
+/// Compare names through this, never raw, or every `q` uniform stays unbound.
+inline std::string canonicalTokenName23(std::string name) {
+    for (char& ch : name) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        if (ch == 'q') ch = 'v';
+    }
+    return name;
 }
 
 /// @brief Rank an AMAT technique's quality token; higher is better.
@@ -1823,7 +1840,11 @@ public:
                         // blend disabled, mask 15), so drop the blend nibbles and let
                         // the effect be what it really is: opaque.
                         if (psh.alphaIsConstant && blendReadsSrcAlpha(rstate)) rstate &= ~kBgfxBlendMask;
-                        if (spf & kAmatPassNoColor) { /* depth-only pass */ }
+                        // 0x8 (no RGB) paints nothing visible either: what is left of
+                        // the mask is alpha, a StencilId. AMAT 543769 (the Holographic
+                        // Dawn blade) fills its whole pass 0 with 0x9 effects and
+                        // paints only in pass 1; taking one of them drew it invisible.
+                        if (spf & (kAmatPassNoColor | kAmatPassNoRGB)) { /* depth / stencil pass */ }
                         else if (psh.samplesSlot0 && (psh.hasShLighting || !psh.writesNormalEncode))
                             cands.push_back({ps, vs, rstate, spf, ns, psh.hasShLighting, isBlendState(rstate), etok, qrank});
                         if (getenv("AMATDBG")) std::fprintf(stderr,

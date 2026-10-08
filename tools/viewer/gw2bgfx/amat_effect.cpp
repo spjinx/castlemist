@@ -162,4 +162,18 @@ AmatSelection amatSelectEffect(const AmatPackage& pkg,
     return sel;
 }
 
+std::vector<std::pair<uint32_t, AmatSelection>> amatSelectPasses(const AmatPackage& pkg,
+                                                                 int techniqueIndex,
+                                                                 uint64_t materialToken,
+                                                                 uint32_t variant) {
+    std::vector<std::pair<uint32_t, AmatSelection>> out;
+    if (techniqueIndex < 0 || techniqueIndex >= (int)pkg.techniques.size()) return out;
+    const uint32_t passCount = (uint32_t)pkg.techniques[techniqueIndex].passes.size();
+    for (uint32_t p = 0; p < passCount; ++p) {
+        AmatSelection sel = amatSelectEffect(pkg, techniqueIndex, p, materialToken, variant);
+        if (sel.ok) out.emplace_back(p, sel);
+    }
+    return out;
+}
+
 } // namespace gw2bgfx

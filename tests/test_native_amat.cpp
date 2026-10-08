@@ -82,3 +82,20 @@ CM_TEST(amat, effect_token_remap_chain_terminates_at_the_default) {
     // The default maps to itself, which is what stops the walk.
     CHECK_EQ(amatRemapEffectToken(kAmatDefaultEffectToken), kAmatDefaultEffectToken);
 }
+
+// The engine's alphabet has `v` where `q` would sit ("...p v r s t u w x y"), so
+// encoding sends both letters to the same digit and a decode can only ever give
+// `v` back. A shader uniform spelled with `q` and the MODL constant that feeds it
+// are therefore the SAME token even though their names differ. Real pair, from
+// AMAT 543769 ps 58 (Holographic Dawn's glow): the uniform is `stafreq`, the
+// MODL constant token 0xB628D31D decodes to `stafrev`. Matching on raw names left
+// that constant unbound.
+CM_TEST(amat, a_q_in_a_uniform_name_matches_the_v_its_token_decodes_to) {
+    using castlemist::model::canonicalTokenName23;
+    CHECK(decodeToken23(0xB628D31Du) == "stafrev");
+    CHECK(canonicalTokenName23("stafreq") == decodeToken23(0xB628D31Du));
+    CHECK(canonicalTokenName23("stbfreq") == decodeToken23(0xB628D52Eu));
+    // Names already in the alphabet come through unchanged, case folded.
+    CHECK(canonicalTokenName23("envcp") == "envcp");
+    CHECK(canonicalTokenName23("GloOver") == "gloover");
+}
