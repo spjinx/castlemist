@@ -1,10 +1,12 @@
 /// @file
 /// @brief Tests for the sky export: projection writers (face table, equirect,
-///        PNG output) and the sky sampler (docs/research/gw2-sky.md).
+///        PNG output), the sky sampler (docs/research/gw2-sky.md) and the
+///        skybox export folder.
 
 #include "test_framework.h"
 
 #include "castlemist/exportgltf/sky_bake.h"
+#include "castlemist/exportgltf/sky_export.h"
 #include "castlemist/exportgltf/sky_project.h"
 
 #include <algorithm>
@@ -12,6 +14,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -500,4 +503,299 @@ CM_TEST(skybake, unproven_layers_are_warned_not_baked) {
     CHECK(make_sky_sampler(dayHaze, 1, tex).warnings.empty());
     // A map without those layers gets no such warnings.
     CHECK(make_sky_sampler(plain, 0, tex).warnings.empty());
+}
+
+// ---------------------------------------------------------------------------
+// Skybox export, pure stage: hand-built SkyInputs, output under the temp dir.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+namespace fs = std::filesystem;
+
+/// A fresh, empty parent folder for one test.
+fs::path export_parent(const char* test) {
+    fs::path p = fs::temp_directory_path() / "cm_test_skyexport" / test;
+    fs::remove_all(p);
+    fs::create_directories(p);
+    return p;
+}
+
+bool png_size(const fs::path& p, int& w, int& h) {
+    int comp = 0;
+    return stbi_info(p.string().c_str(), &w, &h, &comp) != 0;
+}
+
+nlohmann::json read_json(const fs::path& p) {
+    std::ifstream f(p);
+    return nlohmann::json::parse(f, nullptr, false);
+}
+
+bool any_contains(const nlohmann::json& arr, const std::string& needle) {
+    if (!arr.is_array()) return false;
+    for (const auto& w : arr)
+        if (w.is_string() && w.get<std::string>().find(needle) != std::string::npos) return true;
+    return false;
+}
+
+/// One panorama mode (NE/SW/T = 11/12/13), all three decoded (8x8).
+SkyInputs panorama_inputs() {
+    SkyInputs in;
+    in.sky = one_mode_sky();
+    in.sky.envVersion = 76;
+    in.textures[kNE] = solid(8, 200, 100, 50, 255);
+    in.textures[kSW] = solid(8, 50, 100, 200, 255);
+    in.textures[kT] = solid(8, 255, 255, 255, 255);
+    in.mapFileId = 999;
+    return in;
+}
+
+constexpr uint32_t kCube = 100;   // cube faces 100..105, stored order E W N S B T
+
+SkyInputs cube_inputs() {
+    SkyInputs in;
+    in.sky.present = true;
+    MapSkyMode m;
+    for (uint32_t i = 0; i < 6; ++i) {
+        m.cube[i] = kCube + i;
+        in.textures[kCube + i] = solid(8, static_cast<uint8_t>(40 * i), 0, 0, 255);
+    }
+    in.sky.modes.push_back(m);
+    return in;
+}
+
+const char* const kFaceFiles[] = {"px", "nx", "py", "ny", "pz", "nz"};
+
+} // namespace
+
+CM_TEST(skyexport, mode_names) {
+    CHECK_EQ(mode_name(0), std::string("day"));
+    CHECK_EQ(mode_name(1), std::string("night"));
+    CHECK_EQ(mode_name(2), std::string("mode2"));
+    CHECK_EQ(mode_name(3), std::string("mode3"));
+}
+
+CM_TEST(skyexport, no_sky_writes_nothing) {
+    fs::path parent = export_parent("no_sky");
+    SkyInputs in;   // sky.present == false
+    SkyExportReport r = write_skybox(in, parent.string(), "Sky");
+    CHECK_FALSE(r.ok);
+    CHECK_EQ(r.error, std::string("no sky"));
+    CHECK_FALSE(fs::exists(parent / "Sky"));
+
+    // present, but no mode has a whole panorama or cube
+    in.sky.present = true;
+    in.sky.modes.resize(2);
+    in.sky.modes[0].ne = 5;
+    r = write_skybox(in, parent.string(), "Sky");
+    CHECK_FALSE(r.ok);
+    CHECK_EQ(r.error, std::string("no sky"));
+    CHECK_FALSE(fs::exists(parent / "Sky"));
+    fs::remove_all(parent);
+}
+
+CM_TEST(skyexport, panorama_mode_writes_baked_files) {
+    fs::path parent = export_parent("panorama");
+    SkyExportOptions opt;
+    opt.faceSize = 16;
+    opt.equirectWidth = 32;
+    SkyExportReport r = write_skybox(panorama_inputs(), parent.string(), "Sky", opt);
+    CHECK(r.ok);
+    CHECK_EQ(r.modesWritten, 1);
+    CHECK_EQ(r.rawSkyboxes, 0);
+    CHECK(fs::path(r.folder) == parent / "Sky");
+    fs::path day = parent / "Sky" / "day";
+    int w = 0, h = 0;
+    CHECK(png_size(day / "baked" / "equirect.png", w, h));
+    CHECK_EQ(w, 32);
+    CHECK_EQ(h, 16);
+    for (const char* f : kFaceFiles) {
+        w = h = 0;
+        CHECK(png_size(day / "baked" / (std::string(f) + ".png"), w, h));
+        CHECK_EQ(w, 16);
+        CHECK_EQ(h, 16);
+    }
+    CHECK_FALSE(fs::exists(day / "skybox"));
+
+    nlohmann::json j = read_json(parent / "Sky" / "sky.json");
+    CHECK(j.is_object());
+    CHECK_EQ(j["map"].get<int>(), 999);
+    CHECK_EQ(j["envVersion"].get<int>(), 76);
+    CHECK_EQ(j["modes"].size(), size_t(1));
+    const auto& m = j["modes"][0];
+    CHECK_EQ(m["name"].get<std::string>(), std::string("day"));
+    CHECK(m["aliasOf"].is_null());
+    CHECK(m["baked"].get<bool>());
+    CHECK_FALSE(m["skybox"].get<bool>());
+    CHECK(m["layers"] == nlohmann::json::array({"base"}));
+    CHECK_EQ(m["sources"]["ne"].get<int>(), int(kNE));
+    CHECK_EQ(m["sources"]["sw"].get<int>(), int(kSW));
+    CHECK_EQ(m["sources"]["top"].get<int>(), int(kT));
+    CHECK(m["sources"]["cube"].is_null());
+    CHECK_EQ(m["unitySlots"]["px"].get<std::string>(), std::string("_LeftTex"));
+    CHECK(m["sun"].is_null());   // no env light in these inputs
+    CHECK(j["warnings"].is_array());
+    fs::remove_all(parent);
+}
+
+CM_TEST(skyexport, day_mode_carries_the_env_sun) {
+    fs::path parent = export_parent("sun");
+    SkyInputs in = panorama_inputs();
+    in.sky.modes.push_back(in.sky.modes[0]);
+    in.sky.modes[1].ne = kSW;   // night differs from day
+    in.daySun.present = true;
+    in.daySun.sunDir[0] = 0; in.daySun.sunDir[1] = 0; in.daySun.sunDir[2] = -1;   // GW2 up
+    in.daySun.sunColor[0] = 1; in.daySun.sunColor[1] = 0.5f; in.daySun.sunColor[2] = 0.25f;
+    in.daySun.sunIntensity = 2.0f;
+    SkyExportReport r = write_skybox(in, parent.string(), "Sky", SkyExportOptions{8, 16});
+    CHECK(r.ok);
+    nlohmann::json j = read_json(parent / "Sky" / "sky.json");
+    const auto& sun = j["modes"][0]["sun"];
+    CHECK(sun.is_object());
+    CHECK_NEAR(sun["direction"][0].get<float>(), 0.0f, 1e-6f);
+    CHECK_NEAR(sun["direction"][1].get<float>(), 1.0f, 1e-6f);   // Unity up
+    CHECK_NEAR(sun["direction"][2].get<float>(), 0.0f, 1e-6f);
+    CHECK_NEAR(sun["color"][1].get<float>(), 0.5f, 1e-6f);
+    CHECK_NEAR(sun["intensity"].get<float>(), 2.0f, 1e-6f);
+    CHECK(j["modes"][1]["sun"].is_null());
+    fs::remove_all(parent);
+}
+
+CM_TEST(skyexport, cube_mode_writes_raw_faces) {
+    fs::path parent = export_parent("cube");
+    SkyExportReport r = write_skybox(cube_inputs(), parent.string(), "Sky", SkyExportOptions{16, 32});
+    CHECK(r.ok);
+    CHECK_EQ(r.rawSkyboxes, 1);
+    CHECK_EQ(r.modesWritten, 1);
+    fs::path day = parent / "Sky" / "day";
+    for (const char* f : kFaceFiles) {
+        int w = 0, h = 0;
+        CHECK(png_size(day / "skybox" / (std::string(f) + ".png"), w, h));
+        CHECK_EQ(w, 8);
+        CHECK_EQ(h, 8);
+    }
+    // gw2-sky.md §6: E->px W->nx N->pz S->nz B->ny T->py, pixels untouched.
+    const std::pair<const char*, int> expect[] = {
+        {"px", 0}, {"nx", 1}, {"pz", 2}, {"nz", 3}, {"ny", 4}, {"py", 5}};
+    for (const auto& [f, stored] : expect) {
+        int w = 0, h = 0, comp = 0;
+        std::string path = (day / "skybox" / (std::string(f) + ".png")).string();
+        unsigned char* px = stbi_load(path.c_str(), &w, &h, &comp, 4);
+        CHECK(px != nullptr);
+        if (!px) continue;
+        CHECK_EQ(int(px[0]), 40 * stored);
+        stbi_image_free(px);
+    }
+    CHECK_FALSE(fs::exists(day / "baked"));   // cube-only: nothing to bake
+    nlohmann::json j = read_json(parent / "Sky" / "sky.json");
+    CHECK(j["modes"][0]["skybox"].get<bool>());
+    CHECK_FALSE(j["modes"][0]["baked"].get<bool>());
+    CHECK_EQ(j["modes"][0]["sources"]["cube"]["E"].get<int>(), int(kCube));
+    CHECK_EQ(j["modes"][0]["sources"]["cube"]["T"].get<int>(), int(kCube + 5));
+    CHECK_EQ(j["modes"][0]["warnings"].size(), size_t(1));   // one note, no bake flood
+    fs::remove_all(parent);
+}
+
+CM_TEST(skyexport, duplicate_modes_alias) {
+    fs::path parent = export_parent("alias");
+    SkyInputs in = panorama_inputs();
+    in.sky.modes.resize(4, in.sky.modes[0]);
+    in.sky.modes[1].ne = kSW;             // night and mode2 differ from day
+    in.sky.modes[2].sw = kNE;
+    const SkyExportOptions opt{8, 16};
+    SkyExportReport r = write_skybox(in, parent.string(), "Sky", opt);
+    CHECK(r.ok);
+    CHECK_EQ(r.modesWritten, 3);
+    CHECK_FALSE(fs::exists(parent / "Sky" / "mode3"));
+    CHECK(fs::exists(parent / "Sky" / "mode2" / "baked" / "equirect.png"));
+    nlohmann::json j = read_json(parent / "Sky" / "sky.json");
+    CHECK_EQ(j["modes"].size(), size_t(4));
+    CHECK_EQ(j["modes"][3]["aliasOf"].get<std::string>(), std::string("day"));
+    CHECK(j["modes"][2]["aliasOf"].is_null());
+    CHECK(any_contains(j["warnings"], "mode2/mode3"));
+
+    // Same textures but a different Brightness (mode 3 uses night*): no alias.
+    in.sky.params.nightBrightness = 0.5f;
+    r = write_skybox(in, parent.string(), "Sky", opt);
+    CHECK(r.ok);
+    CHECK_EQ(r.modesWritten, 4);
+    CHECK(fs::exists(parent / "Sky" / "mode3" / "baked" / "equirect.png"));
+    j = read_json(parent / "Sky" / "sky.json");
+    CHECK(j["modes"][3]["aliasOf"].is_null());
+    fs::remove_all(parent);
+}
+
+CM_TEST(skyexport, missing_layer_is_warned) {
+    fs::path parent = export_parent("missing");
+    SkyInputs in = panorama_inputs();
+    in.sky.modes.push_back(in.sky.modes[0]);
+    in.sky.modes[0].ne = 4242;            // day's NE never decoded
+    in.decodeWarnings.push_back("fileId 4242: not a decodable texture");
+    SkyExportReport r = write_skybox(in, parent.string(), "Sky", SkyExportOptions{8, 16});
+    CHECK(r.ok);
+    CHECK_EQ(r.modesWritten, 1);
+    CHECK_FALSE(fs::exists(parent / "Sky" / "day"));
+    CHECK(fs::exists(parent / "Sky" / "night" / "baked" / "equirect.png"));
+    nlohmann::json j = read_json(parent / "Sky" / "sky.json");
+    CHECK_FALSE(j["modes"][0]["baked"].get<bool>());
+    CHECK(any_contains(j["modes"][0]["warnings"], "4242"));
+    CHECK(j["modes"][1]["baked"].get<bool>());
+    CHECK(any_contains(j["warnings"], "fileId 4242"));
+    bool reported = false;
+    for (const std::string& w : r.warnings)
+        if (w.find("4242") != std::string::npos) reported = true;
+    CHECK(reported);
+    fs::remove_all(parent);
+}
+
+CM_TEST(skyexport, warnings_are_deduplicated) {
+    fs::path parent = export_parent("dedup");
+    SkyInputs in = panorama_inputs();
+    in.sky.starFile = 187544;             // stars: UNPROVEN, warned by every mode
+    in.sky.modes.push_back(in.sky.modes[0]);
+    in.sky.modes[1].ne = kSW;
+    in.decodeWarnings = {"fileId 187544: not a decodable texture",
+                         "fileId 187544: not a decodable texture"};
+    SkyExportReport r = write_skybox(in, parent.string(), "Sky", SkyExportOptions{8, 16});
+    CHECK(r.ok);
+    nlohmann::json j = read_json(parent / "Sky" / "sky.json");
+    CHECK_EQ(j["warnings"].size(), size_t(1));
+    CHECK(any_contains(j["modes"][0]["warnings"], "stars"));
+    CHECK(any_contains(j["modes"][1]["warnings"], "stars"));
+    std::vector<std::string> sorted = r.warnings;
+    std::sort(sorted.begin(), sorted.end());
+    CHECK(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end());
+    fs::remove_all(parent);
+}
+
+CM_TEST(skyexport, overwrites_existing_folder) {
+    fs::path parent = export_parent("overwrite");
+    fs::path stale = parent / "Sky" / "day" / "skybox" / "stale.png";
+    fs::create_directories(stale.parent_path());
+    { std::ofstream(stale) << "old"; }
+    SkyExportReport r = write_skybox(panorama_inputs(), parent.string(), "Sky", SkyExportOptions{8, 16});
+    CHECK(r.ok);
+    CHECK_FALSE(fs::exists(stale));
+    CHECK_FALSE(fs::exists(parent / "Sky" / "day" / "skybox"));
+    CHECK(fs::exists(parent / "Sky" / "day" / "baked" / "equirect.png"));
+    fs::remove_all(parent);
+}
+
+CM_TEST(skyexport, report_json_fields) {
+    SkyExportReport r;
+    r.ok = true;
+    r.folder = "C:/x/Sky";
+    r.modesWritten = 2;
+    r.rawSkyboxes = 1;
+    r.warnings = {"a"};
+    nlohmann::json j = report_json(r);
+    CHECK(j["ok"].get<bool>());
+    CHECK_EQ(j["folder"].get<std::string>(), std::string("C:/x/Sky"));
+    CHECK_EQ(j["modesWritten"].get<int>(), 2);
+    CHECK_EQ(j["rawSkyboxes"].get<int>(), 1);
+    CHECK_EQ(j["warnings"].size(), size_t(1));
+    CHECK(j["error"].is_null());
+    r.ok = false;
+    r.error = "no sky";
+    CHECK_EQ(report_json(r)["error"].get<std::string>(), std::string("no sky"));
 }
