@@ -117,20 +117,24 @@ const toMapSpace = (mThree, local4) => mat4Mul(mat4Mul(A4, mThree), local4).map(
 
 // ---------------------------------------------------------------- terrain
 
-// after spjinx/t3d TerrainRenderer.ts:18-36 (getChunkResolution).
+// Segments per chunk side and stored samples per side. T3D uses the trn's
+// verticesPerChunkSide when the stored sample count is (side+3)^2 per chunk,
+// and otherwise its legacy 32 segments / 35 samples
+// (after spjinx/t3d TerrainRenderer.ts:15-36, getChunkResolution).
 function chunkResolution(trn, warnings) {
-    const LEGACY_SEGMENTS = 32;
-    const preferred = trn.verticesPerChunkSide ?? LEGACY_SEGMENTS;
-    const chunkCount = trn.chunkArray.length;
-    const samplesPerChunk = chunkCount > 0 ? trn.heightMapArray.length / chunkCount : 0;
+    const LEGACY = 32;
+    const side = trn.verticesPerChunkSide ?? LEGACY;
+    const count = trn.chunkArray.length;
     if (trn.verticesPerChunkSide === undefined) {
         warnings.push("trn has no verticesPerChunkSide; T3D uses its legacy 32 segments / 35 samples (TerrainRenderer.ts:15-19)");
     }
-    if (samplesPerChunk === (preferred + 3) * (preferred + 3)) {
-        return { segments: preferred, sampleWidth: preferred + 3 };
+    const fits = count > 0 && trn.heightMapArray.length === (side + 3) * (side + 3) * count;
+    if (!fits) {
+        const perChunk = count > 0 ? trn.heightMapArray.length / count : 0;
+        warnings.push(`trn samples per chunk ${perChunk} != (${side}+3)^2; T3D falls back to 32/35 (TerrainRenderer.ts:32-35)`);
     }
-    warnings.push(`trn samples per chunk ${samplesPerChunk} != (${preferred}+3)^2; T3D falls back to 32/35 (TerrainRenderer.ts:32-35)`);
-    return { segments: LEGACY_SEGMENTS, sampleWidth: LEGACY_SEGMENTS + 3 };
+    const segments = fits ? side : LEGACY;
+    return { segments, sampleWidth: segments + 3 };
 }
 
 // Reproduces TerrainRenderer.loadPagedImageCallback's chunk placement and the
@@ -175,10 +179,8 @@ function buildTerrain(trn, parm, warnings) {
             // TerrainRenderer.ts:484-502: chunk centre. Y offset depends on
             // whether numChunksD_2 is even (rect[1] + cdy/2) or odd
             // (rect[1] - cdy/2); T3D does not explain this.
-            const posX = rect[0] + cdx / 2 + cx * cdx;
-            const posZ = yChunks % 2 === 0
-                ? cy * cdy * 1 + (rect[1] + cdy / 2 - 0)
-                : (rect[1] - cdy / 2 + 0) + cy * cdy * 1;
+            const posX = rect[0] + (cx + 0.5) * cdx;
+            const posZ = rect[1] + (cy + (yChunks % 2 === 0 ? 0.5 : -0.5)) * cdy;
 
             // TerrainRenderer.ts:504-520 (mapRect).
             const x1 = posX - cdx / 2, x2 = posX + cdx / 2, z1 = posZ - cdy / 2, z2 = posZ + cdy / 2;
@@ -211,36 +213,32 @@ function buildTerrain(trn, parm, warnings) {
     return { segments, sampleWidth, xChunks, yChunks, cdx, cdy, chunks, bounds, originX, originZ };
 }
 
-// after spjinx/t3d TerrainRenderer.ts:85-117 (sampleTerrainHeightChunk).
-function sampleChunk(chunk, x, z) {
-    const width = chunk.maxX - chunk.minX;
-    const depth = chunk.maxZ - chunk.minZ;
-    if (width <= 0 || depth <= 0) return null;
-    const u = (x - chunk.minX) / width;
-    const v = (z - chunk.minZ) / depth;
-    if (u < 0 || u > 1 || v < 0 || v > 1) return null;
-    const colF = Math.max(0, Math.min(chunk.columns - 1, u * (chunk.columns - 1)));
-    const rowF = Math.max(0, Math.min(chunk.rows - 1, v * (chunk.rows - 1)));
-    const c0 = Math.floor(colF), r0 = Math.floor(rowF);
-    const c1 = Math.min(chunk.columns - 1, c0 + 1), r1 = Math.min(chunk.rows - 1, r0 + 1);
-    const tx = colF - c0, ty = rowF - r0;
-    const h = chunk.heights, w = chunk.columns;
-    const hx0 = h[r0 * w + c0] + (h[r0 * w + c1] - h[r0 * w + c0]) * tx;
-    const hx1 = h[r1 * w + c0] + (h[r1 * w + c1] - h[r1 * w + c0]) * tx;
-    return hx0 + (hx1 - hx0) * ty;
-}
+// Height at three.js (x, z), or null off the terrain: pick the chunk cell
+// holding the point (counted from the sampler origin, clamped to the last
+// chunk), then interpolate bilinearly in that chunk's inner height grid,
+// whose corners sit on the chunk's min/max X and Z
+// (after spjinx/t3d TerrainRenderer.ts:85-148, the terrain height sampler).
+const lerp = (a, b, t) => a + (b - a) * t;
 
-// after spjinx/t3d TerrainRenderer.ts:129-148 (createTerrainHeightSampler):
-// three.js (x, z) -> three.js Y, or null outside the terrain.
 function sampleTerrain(t, x, z) {
     const lx = x - t.originX, lz = z - t.originZ;
     if (lx < 0 || lz < 0) return null;
-    const cx = Math.min(t.xChunks - 1, Math.floor(lx / t.cdx));
-    const cz = Math.min(t.yChunks - 1, Math.floor(lz / t.cdy));
-    if (cx < 0 || cx >= t.xChunks || cz < 0 || cz >= t.yChunks) return null;
-    const chunk = t.chunks[cz * t.xChunks + cx];
-    if (!chunk) return null;
-    return sampleChunk(chunk, x, z);
+    const chunk = t.chunks[Math.min(t.yChunks - 1, Math.floor(lz / t.cdy)) * t.xChunks +
+                           Math.min(t.xChunks - 1, Math.floor(lx / t.cdx))];
+    if (!chunk || chunk.maxX <= chunk.minX || chunk.maxZ <= chunk.minZ) return null;
+
+    // Fraction across the chunk; outside [0, 1] means the point is not on it.
+    const u = (x - chunk.minX) / (chunk.maxX - chunk.minX);
+    const v = (z - chunk.minZ) / (chunk.maxZ - chunk.minZ);
+    if (!(u >= 0 && u <= 1 && v >= 0 && v <= 1)) return null;
+
+    // Grid coordinates; u, v in [0, 1] keep them inside the grid.
+    const last = chunk.columns - 1;
+    const gx = u * last, gz = v * (chunk.rows - 1);
+    const i = Math.floor(gx), j = Math.floor(gz);
+    const i1 = Math.min(last, i + 1), j1 = Math.min(chunk.rows - 1, j + 1);
+    const at = (col, row) => chunk.heights[row * chunk.columns + col];
+    return lerp(lerp(at(i, j), at(i1, j), gx - i), lerp(at(i, j1), at(i1, j1), gx - i), gz - j);
 }
 
 // Map-space height at map (x, y): T3D samples three.js (X = x, Z = -y) and
