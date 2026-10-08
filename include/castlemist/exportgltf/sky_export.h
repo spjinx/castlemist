@@ -35,7 +35,10 @@ namespace castlemist::exportgltf::sky {
 /// Everything write_skybox() needs, read from the dat.
 struct SkyInputs {
     castlemist::model::Extractor::MapSky sky;
-    TextureMap textures;                          ///< every fileId the sky names that decoded
+    TextureMap textures;                          ///< every fileId the sky names that decoded, star atlas included
+    /// The `starFile` packfile's STAR chunk (gw2-sky.md §8.2); not present
+    /// when the map has no star file or it could not be read.
+    castlemist::model::Extractor::MapStars stars;
     std::vector<std::string> decodeWarnings;      ///< "fileId N: not a decodable texture"
     /// parseMapEnv() with the auto (brightest) preset. Only the "day" mode
     /// gets it: no proven link ties the 3 lighting presets to the sky modes.

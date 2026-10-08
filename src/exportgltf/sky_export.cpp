@@ -5,6 +5,8 @@
 #include "castlemist/exportgltf/sky_export.h"
 
 #include "castlemist/extract/entry_extractor.h"
+#include "castlemist/format/dds.h"
+#include "castlemist/native/cmp_decompress_method0.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -31,17 +33,33 @@ bool any_cube(const Extractor::MapSkyMode& m) {
     return std::any_of(std::begin(m.cube), std::end(m.cube), [](uint32_t f) { return f != 0; });
 }
 
-/// gw2-sky.md §5: modes 0/2 draw with dayBrightness, 1/3 with nightBrightness.
-float mode_brightness(const Extractor::MapSkyParams& p, size_t i) {
-    return i % 2 ? p.nightBrightness : p.dayBrightness;
+bool same_card_attr(const Extractor::MapSkyCardAttr& a, const Extractor::MapSkyCardAttr& b) {
+    return a.texture == b.texture && a.azimuth == b.azimuth && a.latitude == b.latitude &&
+           a.density == b.density && a.hazeDensity == b.hazeDensity && a.minHaze == b.minHaze &&
+           a.lightIntensity == b.lightIntensity && a.brightness == b.brightness &&
+           std::equal(std::begin(a.scale), std::end(a.scale), std::begin(b.scale)) &&
+           std::equal(std::begin(a.textureUV), std::end(a.textureUV), std::begin(b.textureUV));
 }
 
-/// Mode @p j repeats mode @p i: same textures and the same Brightness.
+/// gw2-sky.md §3: modes 0/2 use the day attribute set (sky params, stars,
+/// cards), 1/3 the night set. Two modes from different sets bake alike only
+/// when the day and night values the bake reads agree.
+bool same_attribute_set(const Extractor::MapSky& s, size_t i, size_t j) {
+    if (i % 2 == j % 2) return true;
+    const Extractor::MapSkyParams& p = s.params;
+    if (p.dayBrightness != p.nightBrightness || p.dayStarDensity != p.nightStarDensity ||
+        p.dayHazeBottom != p.nightHazeBottom || p.dayHazeFalloff != p.nightHazeFalloff ||
+        p.dayHazeDensity != p.nightHazeDensity || p.dayLightIntensity != p.nightLightIntensity)
+        return false;
+    return std::all_of(s.cards.begin(), s.cards.end(),
+                       [](const Extractor::MapSkyCard& c) { return same_card_attr(c.day, c.night); });
+}
+
+/// Mode @p j repeats mode @p i: same textures and the same attribute set.
 bool same_mode(const Extractor::MapSky& s, size_t i, size_t j) {
     const Extractor::MapSkyMode &a = s.modes[i], &b = s.modes[j];
     return a.ne == b.ne && a.sw == b.sw && a.top == b.top &&
-           std::equal(std::begin(a.cube), std::end(a.cube), std::begin(b.cube)) &&
-           mode_brightness(s.params, i) == mode_brightness(s.params, j);
+           std::equal(std::begin(a.cube), std::end(a.cube), std::begin(b.cube)) && same_attribute_set(s, i, j);
 }
 
 json id_or_null(uint32_t id) { return id ? json(id) : json(nullptr); }
@@ -55,17 +73,25 @@ json mode_sources(const Extractor::MapSky& s, const Extractor::MapSkyMode& m) {
     json clouds = json::array();
     for (const auto& l : s.clouds)
         if (l.texture) clouds.push_back(l.texture);
-    // Which of a card's day/night attribute sets a mode uses is UNPROVEN
-    // (gw2-sky.md §3), so every card texture is listed.
-    json cards = json::array();
-    std::unordered_set<uint32_t> seen;
-    for (const auto& c : s.cards)
-        for (uint32_t t : {c.day.texture, c.night.texture})
-            if (t && seen.insert(t).second) cards.push_back(t);
-    return json{{"ne", id_or_null(m.ne)},     {"sw", id_or_null(m.sw)},
-                {"top", id_or_null(m.top)},   {"cube", cube},
-                {"stars", id_or_null(s.starFile)}, {"clouds", clouds},
-                {"cards", cards}};
+    // Stars and cards are listed as the bake used them (baked_sources).
+    return json{{"ne", id_or_null(m.ne)},   {"sw", id_or_null(m.sw)}, {"top", id_or_null(m.top)},
+                {"cube", cube},             {"stars", nullptr},       {"clouds", clouds},
+                {"cards", json::array()}};
+}
+
+/// The star file / atlas and card textures a bake actually used.
+void baked_sources(const BakeResult& b, json& sources) {
+    if (b.starFile) sources["stars"] = json{{"file", b.starFile}, {"atlas", b.starAtlas}};
+    sources["cards"] = b.cardTextures;
+}
+
+/// Decompressed bytes of the entry @p fileId names; empty if it has none.
+std::vector<uint8_t> file_bytes(Gw2Dat& dat, uint32_t fileId) {
+    const uint32_t base = get_by_base_id(dat, fileId);
+    if (base == 0 || base > dat.mft_data_list.size()) return {};
+    const MftData& e = dat.mft_data_list[base - 1];
+    std::vector<uint8_t> raw = read_entry_bytes(dat.file_info.file_path, e);
+    return e.compression_flag ? castlemist::cmp::decompress_entry(raw) : raw;
 }
 
 json sun_json(const Extractor::MapEnvLight& l) {
@@ -128,7 +154,6 @@ SkyInputs load_sky_inputs(Gw2Dat& dat, const std::vector<uint8_t>& mapBytes, con
         add(m.top);
         for (uint32_t f : m.cube) add(f);
     }
-    add(in.sky.starFile);
     for (const auto& l : in.sky.clouds) add(l.texture);
     for (const auto& c : in.sky.cards) {
         add(c.day.texture);
@@ -148,6 +173,40 @@ SkyInputs load_sky_inputs(Gw2Dat& dat, const std::vector<uint8_t>& mapBytes, con
             in.textures.emplace(id, std::move(img));
         else
             in.decodeWarnings.push_back("fileId " + std::to_string(id) + ": not a decodable texture");
+    }
+
+    // gw2-sky.md §8.2: starFile is a PF packfile (chunk STAR), not a texture.
+    // Its atlas is the chunk's own filename -- the reference the game loads
+    // (0x140a763f0) -- and a plain DDS the ATEX decoder does not read.
+    if (const uint32_t sf = in.sky.starFile) {
+        try {
+            std::vector<uint8_t> bytes = file_bytes(dat, sf);
+            if (!bytes.empty()) in.stars = Extractor(bytes, tpl).parseStars();
+        } catch (const std::exception&) {
+            in.stars = {};
+        }
+        if (!in.stars.present) {
+            in.decodeWarnings.push_back("fileId " + std::to_string(sf) + ": not a STAR packfile");
+        } else if (const uint32_t at = in.stars.atlas) {
+            Image img;
+            try {
+                std::vector<uint8_t> bytes = file_bytes(dat, at);
+                uint32_t w = 0, h = 0;
+                if (castlemist::dds::decode_rgba8(bytes.data(), bytes.size(), w, h, img.rgba)) {
+                    img.width = static_cast<int>(w);
+                    img.height = static_cast<int>(h);
+                } else {
+                    ModelTextureCPU t;   // not a plain DDS: try the texture decoder
+                    if (decode_texture_rgba(dat, at, t)) img = Image{t.width, t.height, std::move(t.rgba)};
+                }
+            } catch (const std::exception&) {
+                img = {};
+            }
+            if (image_ok(img))
+                in.textures.emplace(at, std::move(img));
+            else
+                in.decodeWarnings.push_back("fileId " + std::to_string(at) + ": star atlas not decodable");
+        }
     }
     return in;
 }
@@ -187,7 +246,8 @@ SkyExportReport write_skybox(const SkyInputs& in, const std::string& parentDir, 
     for (size_t j = 0; j < s.modes.size(); ++j) {
         const Extractor::MapSkyMode& m = s.modes[j];
         const std::string mname = mode_name(j);
-        json mj = {{"name", mname}, {"aliasOf", nullptr}, {"sources", mode_sources(s, m)}};
+        json mj = {{"name", mname}, {"aliasOf", nullptr}, {"sources", mode_sources(s, m)},
+                   {"skyDistance", s.skyDistance}};
         mj["sun"] = (j == 0 && in.daySun.present) ? sun_json(in.daySun) : json(nullptr);
 
         if (has_content(m)) {
@@ -237,11 +297,12 @@ SkyExportReport write_skybox(const SkyInputs& in, const std::string& parentDir, 
             push_unique(warns, mname + ": cube sky incomplete (a face is null); skybox not written");
         }
 
-        // Bake of the hemicube (gw2-sky.md §2, §5).
+        // Bake: hemicube (gw2-sky.md §2, §5), stars (§8), texture cards (§9).
         if (m.hasPanorama()) {
-            BakeResult b = make_sky_sampler(s, j, in.textures);
+            BakeResult b = make_sky_sampler(s, j, in.textures, &in.stars);
             for (const std::string& w : b.warnings) push_unique(warns, w);
             if (b.ok) {
+                baked_sources(b, mj["sources"]);
                 baked = write(render_equirect(b.radiance, eqW, eqH), dir / "baked" / "equirect.png");
                 for (Face f : kFaces)
                     baked = write(render_face(b.radiance, f, faceSize),

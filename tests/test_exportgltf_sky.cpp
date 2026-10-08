@@ -1084,6 +1084,46 @@ CM_TEST(skyexport, duplicate_modes_alias) {
     fs::remove_all(parent);
 }
 
+CM_TEST(skyexport, sky_json_lists_baked_star_and_card_sources) {
+    fs::path parent = export_parent("sources");
+    SkyInputs in = panorama_inputs();
+    in.sky.modes.push_back(in.sky.modes[0]);
+    in.sky.skyDistance = 36864;
+    in.sky.starFile = kStarFile;
+    in.sky.params.nightStarDensity = 1;   // stars at night only
+    in.stars = one_star(1.0f, 0.5f, 0.125f);
+    in.textures[kAtlas] = solid(16, 255, 255, 255, 255);
+    MapSkyCard c;
+    c.day.texture = kCardDay;
+    c.day.density = 1;
+    c.day.brightness = 1;
+    c.day.scale[0] = c.day.scale[1] = 1;
+    c.night = c.day;
+    c.night.texture = kCardNight;
+    in.sky.cards.push_back(c);
+    in.textures[kCardDay] = solid(8, 255, 0, 0, 255);
+    in.textures[kCardNight] = solid(8, 0, 0, 255, 255);
+    SkyExportReport r = write_skybox(in, parent.string(), "Sky", SkyExportOptions{8, 16});
+    CHECK(r.ok);
+    // Same hemicube and Brightness, but night has stars and its own card: no alias.
+    CHECK_EQ(r.modesWritten, 2);
+    nlohmann::json j = read_json(parent / "Sky" / "sky.json");
+    const auto& day = j["modes"][0];
+    const auto& night = j["modes"][1];
+    CHECK(night["aliasOf"].is_null());
+    CHECK_EQ(day["skyDistance"].get<float>(), 36864.0f);
+    CHECK(day["layers"] == nlohmann::json::array({"base", "cards"}));
+    CHECK(night["layers"] == nlohmann::json::array({"base", "stars", "cards"}));
+    CHECK(day["sources"]["stars"].is_null());
+    CHECK_EQ(night["sources"]["stars"]["file"].get<int>(), int(kStarFile));
+    CHECK_EQ(night["sources"]["stars"]["atlas"].get<int>(), int(kAtlas));
+    CHECK(day["sources"]["cards"] == nlohmann::json::array({kCardDay}));
+    CHECK(night["sources"]["cards"] == nlohmann::json::array({kCardNight}));
+    CHECK(any_contains(day["warnings"], "seams: 1.4-texel inset"));
+    CHECK(any_contains(night["warnings"], "layer order"));
+    fs::remove_all(parent);
+}
+
 CM_TEST(skyexport, missing_layer_is_warned) {
     fs::path parent = export_parent("missing");
     SkyInputs in = panorama_inputs();
