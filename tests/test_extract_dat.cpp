@@ -18,12 +18,18 @@
 
 #include "test_framework.h"
 
+#include "castlemist/exportgltf/sky_export.h"
 #include "castlemist/extract/entry_extractor.h"
 #include "castlemist/format/struct_template.h"
+#include "castlemist/native/cmp_decompress_method0.hpp"
 #include "castlemist/native/gw2model.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 
@@ -94,6 +100,26 @@ ExtractedEntry extract_base(uint32_t base_id) {
     Gw2Dat& dat = shared_dat();
     if (base_id == 0 || base_id - 1 >= dat.mft_data_list.size()) SKIP("baseId out of range for this dat");
     return extract_entry(dat, base_id - 1);
+}
+
+/// @brief The decompressed packfile for a fileId, without building a preview.
+///
+/// extract_entry() would build a whole map scene for a mapc; the sky tests only
+/// need the bytes. Skips when the fileId is not in this dat.
+std::vector<uint8_t> packfile_by_file_id(uint32_t file_id) {
+    Gw2Dat& dat = shared_dat();
+    uint32_t base = get_by_base_id(dat, file_id);
+    if (base == 0 || base > dat.mft_data_list.size()) SKIP("fileId not in this dat");
+    const MftData& e = dat.mft_data_list[base - 1];
+    std::vector<uint8_t> raw = read_entry_bytes(dat.file_info.file_path, e);
+    return e.compression_flag ? castlemist::cmp::decompress_entry(raw) : raw;
+}
+
+/// @brief parseMapSky() on a map fileId (skips without the dat or template).
+castlemist::model::Extractor::MapSky map_sky(uint32_t file_id) {
+    if (!ensure_template()) SKIP("no gw2_packfile.json struct template");
+    std::vector<uint8_t> bytes = packfile_by_file_id(file_id);
+    return castlemist::model::Extractor(bytes, *castlemist::tpl::get()).parseMapSky();
 }
 
 } // namespace
@@ -529,4 +555,180 @@ CM_TEST(dat, hologram_blade_draws_its_glow_pass_with_every_constant_bound) {
         if (off < 0 || !bound) std::fprintf(stderr, "  uniform %s: off=%d bound=%d\n", want, off, (int)bound);
         CHECK(off >= 0 && bound);
     }
+}
+
+// ---- map sky (env chunk -> PackMapEnvDataGlobalV*) ----
+
+// 187611: a panorama sky. Four sky modes, mode 3 repeating mode 0, one star
+// texture and four cloud layers; no cube faces (its env is v76, which has the
+// skyModeCubeTex array, but every entry is null).
+CM_TEST(mapsky, panorama_map_187611) {
+    auto s = map_sky(187611);
+    CHECK(s.present);
+    CHECK_EQ(s.modes.size(), size_t{4});
+    if (s.modes.size() < 4) return;
+    CHECK_EQ(s.modes[0].ne, 187554u);
+    CHECK_EQ(s.modes[0].sw, 187556u);
+    CHECK_EQ(s.modes[0].top, 187558u);
+    CHECK(s.modes[0].hasPanorama());
+    CHECK_EQ(s.modes[3].ne, 187554u);
+    CHECK_EQ(s.starFile, 187544u);
+    CHECK_FALSE(s.modes[0].hasCube());
+    CHECK_EQ(s.clouds.size(), size_t{4});
+    if (!s.clouds.empty()) CHECK_EQ(s.clouds[0].texture, 186345u);
+}
+
+// 3264516: one of three maps with a real cube sky, in modes 0-1 only.
+CM_TEST(mapsky, cube_map_3264516) {
+    auto s = map_sky(3264516);
+    CHECK(s.present);
+    CHECK(s.modes.size() >= size_t{3});
+    if (s.modes.size() < 3) return;
+    CHECK(s.modes[0].hasCube());
+    CHECK_EQ(s.modes[0].cube[0], 3263205u);  // E
+    CHECK_EQ(s.modes[0].cube[1], 3263207u);  // W
+    CHECK_EQ(s.modes[0].cube[2], 3263209u);  // N
+    CHECK_EQ(s.modes[0].cube[3], 3263211u);  // S
+    CHECK_EQ(s.modes[0].cube[4], 3263213u);  // B
+    CHECK_EQ(s.modes[0].cube[5], 3263215u);  // T
+    CHECK(s.modes[1].hasCube());
+    CHECK_FALSE(s.modes[2].hasCube());
+}
+
+// Sky cards (sun, moons, planets) are textured; a card read from the wrong
+// offset shows up as a NaN/inf placement.
+CM_TEST(mapsky, sky_cards_have_textures) {
+    size_t textured = 0;
+    for (uint32_t id : {187611u, 3264516u}) {
+        auto s = map_sky(id);
+        for (const auto& c : s.cards) {
+            if (!c.day.texture) continue;
+            ++textured;
+            CHECK(std::isfinite(c.day.azimuth));
+            CHECK(std::isfinite(c.day.latitude));
+        }
+    }
+    CHECK(textured > 0);
+}
+
+// env v75 and older have no skyModeCubeTex: the parse still finds the sky and
+// leaves the cube faces empty. 184799 is a v75 map in the index this was
+// written against; a newer dat may have moved it on, so skip in that case.
+CM_TEST(mapsky, missing_fields_stay_empty) {
+    auto s = map_sky(184799);
+    if (s.envVersion >= 76) SKIP("map 184799 is no longer an old-env map on this dat");
+    CHECK(s.present);
+    CHECK(!s.modes.empty());
+    for (const auto& m : s.modes)
+        for (uint32_t f : m.cube) CHECK_EQ(f, 0u);
+}
+
+// A model packfile has no env chunk.
+CM_TEST(mapsky, no_env_chunk) {
+    auto s = map_sky(2163020);  // Holographic Dawn, used above
+    CHECK_FALSE(s.present);
+    CHECK(s.modes.empty());
+}
+
+
+// ---- skybox export, end to end (load_sky_inputs -> write_skybox) ----
+
+namespace {
+
+namespace sky = castlemist::exportgltf::sky;
+namespace fs = std::filesystem;
+
+/// load_sky_inputs() on a map fileId (skips without the dat or template).
+sky::SkyInputs sky_inputs(uint32_t file_id) {
+    if (!ensure_template()) SKIP("no gw2_packfile.json struct template");
+    std::vector<uint8_t> bytes = packfile_by_file_id(file_id);
+    return sky::load_sky_inputs(shared_dat(), bytes, *castlemist::tpl::get(), file_id);
+}
+
+fs::path sky_out_parent(const char* test) {
+    fs::path p = fs::temp_directory_path() / "cm_test_skyexport_dat" / test;
+    fs::remove_all(p);
+    fs::create_directories(p);
+    return p;
+}
+
+/// Width and height from a PNG's IHDR, without a decoder.
+bool png_dims(const fs::path& p, int& w, int& h) {
+    std::ifstream f(p, std::ios::binary);
+    unsigned char b[24] = {};
+    if (!f.read(reinterpret_cast<char*>(b), sizeof b)) return false;
+    auto be = [&](int o) { return (b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]; };
+    w = be(16);
+    h = be(20);
+    return b[1] == 'P' && b[2] == 'N' && b[3] == 'G';
+}
+
+/// Modes the export should write for @p s: those with a whole panorama or cube
+/// that don't repeat an earlier one (same textures and, gw2-sky.md §5, the same
+/// Brightness: day* for modes 0/2, night* for 1/3).
+int distinct_sky_modes(const castlemist::model::Extractor::MapSky& s) {
+    auto brightness = [&](size_t i) { return i % 2 ? s.params.nightBrightness : s.params.dayBrightness; };
+    int n = 0;
+    for (size_t j = 0; j < s.modes.size(); ++j) {
+        const auto& b = s.modes[j];
+        if (!b.hasPanorama() && !b.hasCube()) continue;
+        bool alias = false;
+        for (size_t i = 0; i < j && !alias; ++i) {
+            const auto& a = s.modes[i];
+            alias = (a.hasPanorama() || a.hasCube()) && a.ne == b.ne && a.sw == b.sw && a.top == b.top &&
+                    std::equal(a.cube, a.cube + 6, b.cube) && brightness(i) == brightness(j);
+        }
+        if (!alias) ++n;
+    }
+    return n;
+}
+
+} // namespace
+
+// 187611: panorama sky in four modes, mode 3 repeating mode 0's textures.
+CM_TEST(skyexport_dat, map_187611) {
+    sky::SkyInputs in = sky_inputs(187611);
+    CHECK(in.sky.present);
+    CHECK(in.textures.count(187554) == 1);
+    fs::path parent = sky_out_parent("map_187611");
+    sky::SkyExportReport r = sky::write_skybox(in, parent.string(), "Sky", sky::SkyExportOptions{64, 128});
+    CHECK(r.ok);
+    CHECK_EQ(r.modesWritten, distinct_sky_modes(in.sky));
+    CHECK_EQ(r.rawSkyboxes, 0);
+    int w = 0, h = 0;
+    CHECK(png_dims(parent / "Sky" / "day" / "baked" / "equirect.png", w, h));
+    CHECK_EQ(w, 128);
+    CHECK_EQ(h, 64);
+    CHECK(fs::exists(parent / "Sky" / "sky.json"));
+    std::printf("      187611: modesWritten %d (dayBrightness %g, nightBrightness %g)\n", r.modesWritten,
+                in.sky.params.dayBrightness, in.sky.params.nightBrightness);
+    fs::remove_all(parent);
+}
+
+// 3264516: cube-only sky in modes 0-1; the faces go out as stored.
+CM_TEST(skyexport_dat, map_3264516_raw) {
+    sky::SkyInputs in = sky_inputs(3264516);
+    CHECK(in.sky.present);
+    fs::path parent = sky_out_parent("map_3264516");
+    sky::SkyExportReport r = sky::write_skybox(in, parent.string(), "Sky", sky::SkyExportOptions{64, 128});
+    CHECK(r.ok);
+    // Modes 0-1 both hold a cube. On the dat this was written against they name
+    // the same six faces and day/night Brightness match, so night is an alias
+    // of day and only one skybox/ goes out; count from the data, not a constant.
+    CHECK(in.sky.modes.size() >= 2 && in.sky.modes[0].hasCube() && in.sky.modes[1].hasCube());
+    CHECK_EQ(r.rawSkyboxes, distinct_sky_modes(in.sky));
+    CHECK_EQ(r.modesWritten, r.rawSkyboxes);
+    CHECK_EQ(fs::exists(parent / "Sky" / "night"), r.rawSkyboxes == 2);
+    std::printf("      3264516: rawSkyboxes %d (dayBrightness %g, nightBrightness %g)\n", r.rawSkyboxes,
+                in.sky.params.dayBrightness, in.sky.params.nightBrightness);
+    auto e = in.textures.find(3263205);   // E -> px
+    CHECK(e != in.textures.end());
+    int w = 0, h = 0;
+    CHECK(png_dims(parent / "Sky" / "day" / "skybox" / "px.png", w, h));
+    if (e != in.textures.end()) {
+        CHECK_EQ(w, e->second.width);
+        CHECK_EQ(h, e->second.height);
+    }
+    CHECK_FALSE(fs::exists(parent / "Sky" / "day" / "baked"));
+    fs::remove_all(parent);
 }

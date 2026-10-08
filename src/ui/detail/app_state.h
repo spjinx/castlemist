@@ -83,6 +83,7 @@ constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL = 1016; // Export glTF... (single m
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MAP = 1017;   // Export glTF... (whole map scene)
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL_ATLAS = 1018; // Export glTF... (single model, baked to a fresh UV atlas)
 constexpr UINT_PTR ID_FILE_EXPORT_VRCHAT_MODEL = 2185;     // Export for VRChat (Model)... (folder: glb, fbx, blend, Textures, materials.json)
+constexpr UINT_PTR ID_FILE_EXPORT_SKYBOX_MAP = 2186;       // Export Skybox (Map)... (folder: sky.json, <mode>/baked, <mode>/skybox)
 // Chat-link decoder popup controls.
 constexpr int ID_CL_INPUT = 2070;
 constexpr UINT_PTR ID_CL_DECODE = 2071;
@@ -324,6 +325,8 @@ constexpr UINT WM_APP_NAMES_PROGRESS = WM_APP + 14;
 constexpr UINT WM_APP_NAMES_BULK_DONE = WM_APP + 15;
 /// "Export for VRChat (Model)" finished (lparam = heap VrchatModelReport*, owned by the handler).
 constexpr UINT WM_APP_VRCHAT_MODEL_DONE = WM_APP + 16;
+/// "Export Skybox (Map)" finished (lparam = heap SkyExportReport*, owned by the handler).
+constexpr UINT WM_APP_SKYBOX_EXPORT_DONE = WM_APP + 17;
 
 enum class MiddleTab { Compressed = 0, Decompressed = 1, Structure = 2, Preview = 3 };
 
@@ -679,6 +682,8 @@ void do_export_gltf_map(HWND hwnd);
 void on_gltf_export_done(HWND hwnd);
 void do_export_vrchat_model(HWND hwnd);
 void on_vrchat_model_done(HWND hwnd, LPARAM lparam);
+void do_export_skybox_map(HWND hwnd);
+void on_skybox_export_done(HWND hwnd, LPARAM lparam);
 void do_save_model_texture(HWND hwnd, uint32_t fileId);
 std::string combo_sel(HWND combo);
 void apply_filters();
