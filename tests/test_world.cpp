@@ -119,3 +119,99 @@ CM_TEST(world, frame_to_blender_axes) {
     check_identity_is_proper_rotation(map_matrix_to_blender);
     check_matrix_commutes(map_to_blender, map_matrix_to_blender);
 }
+
+// ---- terrain (docs/research/gw2-world-frame.md §3) ----
+
+#include "castlemist/world/terrain.h"
+
+#include <string>
+#include <vector>
+
+// §3.2: 4 x 6 chunks of 32 segments, 35 stored samples per side.
+CM_TEST(world, terrain_layout_from_dims_and_count) {
+    auto l = castlemist::world::terrain_layout(128, 192, 32, 24 * 35 * 35);
+    CHECK(l.ok);
+    CHECK_EQ(l.chunksX, 4);
+    CHECK_EQ(l.chunksY, 6);
+    CHECK_EQ(l.segments, 32);
+    CHECK_EQ(l.stored, 35);
+    CHECK(l.why.empty());
+}
+
+// A sample count that is not a whole number of (segments+3)^2 chunks is rejected.
+CM_TEST(world, terrain_layout_rejects_odd_sample_count) {
+    auto l = castlemist::world::terrain_layout(128, 192, 32, 24 * 35 * 35 + 1);
+    CHECK_FALSE(l.ok);
+    CHECK_FALSE(l.why.empty());
+    auto l0 = castlemist::world::terrain_layout(128, 192, 0, 24 * 35 * 35 + 1);   // no field, nothing solves
+    CHECK_FALSE(l0.ok);
+    CHECK_FALSE(l0.why.empty());
+}
+
+// §3.1/§3.3 on a hand-built 2 x 1 chunk map, segments 2, stored 5. Stored
+// sample (row r, column c) of chunk k has the value 100*r + (2k + c): the
+// three overlapping columns of the two chunks hold the same values (as the
+// real data does), every other sample of a chunk is distinct.
+CM_TEST(world, terrain_detile_hand_grid) {
+    castlemist::model::Extractor::MapTerrain t;
+    t.present = true;
+    t.dimX = 4; t.dimY = 2; t.vertsPerChunkSide = 2;
+    t.rect[0] = 0; t.rect[1] = 0; t.rect[2] = 200; t.rect[3] = 100; t.hasRect = true;
+    for (int k = 0; k < 2; ++k)
+        for (int r = 0; r < 5; ++r)
+            for (int c = 0; c < 5; ++c) t.heights.push_back(float(100 * r + 2 * k + c));
+    std::vector<std::string> warnings;
+    auto terr = castlemist::world::build_terrain(t, warnings);
+    CHECK(warnings.empty());
+    CHECK(terr.present);
+    CHECK_EQ(terr.chunksX, 2);
+    CHECK_EQ(terr.chunksY, 1);
+    CHECK_EQ(terr.chunks.size(), size_t(2));
+    if (terr.chunks.size() != 2) return;
+    for (int k = 0; k < 2; ++k) {
+        const auto& ch = terr.chunks[k];
+        CHECK_EQ(ch.cx, k);
+        CHECK_EQ(ch.cy, 0);
+        CHECK_EQ(ch.samples, 3);
+        CHECK_EQ(ch.rect[0], 100.0f * k);
+        CHECK_EQ(ch.rect[1], 0.0f);
+        CHECK_EQ(ch.rect[2], 100.0f * (k + 1));
+        CHECK_EQ(ch.rect[3], 100.0f);
+        CHECK_EQ(ch.heights.size(), size_t(9));
+        if (ch.heights.size() != 9) return;
+        // The inner 3 x 3: stored rows/columns 1..3.
+        for (int j = 0; j < 3; ++j)
+            for (int i = 0; i < 3; ++i) CHECK_EQ(ch.heights[j * 3 + i], float(100 * (j + 1) + 2 * k + i + 1));
+    }
+    // Shared edge: chunk 0's east column == chunk 1's west column.
+    for (int j = 0; j < 3; ++j) CHECK_EQ(terr.chunks[0].heights[j * 3 + 2], terr.chunks[1].heights[j * 3 + 0]);
+    // Row 0 is the north edge (largest y), column 0 the west edge.
+    bool inside = false;
+    CHECK_EQ(castlemist::world::terrain_height_at(terr, 0, 100, &inside), 101.0f);
+    CHECK(inside);
+    CHECK_EQ(castlemist::world::terrain_height_at(terr, 0, 0, &inside), 301.0f);
+    CHECK_EQ(castlemist::world::terrain_height_at(terr, 200, 0, &inside), 305.0f);
+    CHECK(inside);
+    // Bilinear: halfway between samples (row 1, col 0) = 201 and (row 1, col 1) = 202.
+    CHECK_NEAR(castlemist::world::terrain_height_at(terr, 25, 50, &inside), 201.5, 1e-4);
+    castlemist::world::terrain_height_at(terr, -1, 50, &inside);
+    CHECK_FALSE(inside);
+    castlemist::world::terrain_height_at(terr, 50, 100.5f, &inside);
+    CHECK_FALSE(inside);
+}
+
+// §2: no parm rect -> no terrain and a warning; no rect is invented.
+CM_TEST(world, terrain_no_rect_warns) {
+    castlemist::model::Extractor::MapTerrain t;
+    t.present = true;
+    t.dimX = 4; t.dimY = 2; t.vertsPerChunkSide = 2;
+    t.heights.assign(50, 1.0f);
+    t.hasRect = false;
+    std::vector<std::string> warnings;
+    auto terr = castlemist::world::build_terrain(t, warnings);
+    CHECK_FALSE(terr.present);
+    CHECK(terr.chunks.empty());
+    bool found = false;
+    for (const auto& w : warnings) found = found || w.find("no parm rect") != std::string::npos;
+    CHECK(found);
+}

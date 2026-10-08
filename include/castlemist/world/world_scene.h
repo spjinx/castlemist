@@ -22,12 +22,15 @@ struct TerrainMaterial {
     float pickerScale = 0.25f;              ///< page covers 4x4 chunks
 };
 
-/// @brief One heightfield chunk.
+/// @brief One heightfield chunk (layout: docs/research/gw2-world-frame.md §3).
 struct TerrainChunk {
-    int cx = 0, cy = 0;
+    int cx = 0, cy = 0;                     ///< cx counts east from the map's west edge, cy south from its north edge
     float rect[4] = {0, 0, 0, 0};           ///< x0, y0, x1, y1 in map space
     int samples = 0;                        ///< per side (segments + 1)
-    std::vector<float> heights;             ///< samples*samples, row-major, map-space Z
+    /// samples*samples, row-major, map-space Z as stored (up = -Z). Row 0 is
+    /// the north edge (y = rect[3]), column 0 the west edge (x = rect[0]);
+    /// sample (i, j) sits at (x0 + i*(x1-x0)/(samples-1), y1 - j*(y1-y0)/(samples-1)).
+    std::vector<float> heights;
     TerrainMaterial material;
 };
 

@@ -94,3 +94,153 @@ CM_TEST(world_dat, dat_opens) {
     Gw2Dat& dat = shared_dat();
     CHECK(dat.mft_data_list.size() > 100000);
 }
+
+// ---- terrain (docs/research/gw2-world-frame.md §3) ----
+
+#include "castlemist/world/terrain.h"
+
+#include <cmath>
+#include <fstream>
+#include <nlohmann/json.hpp>
+
+namespace {
+
+/// @brief A committed T3D reference, tests/world_ref/<fileId>.json.
+nlohmann::json world_ref(uint32_t file_id) {
+    std::string path = std::string(CM_WORLD_REF_DIR) + "/" + std::to_string(file_id) + ".json";
+    std::ifstream f(path);
+    if (!f) SKIP("no reference file");
+    return nlohmann::json::parse(f);
+}
+
+struct MapUnderTest {
+    castlemist::model::Extractor::MapTerrain raw;
+    std::vector<castlemist::model::Extractor::MapProp> props;
+    castlemist::world::Terrain terrain;
+    std::vector<std::string> warnings;
+};
+
+/// @brief Parse a map's terrain and props, and build its Terrain.
+MapUnderTest load_map_terrain(uint32_t file_id) {
+    if (!ensure_template()) SKIP("no struct template");
+    std::vector<uint8_t> bytes = packfile_by_file_id(file_id);
+    castlemist::model::Extractor ex(bytes, *castlemist::tpl::get());
+    MapUnderTest m;
+    m.raw = ex.parseTerrain();
+    m.props = ex.parseMapProps();
+    m.terrain = castlemist::world::build_terrain(m.raw, m.warnings);
+    return m;
+}
+
+constexpr uint32_t kTestMaps[] = {192711, 191000, 1151420};   // Queensdale, Lion's Arch, Spirit Vale
+
+} // namespace
+
+// §3.2: the chunk grid equals T3D's on every test map.
+CM_TEST(world_dat, terrain_chunk_grid_matches_reference) {
+    for (uint32_t id : kTestMaps) {
+        nlohmann::json ref = world_ref(id);
+        MapUnderTest m = load_map_terrain(id);
+        CHECK(m.terrain.present);
+        CHECK(m.warnings.empty());
+        CHECK_EQ(m.terrain.chunksX, ref["chunks"][0].get<int>());
+        CHECK_EQ(m.terrain.chunksY, ref["chunks"][1].get<int>());
+        CHECK_EQ((int)m.terrain.chunks.size(), m.terrain.chunksX * m.terrain.chunksY);
+        if (!m.terrain.chunks.empty()) CHECK_EQ(m.terrain.chunks[0].samples, ref["segments"].get<int>() + 1);
+    }
+}
+
+// §3.3/§3.4: terrain_height_at agrees with T3D's sampled heights at all 256
+// reference positions, within 0.01, on every test map. T3D's chunk placement
+// (TerrainRenderer.ts:490-502) coincides with §3.3's rule on all three maps
+// (Spirit Vale included), so the comparison holds everywhere.
+CM_TEST(world_dat, terrain_heights_match_reference) {
+    for (uint32_t id : kTestMaps) {
+        nlohmann::json ref = world_ref(id);
+        MapUnderTest m = load_map_terrain(id);
+        int compared = 0, off = 0;
+        for (const auto& row : ref["heights"]) {
+            float x = row[0].get<float>(), y = row[1].get<float>();
+            bool inside = false;
+            float h = castlemist::world::terrain_height_at(m.terrain, x, y, &inside);
+            if (row[2].is_null()) { CHECK_FALSE(inside); continue; }
+            ++compared;
+            CHECK(inside);
+            float want = row[2].get<float>();
+            if (!(std::fabs(h - want) <= 0.01f)) {
+                if (off++ < 3) CHECK_NEAR(h, want, 0.01);   // show the first few
+            }
+        }
+        CHECK_EQ(compared, 256);
+        CHECK_EQ(off, 0);
+    }
+}
+
+// §3.1: every pair of adjacent chunks shares its edge heights exactly.
+CM_TEST(world_dat, terrain_adjacent_chunks_share_edges) {
+    for (uint32_t id : kTestMaps) {
+        MapUnderTest m = load_map_terrain(id);
+        const auto& T = m.terrain;
+        CHECK(T.present);
+        size_t pairs = 0, unequal = 0;
+        for (int cy = 0; cy < T.chunksY; ++cy)
+            for (int cx = 0; cx < T.chunksX; ++cx) {
+                const auto& a = T.chunks[(size_t)cy * T.chunksX + cx];
+                const int n = a.samples;
+                if (cx + 1 < T.chunksX) {   // east neighbour: a's last column == b's first
+                    const auto& b = T.chunks[(size_t)cy * T.chunksX + cx + 1];
+                    ++pairs;
+                    for (int j = 0; j < n; ++j) unequal += a.heights[j * n + n - 1] != b.heights[j * n];
+                }
+                if (cy + 1 < T.chunksY) {   // south neighbour: a's last row == b's first
+                    const auto& b = T.chunks[(size_t)(cy + 1) * T.chunksX + cx];
+                    ++pairs;
+                    for (int i = 0; i < n; ++i) unequal += a.heights[(n - 1) * n + i] != b.heights[i];
+                }
+            }
+        CHECK_EQ(pairs, size_t(T.chunksX * (T.chunksY - 1) + (T.chunksX - 1) * T.chunksY));
+        CHECK_EQ(unequal, size_t(0));
+    }
+}
+
+// §3.3: props sit on the terrain where §3.3 places it better than where the
+// alternatives would: T3D's other odd/even branch (the whole grid one chunk
+// north or south), the grid flipped north-south, or mirrored east-west. "On"
+// means |z - h| < 16 units. The bound "at least twice as many" is stated, not
+// fitted: measured, the rule wins by 7.6x to 27x on every map (note §3.3),
+// Spirit Vale included -- its median gap is large because most of its props
+// stand on prop-built floors high above the terrain, not because the terrain
+// is misplaced.
+CM_TEST(world_dat, terrain_props_sit_on_terrain) {
+    for (uint32_t id : kTestMaps) {
+        MapUnderTest m = load_map_terrain(id);
+        const auto& T = m.terrain;
+        CHECK(T.present);
+        if (!T.present) continue;
+        const float x0 = T.chunks.front().rect[0], y1 = T.chunks.front().rect[3];
+        const float x1 = T.chunks.back().rect[2], y0 = T.chunks.back().rect[1];
+        const float cdy = (y1 - y0) / T.chunksY;
+        auto on = [&](auto place) {
+            size_t n = 0;
+            for (const auto& p : m.props) {
+                float x = p.pos[0], y = p.pos[1];
+                place(x, y);
+                bool inside = false;
+                float h = castlemist::world::terrain_height_at(T, x, y, &inside);
+                n += inside && std::fabs(p.pos[2] - h) < 16.0f;
+            }
+            return n;
+        };
+        size_t rule = on([](float&, float&) {});
+        size_t north = on([&](float&, float& y) { y -= cdy; });
+        size_t south = on([&](float&, float& y) { y += cdy; });
+        size_t flipNS = on([&](float&, float& y) { y = y0 + y1 - y; });
+        size_t mirrorEW = on([&](float& x, float&) { x = x0 + x1 - x; });
+        std::printf("    map %u: props on terrain %zu (shifted a chunk N %zu, S %zu; flipped N-S %zu; mirrored E-W %zu) of %zu\n",
+                    id, rule, north, south, flipNS, mirrorEW, m.props.size());
+        CHECK(rule > 2 * north);
+        CHECK(rule > 2 * south);
+        CHECK(rule > 2 * flipNS);
+        CHECK(rule > 2 * mirrorEW);
+    }
+}
