@@ -200,9 +200,10 @@ Image solid(int size, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
 
 /// GW2 sky direction of texture coordinate (u, v), straight from the vertex
 /// table in gw2-sky.md §2 (the forward mapping, written independently of the
-/// sampler's inverse). Unnormalised; R = 1. Inset e = 1/W.
+/// sampler's inverse). Unnormalised; R = 1. Inset e = 1.4/W, the seamless
+/// inset §2 measured (the game's own is 25/F0).
 void forward_dir(Tex t, float u, float v, int width, float out[3]) {
-    const float a = 1.0f / width, b = 1.0f - a;
+    const float a = 1.4f / width, b = 1.0f - a;
     const float s = (u - a) / (b - a);            // 0..1 across the face
     if (t == Tex::T) {                            // face 4, z = -R
         out[0] = 2 * s - 1;
@@ -264,6 +265,23 @@ bool has_warning(const BakeResult& r, const std::string& needle) {
 
 float max_channel(const Rgb& c) { return std::max({c.r, c.g, c.b}); }
 
+/// The note every baked mode carries about its hemicube inset (gw2-sky.md §2).
+bool is_seam_note(const std::string& w) { return w.rfind("seams:", 0) == 0; }
+
+/// Warnings other than the seam note.
+std::vector<std::string> other_warnings(const BakeResult& r) {
+    std::vector<std::string> out;
+    for (const std::string& w : r.warnings)
+        if (!is_seam_note(w)) out.push_back(w);
+    return out;
+}
+
+bool any_warning(const BakeResult& r, const std::string& a, const std::string& b = std::string()) {
+    for (const std::string& w : r.warnings)
+        if (w.find(a) != std::string::npos && (b.empty() || w.find(b) != std::string::npos)) return true;
+    return false;
+}
+
 } // namespace
 
 CM_TEST(skybake, gw2_to_unity_up_is_plus_y) {
@@ -323,7 +341,9 @@ CM_TEST(skybake, missing_base_is_not_ok) {
         BakeResult r = make_sky_sampler(sky, 0, tex);
         CHECK(r.ok);
         CHECK(r.layers == std::vector<std::string>{"base"});
-        CHECK(r.warnings.empty());
+        // gw2-sky.md §2: the 1.4-texel inset is a choice, and says so.
+        CHECK_EQ(r.warnings.size(), size_t(1));
+        CHECK(any_warning(r, "seams: 1.4-texel inset", "25/F0 (gw2-sky.md §2)"));
         CHECK_NEAR(r.radiance(up).r, 1.0f, 1e-6f);
     }
 }
@@ -454,8 +474,343 @@ CM_TEST(skybake, panorama_texel_maps_to_its_direction) {
     }
 }
 
+// ---- stars (gw2-sky.md §8) and texture sky cards (§9) ----
+
+namespace {
+
+using MapStars = castlemist::model::Extractor::MapStars;
+using MapStar = castlemist::model::Extractor::MapStar;
+using MapSkyCard = castlemist::model::Extractor::MapSkyCard;
+
+constexpr uint32_t kStarFile = 500, kAtlas = 501, kCardDay = 600, kCardNight = 601;
+constexpr float kPi = 3.14159265358979323846f;
+
+/// One mode, black opaque hemicube, day and night star density 1, no haze.
+MapSky black_sky(TextureMap& tex) {
+    MapSky sky = one_mode_sky();
+    sky.modes.resize(4, sky.modes[0]);
+    tex[kNE] = solid(8, 0, 0, 0, 255);
+    tex[kSW] = solid(8, 0, 0, 0, 255);
+    tex[kT] = solid(8, 0, 0, 0, 255);
+    return sky;
+}
+
+/// §8.3 star centre, GW2 space: (cos e1 cos e0, -cos e1 sin e0, -sin e1).
+void star_centre(float e0, float e1, float g[3]) {
+    g[0] = std::cos(e1) * std::cos(e0);
+    g[1] = -std::cos(e1) * std::sin(e0);
+    g[2] = -std::sin(e1);
+}
+
+/// §9.2 card centre, GW2 space: (cos lat cos az, cos lat sin az, -sin lat).
+void card_centre(float az, float lat, float g[3]) {
+    g[0] = std::cos(lat) * std::cos(az);
+    g[1] = std::cos(lat) * std::sin(az);
+    g[2] = -std::sin(lat);
+}
+
+/// Unity direction at tangent offsets (@p a, @p b) from GW2 centre @p c along
+/// GW2 axes @p eL / @p eD: the gnomonic point c + a*eL + b*eD, normalised.
+void offset_dir(const float c[3], const float eL[3], const float eD[3], float a, float b, float u[3]) {
+    float g[3];
+    for (int i = 0; i < 3; ++i) g[i] = c[i] + a * eL[i] + b * eD[i];
+    normalize3(g);
+    to_unity(g, u);
+}
+
+/// A star field of one star with atlas rect u0..u1, v0..v1.
+MapStars one_star(float e0, float e1, float scale, float u0 = 0, float u1 = 0.25f, float v0 = 0,
+                  float v1 = 0.25f) {
+    MapStars st;
+    st.present = true;
+    st.scale = scale;
+    st.atlas = kAtlas;
+    st.stars.push_back(MapStar{e0, e1, u0, u1, v0, v1});
+    return st;
+}
+
+/// Sky with one texture card (day and night attributes alike).
+MapSky card_sky(TextureMap& tex, float az, float latStored, float scale) {
+    MapSky sky = black_sky(tex);
+    MapSkyCard c;
+    c.day.texture = kCardDay;
+    c.day.azimuth = az;
+    c.day.latitude = latStored;
+    c.day.scale[0] = c.day.scale[1] = scale;
+    c.day.density = 1;
+    c.day.brightness = 1;
+    c.day.textureUV[0] = 0; c.day.textureUV[1] = 1; c.day.textureUV[2] = 1; c.day.textureUV[3] = 0;
+    c.night = c.day;
+    sky.cards.push_back(c);
+    return sky;
+}
+
+} // namespace
+
+CM_TEST(skybake, star_lights_its_direction) {
+    TextureMap tex;
+    MapSky sky = black_sky(tex);
+    sky.starFile = kStarFile;
+    sky.params.dayStarDensity = 1;
+    tex[kAtlas] = solid(16, 128, 128, 128, 255);
+    const float e0 = 0.7f, e1 = 0.4f;
+    MapStars st = one_star(e0, e1, 0.125f);
+    BakeResult r = make_sky_sampler(sky, 0, tex, &st);
+    CHECK(r.ok);
+    CHECK(r.layers == (std::vector<std::string>{"base", "stars"}));
+    float g[3], u[3];
+    star_centre(e0, e1, g);
+    to_unity(g, u);
+    // §8.4 with tw = 0: add = 2 T.rgb^2 * att * StarDensity, att = 1 (no haze).
+    const float t = 128.0f / 255.0f;
+    CHECK_NEAR(r.radiance(u).r, 2 * t * t, 1e-3f);
+    // 2 degrees away, in elevation and in azimuth: nothing.
+    star_centre(e0, e1 + 2 * kDegToRad, g);
+    to_unity(g, u);
+    CHECK_EQ(max_channel(r.radiance(u)), 0.0f);
+    star_centre(e0 + 2 * kDegToRad / std::cos(e1), e1, g);
+    to_unity(g, u);
+    CHECK_EQ(max_channel(r.radiance(u)), 0.0f);
+    // §8.4: the twinkle phase is not reproducible; the bake says it used tw = 0.
+    CHECK(any_warning(r, "stars:", "tw"));
+}
+
+CM_TEST(skybake, star_size_scales_with_one_over_f0) {
+    TextureMap tex;
+    tex[kAtlas] = solid(16, 255, 255, 255, 255);
+    const float e0 = -0.3f, e1 = 0.9f;
+    float c[3], eL[3], eD[3];
+    star_centre(e0, e1, c);
+    eL[0] = std::sin(e0); eL[1] = std::cos(e0); eL[2] = 0;          // §8.3 eL
+    eD[0] = std::sin(e1) * std::cos(e0); eD[1] = -std::sin(e1) * std::sin(e0); eD[2] = std::cos(e1);
+    for (float f0 : {24576.0f, 49152.0f}) {
+        MapSky sky = black_sky(tex);
+        sky.skyDistance = f0;
+        sky.starFile = kStarFile;
+        sky.params.dayStarDensity = 1;
+        MapStars st = one_star(e0, e1, 0.5f, 0.0f, 0.5f, 0.0f, 0.25f);
+        BakeResult r = make_sky_sampler(sky, 0, tex, &st);
+        const float R = 0.5f * f0;
+        const float au = 2500 * 0.5f * 0.5f / R, av = 2500 * 0.5f * 0.25f / R;
+        float u[3];
+        for (float k : {0.95f, -0.95f}) {
+            offset_dir(c, eL, eD, k * au, 0, u);
+            CHECK(r.radiance(u).r > 0.5f);
+            offset_dir(c, eL, eD, 0, k * av, u);
+            CHECK(r.radiance(u).r > 0.5f);
+        }
+        for (float k : {1.05f, -1.05f}) {
+            offset_dir(c, eL, eD, k * au, 0, u);
+            CHECK_EQ(r.radiance(u).r, 0.0f);
+            offset_dir(c, eL, eD, 0, k * av, u);
+            CHECK_EQ(r.radiance(u).r, 0.0f);
+        }
+    }
+}
+
+CM_TEST(skybake, star_sprite_is_upright_and_unmirrored) {
+    // §8.3: +eL (north at e0 = 0) is the u0 side, +eD (down) the v1 side.
+    TextureMap tex;
+    MapSky sky = black_sky(tex);
+    sky.starFile = kStarFile;
+    sky.params.dayStarDensity = 1;
+    Image atlas = solid(16, 0, 0, 0, 255);
+    for (int y = 0; y < 16; ++y)
+        for (int x = 0; x < 16; ++x) {
+            uint8_t* p = &atlas.rgba[(static_cast<size_t>(y) * 16 + x) * 4];
+            p[0] = x < 8 ? 255 : 0;   // red: left half (u < 0.5)
+            p[1] = y < 8 ? 255 : 0;   // green: top half (v < 0.5)
+        }
+    tex[kAtlas] = atlas;
+    MapStars st = one_star(0, 0, 1.0f, 0, 1, 0, 1);
+    BakeResult r = make_sky_sampler(sky, 0, tex, &st);
+    const float au = 2500.0f / (0.5f * sky.skyDistance);
+    float c[3] = {1, 0, 0}, eL[3] = {0, 1, 0}, eD[3] = {0, 0, 1}, u[3];
+    offset_dir(c, eL, eD, 0.6f * au, -0.6f * au, u);   // north and up: u0, v0
+    Rgb nw = r.radiance(u);
+    CHECK(nw.r > 0.5f);
+    CHECK(nw.g > 0.5f);
+    offset_dir(c, eL, eD, -0.6f * au, 0.6f * au, u);   // south and down: u1, v1
+    Rgb se = r.radiance(u);
+    CHECK_EQ(se.r, 0.0f);
+    CHECK_EQ(se.g, 0.0f);
+}
+
+CM_TEST(skybake, stars_add_to_the_base_with_haze_attenuation) {
+    TextureMap tex;
+    MapSky sky = black_sky(tex);
+    tex[kNE] = solid(8, 77, 77, 77, 255);
+    tex[kSW] = solid(8, 77, 77, 77, 255);
+    tex[kT] = solid(8, 77, 77, 77, 255);
+    tex[kAtlas] = solid(16, 100, 100, 100, 255);
+    sky.starFile = kStarFile;
+    sky.params.nightStarDensity = 0.5f;
+    const float e0 = 2.0f, e1 = 0.5f;
+    MapStars st = one_star(e0, e1, 0.125f);
+    float g[3], u[3];
+    star_centre(e0, e1, g);
+    to_unity(g, u);
+    const float base = 77.0f / 255.0f, t = 100.0f / 255.0f, add = 2 * t * t;
+    BakeResult r = make_sky_sampler(sky, 1, tex, &st);   // night: night* values
+    CHECK_NEAR(r.radiance(u).r, base + add * 0.5f, 1e-3f);
+    // §8.4: att = 1 - (1 - f^2 (3 - 2f)) HazeDensity, f = saturate((|d.z| - HazeBottom) / HazeFalloff).
+    sky.params.nightHazeDensity = 1.0f;
+    sky.params.nightHazeBottom = 0.0f;
+    sky.params.nightHazeFalloff = 1.0f;
+    r = make_sky_sampler(sky, 1, tex, &st);
+    const float f = std::sin(e1), att = 1 - (1 - f * f * (3 - 2 * f));
+    CHECK_NEAR(r.radiance(u).r, base + add * 0.5f * att, 1e-3f);
+    // Day density 0: the game hides the mesh; no stars layer for day.
+    BakeResult d = make_sky_sampler(sky, 0, tex, &st);
+    CHECK(d.layers == std::vector<std::string>{"base"});
+    CHECK_NEAR(d.radiance(u).r, base, 1e-4f);
+}
+
 CM_TEST(skybake, sky_card_sits_at_azimuth_latitude) {
-    SKIP("sky cards UNPROVEN in gw2-sky.md §4");
+    // §9.2: az radians (0 = east, toward north), latitude stored 0..1 x pi/2;
+    // §9.3: half-angle atan(1000 scale / F), F = F0.
+    TextureMap tex;
+    const float az = 1.0f, latStored = 0.3f, scale = 2.0f;
+    MapSky sky = card_sky(tex, az, latStored, scale);
+    constexpr int kTex = 16;
+    tex[kCardDay] = solid(kTex, 255, 255, 255, 255);
+    BakeResult r = make_sky_sampler(sky, 0, tex);
+    CHECK(r.ok);
+    CHECK(r.layers == (std::vector<std::string>{"base", "cards"}));
+    const float lat = latStored * kPi / 2;
+    float c[3], u[3];
+    card_centre(az, lat, c);
+    to_unity(c, u);
+    CHECK_NEAR(r.radiance(u).r, 1.0f, 1e-4f);
+    // Not at the mirrored azimuth or the unscaled latitude.
+    card_centre(-az, lat, c);
+    to_unity(c, u);
+    CHECK_EQ(r.radiance(u).r, 0.0f);
+    card_centre(az, latStored, c);
+    to_unity(c, u);
+    CHECK_EQ(r.radiance(u).r, 0.0f);
+    // Edge within half a texel of tan = 1000 scale / F0.
+    card_centre(az, lat, c);
+    const float eL[3] = {-std::sin(az), std::cos(az), 0};
+    const float eD[3] = {std::sin(lat) * std::cos(az), std::sin(lat) * std::sin(az), std::cos(lat)};
+    const float tu = 1000 * scale / sky.skyDistance, texel = 2 * tu / kTex;
+    for (float s : {1.0f, -1.0f}) {
+        offset_dir(c, eL, eD, s * (tu - 0.5f * texel), 0, u);
+        CHECK_NEAR(r.radiance(u).r, 1.0f, 1e-4f);
+        offset_dir(c, eL, eD, s * (tu + 0.5f * texel), 0, u);
+        CHECK_EQ(r.radiance(u).r, 0.0f);
+        offset_dir(c, eL, eD, 0, s * (tu - 0.5f * texel), u);
+        CHECK_NEAR(r.radiance(u).r, 1.0f, 1e-4f);
+        offset_dir(c, eL, eD, 0, s * (tu + 0.5f * texel), u);
+        CHECK_EQ(r.radiance(u).r, 0.0f);
+    }
+    CHECK(any_warning(r, "sky cards:", "UNPROVEN"));
+    CHECK(any_warning(r, "layer order", "UNPROVEN"));
+}
+
+CM_TEST(skybake, sky_card_texture_uv_crop_and_orientation) {
+    // §9.3: textureUV = (uLeft, uRight, 1 - vTop, 1 - vBottom); (0,1,1,0) is the
+    // whole texture upright and unmirrored (left = +eL, top = up).
+    TextureMap tex;
+    const float az = -2.0f, latStored = 0.5f;
+    MapSky sky = card_sky(tex, az, latStored, 1.0f);
+    Image quad = solid(16, 0, 0, 0, 255);
+    for (int y = 0; y < 16; ++y)
+        for (int x = 0; x < 16; ++x) {
+            uint8_t* p = &quad.rgba[(static_cast<size_t>(y) * 16 + x) * 4];
+            const bool right = x >= 8, bottom = y >= 8;
+            p[0] = (!right && !bottom) ? 255 : 0;   // top-left red
+            p[1] = (right && !bottom) ? 255 : 0;    // top-right green
+            p[2] = (!right && bottom) ? 255 : 0;    // bottom-left blue
+        }
+    tex[kCardDay] = quad;
+    const float lat = latStored * kPi / 2;
+    float c[3], u[3];
+    card_centre(az, lat, c);
+    const float eL[3] = {-std::sin(az), std::cos(az), 0};
+    const float eD[3] = {std::sin(lat) * std::cos(az), std::sin(lat) * std::sin(az), std::cos(lat)};
+    const float tu = 1000.0f / sky.skyDistance;
+    {
+        BakeResult r = make_sky_sampler(sky, 0, tex);
+        offset_dir(c, eL, eD, 0.5f * tu, -0.5f * tu, u);    // left, up
+        Rgb tl = r.radiance(u);
+        CHECK(tl.r > 0.9f && tl.g < 0.1f && tl.b < 0.1f);
+        offset_dir(c, eL, eD, -0.5f * tu, -0.5f * tu, u);   // right, up
+        Rgb tr = r.radiance(u);
+        CHECK(tr.g > 0.9f && tr.r < 0.1f);
+        offset_dir(c, eL, eD, 0.5f * tu, 0.5f * tu, u);     // left, down
+        Rgb bl = r.radiance(u);
+        CHECK(bl.b > 0.9f && bl.r < 0.1f);
+    }
+    // (0.5, 1, 1, 0.5): u 0.5..1, v 0..0.5 -> the top-right (green) quadrant fills the card.
+    sky.cards[0].day.textureUV[0] = 0.5f;
+    sky.cards[0].day.textureUV[1] = 1.0f;
+    sky.cards[0].day.textureUV[2] = 1.0f;
+    sky.cards[0].day.textureUV[3] = 0.5f;
+    BakeResult r = make_sky_sampler(sky, 0, tex);
+    for (float a : {0.8f, 0.0f, -0.8f})
+        for (float b : {0.8f, 0.0f, -0.8f}) {
+            offset_dir(c, eL, eD, a * tu, b * tu, u);
+            Rgb p = r.radiance(u);
+            CHECK(p.g > 0.9f && p.r < 0.1f && p.b < 0.1f);
+        }
+}
+
+CM_TEST(skybake, sky_card_alpha_blends_over_the_base) {
+    // §9.4/§9.5 reduced form: rgb = T.rgb * brightness, a = T.a * density,
+    // dst = rgb a + dst (1 - a) (SRC_ALPHA, INV_SRC_ALPHA).
+    TextureMap tex;
+    const float az = 0.4f, latStored = 0.2f;
+    MapSky sky = card_sky(tex, az, latStored, 1.0f);
+    tex[kNE] = solid(8, 77, 77, 77, 255);
+    tex[kSW] = solid(8, 77, 77, 77, 255);
+    tex[kT] = solid(8, 77, 77, 77, 255);
+    tex[kCardDay] = solid(8, 100, 0, 0, 128);
+    sky.cards[0].day.density = 0.5f;
+    sky.cards[0].day.brightness = 2.0f;
+    BakeResult r = make_sky_sampler(sky, 0, tex);
+    float c[3], u[3];
+    card_centre(az, latStored * kPi / 2, c);
+    to_unity(c, u);
+    const float base = 77.0f / 255.0f, a = 128.0f / 255.0f * 0.5f, red = 100.0f / 255.0f * 2.0f;
+    Rgb p = r.radiance(u);
+    CHECK_NEAR(p.r, red * a + base * (1 - a), 1e-3f);
+    CHECK_NEAR(p.g, base * (1 - a), 1e-3f);
+}
+
+CM_TEST(skybake, sky_card_day_and_night_attributes_follow_mode) {
+    // §3: modes 0/2 use `day` (t = 1), modes 1/3 `night` (t = 0).
+    TextureMap tex;
+    MapSky sky = card_sky(tex, 0.0f, 0.2f, 1.0f);
+    sky.cards[0].night.texture = kCardNight;
+    sky.cards[0].night.azimuth = kPi;
+    tex[kCardDay] = solid(8, 255, 0, 0, 255);
+    tex[kCardNight] = solid(8, 0, 0, 255, 255);
+    float dayDir[3], nightDir[3], g[3];
+    card_centre(0.0f, 0.2f * kPi / 2, g);
+    to_unity(g, dayDir);
+    card_centre(kPi, 0.2f * kPi / 2, g);
+    to_unity(g, nightDir);
+    for (size_t mode = 0; mode < 4; ++mode) {
+        BakeResult r = make_sky_sampler(sky, mode, tex);
+        const bool day = mode % 2 == 0;
+        Rgb atDay = r.radiance(dayDir), atNight = r.radiance(nightDir);
+        CHECK_NEAR(atDay.r, day ? 1.0f : 0.0f, 1e-4f);
+        CHECK_NEAR(atNight.b, day ? 0.0f : 1.0f, 1e-4f);
+    }
+}
+
+CM_TEST(skybake, material_cards_are_left_out_and_warned) {
+    TextureMap tex;
+    MapSky sky = card_sky(tex, 0.0f, 0.2f, 1.0f);
+    sky.cards[0].day.texture = 0;
+    sky.cards[0].night.texture = 0;
+    sky.cards[0].materialFile = 3135800;
+    BakeResult r = make_sky_sampler(sky, 0, tex);
+    CHECK(r.ok);
+    CHECK(r.layers == std::vector<std::string>{"base"});
+    CHECK(any_warning(r, "material", "UNPROVEN"));
+    CHECK(any_warning(r, "3135800"));
 }
 
 CM_TEST(skybake, unproven_layers_are_warned_not_baked) {
@@ -470,13 +825,17 @@ CM_TEST(skybake, unproven_layers_are_warned_not_baked) {
     plain.modes.push_back(plain.modes[0]);
     Rgb base = make_sky_sampler(plain, 0, tex).radiance(d);
 
-    // A map with every layer gw2-sky.md §4 leaves out.
+    // Clouds (§10.5), haze and sun glow (§5) stay out; a star file that was
+    // not read and a card texture that did not decode are named.
     MapSky sky = plain;
     sky.starFile = 187544;
+    sky.params.dayStarDensity = sky.params.nightStarDensity = 1;
     sky.clouds.resize(1);
     sky.clouds[0].texture = 77;
     sky.cards.resize(1);
     sky.cards[0].day.texture = 78;
+    sky.cards[0].day.density = 1;
+    sky.cards[0].night = sky.cards[0].day;
     sky.params.dayHazeDensity = 0.5f;
     sky.params.dayLightIntensity = 0.7f;
     sky.params.nightHazeDensity = 0.5f;
@@ -485,12 +844,12 @@ CM_TEST(skybake, unproven_layers_are_warned_not_baked) {
         BakeResult r = make_sky_sampler(sky, mode, tex);
         CHECK(r.ok);
         CHECK(r.layers == std::vector<std::string>{"base"});
-        CHECK(has_warning(r, "stars"));
+        CHECK(any_warning(r, "stars:", "187544"));
         CHECK(has_warning(r, "clouds"));
-        CHECK(has_warning(r, "sky cards"));
+        CHECK(any_warning(r, "sky cards:", "78"));
         CHECK(has_warning(r, "haze"));
         CHECK(has_warning(r, "sun glow"));
-        CHECK_EQ(r.warnings.size(), size_t(5));
+        CHECK_EQ(other_warnings(r).size(), size_t(5));
         Rgb c = r.radiance(d);                  // left out: base colour alone
         CHECK_NEAR(c.r, base.r, 1e-6f);
         CHECK_NEAR(c.g, base.g, 1e-6f);
@@ -500,9 +859,9 @@ CM_TEST(skybake, unproven_layers_are_warned_not_baked) {
     MapSky dayHaze = plain;
     dayHaze.params.dayHazeDensity = 0.5f;
     CHECK(has_warning(make_sky_sampler(dayHaze, 0, tex), "haze"));
-    CHECK(make_sky_sampler(dayHaze, 1, tex).warnings.empty());
+    CHECK(other_warnings(make_sky_sampler(dayHaze, 1, tex)).empty());
     // A map without those layers gets no such warnings.
-    CHECK(make_sky_sampler(plain, 0, tex).warnings.empty());
+    CHECK(other_warnings(make_sky_sampler(plain, 0, tex)).empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -751,7 +1110,8 @@ CM_TEST(skyexport, missing_layer_is_warned) {
 CM_TEST(skyexport, warnings_are_deduplicated) {
     fs::path parent = export_parent("dedup");
     SkyInputs in = panorama_inputs();
-    in.sky.starFile = 187544;             // stars: UNPROVEN, warned by every mode
+    in.sky.starFile = 187544;             // stars shown but not read: warned by every mode
+    in.sky.params.dayStarDensity = in.sky.params.nightStarDensity = 1;
     in.sky.modes.push_back(in.sky.modes[0]);
     in.sky.modes[1].ne = kSW;
     in.decodeWarnings = {"fileId 187544: not a decodable texture",
