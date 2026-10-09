@@ -105,11 +105,12 @@ CM_TEST(world_dat, dat_opens) {
 
 namespace {
 
-/// @brief A committed T3D reference, tests/world_ref/<fileId>.json.
+/// @brief A committed T3D reference, tests/world_ref/<fileId>.json. The
+///        references are in the repo, so a missing one fails the test.
 nlohmann::json world_ref(uint32_t file_id) {
     std::string path = std::string(CM_WORLD_REF_DIR) + "/" + std::to_string(file_id) + ".json";
     std::ifstream f(path);
-    if (!f) SKIP("no reference file");
+    if (!f) ::castlemist::test::fail(__FILE__, __LINE__, "committed reference missing: " + path);
     return nlohmann::json::parse(f);
 }
 
