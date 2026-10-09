@@ -355,10 +355,16 @@ struct AppState {
     /// Armor dye channels the viewer bakes into armor's rebuilt atlas. Kept
     /// across models, like a wardrobe's dye pick.
     std::array<castlemist::ripper::DyeChoice, 4> armor_dyes{};
-    /// The current model as extracted, before its atlas stand-in was applied
-    /// (null when it isn't armor): re-dyeing rebuilds from it.
+    /// Dye channels of models dyed in the shader (mounts: ripper/shader_dye.h).
+    /// Colour id 0 leaves a channel as authored, which is where every channel
+    /// starts. Kept across models, apart from the armor picks.
+    std::array<castlemist::ripper::DyeChoice, 4> shader_dyes = {{{0, 0}, {0, 0}, {0, 0}, {0, 0}}};
+    /// The current model as extracted, before its atlas stand-in or shader dyes
+    /// were applied (null when it has no dye channels): re-dyeing rebuilds from it.
     std::shared_ptr<ModelPreview> armor_pristine;
     std::array<bool, 4> armor_channels{};  // which channels the current piece has
+    /// The current model dyes in the shader (shader_dyes), not in the armor atlas (armor_dyes).
+    bool dye_in_shader = false;
     bool dat_loaded = false;
 
     // Index-DB navigation (Stage 2). When an index is loaded, the list gains
@@ -787,9 +793,13 @@ void open_look_dialog(HWND owner, const castlemist::character::CharacterManifest
 void open_dye_dialog(HWND owner);
 /// Tells an open Dyes window the model changed (channels, enabled state).
 void dye_dialog_model_changed();
-/// Re-bakes the current armor model's atlas with g_app->armor_dyes and shows it
-/// in every view, without reloading the model. False when it isn't armor.
+/// Re-bakes the current armor model's atlas with g_app->armor_dyes, or sets a
+/// shader-dyed model's (a mount's) dye uniforms from g_app->shader_dyes, and
+/// shows it in every view without reloading the model. False when the model
+/// has no dye channels.
 bool rebake_armor_dyes();
+/// The dye picks the current model uses: shader_dyes or armor_dyes.
+std::array<castlemist::ripper::DyeChoice, 4>& current_dyes();
 std::wstring utf8_to_wide(const std::string& s);
 std::string wide_to_utf8(const std::wstring& w);
 

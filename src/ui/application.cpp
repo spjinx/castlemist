@@ -728,7 +728,7 @@ int run(HINSTANCE hInstance, int cmd_show) {
                         const size_t end = std::min(spec.find(',', at), spec.size());
                         unsigned id = 0, mat = 0;
                         if (std::sscanf(spec.substr(at, end - at).c_str(), "%u/%u", &id, &mat) >= 1)
-                            g_app->armor_dyes[ch] = {id, static_cast<int>(mat)};
+                            current_dyes()[ch] = {id, static_cast<int>(mat)};
                         ++ch;
                         at = end + 1;
                     }

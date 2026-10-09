@@ -15,6 +15,7 @@
 #include "castlemist/format/struct_template.h"
 #include "castlemist/render/gw2bgfx_view.h"
 #include "castlemist/ripper/armor_preview.h"
+#include "castlemist/ripper/shader_dye.h"
 
 namespace castlemist::ui {
 
@@ -175,8 +176,44 @@ void populate_struct_tree_if_visible() {
 // the main thread: either synchronously right after a same-thread extract
 // (there isn't one anymore, but kept generic) or from the WM_APP_EXTRACT_DONE
 // handler once a background result's generation is confirmed current.
+std::array<castlemist::ripper::DyeChoice, 4>& current_dyes() {
+    return g_app->dye_in_shader ? g_app->shader_dyes : g_app->armor_dyes;
+}
+
+namespace {
+
+// A mount's (shader-dyed model's) dyes: g_app->shader_dyes as the hsmnt*
+// uniforms, into the reconstruction and Shader mode through the model, and into
+// Game 1:1 as overrides. Colour 0 (or one the dye list lacks) stays as authored.
+castlemist::ripper::ShaderUniforms shader_dye_uniforms_now() {
+    namespace rp = castlemist::ripper;
+    std::array<std::optional<rp::ColorMatrix>, 4> m;
+    const auto dyes = rp::preview_dyes(g_app->shader_dyes);
+    for (size_t ch = 0; ch < 4; ++ch)
+        if (g_app->shader_dyes[ch].color_id != 0 && ch < dyes.size() && dyes[ch].shift &&
+            dyes[ch].color_id == g_app->shader_dyes[ch].color_id)
+            m[ch] = rp::dye_matrix(*dyes[ch].shift);
+    return rp::shader_dye_uniforms(m);
+}
+
+bool apply_shader_dyes() {
+    namespace rp = castlemist::ripper;
+    const rp::ShaderUniforms u = shader_dye_uniforms_now();
+    ModelPreview& model = *g_app->current_entry.model;
+    rp::set_shader_dyes(model, *g_app->armor_pristine, u);
+    castlemist::render::refresh_model_materials(model);
+    castlemist::gw2bgfxview::set_uniform_overrides(u);
+    castlemist::texpanel::set_model(g_app->hwnd_tex_info, &model);
+    if (g_app->hwnd_model) InvalidateRect(g_app->hwnd_model, nullptr, FALSE);
+    if (g_app->hwnd_model_bgfx) InvalidateRect(g_app->hwnd_model_bgfx, nullptr, FALSE);
+    return true;
+}
+
+} // namespace
+
 bool rebake_armor_dyes() {
     if (!g_app || !g_app->armor_pristine || !g_app->current_entry.model || !g_app->dat_loaded) return false;
+    if (g_app->dye_in_shader) return apply_shader_dyes();
     try {
         const ModelPreview& pristine = *g_app->armor_pristine;
         auto atlas = castlemist::ripper::build_armor_preview(g_app->data_gw2, g_app->current_mft_index, pristine,
@@ -248,8 +285,10 @@ void apply_extracted_entry(uint32_t mft_index, ExtractedEntry&& entry) {
         // archive read and a pile of GPU uploads for nothing.
         g_app->bgfx_model_loaded = false;
         castlemist::gw2bgfxview::set_atlas_textures(nullptr, nullptr);
+        castlemist::gw2bgfxview::set_uniform_overrides({});
         g_app->armor_pristine.reset();
         g_app->armor_channels = {};
+        g_app->dye_in_shader = false;
         if (g_app->current_entry.model) {
             // Character armor samples an atlas the game composites at runtime;
             // without a stand-in it previews flat white in every mode.
@@ -265,6 +304,20 @@ void apply_extracted_entry(uint32_t mft_index, ExtractedEntry&& entry) {
                                                                     atlas->normal ? &*atlas->normal : nullptr);
                     }
                 } catch (const std::exception&) { /* preview as authored */ }
+            }
+            // A mount dyes in its shader: shows as authored until a dye is
+            // picked, so only its channels are noted here.
+            if (!g_app->armor_pristine && castlemist::ripper::has_shader_dyes(*g_app->current_entry.model)) {
+                g_app->armor_pristine = std::make_shared<ModelPreview>(*g_app->current_entry.model);
+                g_app->armor_channels = castlemist::ripper::shader_dye_channels(*g_app->current_entry.model);
+                g_app->dye_in_shader = true;
+                // Dyes picked on an earlier mount carry over, as armor's do.
+                if (std::any_of(g_app->shader_dyes.begin(), g_app->shader_dyes.end(),
+                                [](const castlemist::ripper::DyeChoice& d) { return d.color_id != 0; })) {
+                    const auto u = shader_dye_uniforms_now();
+                    castlemist::ripper::set_shader_dyes(*g_app->current_entry.model, *g_app->armor_pristine, u);
+                    castlemist::gw2bgfxview::set_uniform_overrides(u);
+                }
             }
             dye_dialog_model_changed();
             castlemist::render::set_model(*g_app->current_entry.model);

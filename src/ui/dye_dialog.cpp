@@ -3,7 +3,9 @@
 ///        on screen, each a dye from the game's full dye list (the content
 ///        map's every-dye palette) and the material its shift is taken for.
 ///        A pick re-bakes the piece's rebuilt atlas in place (rebake_armor_dyes),
-///        so Full, Shader and Game 1:1 all show it without a reload.
+///        so Full, Shader and Game 1:1 all show it without a reload. A mount
+///        (any model dyed in its shader) gets the same window; its channels
+///        start as authored and set the shader's hsmnt* uniforms instead.
 
 #include "detail/app_state.h"
 
@@ -34,7 +36,7 @@ constexpr int kCell = 17, kCols = 24, kRowH = 32;
 const wchar_t* const kMaterialNames[4] = {L"Cloth", L"Leather", L"Metal", L"Fur"};
 
 struct DyeUi {
-    HWND wnd = nullptr, grid = nullptr, search = nullptr, status = nullptr;
+    HWND wnd = nullptr, grid = nullptr, search = nullptr, status = nullptr, reset = nullptr;
     HWND swatch[4]{}, name[4]{}, mat[4]{};
     int channel = 0;                          // the channel a grid click dyes
     std::vector<const cm::PaletteColor*> all;  // every dye, sorted by colour
@@ -50,6 +52,7 @@ std::wstring lower(std::wstring s) {
 }
 
 std::wstring dye_name(uint32_t id) {
+    if (id == 0) return L"As authored";
     const std::string n = rp::color_name(id);
     return n.empty() ? L"Colour " + std::to_wstring(id) : utf8_to_wide(n);
 }
@@ -106,7 +109,7 @@ void filter_dyes() {
 
 void refresh_channels() {
     for (int i = 0; i < 4; ++i) {
-        const rp::DyeChoice& d = g_app->armor_dyes[static_cast<size_t>(i)];
+        const rp::DyeChoice& d = current_dyes()[static_cast<size_t>(i)];
         const bool has = g_app->armor_channels[static_cast<size_t>(i)];
         std::wstring n = has ? dye_name(d.color_id) : L"(no channel)";
         SetWindowTextW(g_dy->name[i], n.c_str());
@@ -115,12 +118,13 @@ void refresh_channels() {
         EnableWindow(g_dy->mat[i], has);
         InvalidateRect(g_dy->swatch[i], nullptr, TRUE);
     }
+    SetWindowTextW(g_dy->reset, g_app->dye_in_shader ? L"Reset to as authored" : L"Reset to Dye Remover");
     InvalidateRect(g_dy->grid, nullptr, TRUE);
 }
 
 void apply() {
     SetCursor(LoadCursorW(nullptr, IDC_WAIT));
-    if (!rebake_armor_dyes()) set_status(L"The model on screen isn't armor with dye channels.");
+    if (!rebake_armor_dyes()) set_status(L"The model on screen has no dye channels (armor, outfits and mounts do).");
     refresh_channels();
 }
 
@@ -139,7 +143,7 @@ LRESULT CALLBACK GridProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         RECT all;
         GetClientRect(hwnd, &all);
         FillRect(dc, &all, GetSysColorBrush(COLOR_WINDOW));
-        const rp::DyeChoice& cur = g_app->armor_dyes[static_cast<size_t>(g_dy->channel)];
+        const rp::DyeChoice& cur = current_dyes()[static_cast<size_t>(g_dy->channel)];
         for (size_t i = 0; i < g_dy->shown.size(); ++i) {
             RECT r{static_cast<LONG>(i % kCols) * kCell + 1, static_cast<LONG>(i / kCols) * kCell + 1, 0, 0};
             r.right = r.left + kCell - 2;
@@ -176,10 +180,10 @@ LRESULT CALLBACK GridProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     case WM_LBUTTONDOWN: {
         const int i = cell_at(lparam);
         if (i < 0) return 0;
-        g_app->armor_dyes[static_cast<size_t>(g_dy->channel)].color_id = g_dy->shown[static_cast<size_t>(i)]->id;
+        current_dyes()[static_cast<size_t>(g_dy->channel)].color_id = g_dy->shown[static_cast<size_t>(i)]->id;
         apply();
         set_status(L"Channel " + std::to_wstring(g_dy->channel + 1) + L": " +
-                   dye_name(g_app->armor_dyes[static_cast<size_t>(g_dy->channel)].color_id));
+                   dye_name(current_dyes()[static_cast<size_t>(g_dy->channel)].color_id));
         return 0;
     }
     }
@@ -193,7 +197,7 @@ void draw_swatch(const DRAWITEMSTRUCT* di) {
     // The channel the grid dyes gets a thick dark frame.
     FillRect(di->hDC, &r, GetSysColorBrush(picked ? COLOR_HIGHLIGHT : COLOR_BTNFACE));
     InflateRect(&r, -3, -3);
-    const rp::DyeChoice& d = g_app->armor_dyes[static_cast<size_t>(ch)];
+    const rp::DyeChoice& d = current_dyes()[static_cast<size_t>(ch)];
     const cm::PaletteColor* c = find_dye(d.color_id);
     if (c && g_app->armor_channels[static_cast<size_t>(ch)]) {
         const auto rgb = swatch_of(*c, d.material);
@@ -237,16 +241,22 @@ LRESULT CALLBACK DyeWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             set_status(L"Channel " + std::to_wstring(g_dy->channel + 1) + L" - click a dye.");
         } else if (id >= ID_DY_MAT0 && id < ID_DY_MAT0 + 4 && HIWORD(wparam) == CBN_SELCHANGE) {
             const int ch = static_cast<int>(id - ID_DY_MAT0);
-            g_app->armor_dyes[static_cast<size_t>(ch)].material =
+            current_dyes()[static_cast<size_t>(ch)].material =
                 static_cast<int>(SendMessageW(g_dy->mat[ch], CB_GETCURSEL, 0, 0));
             g_dy->channel = ch;
             apply();
         } else if (id == ID_DY_SEARCH && HIWORD(wparam) == EN_CHANGE) {
             filter_dyes();
         } else if (id == ID_DY_RESET) {
-            g_app->armor_dyes = {};
-            apply();
-            set_status(L"Every channel back to Dye Remover (cloth).");
+            if (g_app->dye_in_shader) {
+                for (rp::DyeChoice& d : g_app->shader_dyes) d.color_id = 0;
+                apply();
+                set_status(L"Every channel back to the colours the model was authored with.");
+            } else {
+                g_app->armor_dyes = {};
+                apply();
+                set_status(L"Every channel back to Dye Remover (cloth).");
+            }
         }
         return 0;
     }
@@ -336,7 +346,7 @@ void open_dye_dialog(HWND owner) {
     mk(L"STATIC", L"Find", SS_LEFT, pad, listY + 4, 30, 18, 0);
     g_dy->search = mk(L"EDIT", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, pad + 34, listY, gridW - 34, 22, ID_DY_SEARCH);
     g_dy->grid = mk(L"Gw2DyeGridWnd", L"", WS_BORDER, pad, gridY, gridW, gridH, ID_DY_GRID);
-    mk(L"BUTTON", L"Reset to Dye Remover", WS_TABSTOP, pad, gridY + gridH + 8, 140, 26, ID_DY_RESET);
+    g_dy->reset = mk(L"BUTTON", L"Reset to Dye Remover", WS_TABSTOP, pad, gridY + gridH + 8, 140, 26, ID_DY_RESET);
     g_dy->status = mk(L"STATIC", L"", SS_LEFT | SS_ENDELLIPSIS, pad, gridY + gridH + 42, gridW, 18, 0);
     load_dye_list();
     ShowWindow(g_dy->wnd, SW_SHOW);
