@@ -306,8 +306,14 @@ guess) is UNPROVEN and does not matter: castlemist does not use it.
   exactly, both maps with the field).
 - The grid is T3D's `chunksX = sqrt(dims[0] · count / dims[1])`,
   `chunksY = count / chunksX` (`TerrainRenderer.ts:192-195`), required to be
-  whole; it equals the reference `chunks` on all three maps, and
+  whole (castlemist checks `chunksX² · dims[1] == dims[0] · count` in
+  integers); it equals the reference `chunks` on all three maps, and
   `dims = chunks × segments` holds on all three.
+- **The relation is checked, not assumed.** When `verticesPerChunkSide` is
+  present and `dims ≠ chunks × segments`, the layout is one no map here
+  proves, so `terrain_layout` rejects it (`TerrainLayout::why`, a
+  `terrain:` warning, no terrain); `cm_test_world
+  terrain_dims_not_chunks_times_segments_warns`.
 - **No `verticesPerChunkSide` (Spirit Vale).** T3D assumes 32. castlemist
   instead solves `samples = (dimX/s) · (dimY/s) · (s + 3)²` for an integer
   `s` dividing both dims, using the relation `dims = chunks × segments` that
@@ -620,9 +626,23 @@ as stored (§4.4). `resolved = true` when every index is inside
 exceptions) for: no `materials`; a chunk-count mismatch; no / unreadable
 PIMG; a page grid no `n` fits; a missing page; a page reference whose layer
 or coord is not the chunk's own; an index past `texFileArray` (names the
-chunk); a chunk with no colour texture; tokens not kept (`ramp`). On the three
-test maps every chunk resolves; the only warning is Spirit Vale's 25 `ramp`
-bindings.
+chunk); a chunk with no colour texture; tokens not kept (`ramp`). And, once
+the chunks are resolved, one aggregated line per item this section leaves
+**UNPROVEN** (each with the literal token `UNPROVEN`):
+
+- `uvScale` unknown, stored 0 (§4.4), on every chunk;
+- the `tiling` bytes kept as stored, meaning unknown (§4.4), on every chunk;
+- `materialFileId` is the lo-res material; which of lo-res / hi-res the game
+  draws when is unknown (§4.1), on every chunk;
+- the channel order of `pickerSolid` / `picker2Solid` (§4.2), with the number
+  of chunk-layer pairs that use a solid-colour page, only when there are any;
+- non-null `uvData` not decoded (§4.4), with the number of chunks, only when
+  there are any.
+
+On the three test maps every chunk resolves. Queensdale and Lion's Arch get
+the first three lines; Spirit Vale gets all five (128 solid-colour chunk
+pages, 36 chunks with `uvData`) plus its 25 `ramp` bindings
+(`cm_test_world_dat terrain_materials_match_reference` checks exactly these).
 
 ---
 

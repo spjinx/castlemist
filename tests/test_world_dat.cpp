@@ -272,6 +272,31 @@ CM_TEST(world_dat, terrain_materials_match_reference) {
         CHECK_EQ(mats.chunks.size(), T.chunks.size());
         castlemist::world::resolve_terrain_materials(T, mats, shared_dat(), *castlemist::tpl::get(), warnings);
         for (const auto& w : warnings) std::printf("    map %u warning: %s\n", id, w.c_str());
+        // The warnings are exactly the UNPROVEN items of note §4.5 (and Spirit
+        // Vale's ramp bindings): uvScale, tiling, lo- vs hi-res material on
+        // every map; solid-colour pages (128 chunk-layer pairs) and 36 non-null
+        // uvData on Spirit Vale only (§4.2, §4.4).
+        {
+            const bool sv = id == 1151420;
+            const std::string n = std::to_string(T.chunks.size());
+            std::vector<std::string> want = {
+                "terrain materials: uvScale UNPROVEN on all " + n + " chunks",
+                "terrain materials: tiling bytes kept as stored on " + n + " chunks",
+                "terrain materials: materialFileId is loResMaterial on " + n + " chunks"};
+            if (sv) {
+                want.push_back("terrain materials: 25 chunk texture bindings not kept (tokens: ramp)");
+                want.push_back("terrain materials: 128 chunk blend pages are solid-colour");
+                want.push_back("terrain materials: 36 chunks have a non-null uvData");
+            }
+            CHECK_EQ(warnings.size(), want.size());
+            for (const auto& p : want) {
+                size_t hits = 0;
+                for (const auto& w : warnings) hits += w.rfind(p, 0) == 0;
+                CHECK_EQ(hits, size_t(1));
+            }
+            for (const auto& w : warnings)
+                if (w.find("ramp") == std::string::npos) CHECK(w.find("UNPROVEN") != std::string::npos);
+        }
 
         // The terrain's paged image, read independently of resolve_terrain_materials.
         std::vector<uint8_t> pbytes = packfile_by_file_id(mats.pimgFileId);

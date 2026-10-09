@@ -13,6 +13,8 @@ CM_TEST(world, default_scene_is_empty) {
     CHECK(scene.collision.instances.empty());
     CHECK(scene.warnings.empty());
     CHECK_FALSE(scene.hasBounds);
+    // §4.2: no chunks-per-page is assumed; 0 means unknown until pages resolve.
+    CHECK_EQ(castlemist::world::TerrainMaterial{}.pickerScale, 0.0f);
 }
 
 // ---- frame (docs/research/gw2-world-frame.md §1) ----
@@ -216,6 +218,30 @@ CM_TEST(world, terrain_no_rect_warns) {
     CHECK(found);
 }
 
+// §3.2: with verticesPerChunkSide present, dims = chunks * segments is checked.
+// 8 x 4 dims, 2 segments, two 5 x 5 chunks: the sample count gives a 2 x 1
+// grid, which is 4 x 2 quads, not 8 x 4. No terrain, and the reason is named.
+CM_TEST(world, terrain_dims_not_chunks_times_segments_warns) {
+    castlemist::model::Extractor::MapTerrain t;
+    t.present = true;
+    t.dimX = 8; t.dimY = 4; t.vertsPerChunkSide = 2;
+    t.rect[0] = 0; t.rect[1] = 0; t.rect[2] = 200; t.rect[3] = 100; t.hasRect = true;
+    t.heights.assign(50, 1.0f);
+    const auto l = castlemist::world::terrain_layout(t.dimX, t.dimY, t.vertsPerChunkSide, t.heights.size());
+    CHECK_FALSE(l.ok);
+    CHECK(l.why.find("not chunks 2x1 times verticesPerChunkSide 2") != std::string::npos);
+    std::vector<std::string> warnings;
+    auto terr = castlemist::world::build_terrain(t, warnings);
+    CHECK_FALSE(terr.present);
+    CHECK_EQ(warnings.size(), size_t(1));
+    CHECK(!warnings.empty() && warnings[0].rfind("terrain: dims 8x4 are not chunks 2x1", 0) == 0);
+    // The consistent map (dims 4 x 2) still lays out.
+    CHECK(castlemist::world::terrain_layout(4, 2, 2, 50).ok);
+    // A chunk count that is no exact grid for the aspect is rejected (integer check):
+    // 3 chunks at 4:2 would need chunksX = sqrt(6).
+    CHECK_FALSE(castlemist::world::terrain_layout(4, 2, 2, 75).ok);
+}
+
 // ---- terrain materials (docs/research/gw2-world-frame.md §4) ----
 
 namespace {
@@ -260,6 +286,7 @@ CM_TEST(world, terrain_material_index_out_of_range) {
     m.chunks[0].texIndices = {0, 1, 2, 3};
     m.chunks[1].materialFileId = 7;
     m.chunks[1].texIndices = {0, 1, 2, (uint32_t)m.texFileIds.size()};
+    m.chunks[1].hasUvData = true;
 
     Gw2Dat dat;   // never read: the map has no paged image
     warnings.clear();
@@ -271,6 +298,18 @@ CM_TEST(world, terrain_material_index_out_of_range) {
     bool named = false;
     for (const auto& w : warnings) named = named || w.find("chunk 1 ") != std::string::npos;
     CHECK(named);
+    // §4.1, §4.4: what is kept but UNPROVEN is one aggregated line each.
+    auto count = [&](const std::string& prefix) {
+        size_t n = 0;
+        for (const auto& w : warnings) n += w.rfind(prefix, 0) == 0 && w.find("UNPROVEN") != std::string::npos;
+        return n;
+    };
+    CHECK_EQ(count("terrain materials: uvScale UNPROVEN on all 2 chunks"), size_t(1));
+    CHECK_EQ(count("terrain materials: tiling bytes kept as stored on 2 chunks"), size_t(1));
+    CHECK_EQ(count("terrain materials: materialFileId is loResMaterial on 2 chunks"), size_t(1));
+    CHECK_EQ(count("terrain materials: 1 chunks have a non-null uvData"), size_t(1));
+    CHECK_EQ(count("terrain materials: 0 chunk blend pages"), size_t(0));   // no solid pages: no line
+    CHECK_EQ(terr.chunks[0].material.pickerScale, 0.0f);                   // no pages: unknown
 }
 
 // ---- props (docs/research/gw2-world-frame.md §5) ----
@@ -589,6 +628,18 @@ CM_TEST(world, run_section_names_a_failure_and_carries_on) {
     CHECK_EQ(ran, 1);
     CHECK_EQ(warnings.size(), size_t(1));
     CHECK_EQ(warnings[0], std::string("exception in props: boom; section left empty"));
+}
+
+// The spec: a map with no props or no collision is valid, and warned.
+CM_TEST(world, absent_chunk_warnings_name_missing_props_and_collision) {
+    using Chunks = std::vector<std::pair<std::string, uint16_t>>;
+    const auto none = castlemist::world::absent_chunk_warnings(Chunks{{"parm", 1}, {"trn", 2}});
+    CHECK_EQ(none.size(), size_t(2));
+    if (none.size() == 2) {
+        CHECK_EQ(none[0], std::string("props: no prp2 chunk; map has no props"));
+        CHECK_EQ(none[1], std::string("collision: no havk chunk; map has no collision"));
+    }
+    CHECK(castlemist::world::absent_chunk_warnings(Chunks{{"prp2", 3}, {"havk", 4}}).empty());
 }
 
 // A template without `types` is its own error, thrown before the dat is touched.

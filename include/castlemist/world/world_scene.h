@@ -31,7 +31,9 @@ struct TerrainMaterial {
     /// This chunk's sub-rect in its page, in page-image UV: u from the image's
     /// first column (west edge), v from its first stored row (north edge).
     float pickerOffset[2] = {0, 0};
-    float pickerScale = 0.25f;              ///< sub-rect size: 1 / chunks per page side (4 on every test map)
+    /// Sub-rect size: 1 / chunks per page side, derived from the page grid
+    /// (0.25 on every test map, §4.2); 0 = unknown (no pages resolved).
+    float pickerScale = 0;
     float uvScale = 0;                      ///< ground-texture tiling per chunk; 0 = unknown (UNPROVEN, §4.4)
     uint8_t tiling[3] = {0, 0, 0};          ///< the chunk's `tiling` bytes as stored (meaning UNPROVEN, §4.4)
 };

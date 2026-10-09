@@ -179,6 +179,19 @@ std::vector<std::string> unread_chunk_warnings(const std::vector<std::pair<std::
     return out;
 }
 
+std::vector<std::string> absent_chunk_warnings(const std::vector<std::pair<std::string, uint16_t>>& chunks) {
+    // The spec: a map with no terrain or no props is valid, and warned. Terrain
+    // says so itself (build_terrain); props and collision have no reader of
+    // their own that could, so the chunk list does.
+    auto has = [&](const char* fourcc) {
+        return std::any_of(chunks.begin(), chunks.end(), [&](const auto& c) { return c.first == fourcc; });
+    };
+    std::vector<std::string> out;
+    if (!has("prp2")) out.push_back("props: no prp2 chunk; map has no props");
+    if (!has("havk")) out.push_back("collision: no havk chunk; map has no collision");
+    return out;
+}
+
 WorldScene load_world(Gw2Dat& dat, uint32_t mapFileId, const nlohmann::json& tpl) {
     using Ex = castlemist::model::Extractor;
     const std::string id = std::to_string(mapFileId);
@@ -249,6 +262,7 @@ WorldScene load_world(Gw2Dat& dat, uint32_t mapFileId, const nlohmann::json& tpl
     section("water", [&] { attach_water(*ex, w); });
     section("environment", [&] { attach_environment(*ex, w); });
 
+    for (std::string& line : absent_chunk_warnings(chunks)) w.warnings.push_back(std::move(line));
     for (std::string& line : unread_chunk_warnings(chunks)) w.warnings.push_back(std::move(line));
 
     w.warnings.push_back(

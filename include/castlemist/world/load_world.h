@@ -78,12 +78,19 @@ void run_section(std::vector<std::string>& warnings, const char* name, const std
 ///        are read: parm, trn, prp2, havk, watr, shor, rive, env.
 std::vector<std::string> unread_chunk_warnings(const std::vector<std::pair<std::string, uint16_t>>& chunks);
 
+/// @brief The warnings for a map that lacks a section's chunk: "props: no prp2
+///        chunk; map has no props" and "collision: no havk chunk; map has no
+///        collision". Such a map is valid; it is warned, never filled in.
+///        (A map without terrain is warned by build_terrain.)
+std::vector<std::string> absent_chunk_warnings(const std::vector<std::pair<std::string, uint16_t>>& chunks);
+
 /// @brief Load a map packfile into a WorldScene.
 ///
 /// Runs terrain, terrain materials, props, collision, water and environment,
 /// each in its own `try`: one failing leaves its part empty and adds a named
 /// warning. `bounds` is `parm.rect` (§2). Every chunk in the packfile that no
-/// section reads is listed as `"chunk <fourcc> v<ver> not read"`, and a
+/// section reads is listed as `"chunk <fourcc> v<ver> not read"`, a missing
+/// `prp2` or `havk` chunk is warned (absent_chunk_warnings), and a
 /// `"units: ..."` warning records that map units per metre are UNPROVEN
 /// (§1.3).
 /// @throws std::runtime_error when @p tpl has no `types` ("struct template

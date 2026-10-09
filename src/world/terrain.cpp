@@ -58,15 +58,30 @@ TerrainLayout terrain_layout(uint32_t dimX, uint32_t dimY, uint32_t vertsPerChun
 
     // Chunk grid: chunksX = sqrt(dims[0] * count / dims[1]), chunksY = count / chunksX
     // (after spjinx/t3d TerrainRenderer.ts parseNumChunks), required to be whole.
-    const double cxF = std::sqrt((double)dimX * (double)count / (double)dimY);
-    const long cx = std::lround(cxF);
-    if (cx <= 0 || std::fabs(cxF - (double)cx) > 1e-9 || count % (size_t)cx) {
+    // Checked exactly in integers: chunksX^2 * dimY == dimX * count.
+    const uint64_t want = (uint64_t)dimX * (uint64_t)count;
+    const long guess = std::lround(std::sqrt((double)want / (double)dimY));
+    long cx = 0;
+    for (long c = guess > 1 ? guess - 1 : 1; c <= guess + 1; ++c)
+        if ((uint64_t)c * (uint64_t)c * (uint64_t)dimY == want) cx = c;
+    if (cx <= 0 || count % (size_t)cx) {
         l.why = std::to_string(count) + " chunks do not form a grid with aspect " + std::to_string(dimX) + ":" +
                 std::to_string(dimY);
         return l;
     }
+    const size_t cy = count / (size_t)cx;
+    // §3.2: dims = chunks * segments holds on every test map. With the field
+    // present it is checked, not assumed; a map that breaks it has a layout
+    // nothing proves, so its terrain is left out.
+    if (vertsPerChunkSide > 0 &&
+        ((size_t)cx * (size_t)segments != dimX || cy * (size_t)segments != dimY)) {
+        l.why = "dims " + std::to_string(dimX) + "x" + std::to_string(dimY) + " are not chunks " +
+                std::to_string(cx) + "x" + std::to_string(cy) + " times verticesPerChunkSide " +
+                std::to_string(segments) + " (the relation note §3.2 proves on the test maps); layout not trusted";
+        return l;
+    }
     l.chunksX = (int)cx;
-    l.chunksY = (int)(count / (size_t)cx);
+    l.chunksY = (int)cy;
     l.segments = segments;
     l.stored = (int)stored;
     l.ok = true;
@@ -267,6 +282,7 @@ void resolve_terrain_materials(Terrain& t, const castlemist::model::Extractor::M
 
     std::set<std::string> dropped;   // tokens bound but not kept (§4.1)
     size_t droppedCount = 0;
+    size_t solidPages = 0, withUvData = 0;   // for the UNPROVEN lines below (§4.2, §4.4)
     for (size_t i = 0; i < t.chunks.size(); ++i) {
         TerrainChunk& ch = t.chunks[i];
         const auto& c = m.chunks[i];
@@ -313,8 +329,10 @@ void resolve_terrain_materials(Terrain& t, const castlemist::model::Extractor::M
                     continue;
                 }
                 (layer == 0 ? mat.pickerFileId : mat.picker2FileId) = it->second->fileId;
-                if (!it->second->fileId)
+                if (!it->second->fileId) {
                     std::memcpy(layer == 0 ? mat.pickerSolid : mat.picker2Solid, it->second->solidColor, 4);
+                    ++solidPages;
+                }
                 // §4.3: page-image UV, u from the west column, v from the north (first) row.
                 mat.pickerOffset[0] = (float)(tex.coord[0] % (uint32_t)perPage) / (float)perPage;
                 mat.pickerOffset[1] = (float)(tex.coord[1] % (uint32_t)perPage) / (float)perPage;
@@ -327,8 +345,25 @@ void resolve_terrain_materials(Terrain& t, const castlemist::model::Extractor::M
             warnings.push_back("terrain materials: " + chunk_name(i, ch) +
                                " binds no colour texture; chunk left unresolved");
         mat.resolved = ok && anyColour;
+        withUvData += c.hasUvData;
         ch.material = std::move(mat);
     }
+
+    // What is kept but UNPROVEN, one aggregated line each (§4.1, §4.2, §4.4).
+    const std::string n = std::to_string(t.chunks.size());
+    warnings.push_back("terrain materials: uvScale UNPROVEN on all " + n +
+                       " chunks; stored 0 (unknown), not T3D's hard-coded 8 (note §4.4)");
+    warnings.push_back("terrain materials: tiling bytes kept as stored on " + n +
+                       " chunks; their meaning is UNPROVEN (note §4.4)");
+    warnings.push_back("terrain materials: materialFileId is loResMaterial on " + n +
+                       " chunks; which of loResMaterial / hiResMaterial the game draws when is UNPROVEN (note §4.1)");
+    if (solidPages)
+        warnings.push_back("terrain materials: " + std::to_string(solidPages) +
+                           " chunk blend pages are solid-colour; their solidColor is kept in pickerSolid / "
+                           "picker2Solid as stored, channel order UNPROVEN (note §4.2)");
+    if (withUvData)
+        warnings.push_back("terrain materials: " + std::to_string(withUvData) +
+                           " chunks have a non-null uvData that is not decoded; what it does is UNPROVEN (note §4.4)");
     if (droppedCount) {
         std::string names;
         for (const auto& n : dropped) names += (names.empty() ? "" : ", ") + n;
