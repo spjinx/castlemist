@@ -1,5 +1,9 @@
 /// @file
-/// @brief Water and environment for WorldScene (docs/research/gw2-world-frame.md §6).
+/// @brief load_world: a map packfile into one WorldScene -- terrain, terrain
+///        materials, props, collision, water and environment, each a section
+///        whose failure is a warning, with the water and environment steps
+///        (docs/research/gw2-world-frame.md §6), the error policy and the
+///        summary the CLI prints.
 /// @ingroup world
 
 #include "castlemist/world/load_world.h"
@@ -43,7 +47,7 @@ void build_water(const WaterSources& in, WorldScene& out) {
     // watr (§6.1). V0 stores waterFoamData/waterChunks, which nothing reads.
     if (!in.watr.problem.empty()) warn.push_back("watr: " + in.watr.problem);
     if (in.watr.chunk && in.watr.problem.empty() && !in.watr.hasSurfacesField)
-        warn.push_back("watr V0 not read (version " + std::to_string(in.watr.version) +
+        warn.push_back("watr: V0 not read (version " + std::to_string(in.watr.version) +
                        ": no waterSurfaces field; its waterChunks/waterFoamData are not decoded)");
     if (in.watr.hasPlane) {
         w.hasPlane = true;
@@ -89,7 +93,7 @@ void build_water(const WaterSources& in, WorldScene& out) {
     w.shore = in.shore;
     if (w.shore.present)
         warn.push_back("shor: " + std::to_string(w.shore.chains.size()) +
-                       " shore chains read with field names after T3D's SHOR.ts; untested on real data "
+                       " shore chains read with field names after T3D's SHOR.ts, UNPROVEN on real data "
                        "(no test map has a shor chunk)");
 
     // env (§6.5).
@@ -103,6 +107,7 @@ void build_water(const WaterSources& in, WorldScene& out) {
 void attach_water(castlemist::model::Extractor& ex, WorldScene& out) {
     WaterSources in;
     // Each reader is independent: a failure in one is named and the rest still load.
+    // Each warning starts with the chunk it is about ("watr: not read: ...").
     auto guarded = [&](const char* what, auto&& read) {
         try {
             read();
@@ -110,11 +115,11 @@ void attach_water(castlemist::model::Extractor& ex, WorldScene& out) {
             out.warnings.push_back(std::string(what) + " not read: " + e.what());
         }
     };
-    guarded("watr", [&] { in.watr = ex.parseWater(); });
-    guarded("havk water", [&] { in.havk = ex.parseHavokWater(); });
-    guarded("rive", [&] { in.rivers = ex.parseRivers(); });
-    guarded("shor", [&] { in.shore = ex.parseShore(); });
-    guarded("env water presets", [&] { in.envWaterPresets = ex.countEnvWaterPresets(); });
+    guarded("watr:", [&] { in.watr = ex.parseWater(); });
+    guarded("havk: water", [&] { in.havk = ex.parseHavokWater(); });
+    guarded("rive:", [&] { in.rivers = ex.parseRivers(); });
+    guarded("shor:", [&] { in.shore = ex.parseShore(); });
+    guarded("env: water presets", [&] { in.envWaterPresets = ex.countEnvWaterPresets(); });
     build_water(in, out);
 }
 
@@ -122,12 +127,12 @@ void build_environment(const EnvSources& in, WorldScene& out) {
     Environment env;
     env.sky = in.sky;
     env.light = in.light;
-    if (!env.sky.present) out.warnings.push_back("env: no sky (no env chunk or no dataGlobal)");
-    if (!env.light.present) out.warnings.push_back("env: no light rig (no readable lighting preset)");
+    if (!env.sky.present) out.warnings.push_back("environment: no sky (no env chunk or no dataGlobal)");
+    if (!env.light.present) out.warnings.push_back("environment: no light rig (no readable lighting preset)");
     const uint32_t otherPresets = in.counts.lightingPresets > 1 ? in.counts.lightingPresets - 1 : 0;
     const uint32_t zones = in.counts.localBlocks + in.counts.overrideBlocks;
     if (otherPresets || zones)
-        out.warnings.push_back("env: " + std::to_string(otherPresets) +
+        out.warnings.push_back("environment: " + std::to_string(otherPresets) +
                                " other dataGlobal lighting presets and " + std::to_string(zones) +
                                " per-zone blocks (" + std::to_string(in.counts.localBlocks) + " dataLocalArray, " +
                                std::to_string(in.counts.overrideBlocks) +
@@ -141,17 +146,17 @@ void attach_environment(castlemist::model::Extractor& ex, WorldScene& out) {
     try {
         in.sky = ex.parseMapSky();
     } catch (const std::exception& e) {
-        out.warnings.push_back(std::string("env: sky not read: ") + e.what());
+        out.warnings.push_back(std::string("environment: sky not read: ") + e.what());
     }
     try {
         in.light = ex.parseMapEnv();   // auto preset: the brightest (the day rig)
     } catch (const std::exception& e) {
-        out.warnings.push_back(std::string("env: light not read: ") + e.what());
+        out.warnings.push_back(std::string("environment: light not read: ") + e.what());
     }
     try {
         in.counts = ex.countEnv();
     } catch (const std::exception& e) {
-        out.warnings.push_back(std::string("env: preset and zone counts not read: ") + e.what());
+        out.warnings.push_back(std::string("environment: preset and zone counts not read: ") + e.what());
     }
     build_environment(in, out);
 }
@@ -162,7 +167,7 @@ void run_section(std::vector<std::string>& warnings, const char* name, const std
     } catch (const DatIoError&) {
         throw;   // dat I/O failure is an error everywhere, never a section warning
     } catch (const std::exception& what) {
-        warnings.push_back(std::string("exception in ") + name + ": " + what.what() + "; section left empty");
+        warnings.push_back(std::string(name) + ": exception: " + what.what() + "; section left empty");
     }
 }
 
@@ -240,11 +245,9 @@ WorldScene load_world(Gw2Dat& dat, uint32_t mapFileId, const nlohmann::json& tpl
     section("terrain", [&] {
         const Ex::MapTerrain trn = ex->parseTerrain();
         w.terrain = build_terrain(trn, w.warnings);
-        if (trn.hasRect) {   // bounds = parm.rect as stored (§2)
+        if (trn.hasRect) {   // bounds = parm.rect as stored (§2); build_terrain warns when there is none
             std::copy(trn.rect, trn.rect + 4, w.bounds);
             w.hasBounds = true;
-        } else {
-            w.warnings.push_back("parm: no rect; the map has no bounds (no rect is invented)");
         }
     });
     section("terrain materials", [&] {
@@ -290,7 +293,10 @@ nlohmann::json world_summary(const WorldScene& w) {
     j["props"] = w.props.size();
     j["animatedProps"] = w.motion.animatedProps.size();
     j["collision"] = {{"meshes", w.collision.meshes.size()}, {"instances", w.collision.instances.size()}};
-    j["water"] = {{"surfaces", w.water.surfaces.size()}};
+    j["water"] = {{"plane", w.water.hasPlane},
+                  {"planeZ", w.water.hasPlane ? json(w.water.planeZ) : json(nullptr)},
+                  {"surfaces", w.water.surfaces.size()},
+                  {"rivers", w.water.rivers.size()}};
     j["sky"] = {{"present", w.environment.sky.present}, {"modes", w.environment.sky.modes.size()},
                 {"clouds", w.environment.sky.clouds.size()}, {"lightPresent", w.environment.light.present}};
     j["warnings"] = w.warnings;

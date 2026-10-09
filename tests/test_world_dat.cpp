@@ -472,8 +472,8 @@ CM_TEST(world_dat, collision_matches_reference) {
         // per-map count of §7.1 (havk_sequences.mjs: placements on a 2+
         // animation geometry whose own sequence is not the last animation's).
         const std::map<uint32_t, size_t> kOtherSequence = {{192711, 1188}, {191000, 658}, {1151420, 108}};
-        const std::string expected = std::to_string(kOtherSequence.at(id)) +
-                                     " collision placements use animations[last] (T3D's rule, UNPROVEN";
+        const std::string expected = "collision: " + std::to_string(kOtherSequence.at(id)) +
+                                     " placements use animations[last] (T3D's rule, UNPROVEN";
         for (const auto& w : scene.warnings) std::printf("    map %u warning: %s\n", id, w.c_str());
         CHECK_EQ(scene.warnings.size(), size_t(1));
         CHECK(!scene.warnings.empty() && scene.warnings[0].rfind(expected, 0) == 0);
@@ -764,7 +764,7 @@ CM_TEST(world_dat, water_sources_per_map) {
         CHECK_EQ(warning_starting(scene, "watr: waterFlags 1 kept as stored; meaning UNPROVEN") != nullptr, want.plane);
         CHECK(warning_starting(scene, "watr: no template") == nullptr);
         CHECK_EQ(warning_starting(scene, "rive: ") != nullptr, want.rivers > 0);
-        CHECK(warning_starting(scene, "watr V0 not read") == nullptr);
+        CHECK(warning_starting(scene, "watr: V0 not read") == nullptr);
     }
 }
 
@@ -1007,12 +1007,12 @@ CM_TEST(world_dat, environment_sky_present) {
         castlemist::world::WorldScene scene = load_map_water(want.id);
         CHECK(scene.environment.sky.present);
         CHECK(scene.environment.light.present);
-        CHECK(warning_starting(scene, "env: no sky") == nullptr);
-        CHECK(warning_starting(scene, "env: no light rig") == nullptr);
-        const std::string expected = "env: " + std::to_string(want.presets - 1) +
+        CHECK(warning_starting(scene, "environment: no sky") == nullptr);
+        CHECK(warning_starting(scene, "environment: no light rig") == nullptr);
+        const std::string expected = "environment: " + std::to_string(want.presets - 1) +
                                      " other dataGlobal lighting presets and " + std::to_string(want.local) +
                                      " per-zone blocks (" + std::to_string(want.local) + " dataLocalArray, 0 ";
-        const std::string* w = warning_starting(scene, "env: " + std::to_string(want.presets - 1) + " other");
+        const std::string* w = warning_starting(scene, "environment: " + std::to_string(want.presets - 1) + " other");
         if (w) std::printf("    map %u warning: %s\n", want.id, w->c_str());
         CHECK(warning_starting(scene, expected) != nullptr);
     }
@@ -1041,9 +1041,20 @@ CM_TEST(world_dat, load_world_three_maps) {
         for (const auto& c : w.terrain.chunks) unresolved += !c.material.resolved;
         CHECK_EQ(unresolved, size_t(0));
         for (const std::string& s : w.warnings) {
-            CHECK(s.rfind("exception", 0) != 0);
+            CHECK(s.find(": exception: ") == std::string::npos);
             if (s.find("exception") != std::string::npos) std::printf("    map %u warning: %s\n", id, s.c_str());
         }
+        // Every line starts with a section or chunk prefix, and every
+        // UNPROVEN item says so with the literal token.
+        for (const std::string& s : w.warnings) {
+            bool prefixed = false;
+            for (const char* p : {"terrain: ", "terrain materials: ", "props: ", "collision: ", "water: ", "watr: ",
+                                  "havk: ", "rive: ", "shor: ", "env: ", "environment: ", "chunk ", "units: "})
+                prefixed = prefixed || s.rfind(p, 0) == 0;
+            if (!prefixed) std::printf("    map %u unprefixed warning: %s\n", id, s.c_str());
+            CHECK(prefixed);
+        }
+        CHECK(warning_starting(w, "terrain materials: uvScale UNPROVEN") != nullptr);
         // Unread chunks are named; the chunks the sections read never are.
         size_t unread = 0;
         for (const std::string& s : w.warnings)
@@ -1061,6 +1072,15 @@ CM_TEST(world_dat, load_world_three_maps) {
         CHECK_EQ(s["map"].get<uint32_t>(), id);
         CHECK_EQ(s["warnings"].size(), w.warnings.size());
         CHECK_EQ(s["terrain"]["resolvedMaterials"].get<size_t>(), w.terrain.chunks.size());
+        // Water: Queensdale and Lion's Arch have the watr plane at 0, Spirit
+        // Vale none and seven rivers (water_sources_per_map).
+        const bool plane = id != 1151420;
+        CHECK_EQ(s["water"]["plane"].get<bool>(), plane);
+        CHECK_EQ(s["water"]["planeZ"].is_null(), !plane);
+        if (plane) CHECK_EQ(s["water"]["planeZ"].get<float>(), 0.0f);
+        CHECK_EQ(s["water"]["rivers"].get<size_t>(), w.water.rivers.size());
+        CHECK_EQ(s["water"]["rivers"].get<size_t>(), size_t(plane ? 0 : 7));
+        CHECK_EQ(s["water"]["surfaces"].get<size_t>(), size_t(0));
     }
 }
 

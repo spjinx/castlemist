@@ -40,7 +40,7 @@ void build_water(const WaterSources& in, WorldScene& out);
 /// outlines, the `havk` water surface height, river centrelines and shore
 /// chains. Nothing is invented: no flood fill, no plane where the dat has
 /// none. What the dat holds and this does not read is named in
-/// `out.warnings`: a V0 `watr` ("watr V0 not read"), a chunk or struct the
+/// `out.warnings`: a V0 `watr` ("watr: V0 not read"), a chunk or struct the
 /// template cannot read, river widths and materials, `havk` water volumes,
 /// `env` water presets, the untested shore reader, the meaning of
 /// `waterFlags`, and that the water is drawn at `waterPlaneZ` over some
@@ -70,7 +70,7 @@ void build_environment(const EnvSources& in, WorldScene& out);
 void attach_environment(castlemist::model::Extractor& ex, WorldScene& out);
 
 /// @brief Run one load step; an exception becomes the warning
-///        "exception in <name>: <what>; section left empty" and the caller
+///        "<name>: exception: <what>; section left empty" and the caller
 ///        carries on with the next step -- except DatIoError (dat_read.h),
 ///        which is rethrown: dat I/O failure is an error, not a warning.
 void run_section(std::vector<std::string>& warnings, const char* name, const std::function<void()>& run);
@@ -108,9 +108,12 @@ std::vector<std::string> absent_chunk_warnings(const std::vector<std::pair<std::
 WorldScene load_world(Gw2Dat& dat, uint32_t mapFileId, const nlohmann::json& tpl);
 
 /// @brief A compact JSON description of a scene (no geometry):
-///        {map, bounds, terrain:{chunks:[x,y], resolvedMaterials}, models,
-///        props, animatedProps, collision:{meshes, instances},
-///        water:{surfaces}, sky, warnings}.
+///        {map, bounds ([x0, y0, x1, y1] or null), terrain:{present,
+///        chunks:[x, y], resolvedMaterials}, models, props, animatedProps,
+///        collision:{meshes, instances}, water:{plane, planeZ (null without
+///        a plane), surfaces, rivers}, sky:{present, modes, clouds,
+///        lightPresent}, warnings}. Counts only: no per-chunk materials and
+///        no frame (map space as stored, frame.h).
 nlohmann::json world_summary(const WorldScene& w);
 
 } // namespace castlemist::world

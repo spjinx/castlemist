@@ -91,15 +91,16 @@ TerrainLayout terrain_layout(uint32_t dimX, uint32_t dimY, uint32_t vertsPerChun
 
 Terrain build_terrain(const castlemist::model::Extractor::MapTerrain& t, std::vector<std::string>& warnings) {
     Terrain out;
+    // §2: the terrain is placed by parm.rect, which is also the map's bounds;
+    // without it there is nothing to place it by. This is the only warning
+    // for a missing rect (load_world adds none of its own).
+    if (!t.hasRect)
+        warnings.push_back("terrain: no parm rect; no terrain placed and the map has no bounds (no rect is invented)");
     if (t.heights.empty() || t.dimX == 0 || t.dimY == 0) {
         warnings.push_back("terrain: no trn height samples; map has no terrain");
         return out;
     }
-    // §2: the terrain is placed by parm.rect; without it there is nothing to place it by.
-    if (!t.hasRect) {
-        warnings.push_back("terrain: no parm rect; terrain left out (no rect is invented)");
-        return out;
-    }
+    if (!t.hasRect) return out;
     const float X0 = t.rect[0], Y0 = t.rect[1], X1 = t.rect[2], Y1 = t.rect[3];
     if (!(X1 > X0) || !(Y1 > Y0)) {
         warnings.push_back("terrain: parm rect is empty or inverted; terrain left out");

@@ -70,22 +70,22 @@ void build_collision(const castlemist::model::Extractor::MapHavok& h, WorldScene
     }
 
     if (badPlacements)
-        out.warnings.push_back(std::to_string(badPlacements) +
-                               " collision placements reference a geometry, animation or collision index out of "
+        out.warnings.push_back("collision: " + std::to_string(badPlacements) +
+                               " placements reference a geometry, animation or collision index out of "
                                "range; those references were skipped");
     if (otherSequence)
-        out.warnings.push_back(std::to_string(otherSequence) +
-                               " collision placements use animations[last] (T3D's rule, UNPROVEN, see "
+        out.warnings.push_back("collision: " + std::to_string(otherSequence) +
+                               " placements use animations[last] (T3D's rule, UNPROVEN, see "
                                "gw2-world-frame.md §7.1) rather than the animation their sequence names");
     if (noAnimation)
-        out.warnings.push_back(std::to_string(noAnimation) +
-                               " collision placements name a geometry with no animations; no hulls placed");
+        out.warnings.push_back("collision: " + std::to_string(noAnimation) +
+                               " placements name a geometry with no animations; no hulls placed");
     if (zeroScale)
-        out.warnings.push_back(std::to_string(zeroScale) +
-                               " collision placements have scale 0; kept, so their hulls collapse to a point");
+        out.warnings.push_back("collision: " + std::to_string(zeroScale) +
+                               " placements have scale 0; kept, so their hulls collapse to a point");
     if (droppedFaces)
-        out.warnings.push_back(std::to_string(droppedFaces) +
-                               " collision triangles index past their hull's vertices; dropped");
+        out.warnings.push_back("collision: " + std::to_string(droppedFaces) +
+                               " triangles index past their hull's vertices; dropped");
 }
 
 } // namespace castlemist::world

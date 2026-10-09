@@ -7,11 +7,16 @@ description: "The frame WorldScene keeps a GW2 map in (map space as stored): axe
 
 Research for the World Engine data core
 (spec `docs/superpowers/specs/2026-10-08-world-data-core-design.md`,
-plan `docs/superpowers/plans/2026-10-08-world-data-core.md`, Task 3). Done
+plan `docs/superpowers/plans/2026-10-08-world-data-core.md`). Done
 2026-10-08. `WorldScene` keeps everything in **map space as stored**; this
 note proves what that space is and fixes the conversions in
-`include/castlemist/world/frame.h` / `src/world/frame.cpp`. Later sections
-(terrain, props, collision, water) are added by later tasks.
+`include/castlemist/world/frame.h` / `src/world/frame.cpp` (§1-§2), then
+the terrain chunk layout (§3), terrain materials (§4), props (§5), water and
+environment (§6) and collision (§7). Every warning `load_world` emits starts
+with its section or chunk (`terrain:`, `terrain materials:`, `props:`,
+`collision:`, `water:`, `watr:`, `havk:`, `rive:`, `shor:`, `env:`,
+`environment:`, `chunk ...`, `units:`), and every line about something
+UNPROVEN carries the literal token `UNPROVEN`.
 
 ## Evidence base
 
@@ -68,7 +73,8 @@ Four independent lines of evidence, two of them from data alone:
    - The stored heights and the stored prop z are in **the same sign**:
      `|z − h|` is 33 / 89 against 2483 / 1745 for `|z + h|`. No negation is
      needed between `trn.heightMapArray` and prop positions. (Spirit Vale's
-     T3D terrain placement is suspect, Task 2. It still favours `z − h` by 5x.)
+     large gap is not a placement error, §3.3: its raid is built on prop
+     floors above the terrain. It still favours `z − h` by 5x.)
    - The gap's tail is one-sided: props that are far from the ground sit at
      **smaller z** than the terrain under them (p10 −431 and −1306, p90 +118
      and +83). Props on bridges, roofs, upper floors and ledges are above the
@@ -196,8 +202,9 @@ map_to_blender(x, y, z) = ( x,  y, -z )   // Blender: RH, +Z up, +Y = north
 
 **`WorldScene::bounds` = `parm.rect` as stored, `[x0, y0, x1, y1]` in map
 space, x0 < x1, y0 < y1. A map without a `parm` chunk, or whose `parm` has no
-`rect` field, has no bounds: `hasBounds = false`, a warning in
-`WorldScene::warnings`, and no invented rect.**
+`rect` field, has no bounds: `hasBounds = false`, one warning in
+`WorldScene::warnings` (`terrain: no parm rect; no terrain placed and the map
+has no bounds ...`, from `build_terrain`), and no invented rect.**
 
 Evidence:
 
@@ -428,8 +435,8 @@ world layer and none of its rules returns:
   and the sample count (§3.2);
 - rows placed south → north from `rect[1]` (terrain flipped north-south) →
   north → south from `rect[3]` (§3.3);
-- `±3072` rect when there is none → no terrain and a `"no parm rect"`
-  warning (§2);
+- `±3072` rect when there is none → no terrain and a `"terrain: no parm
+  rect"` warning (§2);
 - heights more than 4000 from the median clamped to the median → no clamp;
   heights as stored.
 
@@ -936,10 +943,10 @@ untested ...`.
   light is brightest (the day rig).
 
 Both are present on all three maps (`world_dat.environment_sky_present`). A
-map without them gets a warning (`env: no sky ...`, `env: no light rig
-...`). The env water presets (§6.1) are counted and named in `warnings`, not
-read. Also not attached, and counted in one warning (`env: N other dataGlobal
-lighting presets and M per-zone blocks (...) not attached`):
+map without them gets a warning (`environment: no sky ...`, `environment:
+no light rig ...`). The env water presets (§6.1) are counted and named in `warnings`, not
+read. Also not attached, and counted in one warning (`environment: N other
+dataGlobal lighting presets and M per-zone blocks (...) not attached`):
 - the other dataGlobal `lighting` presets: 3 presets on every test map, so
   2 are dropped;
 - the per-zone `dataLocalArray` and `dataOverrideArray` blocks, each with
@@ -954,20 +961,23 @@ dat-free rule, tested by `cm_test_world environment_names_unattached`.
 - `watr: no template struct for watr vN; chunk not read`, or `watr: N
   waterSurfaces not read: surface struct ... lacks ...`: a present chunk
   that could not be read.
-- `watr V0 not read (...)`: a V0 `watr`, which has no `waterSurfaces`.
+- `watr: V0 not read (...)`: a V0 `watr`, which has no `waterSurfaces`.
 - `watr: waterPlaneZ has no outline: ...`: the water is drawn at
   `waterPlaneZ` is UNPROVEN, and so is its coverage (§6.2).
 - `watr: waterFlags N kept as stored; meaning UNPROVEN`.
 - `rive: N rivers' points not read (...)`: `points` element not float3.
-- `shor: N shore chains read ... untested ...`: §6.4.
-- `env: N other dataGlobal lighting presets and M per-zone blocks (...) not
-  attached ...`: §6.5.
+- `shor: N shore chains read ..., UNPROVEN on real data ...`: §6.4.
+- `environment: N other dataGlobal lighting presets and M per-zone blocks
+  (...) not attached ...`: §6.5 (and `environment: no sky ...`,
+  `environment: no light rig ...`, `environment: sky not read: ...`).
 - `watr: N waterSurfaces kept as stored; waterSurfaceFlags meaning UNPROVEN ...`
 - `water: watr waterPlaneZ A differs from havk waterSurfaceZ B ...`
 - `havk: N waterVolumes not read ...`
 - `rive: N rivers read as centrelines only; ...`, §6.3.
 - `env: N water presets (...) not read`
-- `<chunk> not read: <error>`: one reader threw; the others still load.
+- `<chunk>: not read: <error>` (`watr:`, `rive:`, `shor:`; `havk: water not
+  read: ...`, `env: water presets not read: ...`): one reader threw; the
+  others still load.
 
 ## 7. Collision: hulls placed by obs, prop and zone models
 
@@ -1067,7 +1077,7 @@ code that picks a geometry's animation for a placement.
 `sequence` (by name, kind `qword`; only `propModels` has one).
 `build_collision` counts the placements whose geometry has 2+ animations and
 whose `sequence` differs from `animations[last].sequence`, and emits one
-warning: "`N` collision placements use animations[last] (T3D's rule,
+warning: "collision: `N` placements use animations[last] (T3D's rule,
 UNPROVEN, see gw2-world-frame.md §7.1) rather than the animation their
 sequence names". `world_dat.collision_matches_reference` requires exactly
 this warning, with N = 1188 / 658 / 108.
@@ -1148,7 +1158,7 @@ counts instance origins inside the union of chunk rects: 12998 / 13010
   does (`HavokRenderer.ts:298-316`), and the drops are counted in one warning.
 - A placement whose `geometryIndex`, last animation index or any collision
   index is out of range keeps whatever does resolve. It is counted once, in
-  one warning: "`N` collision placements reference a geometry, animation or
+  one warning: "collision: `N` placements reference a geometry, animation or
   collision index out of range" (pure test `collision_bad_indices_skipped`).
   T3D would throw on the bad geometry and silently skip the rest.
 - Placements whose geometry has no animations (no hulls placed), and

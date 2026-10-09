@@ -214,8 +214,15 @@ CM_TEST(world, terrain_no_rect_warns) {
     CHECK_FALSE(terr.present);
     CHECK(terr.chunks.empty());
     bool found = false;
-    for (const auto& w : warnings) found = found || w.find("no parm rect") != std::string::npos;
+    for (const auto& w : warnings) found = found || w.rfind("terrain: no parm rect", 0) == 0;
     CHECK(found);
+    CHECK_EQ(warnings.size(), size_t(1));   // the one missing-rect line (load_world adds none)
+    // No samples either: the rect is still named, with the missing samples.
+    t.heights.clear();
+    warnings.clear();
+    castlemist::world::build_terrain(t, warnings);
+    CHECK_EQ(warnings.size(), size_t(2));
+    CHECK(!warnings.empty() && warnings[0].rfind("terrain: no parm rect", 0) == 0);
 }
 
 // §3.2: with verticesPerChunkSide present, dims = chunks * segments is checked.
@@ -414,7 +421,7 @@ CM_TEST(world, collision_bad_indices_skipped) {
     CHECK(scene.collision.instances.empty());
     size_t mentions = 0;
     for (const auto& w : scene.warnings)
-        if (w.find("2 collision placements") != std::string::npos) ++mentions;
+        if (w.find("collision: 2 placements") != std::string::npos) ++mentions;
     CHECK_EQ(scene.warnings.size(), size_t(1));
     CHECK_EQ(mentions, size_t(1));
 }
@@ -447,9 +454,9 @@ CM_TEST(world, collision_suspect_placements_warned) {
         return n;
     };
     CHECK_EQ(scene.warnings.size(), size_t(3));
-    CHECK_EQ(has("1 collision placements use animations[last]"), size_t(1));
-    CHECK_EQ(has("1 collision placements name a geometry with no animations"), size_t(1));
-    CHECK_EQ(has("1 collision placements have scale 0"), size_t(1));
+    CHECK_EQ(has("collision: 1 placements use animations[last]"), size_t(1));
+    CHECK_EQ(has("collision: 1 placements name a geometry with no animations"), size_t(1));
+    CHECK_EQ(has("collision: 1 placements have scale 0"), size_t(1));
 }
 
 // ---- water (docs/research/gw2-world-frame.md §6) ----
@@ -477,7 +484,7 @@ CM_TEST(world, water_v0_warns) {
     castlemist::world::build_water(in, scene);
     CHECK(!scene.water.hasPlane);
     CHECK(scene.water.surfaces.empty());
-    CHECK_EQ(warnings_starting(scene, "watr V0 not read"), size_t(1));
+    CHECK_EQ(warnings_starting(scene, "watr: V0 not read"), size_t(1));
 }
 
 // §6: no water data means no water and no warning: nothing is invented.
@@ -539,13 +546,13 @@ CM_TEST(world, water_copies_sources_and_names_gaps) {
     CHECK_EQ(w.shore.chains.size(), size_t(1));
     CHECK_EQ(warnings_starting(scene, "watr: waterPlaneZ has no outline"), size_t(1));
     CHECK_EQ(warnings_starting(scene, "watr: waterFlags 3 kept as stored; meaning UNPROVEN"), size_t(1));
-    CHECK_EQ(warnings_starting(scene, "shor: 1 shore chains read with field names after T3D's SHOR.ts; untested"),
+    CHECK_EQ(warnings_starting(scene, "shor: 1 shore chains read with field names after T3D's SHOR.ts, UNPROVEN"),
              size_t(1));
     CHECK_EQ(warnings_starting(scene, "watr: 1 waterSurfaces"), size_t(1));
     CHECK_EQ(warnings_starting(scene, "rive: 1 rivers"), size_t(1));
     CHECK_EQ(warnings_starting(scene, "havk: 2 waterVolumes not read"), size_t(1));
     CHECK_EQ(warnings_starting(scene, "env: 6 water presets"), size_t(1));
-    CHECK_EQ(warnings_starting(scene, "watr V0 not read"), size_t(0));
+    CHECK_EQ(warnings_starting(scene, "watr: V0 not read"), size_t(0));
     CHECK_EQ(warnings_starting(scene, "water: watr waterPlaneZ"), size_t(0));   // the two heights agree
 }
 
@@ -579,7 +586,7 @@ CM_TEST(world, water_unread_parts_named) {
     castlemist::world::WorldScene scene;
     castlemist::world::build_water(in, scene);
     CHECK_EQ(warnings_starting(scene, "watr: no template struct for watr v7"), size_t(1));
-    CHECK_EQ(warnings_starting(scene, "watr V0 not read"), size_t(0));
+    CHECK_EQ(warnings_starting(scene, "watr: V0 not read"), size_t(0));
     CHECK_EQ(warnings_starting(scene, "rive: 2 rivers' points not read"), size_t(1));
     CHECK(!scene.water.hasPlane);
 }
@@ -602,15 +609,15 @@ CM_TEST(world, environment_names_unattached) {
     CHECK_EQ(scene.environment.sky.starFile, uint32_t(42));
     CHECK_EQ(scene.environment.light.lightCount, 2);
     CHECK_EQ(scene.warnings.size(), size_t(1));
-    CHECK_EQ(warnings_starting(scene, "env: 2 other dataGlobal lighting presets and 13 per-zone blocks "
+    CHECK_EQ(warnings_starting(scene, "environment: 2 other dataGlobal lighting presets and 13 per-zone blocks "
                                       "(12 dataLocalArray, 1 dataOverrideArray"),
              size_t(1));
 
     castlemist::world::WorldScene empty;
     castlemist::world::build_environment({}, empty);
     CHECK_EQ(empty.warnings.size(), size_t(2));
-    CHECK_EQ(warnings_starting(empty, "env: no sky"), size_t(1));
-    CHECK_EQ(warnings_starting(empty, "env: no light rig"), size_t(1));
+    CHECK_EQ(warnings_starting(empty, "environment: no sky"), size_t(1));
+    CHECK_EQ(warnings_starting(empty, "environment: no light rig"), size_t(1));
 }
 
 // ---- load_world's error policy (no dat needed) ----
@@ -627,7 +634,7 @@ CM_TEST(world, run_section_names_a_failure_and_carries_on) {
     castlemist::world::run_section(warnings, "collision", [&] { ++ran; });
     CHECK_EQ(ran, 1);
     CHECK_EQ(warnings.size(), size_t(1));
-    CHECK_EQ(warnings[0], std::string("exception in props: boom; section left empty"));
+    CHECK_EQ(warnings[0], std::string("props: exception: boom; section left empty"));
 }
 
 // Dat I/O failure is an error everywhere: run_section rethrows DatIoError
