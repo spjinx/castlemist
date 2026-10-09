@@ -1820,7 +1820,13 @@ public:
         std::vector<float> points;  // x,y pairs, at height `z` in map space
     };
     struct MapWater {
-        bool present = false;
+        bool present = false;                 ///< at least one surface was read
+        bool chunk = false;                   ///< the map has a `watr` chunk
+        uint16_t version = 0;                 ///< its chunk version
+        bool hasSurfacesField = false;        ///< the version has `waterSurfaces` (V1; V0 has not)
+        bool hasPlane = false;                ///< `waterPlaneZ` read (V1)
+        float planeZ = 0;                     ///< `waterPlaneZ` as stored, map-space z
+        uint32_t flags = 0;                   ///< `waterFlags` as stored (V1)
         std::vector<MapWaterSurface> surfaces;
     };
 
@@ -1829,8 +1835,16 @@ public:
         std::string root; uint16_t ver = 0;
         size_t w = findChunk("watr", &root, &ver);
         if (!w || root.empty()) return out;
+        out.chunk = true;
+        out.version = ver;
         size_t off; json f;
+        if (fieldOffset(root, "waterPlaneZ", off, f) && f.value("kind", std::string()) == "float") {
+            out.planeZ = rdf(w + off);
+            out.hasPlane = true;
+        }
+        if (fieldOffset(root, "waterFlags", off, f) && f.value("kind", std::string()) == "dword") out.flags = rd32(w + off);
         if (!fieldOffset(root, "waterSurfaces", off, f)) return out;
+        out.hasSurfacesField = true;
         std::string st = f["element"].value("struct", std::string());
         int ss = typeSize(st);
         uint32_t sn = 0; size_t sbase = arrayAt(w + off, sn);
@@ -1927,6 +1941,99 @@ public:
         }
         out.present = !out.chains.empty();
         return out;
+    }
+
+    /// @brief The `havk` chunk's water fields (docs/research/gw2-world-frame.md §6).
+    struct MapHavokWater {
+        bool present = false;                 ///< the map has a havk chunk
+        bool hasSurfaceZ = false;             ///< the version has `waterSurfaceZ` (15+)
+        float surfaceZ = 0;                   ///< `waterSurfaceZ` as stored, map-space z
+        uint32_t waterVolumes = 0;            ///< `waterVolumes` count (15+; not read further)
+    };
+
+    /// @brief Read havk's water height and water-volume count by field name,
+    ///        without its hulls (parseHavok reads those).
+    MapHavokWater parseHavokWater() {
+        MapHavokWater out;
+        std::string root; uint16_t ver = 0;
+        const size_t h = findChunk("havk", &root, &ver);
+        if (!h || root.empty()) return out;
+        out.present = true;
+        size_t off; json f;
+        if (fieldOffset(root, "waterSurfaceZ", off, f) && f.value("kind", std::string()) == "float") {
+            out.surfaceZ = rdf(h + off);
+            out.hasSurfaceZ = true;
+        }
+        out.waterVolumes = fieldArray(root, "waterVolumes", h).n;
+        return out;
+    }
+
+    /// @brief River centrelines from the `rive` chunk (docs/research/gw2-world-frame.md §6.3).
+    struct MapRivers {
+        struct River {
+            std::string name;                 ///< `name` ("" where the version has none)
+            std::vector<float> points;        ///< `points`: x,y,z triples, map space
+        };
+        bool present = false;                 ///< at least one river was read
+        uint16_t version = 0;
+        std::vector<River> rivers;
+    };
+
+    /// @brief Read each river's name and centreline points by field name.
+    ///
+    /// Width, tessellation and materials are not read: older versions store
+    /// them as named fields, but the test maps' versions (5, 6) keep them in a
+    /// `properties` bag keyed by unnamed hashes.
+    MapRivers parseRivers() {
+        MapRivers out;
+        std::string root; uint16_t ver = 0;
+        const size_t r = findChunk("rive", &root, &ver);
+        if (!r || root.empty()) return out;
+        out.version = ver;
+        const FieldArray rv = fieldArray(root, "rivers", r);
+        for (uint32_t i = 0; i < rv.n; ++i) {
+            const size_t e = rv.base + (size_t)i * rv.stride;
+            MapRivers::River river;
+            size_t o; json fj;
+            if (fieldOffset(rv.type, "name", o, fj) && fj.value("kind", std::string()) == "wchar_ptr")
+                river.name = readWString(follow(e + o));
+            const FieldArray pts = fieldArray(rv.type, "points", e);
+            if (pts.stride == 12) {
+                river.points.reserve(3ull * pts.n);
+                for (uint32_t k = 0; k < 3 * pts.n; ++k) river.points.push_back(rdf(pts.base + 4ull * k));
+            }
+            out.rivers.push_back(std::move(river));
+        }
+        out.present = !out.rivers.empty();
+        return out;
+    }
+
+    /// @brief How many water presets (PackMapEnvDataWater) the `env` chunk
+    ///        holds: `water` of dataGlobal, of each dataLocalArray entry and of
+    ///        each dataOverrideArray entry. They are not read further.
+    uint32_t countEnvWaterPresets() {
+        std::string root; uint16_t ver = 0;
+        const size_t env = findChunk("env", &root, &ver);
+        if (!env || root.empty()) return 0;
+        // `water` count of one env data block of type `t` at `at`.
+        auto waterIn = [&](const std::string& t, size_t at) -> uint32_t {
+            size_t o; json fj;
+            if (t.empty() || !at || !fieldOffset(t, "water", o, fj)) return 0;
+            const std::string k = fj.value("kind", std::string());
+            if (k != "ptr_array_ptr" && k != "array_ptr") return 0;
+            uint32_t n = 0;
+            return arrayAt(at + o, n) ? n : 0;
+        };
+        uint32_t total = 0;
+        size_t off; json f;
+        if (fieldOffset(root, "dataGlobal", off, f) && f.value("kind", std::string()) == "ptr" &&
+            f.contains("target") && f["target"].is_object())
+            total += waterIn(f["target"].value("struct", std::string()), follow(env + off));
+        for (const char* arr : {"dataLocalArray", "dataOverrideArray"}) {
+            const FieldArray a = fieldArray(root, arr, env);
+            for (uint32_t i = 0; i < a.n; ++i) total += waterIn(a.type, a.base + (size_t)i * a.stride);
+        }
+        return total;
     }
 
     // Map navigation mesh, bounding-box level only: from `nm15` (falling back

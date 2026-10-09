@@ -1,6 +1,6 @@
 ---
 name: gw2-world-frame
-description: "The frame WorldScene keeps a GW2 map in (map space as stored): axes, handedness, Z sign, units, map bounds, the terrain chunk layout, terrain materials and blend pages, prop and collision placements, and the exact map -> Unity / map -> Blender conversions. Source of truth for castlemist::world and every later world export; anything unproven is marked UNPROVEN."
+description: "The frame WorldScene keeps a GW2 map in (map space as stored): axes, handedness, Z sign, units, map bounds, the terrain chunk layout, terrain materials and blend pages, prop and collision placements, water and environment, and the exact map -> Unity / map -> Blender conversions. Source of truth for castlemist::world and every later world export; anything unproven is marked UNPROVEN."
 ---
 
 # GW2 world frame: axes, units, bounds
@@ -695,6 +695,206 @@ union of the terrain's chunk rects (`build_terrain`, §3) is 11667 / 11687
 (99.83%) on 192711, 18532 / 18571 (99.79%) on 191000 and 2423 / 2425 (99.92%)
 on 1151420. The test requires at least 99%. The stragglers are placements
 just outside the map rect; they are kept, not clipped.
+
+## 6. Water and environment
+
+**On Queensdale and Lion's Arch the visible water is one flat plane at the
+height `watr.waterPlaneZ` = 0. The terrain below it is the maps' rivers,
+lakes, bay and sea. No chunk outlines the area the plane covers: that is
+UNPROVEN. `havk.waterSurfaceZ` stores the same height. Neither map has
+`watr` surfaces, rivers or a shore chunk. Spirit Vale has no water plane.
+Its seven `rive` rivers are read as centrelines, but most float far above
+the ground, so whether they are drawn as water is UNPROVEN.** Implemented
+in `Extractor::parseWater` (plane and flags added), `parseHavokWater`,
+`parseRivers` and `countEnvWaterPresets`
+(`include/castlemist/native/gw2model.hpp`), then `build_water` /
+`attach_water` / `attach_environment` (`src/world/load_world.cpp`). Nothing
+is flood-filled and no plane is made up. A map with no water data gets no
+water.
+
+### Evidence base and how to reproduce it
+
+- **Template** (`dumps/packfile/gw2_packfile.json`):
+  - `watr` v0 `PackMapWaterV0` = `{waterFoamData: byte[], waterChunks:
+    dword[]}`.
+  - `watr` v1 `PackMapWaterV1` = `{waterFlags: dword, waterPlaneZ: float,
+    waterSurfaces: PackMapWaterSurfaceV1[]}`, with each surface `{guid: qword,
+    waterSurfaceFlags: dword, waterSurfaceZ: float, vertices: float2[]}`.
+  - `havk` v15+ has `waterSurfaceZ: float` and `waterVolumes:
+    PackMapCollideWaterVolumeV16[]` = `{guid, name: wchar_ptr, flags,
+    verticalRange: float2, vertices: float2[]}`. v14 has neither.
+  - `rive` v5/v6 `MapRiver_*` = `{guid, name: wchar_ptr, properties:
+    {type: dword, val: qword, strVal: filename}[], points: float3[],
+    reaches: {properties[]}[]}`. v0-v4 had named `width`, `xTessellation`
+    and `materials` fields instead.
+  - `shor` v2/v3 `MapShore` = `{chains[]}`.
+  - Each `env` data block (dataGlobal, dataLocalArray[i],
+    dataOverrideArray[i]) has `water: PackMapEnvDataWaterV*[]`: material,
+    textures, colours, wave and foam parameters. It has no geometry.
+- **Generic parse of each map** (`gw2dat_cli parse --dat <dat> --template
+  dumps/packfile/gw2_packfile.json --file-id <id> --max-depth 12 --out
+  <file>`): the trees give every chunk's version and the values quoted
+  below. The dumps are 350-600 MB and are not committed.
+- **In the repo** (`GW2_TEST_DAT=<dat> build/debug/bin/cm_test_world_dat.exe
+  world_dat`):
+  - `water_matches_reference` and `water_sources_per_map` (§6.1).
+  - `water_plane_traces_water_bodies`: set `CM_WORLD_DIAG_DIR=<dir>` and it
+    also writes the §6.2 pictures as `water_mask_<id>.ppm`.
+  - `water_plane_is_where_props_float` (§6.2) and
+    `water_rivers_read_as_stored` (§6.3), which print their measurements.
+  - `environment_sky_present` (§6.5).
+  - `cm_test_world water_*` tests the rules on hand-made input.
+- **T3D**: never reads `watr`. It draws one flat plane at three.js `Y = 0`,
+  i.e. map z = 0, over the terrain bounds (`TerrainRenderer.ts:180-190,
+  556`; `tools/world/README.md`). The references therefore check only that
+  the fields are read: 0 surfaces on every map, planeZ 0 and havk 0 on
+  Queensdale and Lion's Arch, no `watr` on Spirit Vale. **A 0-vs-0 match
+  is not evidence of where the water is.**
+
+### 6.1 What each map stores
+
+| | Queensdale 192711 | Lion's Arch 191000 | Spirit Vale 1151420 |
+|---|---|---|---|
+| `watr` | v1: waterFlags 1, waterPlaneZ 0, 0 surfaces | v1: waterFlags 1, waterPlaneZ 0, 0 surfaces | absent |
+| `havk` | v16: waterSurfaceZ 0, 0 waterVolumes | v16: waterSurfaceZ 0, 0 waterVolumes | v14: no water fields |
+| `rive` | v6: 0 rivers | v6: 0 rivers | v5: 7 rivers |
+| `shor` | absent | absent | absent |
+| `env` water presets | 39 (13 blocks × 3) | 21 (7 × 3) | 27 (9 × 3) |
+
+So on these maps the only water geometry is the plane height and Spirit
+Vale's river centrelines. There are no `watr` surfaces (so no
+`waterSurfaceFlags` to interpret), no shore chains and no water volumes. The
+plane and the havk height agree exactly on both maps that have them.
+`build_water` warns when they differ. Every env block with water holds
+exactly 3 presets, which matches the 3 lighting presets (time of day),
+though that pairing is not proven.
+
+### 6.2 The plane is the visible water; its coverage is UNPROVEN
+
+1. *Two chunks, one height.* `watr` is the render-side water chunk and
+   `havk` the collision chunk. Both store 0 (`waterPlaneZ`,
+   `waterSurfaceZ`).
+2. *The terrain below the plane is the maps' water bodies.* On a 600-cell
+   grid over the terrain (`world_dat.water_plane_traces_water_bodies`;
+   cells whose terrain z > planeZ, since up = −Z, §1):
+
+   | map | cells below the plane | 4-connected components | largest |
+   |---|---|---|---|
+   | Queensdale | 23 946 / 244 200 (9.8%) | 9 | 23 392 (97.7%) |
+   | Lion's Arch | 57 207 / 226 800 (25.2%) | 13 | 53 624 (93.7%) |
+
+   - Queensdale: the picture is a connected river network running across
+     the map with lakes along it and a large lake in the south-east.
+   - Lion's Arch: the bay opens to the sea in the south-west, with the
+     canals and harbour basins.
+   - These are the maps' known water bodies, not scattered pits. With
+     +Z up the "water" would be 90% and 75% of the map.
+
+   The test asserts only what can be stated without the pictures: between
+   1% and 50% of the map, and one component holding at least half. Those
+   bounds were chosen after looking.
+3. *Props over the water sit near the plane.* Take the props over terrain
+   at least 64 below the plane that are not on that terrain (`|z − h| ≥
+   16`). They are 267 on Queensdale and 1368 on Lion's Arch.
+   - Counts by 16-unit band of `z − planeZ`:
+     - Queensdale: −16: 21, 0: 14, +16: 63; no other band above 3.
+     - Lion's Arch: −32: 108 (docks and walkways ~32 above the water),
+       −16: 15, 0: 23; the next largest is −96: 17.
+   - The criterion stated before measuring was "the band centred on planeZ
+     is the most common". It is **false** on both maps.
+   - What is asserted holds by a factor of 3: a 112-unit window centred on
+     planeZ holds at least twice as many as any other such window (105 vs
+     34; 183 vs 56). This criterion was chosen after seeing the histogram.
+   - This places the water within tens of units of planeZ. It does not
+     prove planeZ itself; item 1 does that.
+
+**UNPROVEN: the area the plane covers.** The dat gives a height only. A
+plane drawn over the whole map and depth-tested against the terrain looks
+the same as item 2's region. That is what T3D does and what the old viewer's
+flood fill (`src/extract/map_scene.cpp`, water where all four corners of a
+terrain cell are below `waterZ`) approximates. What the game does with a
+basin below the plane that is cut off from the sea is not known. Queensdale
+has a few small components that may be such basins. `attach_water` names
+this in `warnings`. **What would prove it:** the client's water draw call
+(its world matrix and extent, captured as `gw2-sky.md` did for the sky), or
+a capture of one of those small components in game.
+
+**`waterFlags`** is 1 on both maps; its meaning is UNPROVEN.
+**`waterSurfaceFlags`** cannot be interpreted: no test map has a surface.
+The relation between `havk.waterSurfaceZ` and the surfaces is therefore
+untested. On these maps havk's height equals the plane's.
+
+### 6.3 Rivers (`rive`)
+
+`parseRivers` reads each river's `name` and `points` (float3, map space) by
+field name. Checked against the generic parser:
+- Names: Gorseval02, Bandit01, SoulRiverEntrance01, SoulRiverEntrance02,
+  BanditFall, GorsevalGhostMans, Bandit02.
+- Point counts: 14, 8, 12, 6, 5, 11, 5.
+- First point: (1213.247437, −2816.633789, −3574.578125).
+- Every point lies inside the terrain rects.
+
+Width, tessellation, flow and materials sit in `properties` bags keyed by
+unnamed hashes. Some `strVal` entries are fileIds, e.g. 996093, 1151369,
+1151371, 980467. These bags are not read, so no river surface is built.
+
+Where the points sit, measured by `water_rivers_read_as_stored`.
+`collision` counts the points with a placed havk triangle within 128 units
+vertically at their (x, y):
+
+| river | points | z − terrain, median (min, max) | collision within 128 |
+|---|---|---|---|
+| Gorseval02 | 14 | −1631 (−1823, −1594) | 0 |
+| Bandit01 | 8 | −472 (−2453, +2630) | 0 |
+| SoulRiverEntrance01 | 12 | −625 (−857, +1504) | 3 |
+| SoulRiverEntrance02 | 6 | −667 (−942, +76) | 0 |
+| BanditFall | 5 | −29 (−85, −0.2) | 3 |
+| GorsevalGhostMans | 11 | −890 (−949, −734) | 1 |
+| Bandit02 | 5 | −565 (−885, +1511) | 1 |
+
+- The criterion stated before measuring was "75% of points have collision
+  within 128". It is **false**: 8 of 61.
+- Only BanditFall follows the ground, 0-85 units above it.
+- Gorseval02 is a closed loop at constant z ≈ −3577, about 1600 above the
+  ground.
+- The rest float hundreds of units up. That fits Spirit Vale's spectral
+  "soul rivers", but nothing here proves what they are.
+
+So `Water::rivers` holds the centrelines as stored, and `attach_water`
+warns that river surfaces cannot be built and that whether a river is drawn
+as water is UNPROVEN.
+
+### 6.4 Shore (`shor`)
+
+None of the three maps has a `shor` chunk. `parseShore` reads `chains[]`
+(offset, opacity, animation speed, edge size, flags, points, material,
+textures, after T3D's `SHOR.ts` field names) into `Water::shore` when a map
+has one. It is untested on real data here.
+
+### 6.5 Environment
+
+`attach_environment` stores:
+- `parseMapSky()`: the `env` chunk's dataGlobal sky modes, clouds, cards and
+  parameters, as `gw2-sky.md` documents.
+- `parseMapEnv()` with the auto preset: the lighting preset whose strongest
+  light is brightest (the day rig).
+
+Both are present on all three maps (`world_dat.environment_sky_present`). A
+map without them gets a warning (`env: no sky ...`, `env: no light rig
+...`). The env water presets (§6.1) are counted and named in `warnings`, not
+read. Per-zone `dataLocalArray` sky and lighting overrides are not attached
+either.
+
+### 6.6 Warnings `attach_water` emits
+
+- `watr V0 not read (...)`: a V0 `watr`, which has no `waterSurfaces`.
+- `watr: waterPlaneZ has no outline: ...`: the plane's coverage, §6.2.
+- `watr: N waterSurfaces kept as stored; waterSurfaceFlags meaning UNPROVEN ...`
+- `water: watr waterPlaneZ A differs from havk waterSurfaceZ B ...`
+- `havk: N waterVolumes not read ...`
+- `rive: N rivers read as centrelines only; ...`, §6.3.
+- `env: N water presets (...) not read`
+- `<chunk> not read: <error>`: one reader threw; the others still load.
 
 ## 7. Collision: hulls placed by obs, prop and zone models
 

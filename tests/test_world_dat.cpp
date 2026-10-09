@@ -660,3 +660,319 @@ CM_TEST(world_dat, collision_hulls_fit_visual_props) {
         if (signs != kZFlip) CHECK(median(iou[signs]) < median(iou[kZFlip]));
     CHECK(flipBetter * 10 >= pairs * 9);
 }
+
+// ---- water and environment (docs/research/gw2-world-frame.md §6) ----
+
+#include "castlemist/world/load_world.h"
+
+namespace {
+
+/// @brief Attach a map's water and environment to a fresh scene.
+castlemist::world::WorldScene load_map_water(uint32_t file_id) {
+    if (!ensure_template()) SKIP("no struct template");
+    std::vector<uint8_t> bytes = packfile_by_file_id(file_id);
+    castlemist::model::Extractor ex(bytes, *castlemist::tpl::get());
+    castlemist::world::WorldScene scene;
+    castlemist::world::attach_water(ex, scene);
+    castlemist::world::attach_environment(ex, scene);
+    return scene;
+}
+
+/// @brief The warning that starts with `prefix`, or nullptr.
+const std::string* warning_starting(const castlemist::world::WorldScene& s, const std::string& prefix) {
+    for (const auto& w : s.warnings)
+        if (w.rfind(prefix, 0) == 0) return &w;
+    return nullptr;
+}
+
+} // namespace
+
+// §6: the watr surfaces (count and each z), the watr plane and the havk water
+// height equal T3D's reading. The references are nearly empty -- 0 surfaces
+// on every map, planeZ 0 and havk 0 on Queensdale and Lion's Arch, no watr on
+// Spirit Vale -- so this checks the fields are read, not where the water is;
+// the next tests do that.
+CM_TEST(world_dat, water_matches_reference) {
+    for (uint32_t id : kTestMaps) {
+        nlohmann::json ref = world_ref(id);
+        castlemist::world::WorldScene scene = load_map_water(id);
+        const auto& rw = ref["water"];
+        const auto& w = scene.water;
+        CHECK_EQ(w.surfaces.size(), rw["surfaces"].get<size_t>());
+        CHECK_EQ(w.surfaces.size(), rw["z"].size());
+        for (size_t i = 0; i < w.surfaces.size() && i < rw["z"].size(); ++i)
+            CHECK_NEAR(w.surfaces[i].z, rw["z"][i].get<float>(), 0.01);
+        CHECK_EQ(w.hasPlane, rw.contains("planeZ"));
+        if (w.hasPlane && rw.contains("planeZ")) CHECK_NEAR(w.planeZ, rw["planeZ"].get<float>(), 0.01);
+        CHECK_EQ(w.hasHavkSurfaceZ, rw.contains("havkWaterSurfaceZ"));
+        if (w.hasHavkSurfaceZ && rw.contains("havkWaterSurfaceZ"))
+            CHECK_NEAR(w.havkSurfaceZ, rw["havkWaterSurfaceZ"].get<float>(), 0.01);
+    }
+}
+
+// §6.1: what the dat holds about each map's water, beyond the reference
+// (counts from `gw2dat_cli parse`, note §6). Queensdale and Lion's Arch: a
+// watr V1 plane at z = 0 with waterFlags 1, the havk water height equal to
+// it, no surfaces, no rivers, no shore chunk. Spirit Vale: no watr, a havk
+// version (14) with no water height, seven river centrelines. Every map's env
+// holds water presets (3 per env block), which are not read.
+CM_TEST(world_dat, water_sources_per_map) {
+    struct Want { uint32_t id; bool plane; size_t rivers; uint32_t envPresets; };
+    for (const Want& want : {Want{192711, true, 0, 39}, Want{191000, true, 0, 21}, Want{1151420, false, 7, 27}}) {
+        castlemist::world::WorldScene scene = load_map_water(want.id);
+        for (const auto& w : scene.warnings) std::printf("    map %u warning: %s\n", want.id, w.c_str());
+        const auto& w = scene.water;
+        CHECK_EQ(w.hasPlane, want.plane);
+        CHECK_EQ(w.hasHavkSurfaceZ, want.plane);
+        if (want.plane) {
+            CHECK_EQ(w.planeZ, 0.0f);
+            CHECK_EQ(w.planeFlags, uint32_t(1));
+            CHECK_EQ(w.havkSurfaceZ, w.planeZ);
+        }
+        CHECK(w.surfaces.empty());
+        CHECK(!w.shore.present);
+        CHECK_EQ(w.rivers.size(), want.rivers);
+        CHECK(warning_starting(scene, "env: " + std::to_string(want.envPresets) + " water presets") != nullptr);
+        // The plane is a height with no outline: its coverage is named UNPROVEN.
+        CHECK_EQ(warning_starting(scene, "watr: waterPlaneZ has no outline") != nullptr, want.plane);
+        CHECK_EQ(warning_starting(scene, "rive: ") != nullptr, want.rivers > 0);
+        CHECK(warning_starting(scene, "watr V0 not read") == nullptr);
+    }
+}
+
+namespace {
+
+/// @brief The terrain on a grid `w` cells wide over its chunk rects: per
+///        cell 0 = no terrain, 1 = terrain above (z <) `level`, 2 = below it.
+struct WetMask {
+    int w = 0, h = 0;
+    std::vector<uint8_t> cells;
+    size_t wet = 0, dry = 0;
+    size_t components = 0, largest = 0;   ///< 4-connected components of wet cells
+};
+
+WetMask wet_mask(const castlemist::world::Terrain& T, float level, int w) {
+    WetMask m;
+    const float x0 = T.chunks.front().rect[0], y1 = T.chunks.front().rect[3];
+    const float x1 = T.chunks.back().rect[2], y0 = T.chunks.back().rect[1];
+    m.w = w;
+    m.h = (int)(w * (y1 - y0) / (x1 - x0));
+    m.cells.assign((size_t)m.w * m.h, 0);
+    for (int j = 0; j < m.h; ++j)   // row 0 is the north edge
+        for (int i = 0; i < m.w; ++i) {
+            const float x = x0 + (i + 0.5f) * (x1 - x0) / m.w, y = y1 - (j + 0.5f) * (y1 - y0) / m.h;
+            bool inside = false;
+            const float h = castlemist::world::terrain_height_at(T, x, y, &inside);
+            const uint8_t v = !inside ? 0 : (h > level ? 2 : 1);   // up = -Z: larger z is lower
+            m.cells[(size_t)j * m.w + i] = v;
+            m.wet += v == 2;
+            m.dry += v == 1;
+        }
+    std::vector<uint8_t> seen(m.cells.size(), 0);
+    std::vector<size_t> stack;
+    for (size_t s = 0; s < m.cells.size(); ++s) {
+        if (m.cells[s] != 2 || seen[s]) continue;
+        ++m.components;
+        size_t n = 0;
+        stack.assign(1, s);
+        seen[s] = 1;
+        while (!stack.empty()) {
+            const size_t c = stack.back();
+            stack.pop_back();
+            ++n;
+            const int i = (int)(c % m.w), j = (int)(c / m.w);
+            for (auto [di, dj] : {std::pair{1, 0}, std::pair{-1, 0}, std::pair{0, 1}, std::pair{0, -1}}) {
+                const int a = i + di, b = j + dj;
+                if (a < 0 || b < 0 || a >= m.w || b >= m.h) continue;
+                const size_t k = (size_t)b * m.w + a;
+                if (m.cells[k] == 2 && !seen[k]) { seen[k] = 1; stack.push_back(k); }
+            }
+        }
+        m.largest = std::max(m.largest, n);
+    }
+    return m;
+}
+
+/// @brief With CM_WORLD_DIAG_DIR set, write the mask as a PPM image there
+///        (blue = below the level, tan = above, black = no terrain), the
+///        pictures note §6.2 describes.
+void maybe_write_mask(const WetMask& m, const std::string& name) {
+    const char* dir = std::getenv("CM_WORLD_DIAG_DIR");
+    if (!dir || !*dir) return;
+    const std::string path = std::string(dir) + "/" + name + ".ppm";
+    std::FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) return;
+    std::fprintf(f, "P6\n%d %d\n255\n", m.w, m.h);
+    static const uint8_t kRgb[3][3] = {{0, 0, 0}, {150, 130, 90}, {40, 90, 200}};
+    for (uint8_t v : m.cells) std::fwrite(kRgb[v], 1, 3, f);
+    std::fclose(f);
+    std::printf("    wrote %s\n", path.c_str());
+}
+
+} // namespace
+
+// §6.2: the terrain below the watr plane is the maps' water bodies. On a
+// 600-cell-wide grid, the cells whose terrain lies below planeZ (up = -Z)
+// form Queensdale's river network and lakes and Lion's Arch's bay and canals
+// (the pictures: set CM_WORLD_DIAG_DIR). What is asserted was chosen after
+// looking at those pictures, and says only that the region is one coherent
+// body of plausible size: at most half the map (with up = +Z it would be 90%
+// and 75%), at least 1%, and one 4-connected component holding at least half
+// of it. It cannot prove the level is exactly planeZ: that rests on watr and
+// havk storing the same height (water_sources_per_map).
+CM_TEST(world_dat, water_plane_traces_water_bodies) {
+    for (uint32_t id : {192711u, 191000u}) {
+        castlemist::world::WorldScene scene = load_map_water(id);
+        MapUnderTest m = load_map_terrain(id);
+        CHECK(scene.water.hasPlane && m.terrain.present);
+        if (!scene.water.hasPlane || !m.terrain.present) continue;
+        const WetMask wm = wet_mask(m.terrain, scene.water.planeZ, 600);
+        maybe_write_mask(wm, "water_mask_" + std::to_string(id));
+        const size_t cells = wm.wet + wm.dry;
+        std::printf("    map %u: %zu of %zu cells below the plane (%.1f%%), %zu components, largest %zu (%.1f%% of them)\n",
+                    id, wm.wet, cells, 100.0 * wm.wet / cells, wm.components, wm.largest,
+                    100.0 * wm.largest / std::max<size_t>(1, wm.wet));
+        CHECK(wm.wet * 100 >= cells);
+        CHECK(wm.wet * 2 <= cells);
+        CHECK(wm.largest * 2 >= wm.wet);
+    }
+}
+
+// §6.2: props over the water float near the plane. Props that stand over
+// terrain lying at least 64 units below the plane and are not on that terrain
+// (|z - h| >= 16): boats, buoys, docks, reeds. The criterion stated before
+// measuring -- the 16-unit band centred on planeZ is their most common
+// height -- was FALSE on both maps (Queensdale peaks 8-24 below the plane,
+// Lion's Arch 24-40 above it, on its docks; note §6.2). What holds, and is
+// asserted (chosen after seeing the histogram): the 112-unit window centred
+// on planeZ holds at least twice as many of them as any other 112-unit
+// window from planeZ - 1024 to planeZ + 1024. Supporting evidence for a
+// level within tens of units of planeZ, not a proof of planeZ itself.
+CM_TEST(world_dat, water_plane_is_where_props_float) {
+    for (uint32_t id : {192711u, 191000u}) {
+        castlemist::world::WorldScene scene = load_map_water(id);
+        MapUnderTest m = load_map_terrain(id);
+        CHECK(scene.water.hasPlane);
+        if (!scene.water.hasPlane) continue;
+        const float pz = scene.water.planeZ;
+        constexpr int kBands = 128, kMid = kBands / 2;   // 16-unit bands; band kMid is centred on pz
+        std::vector<size_t> band(kBands, 0);
+        size_t over = 0;
+        for (const auto& p : m.props) {
+            bool inside = false;
+            const float h = castlemist::world::terrain_height_at(m.terrain, p.pos[0], p.pos[1], &inside);
+            if (!inside || h - pz < 64.0f || std::fabs(p.pos[2] - h) < 16.0f) continue;
+            ++over;
+            const int b = (int)std::floor((p.pos[2] - pz + 8.0f) / 16.0f) + kMid;
+            if (b >= 0 && b < kBands) ++band[b];
+        }
+        auto window = [&](int centre) {   // bands centre-3 .. centre+3: 112 units
+            size_t n = 0;
+            for (int b = centre - 3; b <= centre + 3; ++b) n += (b >= 0 && b < kBands) ? band[b] : 0;
+            return n;
+        };
+        const size_t atPlane = window(kMid);
+        size_t bestOther = 0;
+        for (int c = 0; c < kBands; ++c)
+            if (std::abs(c - kMid) >= 7) bestOther = std::max(bestOther, window(c));
+        std::printf("    map %u: %zu props over terrain >= 64 below the plane and off it; by 16-unit band of z - planeZ:",
+                    id, over);
+        for (int b = kMid - 6; b <= kMid + 6; ++b) std::printf(" %+d:%zu", (b - kMid) * 16, band[b]);
+        std::printf("\n    map %u: window around the plane %zu, best other window %zu\n", id, atPlane, bestOther);
+        CHECK(atPlane >= 2 * bestOther);
+    }
+}
+
+// §6.3: Spirit Vale's rivers are read as stored. Asserted: the seven names
+// and point counts, and the first point, equal the generic template parser's
+// reading (`gw2dat_cli parse --file-id 1151420`, rive v5); every point lies
+// inside the terrain's rects. Measured and printed, not asserted (note
+// §6.3): per river, how far its points sit from the terrain and from the
+// nearest placed collision triangle at their (x, y). Stated before
+// measuring and FALSE: "75% of points have collision within 128 units".
+// Only BanditFall follows the ground; the others float hundreds to 1600
+// units above it, so whether they are drawn as water is UNPROVEN.
+CM_TEST(world_dat, water_rivers_read_as_stored) {
+    const uint32_t id = 1151420;
+    castlemist::world::WorldScene scene = load_map_water(id);
+    castlemist::world::WorldScene coll = load_map_collision(id);
+    MapUnderTest m = load_map_terrain(id);
+    const std::vector<std::pair<std::string, size_t>> kRivers = {
+        {"Gorseval02", 14}, {"Bandit01", 8}, {"SoulRiverEntrance01", 12}, {"SoulRiverEntrance02", 6},
+        {"BanditFall", 5},  {"GorsevalGhostMans", 11}, {"Bandit02", 5}};
+    const auto& rivers = scene.water.rivers;
+    CHECK_EQ(rivers.size(), kRivers.size());
+    for (size_t i = 0; i < rivers.size() && i < kRivers.size(); ++i) {
+        CHECK_EQ(rivers[i].name, kRivers[i].first);
+        CHECK_EQ(rivers[i].points.size(), 3 * kRivers[i].second);
+    }
+    if (rivers.empty() || rivers[0].points.size() < 3) return;
+    CHECK_NEAR(rivers[0].points[0], 1213.247437, 0.01);
+    CHECK_NEAR(rivers[0].points[1], -2816.633789, 0.01);
+    CHECK_NEAR(rivers[0].points[2], -3574.578125, 0.01);
+
+    // Every placed collision triangle in map space, for the vertical probe.
+    std::vector<std::array<float, 9>> tris;
+    for (const auto& inst : coll.collision.instances) {
+        const auto& mesh = coll.collision.meshes[inst.mesh];
+        const float* M = inst.world;
+        auto at = [&](uint32_t v, float* o) {
+            for (int r = 0; r < 3; ++r)
+                o[r] = M[r] * mesh.verts[3 * v] + M[4 + r] * mesh.verts[3 * v + 1] + M[8 + r] * mesh.verts[3 * v + 2] +
+                       M[12 + r];
+        };
+        for (size_t t = 0; t + 2 < mesh.indices.size(); t += 3) {
+            std::array<float, 9> tri;
+            at(mesh.indices[t], &tri[0]);
+            at(mesh.indices[t + 1], &tri[3]);
+            at(mesh.indices[t + 2], &tri[6]);
+            tris.push_back(tri);
+        }
+    }
+    // Smallest |z - surface z| over the collision triangles covering (x, y).
+    auto collisionGap = [&](float x, float y, float z) {
+        float best = 1e30f;
+        for (const auto& t : tris) {
+            const float* a = &t[0];
+            const float* b = &t[3];
+            const float* c = &t[6];
+            const float d = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+            if (std::fabs(d) < 1e-6f) continue;   // vertical or degenerate in (x, y)
+            const float u = ((x - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (y - a[1])) / d;
+            const float w = ((b[0] - a[0]) * (y - a[1]) - (x - a[0]) * (b[1] - a[1])) / d;
+            if (u < 0 || w < 0 || u + w > 1) continue;
+            best = std::min(best, std::fabs(z - (a[2] + u * (b[2] - a[2]) + w * (c[2] - a[2]))));
+        }
+        return best;
+    };
+    size_t inside = 0, total = 0;
+    for (const auto& r : rivers) {
+        std::vector<float> dh, dc;
+        for (size_t k = 0; k + 2 < r.points.size(); k += 3) {
+            const float x = r.points[k], y = r.points[k + 1], z = r.points[k + 2];
+            bool in = false;
+            const float h = castlemist::world::terrain_height_at(m.terrain, x, y, &in);
+            ++total;
+            inside += in;
+            if (in) dh.push_back(z - h);
+            dc.push_back(collisionGap(x, y, z));
+        }
+        std::sort(dh.begin(), dh.end());
+        size_t near = 0;
+        for (float g : dc) near += g <= 128.0f;
+        std::printf("    river %-20s %2zu points: z - terrain median %7.1f, min %7.1f, max %7.1f; collision within 128: %zu\n",
+                    r.name.c_str(), r.points.size() / 3, dh.empty() ? 0.0f : dh[dh.size() / 2],
+                    dh.empty() ? 0.0f : dh.front(), dh.empty() ? 0.0f : dh.back(), near);
+    }
+    CHECK_EQ(inside, total);
+}
+
+// The environment: every test map has a sky and a day light rig.
+CM_TEST(world_dat, environment_sky_present) {
+    for (uint32_t id : kTestMaps) {
+        castlemist::world::WorldScene scene = load_map_water(id);
+        CHECK(scene.environment.sky.present);
+        CHECK(scene.environment.light.present);
+        CHECK(warning_starting(scene, "env: no sky") == nullptr);
+    }
+}

@@ -412,3 +412,115 @@ CM_TEST(world, collision_suspect_placements_warned) {
     CHECK_EQ(has("1 collision placements name a geometry with no animations"), size_t(1));
     CHECK_EQ(has("1 collision placements have scale 0"), size_t(1));
 }
+
+// ---- water (docs/research/gw2-world-frame.md §6) ----
+
+#include "castlemist/world/load_world.h"
+
+namespace {
+
+/// @brief How many of `s.warnings` start with `prefix`.
+size_t warnings_starting(const castlemist::world::WorldScene& s, const std::string& prefix) {
+    size_t n = 0;
+    for (const auto& w : s.warnings) n += w.rfind(prefix, 0) == 0;
+    return n;
+}
+
+} // namespace
+
+// §6: a V0 watr (no waterSurfaces field) is named, not silently empty, and
+// gives no plane.
+CM_TEST(world, water_v0_warns) {
+    castlemist::world::WaterSources in;
+    in.watr.chunk = true;
+    in.watr.version = 0;
+    castlemist::world::WorldScene scene;
+    castlemist::world::build_water(in, scene);
+    CHECK(!scene.water.hasPlane);
+    CHECK(scene.water.surfaces.empty());
+    CHECK_EQ(warnings_starting(scene, "watr V0 not read"), size_t(1));
+}
+
+// §6: no water data means no water and no warning: nothing is invented.
+CM_TEST(world, water_absent_is_empty) {
+    castlemist::world::WorldScene scene;
+    scene.water.hasPlane = true;   // replaced, not kept
+    castlemist::world::build_water({}, scene);
+    CHECK(!scene.water.hasPlane);
+    CHECK(!scene.water.hasHavkSurfaceZ);
+    CHECK(scene.water.surfaces.empty());
+    CHECK(scene.water.rivers.empty());
+    CHECK(!scene.water.shore.present);
+    CHECK(scene.warnings.empty());
+}
+
+// §6: the plane, havk height, surfaces, rivers and shore are copied as
+// stored; the plane's coverage, the surfaces' flags, the rivers' unread
+// properties, havk water volumes and env water presets are named.
+CM_TEST(world, water_copies_sources_and_names_gaps) {
+    castlemist::world::WaterSources in;
+    in.watr.chunk = true;
+    in.watr.version = 1;
+    in.watr.hasSurfacesField = true;
+    in.watr.hasPlane = true;
+    in.watr.planeZ = -12.5f;
+    in.watr.flags = 3;
+    castlemist::model::Extractor::MapWaterSurface s;
+    s.z = 7;
+    s.flags = 2;
+    s.points = {0, 0, 1, 0, 1, 1};
+    in.watr.surfaces = {s};
+    in.watr.present = true;
+    in.havk.hasSurfaceZ = true;
+    in.havk.surfaceZ = -12.5f;
+    in.havk.waterVolumes = 2;
+    castlemist::model::Extractor::MapRivers::River r;
+    r.name = "Brook";
+    r.points = {1, 2, 3, 4, 5, 6};
+    in.rivers.rivers = {r};
+    in.rivers.present = true;
+    in.shore.present = true;
+    in.shore.chains.resize(1);
+    in.envWaterPresets = 6;
+    castlemist::world::WorldScene scene;
+    castlemist::world::build_water(in, scene);
+    const auto& w = scene.water;
+    CHECK(w.hasPlane);
+    CHECK_EQ(w.planeZ, -12.5f);
+    CHECK_EQ(w.planeFlags, uint32_t(3));
+    CHECK(w.hasHavkSurfaceZ);
+    CHECK_EQ(w.havkSurfaceZ, -12.5f);
+    CHECK_EQ(w.surfaces.size(), size_t(1));
+    CHECK_EQ(w.surfaces[0].z, 7.0f);
+    CHECK(w.surfaces[0].points == s.points);
+    CHECK_EQ(w.rivers.size(), size_t(1));
+    CHECK_EQ(w.rivers[0].name, std::string("Brook"));
+    CHECK(w.rivers[0].points == r.points);
+    CHECK(w.shore.present);
+    CHECK_EQ(w.shore.chains.size(), size_t(1));
+    CHECK_EQ(warnings_starting(scene, "watr: waterPlaneZ has no outline"), size_t(1));
+    CHECK_EQ(warnings_starting(scene, "watr: 1 waterSurfaces"), size_t(1));
+    CHECK_EQ(warnings_starting(scene, "rive: 1 rivers"), size_t(1));
+    CHECK_EQ(warnings_starting(scene, "havk: 2 waterVolumes not read"), size_t(1));
+    CHECK_EQ(warnings_starting(scene, "env: 6 water presets"), size_t(1));
+    CHECK_EQ(warnings_starting(scene, "watr V0 not read"), size_t(0));
+    CHECK_EQ(warnings_starting(scene, "water: watr waterPlaneZ"), size_t(0));   // the two heights agree
+}
+
+// §6: the watr plane and the havk water height disagreeing is named; both
+// are kept as stored.
+CM_TEST(world, water_plane_havk_disagree_warns) {
+    castlemist::world::WaterSources in;
+    in.watr.chunk = true;
+    in.watr.version = 1;
+    in.watr.hasSurfacesField = true;
+    in.watr.hasPlane = true;
+    in.watr.planeZ = 0;
+    in.havk.hasSurfaceZ = true;
+    in.havk.surfaceZ = 40;
+    castlemist::world::WorldScene scene;
+    castlemist::world::build_water(in, scene);
+    CHECK_EQ(scene.water.planeZ, 0.0f);
+    CHECK_EQ(scene.water.havkSurfaceZ, 40.0f);
+    CHECK_EQ(warnings_starting(scene, "water: watr waterPlaneZ"), size_t(1));
+}

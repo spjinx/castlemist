@@ -79,8 +79,24 @@ struct CollisionInstance {
 
 struct Collision { std::vector<CollisionMesh> meshes; std::vector<CollisionInstance> instances; };
 
+/// @brief A river's centreline (`rive` chunk), as stored.
+struct River {
+    std::string name;                       ///< `name` as stored ("" where the version has none)
+    std::vector<float> points;              ///< x,y,z triples, map space (up = -Z)
+};
+
+/// @brief The map's water as the dat describes it (docs/research/gw2-world-frame.md §6).
 struct Water {
-    std::vector<castlemist::model::Extractor::MapWaterSurface> surfaces;
+    /// `watr` V1 `waterPlaneZ`: the map's water level, map-space z. It is a
+    /// height only; no chunk outlines the area it covers (§6.2).
+    bool hasPlane = false;
+    float planeZ = 0;
+    uint32_t planeFlags = 0;                ///< `watr` V1 `waterFlags` as stored (meaning UNPROVEN)
+    /// `havk` `waterSurfaceZ` (collision versions 15+), map-space z.
+    bool hasHavkSurfaceZ = false;
+    float havkSurfaceZ = 0;
+    std::vector<castlemist::model::Extractor::MapWaterSurface> surfaces;   ///< `watr` V1 `waterSurfaces`
+    std::vector<River> rivers;
     castlemist::model::Extractor::MapShore shore;
 };
 
