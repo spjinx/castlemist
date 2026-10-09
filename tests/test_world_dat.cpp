@@ -1018,6 +1018,16 @@ CM_TEST(world_dat, load_world_three_maps) {
             CHECK(s.rfind("exception", 0) != 0);
             if (s.find("exception") != std::string::npos) std::printf("    map %u warning: %s\n", id, s.c_str());
         }
+        // Unread chunks are named; the chunks the sections read never are.
+        size_t unread = 0;
+        for (const std::string& s : w.warnings)
+            if (s.rfind("chunk ", 0) == 0) {
+                ++unread;
+                for (const char* read : {"trn", "parm", "prp2", "havk", "env", "watr", "shor", "rive"})
+                    CHECK(s.rfind(std::string("chunk ") + read + " ", 0) != 0);
+            }
+        CHECK(unread > 0);
+        CHECK(warning_starting(w, "chunk zon2 v") != nullptr);
         const std::string* u = warning_starting(w, "units: ");
         CHECK(u != nullptr);
         if (u) CHECK(u->find("UNPROVEN") != std::string::npos);

@@ -573,3 +573,43 @@ CM_TEST(world, environment_names_unattached) {
     CHECK_EQ(warnings_starting(empty, "env: no sky"), size_t(1));
     CHECK_EQ(warnings_starting(empty, "env: no light rig"), size_t(1));
 }
+
+// ---- load_world's error policy (no dat needed) ----
+
+#include "castlemist/world/load_world.h"
+
+#include <stdexcept>
+
+// A section that throws is named, and the sections after it still run.
+CM_TEST(world, run_section_names_a_failure_and_carries_on) {
+    std::vector<std::string> warnings;
+    int ran = 0;
+    castlemist::world::run_section(warnings, "props", [&] { throw std::runtime_error("boom"); });
+    castlemist::world::run_section(warnings, "collision", [&] { ++ran; });
+    CHECK_EQ(ran, 1);
+    CHECK_EQ(warnings.size(), size_t(1));
+    CHECK_EQ(warnings[0], std::string("exception in props: boom; section left empty"));
+}
+
+// A template without `types` is its own error, thrown before the dat is touched.
+CM_TEST(world, missing_template_throws) {
+    Gw2Dat dat;
+    bool threw = false;
+    try {
+        castlemist::world::load_world(dat, 192711, nlohmann::json::object());
+    } catch (const std::runtime_error& e) {
+        threw = std::string(e.what()) == "struct template missing 'types'";
+    }
+    CHECK(threw);
+}
+
+// Read chunks are never listed; each unread chunk is listed once.
+CM_TEST(world, unread_chunk_warnings_skip_consumed_and_dedupe) {
+    const std::vector<std::pair<std::string, uint16_t>> chunks = {
+        {"parm", 1}, {"trn", 2}, {"prp2", 3}, {"havk", 4}, {"env", 5}, {"watr", 1}, {"shor", 1}, {"rive", 1},
+        {"zon2", 22}, {"zon2", 22}, {"dcal", 10}};
+    const auto w = castlemist::world::unread_chunk_warnings(chunks);
+    CHECK_EQ(w.size(), size_t(2));
+    CHECK_EQ(w[0], std::string("chunk zon2 v22 not read"));
+    CHECK_EQ(w[1], std::string("chunk dcal v10 not read"));
+}

@@ -12,6 +12,10 @@
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
+#include <functional>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace castlemist::world {
 
@@ -64,6 +68,16 @@ void build_environment(const EnvSources& in, WorldScene& out);
 ///        warnings of build_environment. Never throws for bad data.
 void attach_environment(castlemist::model::Extractor& ex, WorldScene& out);
 
+/// @brief Run one load step; an exception becomes the warning
+///        "exception in <name>: <what>; section left empty" and the caller
+///        carries on with the next step.
+void run_section(std::vector<std::string>& warnings, const char* name, const std::function<void()>& run);
+
+/// @brief One "chunk <fourcc> v<ver> not read" warning per distinct chunk in
+///        @p chunks (fourcc, version) that no section reads. The chunks that
+///        are read: parm, trn, prp2, havk, watr, shor, rive, env.
+std::vector<std::string> unread_chunk_warnings(const std::vector<std::pair<std::string, uint16_t>>& chunks);
+
 /// @brief Load a map packfile into a WorldScene.
 ///
 /// Runs terrain, terrain materials, props, collision, water and environment,
@@ -72,7 +86,9 @@ void attach_environment(castlemist::model::Extractor& ex, WorldScene& out);
 /// section reads is listed as `"chunk <fourcc> v<ver> not read"`, and a
 /// `"units: ..."` warning records that map units per metre are UNPROVEN
 /// (§1.3).
-/// @throws std::runtime_error on dat I/O failure, when @p mapFileId is not in
+/// @throws std::runtime_error when @p tpl has no `types` ("struct template
+///         missing 'types'", checked first), on a read or decompress failure
+///         ("file <id>: cannot read: ..."), when @p mapFileId is not in
 ///         the dat, or when the file is not a map: no `trn`, `parm`, `prp2`
 ///         or `havk` chunk (`"file <id> is not a map packfile"`). Bad map
 ///         data never throws.

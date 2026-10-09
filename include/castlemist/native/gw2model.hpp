@@ -1605,9 +1605,9 @@ public:
         while (pos + 16 <= n_) {
             char fourcc[5] = {0};
             std::memcpy(fourcc, d_ + pos, 4);
-            out.emplace_back(fourcc, rd16(pos + 8));
             const size_t next = pos + 8 + rd32(pos + 4);
-            if (next <= pos) break;
+            if (next <= pos || next > n_) break;   // a truncated final chunk is not listed
+            out.emplace_back(fourcc, rd16(pos + 8));
             pos = next;
         }
         return out;

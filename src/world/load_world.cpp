@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <set>
 #include <stdexcept>
@@ -154,26 +155,58 @@ void attach_environment(castlemist::model::Extractor& ex, WorldScene& out) {
     build_environment(in, out);
 }
 
+void run_section(std::vector<std::string>& warnings, const char* name, const std::function<void()>& run) {
+    try {
+        run();
+    } catch (const std::exception& what) {
+        warnings.push_back(std::string("exception in ") + name + ": " + what.what() + "; section left empty");
+    }
+}
+
+std::vector<std::string> unread_chunk_warnings(const std::vector<std::pair<std::string, uint16_t>>& chunks) {
+    // The chunks the sections read, by the findChunk calls of their readers: parm and trn
+    // (parseTerrain, parseTerrainMaterials), prp2 (parseMapProps), havk (parseHavok,
+    // parseHavokWater), watr, shor, rive (parseWater, parseShore, parseRivers) and env
+    // (parseMapSky, parseMapEnv, countEnv, countEnvWaterPresets).
+    static const std::set<std::string> kRead = {"parm", "trn", "prp2", "havk", "watr", "shor", "rive", "env"};
+    std::vector<std::string> out;
+    std::set<std::string> seen;
+    for (const auto& [fourcc, ver] : chunks) {
+        if (kRead.count(fourcc)) continue;
+        std::string line = "chunk " + fourcc + " v" + std::to_string(ver) + " not read";
+        if (seen.insert(line).second) out.push_back(std::move(line));
+    }
+    return out;
+}
+
 WorldScene load_world(Gw2Dat& dat, uint32_t mapFileId, const nlohmann::json& tpl) {
     using Ex = castlemist::model::Extractor;
     const std::string id = std::to_string(mapFileId);
 
+    // A template problem is its own error, checked before anything is read.
+    if (!tpl.is_object() || !tpl.contains("types") || !tpl["types"].is_object())
+        throw std::runtime_error("struct template missing 'types'");
+
     const uint32_t base = get_by_base_id(dat, mapFileId);
     if (base == 0 || base > dat.mft_data_list.size()) throw std::runtime_error("file " + id + " is not in the dat");
     const MftData& e = dat.mft_data_list[base - 1];
-    std::vector<uint8_t> raw = read_entry_bytes(dat.file_info.file_path, e);   // I/O failure propagates
 
+    // A read or decompress failure is an I/O error with its own message, not "not a map".
     std::vector<uint8_t> bytes;
-    std::vector<std::pair<std::string, uint16_t>> chunks;
+    try {
+        std::vector<uint8_t> raw = read_entry_bytes(dat.file_info.file_path, e);
+        bytes = e.compression_flag ? castlemist::cmp::decompress_entry(raw) : raw;
+    } catch (const std::exception& what) {
+        throw std::runtime_error("file " + id + ": cannot read: " + what.what());
+    }
+
     std::unique_ptr<Ex> ex;
     try {
-        bytes = e.compression_flag ? castlemist::cmp::decompress_entry(raw) : raw;
-        ex = std::make_unique<Ex>(bytes, tpl);
-        chunks = ex->chunkList();
-    } catch (const std::exception& what) {
-        if (std::string(what.what()).find("template") != std::string::npos) throw;   // a bad template is an error
+        ex = std::make_unique<Ex>(bytes, tpl);   // throws "not a PF packfile" for anything else
+    } catch (const std::exception&) {
         throw std::runtime_error("file " + id + " is not a map packfile");
     }
+    const std::vector<std::pair<std::string, uint16_t>> chunks = ex->chunkList();
 
     // A file with none of the chunks a map is made of is not a map.
     auto has = [&](const char* fourcc) {
@@ -185,13 +218,7 @@ WorldScene load_world(Gw2Dat& dat, uint32_t mapFileId, const nlohmann::json& tpl
     WorldScene w;
     w.mapFileId = mapFileId;
     // One failing section leaves its part empty and is named; the rest still load.
-    auto section = [&](const char* name, auto&& run) {
-        try {
-            run();
-        } catch (const std::exception& what) {
-            w.warnings.push_back(std::string("exception in ") + name + ": " + what.what() + "; section left empty");
-        }
-    };
+    auto section = [&](const char* name, const std::function<void()>& run) { run_section(w.warnings, name, run); };
 
     section("terrain", [&] {
         const Ex::MapTerrain trn = ex->parseTerrain();
@@ -207,20 +234,22 @@ WorldScene load_world(Gw2Dat& dat, uint32_t mapFileId, const nlohmann::json& tpl
         if (!w.terrain.present) return;
         resolve_terrain_materials(w.terrain, ex->parseTerrainMaterials(), dat, tpl, w.warnings);
     });
-    section("props", [&] { build_props(ex->parseMapProps(), w); });
-    section("collision", [&] { build_collision(ex->parseHavok(), w); });
+    // A chunk that is present but whose reader returns nothing (no template root for its
+    // version) is named, not counted as read.
+    section("props", [&] {
+        const auto props = ex->parseMapProps();
+        if (has("prp2") && props.empty()) w.warnings.push_back("props: prp2 chunk present but no props were read");
+        build_props(props, w);
+    });
+    section("collision", [&] {
+        const auto havok = ex->parseHavok();
+        if (has("havk") && !havok.present) w.warnings.push_back("collision: havk chunk present but not read");
+        build_collision(havok, w);
+    });
     section("water", [&] { attach_water(*ex, w); });
     section("environment", [&] { attach_environment(*ex, w); });
 
-    // The chunks the sections above read, by the findChunk calls of the readers
-    // they use: parm and trn (parseTerrain, parseTerrainMaterials), prp2
-    // (parseMapProps), havk (parseHavok, parseHavokWater), watr, shor, rive
-    // (parseWater, parseShore, parseRivers) and env (parseMapSky, parseMapEnv,
-    // countEnv, countEnvWaterPresets). Every other chunk is named, not dropped.
-    static const std::set<std::string> kRead = {"parm", "trn", "prp2", "havk", "watr", "shor", "rive", "env"};
-    for (const auto& [fourcc, ver] : chunks)
-        if (!kRead.count(fourcc))
-            w.warnings.push_back("chunk " + fourcc + " v" + std::to_string(ver) + " not read");
+    for (std::string& line : unread_chunk_warnings(chunks)) w.warnings.push_back(std::move(line));
 
     w.warnings.push_back(
         "units: map units per metre are UNPROVEN; coordinates are kept as stored (nothing in the template "
