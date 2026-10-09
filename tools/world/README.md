@@ -45,6 +45,36 @@ geometry's `animations[]` entries are and which one a placement's own
 node tools/world/havk_sequences.mjs --t3d <t3d> --map-bytes <tmp>/192711.bin
 ```
 
+## `--diagnose`
+
+`t3d_reference.mjs ... --diagnose` (with or without `--out`) prints on stderr
+the z-sign statistics behind `docs/research/gw2-world-frame.md` §1.1 items
+2-3: per map, `|z - h|` and `|z + h|` over every `propArray` prop with T3D's
+terrain under it, the percentiles of `z - h`, and the sign split of every
+stored height with the `havk` water height. Numbers only:
+
+```bash
+node tools/world/t3d_reference.mjs --t3d <t3d> --map-bytes <tmp>/192711.bin \
+     --file-id 192711 --diagnose
+```
+
+## Measurement programs (`measure_terrain.cpp`, `measure_materials.cpp`)
+
+The C++ measurements behind the note's §3 (chunk layout and placement
+hypotheses) and §4 (terrain materials, pages, the page-seam orientation
+test). They read the maps from the dat with castlemist's own parser and print
+numbers only. Off by default; build and run with:
+
+```bash
+cmake --preset debug -DCASTLEMIST_WORLD_MEASURE=ON
+cmake --build --preset debug --target world_measure_terrain world_measure_materials
+./build/debug/bin/world_measure_terrain.exe   "$GW2_TEST_DAT" dumps/packfile/gw2_packfile.json 192711 191000 1151420
+./build/debug/bin/world_measure_materials.exe "$GW2_TEST_DAT" dumps/packfile/gw2_packfile.json 192711 191000 1151420
+```
+
+What each line means is in the program's header comment and in the note's
+"Evidence base" subsections of §3 and §4.
+
 ## Spaces
 
 - **Map space**: GW2 coordinates as stored in the map file.

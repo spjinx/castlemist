@@ -14,6 +14,12 @@
 // Usage:
 //   node tools/world/t3d_reference.mjs --t3d <t3d checkout> \
 //        --map-bytes <decompressed map packfile> --file-id <id> --out <json>
+//   node tools/world/t3d_reference.mjs --t3d <t3d checkout> \
+//        --map-bytes <decompressed map packfile> --file-id <id> --diagnose
+//
+// --diagnose prints (stderr) the z-sign statistics of
+// docs/research/gw2-world-frame.md §1.1 items 2-3 and writes no JSON unless
+// --out is also given.
 //
 // The parser must be built first: `npm ci && npm run build` in <t3d>/parser.
 // See tools/world/README.md for every field's convention.
@@ -30,14 +36,16 @@ function parseArgs(argv) {
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         if (!a.startsWith("--")) throw new Error(`unexpected argument: ${a}`);
+        if (a === "--diagnose") { out.diagnose = true; continue; }   // a flag, no value
         const v = argv[i + 1];
         if (v === undefined || v.startsWith("--")) throw new Error(`missing value for ${a}`);
         out[a.slice(2)] = v;
         i++;
     }
-    for (const k of ["t3d", "map-bytes", "file-id", "out"]) {
+    for (const k of ["t3d", "map-bytes", "file-id"]) {
         if (!out[k]) throw new Error(`missing --${k}`);
     }
+    if (!out.out && !out.diagnose) throw new Error("missing --out (or --diagnose)");
     return out;
 }
 
@@ -484,6 +492,35 @@ async function main() {
         const q = (f) => (d.length ? d[Math.floor(f * (d.length - 1))].toFixed(1) : "n/a");
         console.error(`[${fileId}] |prop z - T3D terrain z| over ${d.length} propArray props: p25 ${q(0.25)} median ${q(0.5)} p75 ${q(0.75)}`);
     }
+
+    // --diagnose (stderr): the numbers behind gw2-world-frame.md §1.1 item 2
+    // (the signed gap z - h over every propArray prop, h = T3D's terrain height
+    // as stored under it; the same with h negated) and item 3 (the sign split
+    // of every stored trn.heightMapArray value; the havk water height).
+    if (args.diagnose) {
+        const same = [], flip = [], signed = [];
+        for (const p of prp2?.propArray ?? []) {
+            const h = mapHeightAt(terrain, p.position[0], p.position[1]);
+            if (h === null) continue;
+            same.push(Math.abs(p.position[2] - h));
+            flip.push(Math.abs(p.position[2] + h));
+            signed.push(p.position[2] - h);
+        }
+        const Q = (a, f) => {
+            if (!a.length) return "n/a";
+            const b = [...a].sort((x, y) => x - y);
+            return b[Math.floor(f * (b.length - 1))].toFixed(1);
+        };
+        console.error(`[${fileId}] diagnose: propArray props over terrain n=${same.length}  ` +
+            `median |z-h| ${Q(same, 0.5)}  median |z+h| ${Q(flip, 0.5)}  (z-h) p10 ${Q(signed, 0.1)} ` +
+            `p25 ${Q(signed, 0.25)} median ${Q(signed, 0.5)} p75 ${Q(signed, 0.75)} p90 ${Q(signed, 0.9)}`);
+        let pos = 0, neg = 0, n = 0;
+        for (const v of trn.heightMapArray) { n++; if (v > 0) pos++; else if (v < 0) neg++; }
+        console.error(`[${fileId}] diagnose: stored heights n=${n}  h>0 ${(100 * pos / n).toFixed(1)}%  ` +
+            `h<0 ${(100 * neg / n).toFixed(1)}%  h==0 ${(100 * (n - pos - neg) / n).toFixed(1)}%  ` +
+            `havk waterSurfaceZ ${havk && havk.waterSurfaceZ !== undefined ? havk.waterSurfaceZ : "none"}`);
+    }
+    if (!args.out) return;
 
     fs.mkdirSync(path.dirname(path.resolve(args.out)), { recursive: true });
     fs.writeFileSync(args.out, formatJson(out));

@@ -21,11 +21,16 @@ note proves what that space is and fixes the conversions in
 - **T3D references:** `tests/world_ref/<id>.json`, made by
   `tools/world/t3d_reference.mjs` from T3D commit `b3428b2`
   (conventions in `tools/world/README.md`).
-- **Signed prop/terrain statistics:** a throwaway copy of
-  `t3d_reference.mjs` (scratchpad, not committed) that additionally prints, per
-  map, the signed gap `prop z - terrain h` over every `propArray` prop (h is
-  T3D's terrain height **as stored** under the prop's x, y), the same gap with
-  h negated, and the sign split of every stored `trn.heightMapArray` value.
+- **Signed prop/terrain statistics (§1.1 items 2-3):**
+  `tools/world/t3d_reference.mjs --diagnose` prints, per map, the signed gap
+  `prop z - terrain h` over every `propArray` prop (h is T3D's terrain height
+  **as stored** under the prop's x, y), the same gap with h negated, and the
+  sign split of every stored `trn.heightMapArray` value with the `havk` water
+  height. Command (map bytes from `gw2dat_cli extract`, written outside the
+  repo, as in `tools/world/README.md`):
+  `node tools/world/t3d_reference.mjs --t3d <t3d> --map-bytes <tmp>/<id>.bin
+  --file-id <id> --diagnose`. Re-run 2026-10-09 on the three maps: every
+  number in the §1.1 tables reproduces exactly.
 - **Executable:** `Gw2-64-disable-aslr.exe` (the build `gw2-sky.md` used,
   imagebase `0x140000000`), `objdump -d -M intel`, RIP-relative xrefs found
   by scanning `.text` for displacements.
@@ -240,14 +245,20 @@ the hypothesis that it misplaces Spirit Vale is refuted.** Implemented in
   `terrain_chunk_grid_matches_reference`, `terrain_heights_match_reference`,
   `terrain_adjacent_chunks_share_edges` and `terrain_props_sit_on_terrain`;
   the last prints the §3.3 props-on-terrain counts.
-- **Hypothesis tables (§3.1, §3.3):** a throwaway C++ program (scratchpad,
-  not committed) that includes `castlemist/native/gw2model.hpp`, opens the
-  decompressed map bytes (`gw2dat_cli extract --file-id <id> --out <id>.bin`,
-  as in `tools/world/README.md`) with the template
-  `dumps/packfile/gw2_packfile.json`, and calls `Extractor::parseTerrain()` and
-  `Extractor::parseMapProps()`. Built with
-  `g++ -std=c++20 -O2 -Iinclude -Iexternal/nlohmann-json/single_include measure.cpp`.
-  It reports, per map:
+- **Hypothesis tables (§3.1, §3.3):** `tools/world/measure_terrain.cpp`,
+  which reads each map from the dat with castlemist's own parser
+  (`Extractor::parseTerrain()`, `Extractor::parseMapProps()`, template
+  `dumps/packfile/gw2_packfile.json`). Built and run with:
+
+  ```bash
+  cmake --preset debug -DCASTLEMIST_WORLD_MEASURE=ON
+  cmake --build --preset debug --target world_measure_terrain
+  ./build/debug/bin/world_measure_terrain.exe "$GW2_TEST_DAT" \
+      dumps/packfile/gw2_packfile.json 192711 191000 1151420
+  ```
+
+  Re-run 2026-10-09: every number in the §3.1 and §3.3 tables reproduces
+  exactly. It reports, per map:
   1. for horizontal neighbours `A = (cx, cy)`, `B = (cx+1, cy)`: how many of
      `A[row][32+k] == B[row][k]` hold, `k = 0, 1, 2`, all 35 rows; the same
      for vertical neighbours `A = (cx, cy)`, `B = (cx, cy+1)` with
@@ -459,13 +470,19 @@ ground-texture UV scale is UNPROVEN.** Implemented in
   and `--file-id 190582` (its PIMG) show the fields above with real values.
 - **Tokens** decode with GW2's base-23 Token rule (`decode_token`,
   `src/extract/game_shader.cpp:111-122`).
-- **Measurement program** (scratchpad, not committed): includes
-  `castlemist/native/gw2model.hpp`, `gw2_atex.hpp`, `castlemist/world/terrain.h`;
-  built with `g++ -std=c++20 -O2 -Iinclude
-  -Iexternal/nlohmann-json/single_include measure.cpp -Lbuild/debug/lib
-  -lcastlemist_world -lcastlemist_extract -lcastlemist_native -lcastlemist_core`,
-  run as `measure <Gw2.dat> <template> 192711 191000 1151420`. Per map it
-  calls `parseTerrain` + `build_terrain` (chunk grid), `parseTerrainMaterials`
+- **Measurement program** `tools/world/measure_materials.cpp`, built and run
+  with:
+
+  ```bash
+  cmake --preset debug -DCASTLEMIST_WORLD_MEASURE=ON
+  cmake --build --preset debug --target world_measure_materials
+  ./build/debug/bin/world_measure_materials.exe "$GW2_TEST_DAT" \
+      dumps/packfile/gw2_packfile.json 192711 191000 1151420
+  ```
+
+  Re-run 2026-10-09: every number in §4.1-§4.4 (tokens, page references,
+  hi/lo pairs, tiling, `uvData`, page grids, solid pages, the §4.3 seam
+  table) reproduces exactly. Per map it calls `parseTerrain` + `build_terrain` (chunk grid), `parseTerrainMaterials`
   and, on the PIMG file, `parsePagedImage`, and reports:
   1. the decoded token sequence of every chunk's `loResMaterial.texIndexArray`,
      what kind of entry each token names (filename or page reference), how many

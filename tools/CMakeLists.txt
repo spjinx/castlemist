@@ -48,6 +48,22 @@ castlemist_add_tool(gw2dat_cli
     DEPS    castlemist::native castlemist::character castlemist::ripper castlemist::db castlemist::world ext::json ext::stb shell32)
 
 # -----------------------------------------------------------------------------
+# world_measure_terrain / world_measure_materials -- the measurement programs
+# behind docs/research/gw2-world-frame.md §3 and §4 (numbers only, printed).
+# Off by default: they are evidence for the research note, not tools anyone
+# runs day to day. See tools/world/README.md.
+# -----------------------------------------------------------------------------
+option(CASTLEMIST_WORLD_MEASURE "Build the world research measurement programs (tools/world)" OFF)
+if (CASTLEMIST_WORLD_MEASURE)
+    castlemist_add_tool(world_measure_terrain
+        SOURCES world/measure_terrain.cpp
+        DEPS    castlemist::world castlemist::native ext::json)
+    castlemist_add_tool(world_measure_materials
+        SOURCES world/measure_materials.cpp
+        DEPS    castlemist::world castlemist::native ext::json)
+endif()
+
+# -----------------------------------------------------------------------------
 # The two prototype viewers the renderer was developed against. They predate
 # src/render and are kept because they are small enough to bisect a rendering
 # question in, which the full application is not.
