@@ -92,6 +92,19 @@ castlemist_add_test(dat
     DEPS    castlemist::extract castlemist::exportgltf)
 set_tests_properties(dat PROPERTIES TIMEOUT 600)
 
+castlemist_add_test(world
+    SOURCES test_world.cpp
+    DEPS    castlemist::world)
+
+# World-layer tests against a real Gw2.dat; skip when it is absent.
+castlemist_add_test(world_dat
+    SOURCES test_world_dat.cpp
+    DEPS    castlemist::world castlemist::extract)
+set_tests_properties(world_dat PROPERTIES TIMEOUT 900)
+# T3D reference numbers (tools/world/README.md), read in place.
+target_compile_definitions(cm_test_world_dat PRIVATE
+    CM_WORLD_REF_DIR="${PROJECT_SOURCE_DIR}/tests/world_ref")
+
 castlemist_add_test(sim
     SOURCES test_sim_cloth.cpp
     DEPS    castlemist::sim)
