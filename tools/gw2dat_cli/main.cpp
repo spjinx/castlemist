@@ -44,6 +44,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -56,6 +58,7 @@
 #include <span>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -79,6 +82,8 @@
 #include "castlemist/extract/entry_extractor.h"
 #include "castlemist/exportgltf/gltf_export.h"
 #include "castlemist/exportgltf/sky_export.h"
+#include "castlemist/exportgltf/world_export.h"
+#include "castlemist/format/struct_template.h"
 #include "castlemist/ripper/assemble.h"
 #include "castlemist/ripper/look.h"
 #include "castlemist/ripper/vrchat.h"
@@ -2416,12 +2421,88 @@ void cmd_world(const Args& a) {
     emit(j);
 }
 
+/// world-export --dat <dat> --file-id <map> --template <json> --out <file.glb>
+///              [--no-terrain] [--no-props] [--collision] [--no-textures]
+///              [--animations] [--scale <s>] [--threads <n>]
+void cmd_world_export(const Args& a) {
+    namespace eg = castlemist::exportgltf;
+    const std::string tpl_path = need(a, "template");
+    std::string tplErr;
+    // The prop models are built against the active template (tpl::get_or_auto_load).
+    if (!castlemist::tpl::load_from_file(tpl_path, tplErr)) fail("cannot load template: " + tplErr);
+    const json& tpl = *castlemist::tpl::get();
+    const std::string out = utf8_arg("--out").empty() ? need(a, "out") : utf8_arg("--out");
+    const uint32_t fileId = static_cast<uint32_t>(to_u64(need(a, "file-id")));
+
+    eg::WorldExportOptions opt;
+    opt.terrain = !has(a, "no-terrain");
+    opt.props = !has(a, "no-props");
+    opt.collision = has(a, "collision");
+    opt.textures = !has(a, "no-textures");
+    opt.animations = has(a, "animations");
+    if (has(a, "scale")) opt.rootScale = std::stod(a.at("scale"));
+    if (!(opt.rootScale > 0)) fail("--scale must be positive");
+
+    auto t0 = std::chrono::steady_clock::now();
+    auto secs = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
+
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    castlemist::world::WorldScene scene = castlemist::world::load_world(dat, fileId, tpl);
+    const double tWorld = secs();
+
+    // Load each distinct prop model once, in parallel against the one parsed
+    // dat (read-only lookups, as build_map_scene does).
+    std::vector<std::shared_ptr<ModelPreview>> models(scene.models.size());
+    size_t loaded = 0;
+    if (opt.props && !scene.models.empty()) {
+        unsigned n = has(a, "threads") ? static_cast<unsigned>(to_u64(a.at("threads")))
+                                       : std::max(1u, std::thread::hardware_concurrency());
+        n = std::max(1u, std::min<unsigned>(n, static_cast<unsigned>(scene.models.size())));
+        std::atomic<size_t> next{0};
+        std::vector<std::thread> pool;
+        for (unsigned t = 0; t < n; ++t)
+            pool.emplace_back([&] {
+                for (size_t i; (i = next.fetch_add(1)) < models.size();) {
+                    try {
+                        models[i] = load_model_by_fileid(dat, scene.models[i].fileId, /*want_game=*/false);
+                    } catch (const std::exception&) {
+                        models[i] = nullptr;  // counted as not loaded below
+                    }
+                }
+            });
+        for (auto& th : pool) th.join();
+        for (const auto& m : models) loaded += m != nullptr;
+    }
+    const double tModels = secs();
+
+    eg::WorldExportReport rep = eg::export_world_gltf(scene, models, out, opt);
+    json j;
+    j["ok"] = rep.ok;
+    if (!rep.ok) j["error"] = rep.error;
+    j["glb"] = rep.glbPath;
+    j["map"] = fileId;
+    j["terrainChunks"] = rep.terrainChunks;
+    j["models"] = {{"distinct", scene.models.size()}, {"loaded", loaded}, {"written", rep.modelsWritten}};
+    j["props"] = {{"placed", scene.props.size()}, {"written", rep.propsWritten}, {"skipped", rep.propsSkipped}};
+    j["collisionInstances"] = rep.collisionInstances;
+    j["frame"] = "glTF: +Y up, +X east, -Z north; map units x scale";
+    j["scale"] = opt.rootScale;
+    j["seconds"] = {{"world", tWorld}, {"models", tModels - tWorld}, {"total", secs()}};
+    std::error_code ec;
+    if (rep.ok) j["bytes"] = std::filesystem::file_size(std::filesystem::path(std::u8string(out.begin(), out.end())), ec);
+    j["exportWarnings"] = rep.warnings;
+    j["worldWarnings"] = scene.warnings;
+    emit(j);
+    if (!rep.ok) std::exit(1);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
         fail("usage: gw2dat_cli <info|list|lookup|resolve|extract|texture|parse|sniff|"
-             "compress|decompress|encode-texture|scananim|map|skybox|world|character|character-export|"
+             "compress|decompress|encode-texture|scananim|map|skybox|world|world-export|character|character-export|"
              "character-assemble> [--flags]");
     }
     std::string cmd = argv[1];
@@ -2440,6 +2521,7 @@ int main(int argc, char** argv) {
         else if (cmd == "map") cmd_map(a);
         else if (cmd == "skybox") cmd_skybox(a);
         else if (cmd == "world") cmd_world(a);
+        else if (cmd == "world-export") cmd_world_export(a);
         else if (cmd == "scanpf") cmd_scanpf(a);
         else if (cmd == "scancloth") cmd_scancloth(a);
         else if (cmd == "scananim") cmd_scananim(a);
