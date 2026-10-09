@@ -35,15 +35,20 @@ void build_collision(const castlemist::model::Extractor::MapHavok& h, WorldScene
     }
 
     // Instances: obs, prop, zone placements as h.placements orders them.
-    size_t badPlacements = 0;
+    size_t badPlacements = 0, noAnimation = 0, otherSequence = 0, zeroScale = 0;
     std::map<std::string, uint32_t> indexInGroup;
     for (const auto& p : h.placements) {
         const uint32_t placement = indexInGroup[p.group]++;
         if (p.geometryIndex >= h.geometryAnimations.size()) { ++badPlacements; continue; }
         const auto& anims = h.geometryAnimations[p.geometryIndex];
-        if (anims.empty()) continue;            // a geometry with no animation has no hull (§7.1)
-        const uint32_t anim = anims.back();     // animations[last] (§7.1)
+        if (anims.empty()) { ++noAnimation; continue; }   // no animation, no hull (§7.1)
+        const uint32_t anim = anims.back();     // animations[last], T3D's rule, UNPROVEN (§7.1)
         if (anim >= h.animationCollisions.size()) { ++badPlacements; continue; }
+        // §7.1: the placement's own sequence names another of the geometry's animations.
+        if (p.hasSequence && anims.size() >= 2 && anim < h.animationSequences.size() &&
+            h.animationSequences[anim] != p.sequence)
+            ++otherSequence;
+        if (p.scale == 0) ++zeroScale;         // kept as stored: a degenerate matrix (§7.2)
 
         // §7.2-7.3: the client's placement transform at 32 * scale, then the
         // hull's own z (stored up = +Z) flipped into map space (up = -Z).
@@ -68,6 +73,16 @@ void build_collision(const castlemist::model::Extractor::MapHavok& h, WorldScene
         out.warnings.push_back(std::to_string(badPlacements) +
                                " collision placements reference a geometry, animation or collision index out of "
                                "range; those references were skipped");
+    if (otherSequence)
+        out.warnings.push_back(std::to_string(otherSequence) +
+                               " collision placements use animations[last] (T3D's rule, UNPROVEN, see "
+                               "gw2-world-frame.md §7.1) rather than the animation their sequence names");
+    if (noAnimation)
+        out.warnings.push_back(std::to_string(noAnimation) +
+                               " collision placements name a geometry with no animations; no hulls placed");
+    if (zeroScale)
+        out.warnings.push_back(std::to_string(zeroScale) +
+                               " collision placements have scale 0; kept, so their hulls collapse to a point");
     if (droppedFaces)
         out.warnings.push_back(std::to_string(droppedFaces) +
                                " collision triangles index past their hull's vertices; dropped");

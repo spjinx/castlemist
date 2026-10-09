@@ -747,7 +747,8 @@ its own.** Implemented in `Extractor::parseHavok`
 
 `build_collision` follows T3D: placement → `geometries[geometryIndex]` →
 `animations[last]` → that animation's `collisionIndices[]` → hulls. A geometry
-with no animation gives no instance (no test map has one). What the other
+with no animation gives no instance and is counted in a warning (no test map
+has one). What the other
 `animations[]` entries are, from `havk_sequences.mjs`:
 
 | | 192711 | 191000 | 1151420 |
@@ -771,7 +772,10 @@ with no animation gives no instance (no test map has one). What the other
   in 211 / 211, 215 / 217 and 89 / 89 cases.
 - So a prop placement names the sequence it plays. T3D's rule gives a
   placement another sequence's hulls whenever the named animation is not the
-  last one: 1188 placements on 192711, 652 on 191000 and 103 on 1151420.
+  last one: 1188 placements on 192711, 652 on 191000 and 103 on 1151420. Add
+  the placements whose sequence names no animation of their geometry (0, 6, 5)
+  and the last animation's `sequence` differs from the placement's in 1188,
+  658 and 108 placements: the counts `build_collision`'s warning reports.
 - `zoneModels` and `obsModels` carry no `sequence`. Obs geometries have one
   animation, the default. Zone geometries have the default plus
   `566482876922` (last) on 192711 and 191000, a set of six sequences (70
@@ -785,6 +789,15 @@ For props, the data points to "the animation whose `sequence` equals the
 placement's own, else the default". That is a reading of the data, not the
 client's rule, and it is not implemented. What would prove it: the client
 code that picks a geometry's animation for a placement.
+
+`Extractor::parseHavok` reads `animations[].sequence` and each placement's
+`sequence` (by name, kind `qword`; only `propModels` has one).
+`build_collision` counts the placements whose geometry has 2+ animations and
+whose `sequence` differs from `animations[last].sequence`, and emits one
+warning: "`N` collision placements use animations[last] (T3D's rule,
+UNPROVEN, see gw2-world-frame.md §7.1) rather than the animation their
+sequence names". `world_dat.collision_matches_reference` requires exactly
+this warning, with N = 1188 / 658 / 108.
 
 ### 7.2 Hull units: ×32 (proven)
 
@@ -809,7 +822,7 @@ This fixes the ratio of hull units to map units only. How long a map unit is
 stays UNPROVEN (§1.3). Scale is `32 · scale` for prop and zone placements and
 `32` for obs models, which have no `scale` field. T3D's fallback to scale 1
 when `32 · scale` is 0 is not carried over: no placement on the test maps has
-scale 0, and a zero scale is kept as the data says.
+scale 0, and a zero scale is kept as the data says and counted in a warning.
 
 ### 7.3 Hull z points up: `diag(1, 1, −1)` (proven)
 
@@ -848,7 +861,8 @@ Rows are matched by key, not by position, because T3D draws prop, zone, obs.
 | 191000 | 13075 (229 / 12758 / 88) | 80 | 0 | 1.95e-06 |
 | 1151420 | 2327 (66 / 1693 / 568) | 80 | 0 | 1.7e-05 |
 
-No test map produces a collision warning. `world_dat.collision_inside_terrain_rects`
+The only collision warning on each test map is §7.1's.
+`world_dat.collision_inside_terrain_rects`
 counts instance origins inside the union of chunk rects: 12998 / 13010
 (192711), 13063 / 13075 (191000), 2326 / 2327 (1151420). The test requires
 99%. The old reader left every hull at the origin.
@@ -864,3 +878,6 @@ counts instance origins inside the union of chunk rects: 12998 / 13010
   one warning: "`N` collision placements reference a geometry, animation or
   collision index out of range" (pure test `collision_bad_indices_skipped`).
   T3D would throw on the bad geometry and silently skip the rest.
+- Placements whose geometry has no animations (no hulls placed), and
+  placements with scale 0 (kept as stored, so the matrix is degenerate), are
+  each counted in one warning (pure test `collision_suspect_placements_warned`).

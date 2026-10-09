@@ -19,7 +19,10 @@ namespace castlemist::world {
 /// `32 * scale` (§7.2), times diag(1, 1, -1) (§7.3): a reflection, so a
 /// hull triangle's winding reverses in map space. References out of range
 /// are skipped with one aggregated warning in `out.warnings`; so are hull
-/// triangles that index past their hull. Never throws for bad data.
+/// triangles that index past their hull. One warning each also counts
+/// placements whose `sequence` names an animation other than the last
+/// (§7.1, the rule is UNPROVEN), geometries with no animations, and scale 0.
+/// Never throws for bad data.
 /// Replaces anything previously in `out.collision`.
 void build_collision(const castlemist::model::Extractor::MapHavok& h, WorldScene& out);
 

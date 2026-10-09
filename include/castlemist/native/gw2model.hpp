@@ -1145,6 +1145,8 @@ public:
         float translate[3] = {}, rotate[3] = {};
         float scale = 1;                       ///< 1 where the struct has no `scale` (obsModels)
         std::string group;                     ///< "obs" | "prop" | "zone"
+        bool hasSequence = false;              ///< the struct has a qword `sequence` (propModels)
+        uint64_t sequence = 0;                 ///< `sequence` as stored: the animation it plays (§7.1)
     };
 
     /// @brief The `havk` chunk's hulls and placements, unresolved
@@ -1155,6 +1157,7 @@ public:
         std::vector<MapCollision> hulls;                       ///< collisions[i] in hull-local space (verts, indices)
         std::vector<std::vector<uint32_t>> geometryAnimations; ///< geometries[i].animations[]
         std::vector<std::vector<uint32_t>> animationCollisions;///< animations[i].collisionIndices[]
+        std::vector<uint64_t> animationSequences;              ///< animations[i].sequence (empty if no such field)
         std::vector<HavokPlacement> placements;                ///< obsModels, propModels, zoneModels, in that order
     };
 
@@ -1200,12 +1203,25 @@ public:
             }
         };
         dwordLists(fieldArray(root, "geometries", h), "animations", out.geometryAnimations);
-        dwordLists(fieldArray(root, "animations", h), "collisionIndices", out.animationCollisions);
+        const FieldArray anims = fieldArray(root, "animations", h);
+        dwordLists(anims, "collisionIndices", out.animationCollisions);
+        // A qword field `name` of struct `type`: its offset, or false.
+        auto qwordField = [&](const std::string& type, const char* name, size_t& o) {
+            json fj;
+            return fieldOffset(type, name, o, fj) && fj.value("kind", std::string()) == "qword";
+        };
+        size_t oSeq = 0;
+        if (qwordField(anims.type, "sequence", oSeq)) {
+            out.animationSequences.reserve(anims.n);
+            for (uint32_t i = 0; i < anims.n; ++i)
+                out.animationSequences.push_back(rd64(anims.base + (size_t)i * anims.stride + oSeq));
+        }
 
         for (const auto& [arrayName, group] : {std::pair<const char*, const char*>{"obsModels", "obs"},
                                                {"propModels", "prop"}, {"zoneModels", "zone"}}) {
             const FieldArray m = fieldArray(root, arrayName, h);
-            size_t oT = 0, oR = 0, oS = 0, oG = 0; json fj;
+            size_t oT = 0, oR = 0, oS = 0, oG = 0, oQ = 0; json fj;
+            const bool hQ = qwordField(m.type, "sequence", oQ);
             const bool hT = fieldOffset(m.type, "translate", oT, fj), hR = fieldOffset(m.type, "rotate", oR, fj),
                        hS = fieldOffset(m.type, "scale", oS, fj), hG = fieldOffset(m.type, "geometryIndex", oG, fj);
             if (!hG) continue;
@@ -1220,6 +1236,7 @@ public:
                     if (hR) p.rotate[k] = rdf(e + oR + 4 * k);
                 }
                 if (hS) p.scale = rdf(e + oS);
+                if (hQ) { p.hasSequence = true; p.sequence = rd64(e + oQ); }
                 out.placements.push_back(std::move(p));
             }
         }

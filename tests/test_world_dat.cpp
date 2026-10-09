@@ -442,9 +442,15 @@ CM_TEST(world_dat, collision_matches_reference) {
     for (uint32_t id : kTestMaps) {
         nlohmann::json ref = world_ref(id);
         castlemist::world::WorldScene scene = load_map_collision(id);
-        // The reference has no collision warning on any test map.
+        // Exactly one warning: the UNPROVEN animations[last] rule, with the
+        // per-map count of §7.1 (havk_sequences.mjs: placements on a 2+
+        // animation geometry whose own sequence is not the last animation's).
+        const std::map<uint32_t, size_t> kOtherSequence = {{192711, 1188}, {191000, 658}, {1151420, 108}};
+        const std::string expected = std::to_string(kOtherSequence.at(id)) +
+                                     " collision placements use animations[last] (T3D's rule, UNPROVEN";
         for (const auto& w : scene.warnings) std::printf("    map %u warning: %s\n", id, w.c_str());
-        CHECK(scene.warnings.empty());
+        CHECK_EQ(scene.warnings.size(), size_t(1));
+        CHECK(!scene.warnings.empty() && scene.warnings[0].rfind(expected, 0) == 0);
         const auto& inst = scene.collision.instances;
         CHECK_EQ(inst.size(), ref["collision"]["instances"].get<size_t>());
         std::map<std::string, size_t> byGroup;

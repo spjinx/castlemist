@@ -379,3 +379,36 @@ CM_TEST(world, collision_bad_indices_skipped) {
     CHECK_EQ(scene.warnings.size(), size_t(1));
     CHECK_EQ(mentions, size_t(1));
 }
+
+// §7.1-7.2: what is kept but suspect is counted in one warning each: a
+// placement whose sequence names an animation other than animations[last],
+// a geometry with no animations, and scale 0.
+CM_TEST(world, collision_suspect_placements_warned) {
+    castlemist::model::Extractor::MapHavok h;
+    h.present = true;
+    h.hulls.resize(2);
+    h.geometryAnimations = {{0, 1}, {}};
+    h.animationCollisions = {{0}, {1}};
+    h.animationSequences = {100, 200};
+    auto place = [](uint32_t g, bool hasSeq, uint64_t seq, float scale) {
+        castlemist::model::Extractor::HavokPlacement p;
+        p.geometryIndex = g; p.group = "prop"; p.hasSequence = hasSeq; p.sequence = seq; p.scale = scale;
+        return p;
+    };
+    h.placements = {place(0, true, 100, 1),    // names animation 0, not the last: warned
+                    place(0, true, 200, 1),    // names the last: fine
+                    place(0, false, 0, 0),     // no sequence field; scale 0: warned
+                    place(1, true, 100, 1)};   // geometry with no animations: warned
+    castlemist::world::WorldScene scene;
+    castlemist::world::build_collision(h, scene);
+    CHECK_EQ(scene.collision.instances.size(), size_t(3));
+    auto has = [&](const char* text) {
+        size_t n = 0;
+        for (const auto& w : scene.warnings) n += w.find(text) != std::string::npos;
+        return n;
+    };
+    CHECK_EQ(scene.warnings.size(), size_t(3));
+    CHECK_EQ(has("1 collision placements use animations[last]"), size_t(1));
+    CHECK_EQ(has("1 collision placements name a geometry with no animations"), size_t(1));
+    CHECK_EQ(has("1 collision placements have scale 0"), size_t(1));
+}
