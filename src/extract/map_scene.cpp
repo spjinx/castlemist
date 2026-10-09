@@ -36,16 +36,19 @@ TerrainGrid build_terrain_grid(const castlemist::model::Extractor::MapTerrain& t
         size_t chunks = (size_t)cX * cY;
         int vps = (int)std::lround(std::sqrt((double)(t.heights.size() / chunks)));
         if (vps > TILES_PER_CHUNK && chunks * (size_t)vps * vps == t.heights.size()) {
-            g.Gx = (cX - 1) * TILES_PER_CHUNK + vps;
-            g.Gy = (cY - 1) * TILES_PER_CHUNK + vps;
+            // A chunk's own samples are its inner (32+1)^2 ring; the outer ring is
+            // an apron (docs/research/gw2-world-frame.md §3.1).
+            const int inner = TILES_PER_CHUNK + 1, ring = (vps - inner) / 2;
+            g.Gx = cX * TILES_PER_CHUNK + 1;
+            g.Gy = cY * TILES_PER_CHUNK + 1;
             g.hz.assign((size_t)g.Gx * g.Gy, 0.0f);
             for (int cy = 0; cy < cY; ++cy)
                 for (int cx = 0; cx < cX; ++cx) {
                     const float* blk = &t.heights[((size_t)cy * cX + cx) * vps * vps];
-                    for (int ly = 0; ly < vps; ++ly)
-                        for (int lx = 0; lx < vps; ++lx)
+                    for (int ly = 0; ly < inner; ++ly)
+                        for (int lx = 0; lx < inner; ++lx)
                             g.hz[(size_t)(cy * TILES_PER_CHUNK + ly) * g.Gx + (cx * TILES_PER_CHUNK + lx)] =
-                                blk[ly * vps + lx];
+                                blk[(ly + ring) * vps + (lx + ring)];
                 }
             chunked = true;
         }
@@ -66,15 +69,13 @@ TerrainGrid build_terrain_grid(const castlemist::model::Extractor::MapTerrain& t
 
 /// @brief Bilinear ground height at a world (x, y); false when outside the grid.
 ///
-/// Grid index 0 sits at the rect's near corner (x0,y0) -- confirmed against
-/// spjinx/t3d's own terrain renderer, which places chunk index 0 at
-/// `rect[0] + cdx/2` (the min corner) and walks toward rect[2]/rect[3] as the
-/// chunk index increases, with no axis flip. An earlier version of this
-/// function flipped this based on a visual read of one map; that flip
-/// disagreed with T3D's own placement code and has been reverted.
+/// Grid column 0 sits at the rect's west edge x0; grid ROW 0 sits at the NORTH
+/// edge y1 and rows run north->south. Proven from data in
+/// docs/research/gw2-world-frame.md §3.3 (props sit on terrain only this way;
+/// the earlier south->north layout mirrored terrain against the props).
 bool sample_terrain_height(const TerrainGrid& g, float wx, float wy, float& out) {
     if (!g.ok) return false;
-    float fx = (wx - g.x0) / g.dx, fy = (wy - g.y0) / g.dy;
+    float fx = (wx - g.x0) / g.dx, fy = (g.y1 - wy) / g.dy;
     if (fx < 0 || fy < 0 || fx > g.Gx - 1 || fy > g.Gy - 1) return false;
     int i0 = (int)fx, j0 = (int)fy;
     int i1 = std::min(g.Gx - 1, i0 + 1), j1 = std::min(g.Gy - 1, j0 + 1);
@@ -116,16 +117,18 @@ std::shared_ptr<ModelPreview> build_terrain_model(const castlemist::model::Extra
         size_t chunks = (size_t)cX * cY;
         int vps = (int)std::lround(std::sqrt((double)(t.heights.size() / chunks)));
         if (vps > TILES_PER_CHUNK && chunks * (size_t)vps * vps == t.heights.size()) {
-            Gx = (cX - 1) * TILES_PER_CHUNK + vps;
-            Gy = (cY - 1) * TILES_PER_CHUNK + vps;
+            // Inner ring only, as in TerrainGrid above (gw2-world-frame.md §3.1).
+            const int inner = TILES_PER_CHUNK + 1, ring = (vps - inner) / 2;
+            Gx = cX * TILES_PER_CHUNK + 1;
+            Gy = cY * TILES_PER_CHUNK + 1;
             hz.assign((size_t)Gx * Gy, 0.0f);
             for (int cy = 0; cy < cY; ++cy)
                 for (int cx = 0; cx < cX; ++cx) {
                     const float* blk = &t.heights[((size_t)cy * cX + cx) * vps * vps];
-                    for (int ly = 0; ly < vps; ++ly)
-                        for (int lx = 0; lx < vps; ++lx) {
+                    for (int ly = 0; ly < inner; ++ly)
+                        for (int lx = 0; lx < inner; ++lx) {
                             int gx = cx * TILES_PER_CHUNK + lx, gy = cy * TILES_PER_CHUNK + ly;
-                            hz[(size_t)gy * Gx + gx] = blk[ly * vps + lx];
+                            hz[(size_t)gy * Gx + gx] = blk[(ly + ring) * vps + (lx + ring)];
                         }
                 }
             chunked = true;
@@ -169,9 +172,10 @@ std::shared_ptr<ModelPreview> build_terrain_model(const castlemist::model::Extra
         for (int i = 0; i < Gx; ++i) {
             float h = H(i, j);
             if (std::abs(h - med) > kClamp) h = med;
-            float wx = x0 + i * dx, wy = y0 + j * dy;
+            // Row j runs north->south from y1 (gw2-world-frame.md §3.3), so +j is -y.
+            float wx = x0 + i * dx, wy = y1 - j * dy;
             float nzx = (H(i - 1, j) - H(i + 1, j)) / (2 * dx);
-            float nzy = (H(i, j - 1) - H(i, j + 1)) / (2 * dy);
+            float nzy = (H(i, j + 1) - H(i, j - 1)) / (2 * dy);
             float nl = std::sqrt(nzx * nzx + nzy * nzy + 1.0f);
             // Negated: the sky-facing normal points along -Z, because GW2's +Z is
             // DOWN (see kWorldUp in render/detail/math.h). The gradient normal
@@ -187,7 +191,8 @@ std::shared_ptr<ModelPreview> build_terrain_model(const castlemist::model::Extra
     for (int j = 0; j < Gy - 1; ++j) {
         for (int i = 0; i < Gx - 1; ++i) {
             uint32_t a = j * Gx + i, b = j * Gx + i + 1, c = (j + 1) * Gx + i, d = (j + 1) * Gx + i + 1;
-            mesh.indices.insert(mesh.indices.end(), {a, c, b, b, c, d});
+            // Reversed vs. the old south->north layout: the row flip mirrors winding.
+            mesh.indices.insert(mesh.indices.end(), {a, b, c, b, d, c});
         }
     }
     ModelMaterialCPU mat; mat.index = 0; mat.kind = 1; // terrain (grass/rock, procedural)
@@ -211,12 +216,13 @@ std::shared_ptr<ModelPreview> build_terrain_model(const castlemist::model::Extra
                 // than waterZ; a corner with a smaller z is dry land and wins.
                 if (std::min(std::min(h00, h10), std::min(h01, h11)) <= waterZ) continue;
                 uint32_t base = static_cast<uint32_t>(wm.vertices.size());
-                float xa = x0 + i * dx, xb = x0 + (i + 1) * dx, ya = y0 + j * dy, yb = y0 + (j + 1) * dy;
+                // Rows run north->south from y1, as for the terrain vertices above.
+                float xa = x0 + i * dx, xb = x0 + (i + 1) * dx, ya = y1 - j * dy, yb = y1 - (j + 1) * dy;
                 wm.vertices.push_back(GVertex{xa, ya, waterZ, 0,0,-1, 0,0,0, 0,0,0, 0,0});
                 wm.vertices.push_back(GVertex{xb, ya, waterZ, 0,0,-1, 0,0,0, 0,0,0, 0,0});
                 wm.vertices.push_back(GVertex{xa, yb, waterZ, 0,0,-1, 0,0,0, 0,0,0, 0,0});
                 wm.vertices.push_back(GVertex{xb, yb, waterZ, 0,0,-1, 0,0,0, 0,0,0, 0,0});
-                wm.indices.insert(wm.indices.end(), {base+0, base+2, base+1, base+1, base+2, base+3});
+                wm.indices.insert(wm.indices.end(), {base+0, base+1, base+2, base+1, base+3, base+2});
             }
         if (!wm.vertices.empty()) {
             model->meshes.push_back(std::move(wm));
