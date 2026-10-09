@@ -428,8 +428,13 @@ void layout_children(int client_w, int client_h) {
     const int status_y = usable_h;
     const int progress_w = 200;
     const int inner_h = kStatusBarHeight - 6;
-    MoveWindow(g_app->hwnd_progress, std::max(0, client_w - progress_w - 8), status_y + 3, progress_w, inner_h, TRUE);
-    MoveWindow(g_app->hwnd_status_label, 8, status_y + 3, std::max(0, client_w - progress_w - 24), inner_h, TRUE);
+    // The data badge sits at the far right; the progress bar (shown only while
+    // busy) to its left.
+    const int badge_w = 230;
+    const int badge_x = std::max(0, client_w - badge_w - 8);
+    MoveWindow(g_app->hwnd_data_badge, badge_x, status_y + 3, badge_w, inner_h, TRUE);
+    MoveWindow(g_app->hwnd_progress, std::max(0, badge_x - progress_w - 8), status_y + 3, progress_w, inner_h, TRUE);
+    MoveWindow(g_app->hwnd_status_label, 8, status_y + 3, std::max(0, badge_x - progress_w - 24), inner_h, TRUE);
 }
 
 void relayout() {

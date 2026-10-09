@@ -50,6 +50,8 @@ HMENU build_menu() {
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DOWNLOAD_NAMES, L"Download all game &names (GW2 API)");
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DECODE_TOKEN,
                 L"Decode &Token / Filename Bytes...");
+    AppendMenuW(tools_menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DATA_STATUS, L"Data &status... (is everything current?)");
 
     g_theme_menu = CreatePopupMenu();
     AppendMenuW(g_theme_menu, MF_STRING, ID_VIEW_THEME_DARK, L"&Dark");
@@ -962,6 +964,13 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         g_app->hwnd_progress =
             CreateWindowExW(0, PROGRESS_CLASSW, L"", WS_CHILD | PBS_MARQUEE, 0, 0, 0, 0, hwnd,
                              reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_PROGRESS)), g_hinstance, nullptr);
+        // Right end of the status band: whether the files exports read are current.
+        // SS_NOTIFY makes the label clickable (STN_CLICKED opens the Data status window).
+        g_app->hwnd_data_badge =
+            CreateWindowExW(0, L"STATIC", L"Data: checking...", WS_CHILD | WS_VISIBLE | SS_RIGHT | SS_NOTIFY, 0, 0,
+                             0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_DATA_BADGE)), g_hinstance,
+                             nullptr);
+        SetTimer(hwnd, TIMER_DATA_STATUS, kDataStatusPollMs, nullptr);
 
         if (!castlemist::gfx::initialize(g_app->hwnd_preview)) {
             MessageBoxW(hwnd, L"Failed to initialize Direct3D 11. Image preview will be unavailable.",
@@ -996,6 +1005,11 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             SetTextColor(dc, kColText);
             SetBkColor(dc, kColCard);
             return reinterpret_cast<LRESULT>(theme_brush(kColCard));
+        }
+        if (g_app && ctl == g_app->hwnd_data_badge) {
+            SetTextColor(dc, data_badge_colour());
+            SetBkColor(dc, kColBand);
+            return reinterpret_cast<LRESULT>(theme_brush(kColBand));
         }
         if (g_app && ctl == g_app->hwnd_status_label) {
             SetTextColor(dc, kColSubtle);
@@ -1182,6 +1196,12 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     case WM_APP_CMAP_DONE:
         on_main_cmap_done(hwnd);
         return 0;
+    case WM_APP_DATA_STATUS_REFRESH:
+        on_data_status_refresh(wparam != 0);
+        return 0;
+    case WM_APP_DATA_STATUS_DONE:
+        on_data_status_done(lparam);
+        return 0;
     case WM_APP_NAMES_PROGRESS:
         on_names_progress(static_cast<size_t>(wparam), static_cast<size_t>(lparam));
         return 0;
@@ -1235,6 +1255,12 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             return 0;
         case ID_TOOLS_DECODE_TOKEN:
             open_token_decoder(hwnd);
+            return 0;
+        case ID_TOOLS_DATA_STATUS:
+            open_data_status_dialog(hwnd);
+            return 0;
+        case ID_DATA_BADGE:
+            if (HIWORD(wparam) == STN_CLICKED) open_data_status_dialog(hwnd);
             return 0;
         case ID_VIEW_THEME_DARK:
             set_theme(hwnd, ThemeMode::Dark);
@@ -1647,6 +1673,10 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         }
         break;
     case WM_TIMER:
+        if (wparam == TIMER_DATA_STATUS) {
+            request_data_status_refresh();
+            return 0;
+        }
         if (wparam == TIMER_FLY) {
             if (!fly_view_active()) { update_fly_timer(); return 0; }
             // Integrate movement against the real elapsed time rather than the

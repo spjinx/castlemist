@@ -71,7 +71,7 @@ target_compile_definitions(cm_test_character PRIVATE
     CM_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 
 castlemist_add_test(db
-    SOURCES test_db_index.cpp test_db_type_names.cpp
+    SOURCES test_db_index.cpp test_db_type_names.cpp test_db_data_status.cpp
     DEPS    castlemist::db ext::sqlite)
 
 castlemist_add_test(media
@@ -114,6 +114,6 @@ castlemist_add_test(render
 
 castlemist_add_test(ui
     SOURCES test_ui_layout.cpp test_ui_content_map_service.cpp test_ui_character_state.cpp
-            test_ui_content_links.cpp
+            test_ui_content_links.cpp test_ui_data_status.cpp
     DEPS    castlemist::ui
     PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/ui")

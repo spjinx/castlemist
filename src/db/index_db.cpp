@@ -9,6 +9,7 @@ namespace castlemist::db {
 namespace {
 
 sqlite3* g_db = nullptr;
+std::wstring g_db_path;
 // True when the open DB has the canonical `uncompressed_size` column (added to the
 // gw2index schema later); older indexes only have `size_final`, which holds the
 // same value, so queries fall back to it rather than failing.
@@ -69,16 +70,20 @@ bool open(const std::wstring& db_path, std::string& err) {
     bool ok = sqlite3_prepare_v2(g_db, "SELECT COUNT(*) FROM entries", -1, &st, nullptr) == SQLITE_OK;
     sqlite3_finalize(st);
     if (!ok) { err = "not a gw2index database (no 'entries' table)"; close(); return false; }
+    g_db_path = db_path;
     g_has_usize_col = table_has_column("entries", "uncompressed_size");
     return true;
 }
 
 void close() {
     if (g_db) { sqlite3_close(g_db); g_db = nullptr; }
+    g_db_path.clear();
     g_has_usize_col = false;
 }
 
 bool is_open() { return g_db != nullptr; }
+
+std::wstring path() { return g_db_path; }
 
 std::wstring dat_path() {
     std::wstring out;

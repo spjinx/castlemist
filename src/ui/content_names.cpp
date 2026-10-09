@@ -325,6 +325,10 @@ void on_names_bulk_done(bool ok, size_t total) {
         for (const auto& [k, n] : g_names) named += !n.empty();
     }
     wchar_t s[512];
+    if (ok && g_app->dat_loaded) {
+        stamp_data_file("content_names", castlemist::db::fingerprint_of(g_app->data_gw2));
+        request_data_status_refresh();
+    }
     if (ok)
         swprintf(s, 512, L"Game names ready: %zu named (%zu looked up this run). Search the list by name.", named, total);
     else

@@ -115,6 +115,29 @@ copy any of it.
 | Character Ripper... | fetch and export your characters (getting-started §8) |
 | Download all game names | fetch every name at once (getting-started §7) |
 | Decode Token / Filename Bytes... | decode the game's packed token and filename values (research aid) |
+| Data status... | whether each file an export reads is current for the open Gw2.dat (see below) |
+
+#### Data status
+
+The right end of the status bar says whether everything castlemist exports from
+is current: **Data: up to date**, or **⚠ Data: 2 stale** in amber. Click it (or
+**Tools > Data status...**) for one row per input, each with its state, why,
+and a fix button:
+
+| row | judged by | fix |
+| --- | --- | --- |
+| Gw2.dat | the archive on disk still has the MFT castlemist loaded (the game can patch it while castlemist is open) | reopen it |
+| Index | its `dat_fingerprint` (older indexes: size + entry count) against the open dat | rebuild (only changed entries are re-read) |
+| Struct template | its `source.peTimestamp` against the installed `Gw2-64.exe`, and any chunk version in the index it has no struct for | regenerate with Ghidra, then Load Struct JSON |
+| Content map | the dat fingerprint stamped when it was built | Rebuild content map |
+| Game names | the dat fingerprint stamped when **Download all game names** finished | Download all names |
+| API keys | that the file reads and has a key; **Check API keys online** asks the API whether each key still works and has its scopes | Manage keys |
+| Saved looks, string keys, Blender | that they are present and readable; string keys are stale when older than the last game patch castlemist saw | |
+
+*Stale* means made for an older game build. *Unknown* means nothing records
+what a file was built from, usually because it predates this check. Rebuilding
+it once stamps it. The stamps live in `data_stamps.json` beside the exe.
+The Character Ripper repeats any stale rows in its status line when it opens.
 
 ### View
 

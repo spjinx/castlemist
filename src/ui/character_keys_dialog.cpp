@@ -60,6 +60,7 @@ bool persist() {
         return false;
     }
     if (g_ck_on_changed) g_ck_on_changed();
+    request_data_status_refresh();
     return true;
 }
 

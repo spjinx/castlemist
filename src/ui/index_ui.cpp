@@ -123,6 +123,7 @@ void finish_open_index(HWND hwnd, bool silent) {
     ShowWindow(g_app->hwnd_filter_content, SW_SHOW);
 
     g_app->index_loaded = true;
+    request_data_status_refresh();
     InvalidateRect(g_app->hwnd_list, nullptr, TRUE);
 
     wchar_t st[128];

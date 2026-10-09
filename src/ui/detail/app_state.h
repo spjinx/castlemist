@@ -28,6 +28,7 @@
 #include "castlemist/ui/theme.h"
 
 #include "castlemist/character/manifest.h"
+#include "castlemist/db/data_status.h"
 #include "castlemist/db/index_db.h"
 #include "castlemist/extract/entry_extractor.h"
 #include "castlemist/format/chat_link.h"
@@ -81,6 +82,7 @@ constexpr UINT_PTR ID_VIEW_THEME_ACCENT = 1013;
 constexpr UINT_PTR ID_TOOLS_CHARACTER = 1019;      // Character Ripper (GW2 API) dialog
 constexpr UINT_PTR ID_TOOLS_DOWNLOAD_NAMES = 1020; // fetch every game name into content_names.tsv
 constexpr UINT_PTR ID_TOOLS_DECODE_TOKEN = 1015;   // token/filename-bytes decoder popup
+constexpr UINT_PTR ID_TOOLS_DATA_STATUS = 1021;    // Data status window: is every export input current?
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL = 1016; // Export glTF... (single model, plain decoded textures)
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MAP = 1017;   // Export glTF... (whole map scene)
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL_ATLAS = 1018; // Export glTF... (single model, baked to a fresh UV atlas)
@@ -302,6 +304,17 @@ constexpr UINT_PTR TIMER_AUDIO = 2;         // ~10 Hz refresh of the audio seek 
 constexpr UINT_PTR TIMER_VIDEO = 3;         // video frame pump (see on_video_tick)
 constexpr int kAudioSeekMax = 1000;         // seek trackbar range (permille of duration)
 constexpr int kVideoSeekMax = 1000;         // video seek trackbar range (permille of frames)
+// Data status window (data_status_ui.cpp) and the status-bar badge that opens it.
+constexpr UINT_PTR ID_DATA_BADGE = 2200;
+constexpr UINT_PTR ID_DS_LIST = 2201;
+constexpr UINT_PTR ID_DS_FIX = 2202;
+constexpr UINT_PTR ID_DS_KEYS = 2203;
+constexpr UINT_PTR ID_DS_REFRESH = 2204;
+constexpr UINT_PTR ID_DS_CLOSE = 2205;
+/// Re-checks the dat on disk now and then, so a patch applied while castlemist
+/// is open shows up without a click.
+constexpr UINT_PTR TIMER_DATA_STATUS = 5;
+constexpr UINT kDataStatusPollMs = 2 * 60 * 1000;
 constexpr int ID_STATUS_LABEL = 2040;
 constexpr int ID_PROGRESS = 2041;
 
@@ -330,6 +343,11 @@ constexpr UINT WM_APP_NAMES_BULK_DONE = WM_APP + 15;
 constexpr UINT WM_APP_VRCHAT_MODEL_DONE = WM_APP + 16;
 /// "Export Skybox (Map)" finished (lparam = heap SkyExportReport*, owned by the handler).
 constexpr UINT WM_APP_SKYBOX_EXPORT_DONE = WM_APP + 17;
+/// Run the data-status checks (wparam = 1: also check the API keys online).
+/// Posted, never sent, so any thread may ask and a burst of asks runs once.
+constexpr UINT WM_APP_DATA_STATUS_REFRESH = WM_APP + 18;
+/// The checks finished; lparam = heap std::vector<DataRow>*, owned by the handler.
+constexpr UINT WM_APP_DATA_STATUS_DONE = WM_APP + 19;
 
 enum class MiddleTab { Compressed = 0, Decompressed = 1, Structure = 2, Preview = 3 };
 
@@ -389,6 +407,8 @@ struct AppState {
     HWND hwnd_main = nullptr;
     HWND hwnd_status_label = nullptr;
     HWND hwnd_progress = nullptr;
+    HWND hwnd_data_badge = nullptr;  // "Data: up to date" / "Data: 2 stale"; click for the Data status window
+    bool data_badge_alert = false;   // something is stale or missing: draw the badge in the warning colour
     HWND hwnd_search_edit = nullptr;
     HWND hwnd_filter_type = nullptr;       // index-mode type filter combo
     HWND hwnd_filter_container = nullptr;  // index-mode container filter combo
@@ -781,6 +801,40 @@ void refresh_entry_info();
 
 /// Point the main browser at a dat fileId (file-id search) and bring it forward.
 void navigate_to_file_id(uint32_t fid);
+
+// ---- data_status_ui.cpp -- is every export input current? (badge + window)
+/// What would make a row current again; the window's fix button runs it.
+enum class DataFix {
+    None, OpenDat, BuildIndex, LoadTemplate, BuildContentMap, RebuildContentMap,
+    DownloadNames, ManageKeys, CheckKeys, LoadStringKeys
+};
+struct DataRow {
+    std::wstring name, role, path, detail;
+    castlemist::db::Freshness state = castlemist::db::Freshness::Unknown;
+    DataFix fix = DataFix::None;
+};
+struct DataBadge {
+    int stale = 0, missing = 0, unknown = 0;
+    std::wstring text;
+};
+/// The badge text for a set of rows ("Data: up to date", "Data: 2 stale", ...).
+DataBadge data_badge(const std::vector<DataRow>& rows);
+/// Ask for a re-check from any thread. `check_keys`: also ask the GW2 API
+/// whether each saved key still works (network).
+void request_data_status_refresh(bool check_keys = false);
+void on_data_status_refresh(bool check_keys);
+void on_data_status_done(LPARAM lparam);
+void update_data_badge();
+COLORREF data_badge_colour();
+std::wstring data_status_summary();
+/// One line naming every stale input, for dialogs that export; empty when none.
+std::wstring data_status_export_warning();
+/// Record that `key` ("content_map", "content_names") was just built from the
+/// dat with fingerprint `fp`. Any thread.
+void stamp_data_file(const char* key, const castlemist::db::DatFingerprint& fp);
+void open_data_status_dialog(HWND owner);
+/// file_ops.cpp: the textkeys.csv in use, empty when none was loaded.
+std::wstring loaded_string_keys_path();
 
 // ---- character_dialog.cpp / character_keys_dialog.cpp -- Character Ripper
 void open_character_dialog(HWND owner);

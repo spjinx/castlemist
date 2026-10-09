@@ -59,6 +59,7 @@ bool load_dat_path(HWND hwnd, const wchar_t* path) {
         swprintf(title, 512, L"castlemist - %ls (%zu assets)", path, g_app->data_gw2.mft_base_id_data_list.size());
         SetWindowTextW(hwnd, title);
         ok = true;
+        request_data_status_refresh();
     } catch (const std::exception& e) {
         MessageBoxA(hwnd, e.what(), "Failed to load .dat", MB_ICONERROR);
     }
@@ -251,6 +252,7 @@ void on_index_build_done(HWND hwnd, bool ok) {
         return;
     }
     SetWindowTextW(g_app->hwnd_status_label, L"Index build finished.");
+    request_data_status_refresh();
     if (MessageBoxW(hwnd, L"Index built. Open it now?", L"castlemist", MB_ICONQUESTION | MB_YESNO) == IDYES)
         load_index_path(hwnd, g_index_out_path.c_str());
     // Then the game names for the Name column and name search (content map first, if it isn't built yet).
@@ -276,6 +278,7 @@ void do_load_template(HWND hwnd) {
         return;
     }
     SetWindowTextW(g_app->hwnd_status_label, L"Struct template loaded.");
+    request_data_status_refresh();
 
     // The "Structure" tab is a pure function of (current bytes, current
     // template) -- unlike the model/map surfaces it needs no re-extraction,
@@ -299,10 +302,18 @@ void do_load_template(HWND hwnd) {
     }
 }
 
+namespace {
+std::wstring g_string_keys_path;  // the textkeys.csv in use
+} // namespace
+
+std::wstring loaded_string_keys_path() { return g_string_keys_path; }
+
 // Loads a string-key CSV (textId,key8_hex); also pulls a sibling strs_textbase.csv
 // (fileId,baseTextId). With both, packed strs records decrypt in the preview.
 void load_keys_from(const std::wstring& csv_path) {
     castlemist::skeys::load_keys(csv_path);
+    g_string_keys_path = csv_path;
+    request_data_status_refresh();
     std::wstring dir = csv_path;
     size_t slash = dir.find_last_of(L"\\/");
     dir = (slash == std::wstring::npos) ? L"" : dir.substr(0, slash + 1);
@@ -346,6 +357,7 @@ void try_autoload_keys() {
         if (GetFileAttributesW((base + L"textkeys.csv").c_str()) != INVALID_FILE_ATTRIBUTES) {
             castlemist::skeys::load_keys(base + L"textkeys.csv");
             castlemist::skeys::load_textbase(base + L"strs_textbase.csv");
+            g_string_keys_path = base + L"textkeys.csv";
             return;
         }
     }

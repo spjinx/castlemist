@@ -96,6 +96,7 @@ real time to establish.
 | ---- | --------------- |
 | [gw2-login-flow.md](gw2-login-flow.md) | the three-gate STS / Portal / AuthSrv login and where credentials are actually validated |
 | [gw2-map-loader-gates.md](gw2-map-loader-gates.md) | the 13-state map loader, and which two states are genuinely server-gated |
+| [emu-ghidra-migration.md](emu-ghidra-migration.md) | what ties `tools/emu` to IDA (its addresses, not its code), proof that the RC4 patch VA is already stale on both installed clients and that a byte signature finds it on both, how little of the IDA annotation export survives a patch, and the plan to move to Ghidra |
 | [gw2-net-crypto.md](gw2-net-crypto.md) | per-connection RC4 over MsgConn, keyed through the TLS/RSA handshake |
 | [gw2-param-system.md](gw2-param-system.md) | the 194-entry command-line table. `-map` exists but is never read |
 

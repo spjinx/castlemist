@@ -7,6 +7,7 @@
 /// far enough to sniff their type -- scales across cores.
 
 #include "castlemist/db/index_builder.h"
+#include "castlemist/db/data_status.h"
 
 #include "sqlite3.h"
 
@@ -84,27 +85,8 @@ void classify(const std::vector<uint8_t>& d, EntryResult& r) {
     r.type = "binary";
 }
 
-// Resolve a chunk's struct variant from the template: container-specific
-// fileTypes[container][fourcc][version], else global chunks[fourcc][version].
-std::string resolve_variant(const json& tpl, const std::string& container,
-                            const std::string& fourcc, int version) {
-    const std::string vs = std::to_string(version);
-    auto ft = tpl.find("fileTypes");
-    if (ft != tpl.end()) {
-        auto c = ft->find(container);
-        if (c != ft->end()) {
-            auto f = c->find(fourcc);
-            if (f != c->end()) { auto v = f->find(vs); if (v != f->end()) return v->get<std::string>(); }
-        }
-    }
-    auto ch = tpl.find("chunks");
-    if (ch != tpl.end()) {
-        auto f = ch->find(fourcc);
-        if (f != ch->end()) { auto v = f->find(vs); if (v != f->end()) return v->get<std::string>();
-            if (!f->empty()) return "?v" + vs; } // fourcc known, version not mapped
-    }
-    return ""; // unknown chunk
-}
+// resolve_variant() lives in data_status.cpp: the template-staleness check
+// resolves chunks by the same rule.
 
 // Walk a packfile's chunk table: fourcc + version (rd16 at chunk-data start) + variant.
 void parse_chunks(const std::vector<uint8_t>& d, const json& tpl, EntryResult& r) {
@@ -419,6 +401,7 @@ bool build_index(const BuildOptions& opt,
             put("dat_path", opt.dat_path);
             put("dat_size", std::to_string(dat.file_info.file_size));
             put("mft_entries", std::to_string(N));
+            put("dat_fingerprint", fingerprint_of(dat).to_string());
         }
         sqlite3_finalize(st);
     }

@@ -74,6 +74,11 @@ data as readable text, for building the 010 Editor templates in
 
 ### When to regenerate
 
+**Tools > Data status** says when. Both generators write a `source` block
+(`{"exe", "peTimestamp", "size", "tool"}`), which castlemist compares against
+the installed `Gw2-64.exe`. Templates generated before that block existed are
+judged only by whether the index holds chunk versions they cannot name.
+
 After a game patch that changes a chunk version. Symptoms: models that used to
 load now come up empty, or a chunk shows a version number with no struct
 variant in `gw2index`'s output.

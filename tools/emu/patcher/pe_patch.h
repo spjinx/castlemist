@@ -1,6 +1,7 @@
 // pe_patch.h - minimal PE64 VA<->file-offset mapping + patch application.
 // Target: Gw2-64-disable-aslr.exe (imagebase 0x140000000, ASLR off).
 #pragma once
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -15,6 +16,41 @@ struct Section {
     uint32_t vsize;      // VirtualSize
     uint32_t raw_ptr;    // PointerToRawData (file offset)
     uint32_t raw_size;   // SizeOfRawData
+    uint32_t flags;      // Characteristics (IMAGE_SCN_*)
+
+    bool executable() const { return (flags & 0x20000000u) != 0; }  // IMAGE_SCN_MEM_EXECUTE
+};
+
+// A byte pattern with wildcards, written the way disassemblers print bytes:
+// "0F B6 54 0A ?? 49". Spaces are optional; "??" (or "?") matches any byte.
+struct Signature {
+    std::vector<uint8_t> bytes;
+    std::vector<bool>    any;   // true where the pattern has a wildcard
+
+    static bool parse(const char* text, Signature& out) {
+        out = Signature{};
+        auto hex = [](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            return -1;
+        };
+        for (const char* p = text; *p;) {
+            if (*p == ' ') { ++p; continue; }
+            if (*p == '?') {
+                out.bytes.push_back(0);
+                out.any.push_back(true);
+                p += (p[1] == '?') ? 2 : 1;
+                continue;
+            }
+            int hi = hex(p[0]), lo = p[1] ? hex(p[1]) : -1;
+            if (hi < 0 || lo < 0) return false;
+            out.bytes.push_back(static_cast<uint8_t>(hi * 16 + lo));
+            out.any.push_back(false);
+            p += 2;
+        }
+        return !out.bytes.empty();
+    }
 };
 
 class Image {
@@ -84,6 +120,39 @@ public:
         return true;
     }
 
+    // File offset -> virtual address. Returns 0 if the offset is in no section.
+    uint64_t off_to_va(size_t off) const {
+        for (const auto& s : sections_) {
+            if (off >= s.raw_ptr && off < static_cast<size_t>(s.raw_ptr) + s.raw_size &&
+                off - s.raw_ptr < s.vsize)
+                return imagebase_ + s.vaddr + (off - s.raw_ptr);
+        }
+        return 0;
+    }
+
+    // Every match of `sig` inside the executable sections, as file offsets.
+    // Code only: the same bytes in .rdata or a resource are never a patch site.
+    std::vector<size_t> find_in_code(const Signature& sig) const {
+        std::vector<size_t> hits;
+        const size_t n = sig.bytes.size();
+        for (const auto& s : sections_) {
+            if (!s.executable()) continue;
+            const size_t begin = s.raw_ptr;
+            const size_t end = std::min<size_t>(buf_.size(), static_cast<size_t>(s.raw_ptr) +
+                                                                 std::min(s.raw_size, s.vsize));
+            for (size_t i = begin; i + n <= end; ++i) {
+                size_t k = 0;
+                while (k < n && (sig.any[k] || buf_[i + k] == sig.bytes[k])) ++k;
+                if (k == n) hits.push_back(i);
+            }
+        }
+        return hits;
+    }
+
+    bool bytes_at_off(size_t off, const std::vector<uint8_t>& want) const {
+        return off + want.size() <= buf_.size() && memcmp(&buf_[off], want.data(), want.size()) == 0;
+    }
+
     // Search the whole file for a byte pattern; returns file offsets.
     std::vector<size_t> find(const std::vector<uint8_t>& pat) const {
         std::vector<size_t> hits;
@@ -120,6 +189,7 @@ private:
             sc.vaddr   = rd32(s + 12);
             sc.raw_size= rd32(s + 16);
             sc.raw_ptr = rd32(s + 20);
+            sc.flags   = rd32(s + 36);
             sections_.push_back(sc);
         }
         return true;

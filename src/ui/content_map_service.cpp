@@ -98,19 +98,23 @@ CmapEnsure ensure_content_map(HWND notify) {
     }
     std::string dat_path = g_app->data_gw2.file_info.file_path;
     std::wstring cache = cmap_cache_path();
+    const castlemist::db::DatFingerprint fp = castlemist::db::fingerprint_of(g_app->data_gw2);
     g_cmap_building = true;
     add_waiter(notify);
-    std::thread([dat_path, entries, file_ids, cache]() {
+    request_data_status_refresh();
+    std::thread([dat_path, entries, file_ids, cache, fp]() {
         castlemist::cmap::build(dat_path, entries, file_ids, nullptr);
-        castlemist::cmap::save(cache);
+        if (castlemist::cmap::save(cache)) stamp_data_file("content_map", fp);
         g_cmap_building = false;
         notify_waiters();
+        request_data_status_refresh();
     }).detach();
     return CmapEnsure::Started;
 }
 
 // Throw away the in-memory map and its disk cache, then build it again from the
-// dat (e.g. after a game patch -- the cache carries no game-version check).
+// dat (e.g. after a game patch; the Data status window says when, from the
+// fingerprint stamped beside the cache in data_stamps.json).
 CmapEnsure rebuild_content_map(HWND notify) {
     if (auto refuse = rebuild_precheck(g_cmap_building, g_cmap_readers, g_app->dat_loaded, g_app->index_loaded)) {
         if (*refuse == CmapEnsure::Building) add_waiter(notify);

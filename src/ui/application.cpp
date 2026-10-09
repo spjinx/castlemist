@@ -718,7 +718,7 @@ int run(HINSTANCE hInstance, int cmd_show) {
                 castlemist::render::set_mode(castlemist::render::RenderMode::GameShader);
                 castlemist::render::save_screenshot(dump_path("shot_shader.bmp").c_str());
                 // Debug: GW2_DYES="id/material,..." (up to four channels; material
-                // 0 cloth .. 3 fur) re-dyes armor in place, as the Dyes window does,
+                // 0 cloth .. 3 fur) re-dyes armor or a mount in place, as the Dyes window does,
                 // and writes shot_dyed{,_shader,_game11}.bmp.
                 if (const char* dy = std::getenv("GW2_DYES")) {
                     if (!castlemist::cmap::built()) castlemist::cmap::load(cmap_cache_path());
@@ -787,6 +787,7 @@ int run(HINSTANCE hInstance, int cmd_show) {
     } catch (const std::exception&) {
         // Fall back to manual File > Open Index DB; the app still runs.
     }
+    request_data_status_refresh();
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

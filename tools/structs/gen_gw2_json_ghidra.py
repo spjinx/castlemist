@@ -44,6 +44,7 @@
 #
 # Output schema (unchanged from gen_gw2_json.py):
 #   { "format":"gw2packfile", "pointerSize":64,
+#     "source": {"exe":..., "peTimestamp":N, "size":N, "tool":"ghidra"},
 #     "fileTypes": {...}, "chunks": {...}, "strucTabs": {...}, "types": {...} }
 # =====================================================================
 
@@ -247,6 +248,36 @@ def build_vmap(nver, tab):
         if desc: vmap[str(i)] = build_struct(desc)
     return vmap
 
+def source_info():
+    """Which client build this template describes. castlemist's Data status
+    window compares peTimestamp with the installed Gw2-64.exe to tell a stale
+    template from a current one. The PE header is read from the loaded image
+    (Ghidra maps it as the "Headers" block); the file on disk is the fallback."""
+    ib = currentProgram.getImageBase().getOffset()
+    ts = None
+    lfanew = u32(ib + 0x3C)
+    if lfanew != 0xFFFFFFFF and u32(ib + lfanew) == 0x00004550:  # "PE\0\0"
+        ts = u32(ib + lfanew + 8)
+    path = str(currentProgram.getExecutablePath() or "")
+    if path.startswith("/") and len(path) > 2 and path[2] == ":":
+        path = path[1:]  # Ghidra writes Windows paths as /C:/...
+    size = None
+    try:
+        size = os.path.getsize(path)
+        if ts is None:
+            with open(path, "rb") as f:
+                hdr = f.read(0x1000)
+            off = int.from_bytes(hdr[0x3C:0x40], "little")
+            if hdr[off:off + 4] == b"PE\0\0":
+                ts = int.from_bytes(hdr[off + 8:off + 12], "little")
+    except OSError:
+        pass
+    src = {"exe": str(currentProgram.getName()), "tool": "ghidra"}
+    if ts is not None: src["peTimestamp"] = ts
+    if size is not None: src["size"] = size
+    return src
+
+
 def main():
     # 1) collect every chunk_info candidate (no dedup), with its address.
     # This is the hot loop -- millions of 4-byte-aligned offsets across the
@@ -315,7 +346,7 @@ def main():
                        "usedBy": sorted(usedby[name][tab]), "versions": vmap})
         strucTabs[name] = lst
 
-    doc = {"format": "gw2packfile", "pointerSize": 64,
+    doc = {"format": "gw2packfile", "pointerSize": 64, "source": source_info(),
           "fileTypes": fileTypes, "chunks": chunks, "strucTabs": strucTabs, "types": types}
     with open(OUT_PATH, "w") as f:
         json.dump(doc, f, separators=(",", ":"))
