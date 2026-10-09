@@ -64,8 +64,9 @@ float terrain_height_at(const Terrain& t, float x, float y, bool* inside = nullp
 /// @p tpl), at the entry's coord (in chunks) divided by the chunks per page.
 /// A chunk with an index past `texFiles` stays `resolved = false`; it and
 /// anything else that cannot be resolved (no PIMG, a missing page, a page
-/// grid no chunks-per-page fits) is reported in @p warnings. Never throws for
-/// bad map data.
+/// grid no chunks-per-page fits, a PIMG that does not decompress or parse)
+/// is reported in @p warnings. Never throws for bad map data.
+/// @throws DatIoError when the PIMG's bytes cannot be read from @p dat.
 void resolve_terrain_materials(Terrain& t, const castlemist::model::Extractor::MapTerrainMaterials& m, Gw2Dat& dat,
                                const nlohmann::json& tpl, std::vector<std::string>& warnings);
 

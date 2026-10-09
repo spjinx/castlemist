@@ -4,13 +4,14 @@
 
 #include "castlemist/world/terrain.h"
 
-#include "castlemist/native/cmp_decompress_method0.hpp"
+#include "castlemist/world/dat_read.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <tuple>
@@ -217,16 +218,17 @@ Ex::MapPagedImage read_paged_image(uint32_t fileId, Gw2Dat& dat, const nlohmann:
         warnings.push_back("terrain materials: trn names no pagedImage; no blend pages");
         return pimg;
     }
-    const uint32_t base = get_by_base_id(dat, fileId);
-    if (base == 0 || base > dat.mft_data_list.size()) {
-        warnings.push_back(what + " is not in the dat; no blend pages");
-        return pimg;
-    }
-    const MftData& e = dat.mft_data_list[base - 1];
-    std::vector<uint8_t> raw = read_entry_bytes(dat.file_info.file_path, e);   // I/O failure propagates
+    // Dat I/O failure (DatIoError) propagates: it is an error, not bad data.
+    // A decompress or parse failure is the PIMG's data: a warning.
     try {
-        std::vector<uint8_t> bytes = e.compression_flag ? castlemist::cmp::decompress_entry(raw) : raw;
-        pimg = Ex(bytes, tpl).parsePagedImage();
+        const std::optional<std::vector<uint8_t>> bytes = read_file_bytes(dat, fileId);
+        if (!bytes) {
+            warnings.push_back(what + " is not in the dat; no blend pages");
+            return pimg;
+        }
+        pimg = Ex(*bytes, tpl).parsePagedImage();
+    } catch (const DatIoError&) {
+        throw;
     } catch (const std::exception& ex) {
         warnings.push_back(what + " unreadable (" + ex.what() + "); no blend pages");
         return Ex::MapPagedImage{};

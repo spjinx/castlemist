@@ -4,8 +4,8 @@
 
 #include "castlemist/world/load_world.h"
 
-#include "castlemist/native/cmp_decompress_method0.hpp"
 #include "castlemist/world/collision.h"
+#include "castlemist/world/dat_read.h"
 #include "castlemist/world/props.h"
 #include "castlemist/world/terrain.h"
 
@@ -13,6 +13,7 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -158,6 +159,8 @@ void attach_environment(castlemist::model::Extractor& ex, WorldScene& out) {
 void run_section(std::vector<std::string>& warnings, const char* name, const std::function<void()>& run) {
     try {
         run();
+    } catch (const DatIoError&) {
+        throw;   // dat I/O failure is an error everywhere, never a section warning
     } catch (const std::exception& what) {
         warnings.push_back(std::string("exception in ") + name + ": " + what.what() + "; section left empty");
     }
@@ -200,18 +203,19 @@ WorldScene load_world(Gw2Dat& dat, uint32_t mapFileId, const nlohmann::json& tpl
     if (!tpl.is_object() || !tpl.contains("types") || !tpl["types"].is_object())
         throw std::runtime_error("struct template missing 'types'");
 
-    const uint32_t base = get_by_base_id(dat, mapFileId);
-    if (base == 0 || base > dat.mft_data_list.size()) throw std::runtime_error("file " + id + " is not in the dat");
-    const MftData& e = dat.mft_data_list[base - 1];
-
-    // A read or decompress failure is an I/O error with its own message, not "not a map".
-    std::vector<uint8_t> bytes;
+    // A read failure is a DatIoError ("file <id>: cannot read: ..."); a map
+    // file that does not decompress is an error too, with its own message.
+    // Neither is "not a map".
+    std::optional<std::vector<uint8_t>> found;
     try {
-        std::vector<uint8_t> raw = read_entry_bytes(dat.file_info.file_path, e);
-        bytes = e.compression_flag ? castlemist::cmp::decompress_entry(raw) : raw;
+        found = read_file_bytes(dat, mapFileId);
+    } catch (const DatIoError&) {
+        throw;
     } catch (const std::exception& what) {
-        throw std::runtime_error("file " + id + ": cannot read: " + what.what());
+        throw std::runtime_error("file " + id + ": cannot decompress: " + what.what());
     }
+    if (!found) throw std::runtime_error("file " + id + " is not in the dat");
+    const std::vector<uint8_t> bytes = std::move(*found);
 
     std::unique_ptr<Ex> ex;
     try {

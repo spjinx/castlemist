@@ -7,6 +7,7 @@
 
 #include "castlemist/native/gw2dat.h"
 #include "castlemist/native/gw2model.hpp"
+#include "castlemist/world/dat_read.h"
 #include "castlemist/world/world_scene.h"
 
 #include <nlohmann/json.hpp>
@@ -70,7 +71,8 @@ void attach_environment(castlemist::model::Extractor& ex, WorldScene& out);
 
 /// @brief Run one load step; an exception becomes the warning
 ///        "exception in <name>: <what>; section left empty" and the caller
-///        carries on with the next step.
+///        carries on with the next step -- except DatIoError (dat_read.h),
+///        which is rethrown: dat I/O failure is an error, not a warning.
 void run_section(std::vector<std::string>& warnings, const char* name, const std::function<void()>& run);
 
 /// @brief One "chunk <fourcc> v<ver> not read" warning per distinct chunk in
@@ -93,12 +95,16 @@ std::vector<std::string> absent_chunk_warnings(const std::vector<std::pair<std::
 /// `prp2` or `havk` chunk is warned (absent_chunk_warnings), and a
 /// `"units: ..."` warning records that map units per metre are UNPROVEN
 /// (§1.3).
+/// @throws DatIoError when the dat cannot be read, for the map file
+///         ("file <id>: cannot read: ...") or any file a section reads (the
+///         terrain's PIMG).
 /// @throws std::runtime_error when @p tpl has no `types` ("struct template
-///         missing 'types'", checked first), on a read or decompress failure
-///         ("file <id>: cannot read: ..."), when @p mapFileId is not in
-///         the dat, or when the file is not a map: no `trn`, `parm`, `prp2`
-///         or `havk` chunk (`"file <id> is not a map packfile"`). Bad map
-///         data never throws.
+///         missing 'types'", checked first), when the map file does not
+///         decompress ("file <id>: cannot decompress: ..."), when @p mapFileId
+///         is not in the dat, or when the file is not a map: no `trn`, `parm`,
+///         `prp2` or `havk` chunk (`"file <id> is not a map packfile"`). Bad
+///         map data never throws; a secondary file that does not decompress
+///         or parse is a section warning.
 WorldScene load_world(Gw2Dat& dat, uint32_t mapFileId, const nlohmann::json& tpl);
 
 /// @brief A compact JSON description of a scene (no geometry):

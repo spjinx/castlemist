@@ -630,6 +630,27 @@ CM_TEST(world, run_section_names_a_failure_and_carries_on) {
     CHECK_EQ(warnings[0], std::string("exception in props: boom; section left empty"));
 }
 
+// Dat I/O failure is an error everywhere: run_section rethrows DatIoError
+// (and adds no warning for it), while any other exception -- bad data, such
+// as a secondary file that does not decompress -- still becomes a warning.
+CM_TEST(world, run_section_rethrows_dat_io_error) {
+    std::vector<std::string> warnings;
+    bool rethrown = false;
+    try {
+        castlemist::world::run_section(warnings, "terrain materials", [&] {
+            throw castlemist::world::DatIoError("file 191359: cannot read: short read");
+        });
+    } catch (const castlemist::world::DatIoError& e) {
+        rethrown = std::string(e.what()) == "file 191359: cannot read: short read";
+    }
+    CHECK(rethrown);
+    CHECK(warnings.empty());
+    castlemist::world::run_section(warnings, "terrain materials", [&] {
+        throw std::runtime_error("huffman decode failed");
+    });
+    CHECK_EQ(warnings.size(), size_t(1));
+}
+
 // The spec: a map with no props or no collision is valid, and warned.
 CM_TEST(world, absent_chunk_warnings_name_missing_props_and_collision) {
     using Chunks = std::vector<std::pair<std::string, uint16_t>>;
