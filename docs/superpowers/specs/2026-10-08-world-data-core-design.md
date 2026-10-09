@@ -206,3 +206,46 @@ effects, Udon.
    translates. Fully separate; starts after 2–4 ship.
 6. **Effects viewer** (separate project) — particles and effects attached to
    models, skills and character movement; its own brainstorm.
+
+## Amendments (2026-10-08, after implementation)
+
+What shipped differs from the text above in these points. The text above is
+left as written; this list wins where they disagree.
+
+- **Per-chunk terrain normals: not built.** Deferred to sub-project 2. A
+  normal on a chunk's edge needs the neighbouring chunk's samples, and only
+  the renderers (sub-projects 2 and 3) consume normals, so they compute them.
+  `TerrainChunk` holds heights, rect and material only.
+- **The `frame` part of WorldScene is implicit; there is no member.**
+  WorldScene keeps everything in map space as stored (left-handed, +X east,
+  +Y north, up = −Z; `docs/research/gw2-world-frame.md` §1). The conversions
+  to Unity and Blender are functions in `include/castlemist/world/frame.h`.
+  The map bounds are `WorldScene::bounds` / `hasBounds` (`parm.rect`, §2).
+- **CLI summary.** `gw2dat_cli world` prints counts plus the number of
+  chunks whose material resolved (`terrain.resolvedMaterials`), not material
+  resolution per chunk and not the frame. Chosen over adding both to
+  `world_summary`: a per-chunk list is hundreds of rows per map, and the
+  frame is one fixed convention, not per-map data. The water entry gives
+  `plane`, `planeZ`, `surfaces` and `rivers`.
+- **Motion v1 = animated props only.** UV scroll moves to sub-project 3 (it
+  lives in each prop model's materials); placed effects move to the effects
+  project.
+- **Types added during implementation:**
+  - `CollisionInstance::placement`: the placement's index in its group's
+    `havk` model array, so rows match the T3D reference by key.
+  - `Water`: `hasPlane`, `planeZ`, `planeFlags` (`watr` V1), `hasHavkSurfaceZ`,
+    `havkSurfaceZ` (`havk`), `rivers` (`River`: name and centreline points).
+  - `TerrainMaterial`: `normalFileIds`, `pickerSolid` / `picker2Solid`
+    (solid-colour pages, channel order UNPROVEN), `uvScale` (0 = unknown,
+    UNPROVEN), `tiling` (the stored bytes, meaning UNPROVEN). `pickerScale`
+    is derived from the page grid and is 0 when unknown.
+- **Units per metre are UNPROVEN: there is no constant.** The planned
+  `kMapUnitsPerMetre` was left out of `frame.h` (no fudge constants);
+  `load_world` adds a `units: ... UNPROVEN` warning on every map.
+- **Added in the final review's fix wave:** `world/dat_read.h`
+  (`read_file_bytes`, `DatIoError`: dat I/O failure is an error everywhere,
+  `run_section` rethrows it); `absent_chunk_warnings` (a map with no `prp2`
+  or `havk` is warned); one `<section>: ` prefix per warning and the literal
+  `UNPROVEN` in every UNPROVEN line; the measurement programs under
+  `tools/world/` (`measure_terrain.cpp`, `measure_materials.cpp`,
+  `t3d_reference.mjs --diagnose`).

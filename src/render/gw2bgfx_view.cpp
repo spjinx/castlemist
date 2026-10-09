@@ -26,6 +26,7 @@ void shutdown() {}
 void on_resize(int, int) {}
 bool set_model(Gw2Dat&, uint32_t, std::string& error) { error = kUnavailable; return false; }
 void set_atlas_textures(const ModelTextureCPU*, const ModelTextureCPU*) {}
+void set_uniform_overrides(const std::map<std::string, std::array<float, 4>>&) {}
 void clear_model() {}
 bool has_model() { return false; }
 void orbit(float, float) {}
@@ -289,6 +290,9 @@ struct State {
     /// set_atlas_textures(): the armor atlas stand-ins, uploaded on demand into
     /// texByFileId (see atlasTexture in set_model).
     std::optional<ModelTextureCPU> atlasDiffuse, atlasNormal;
+    /// set_uniform_overrides(): values that win over every draw's own material
+    /// constants (the viewer's shader dyes). Not tied to a model.
+    std::map<std::string, Vec4> overrides;
     bgfx::TextureHandle texWhite = BGFX_INVALID_HANDLE;
     bgfx::TextureHandle texCube = BGFX_INVALID_HANDLE;
     bgfx::TextureHandle texLightBuf = BGFX_INVALID_HANDLE;
@@ -712,6 +716,11 @@ static void uploadWithMips(bgfx::TextureHandle h, const ModelTextureCPU& src) {
         prev = std::move(cur);
         pw = nw; ph = nh;
     }
+}
+
+void set_uniform_overrides(const std::map<std::string, std::array<float, 4>>& values) {
+    g.overrides.clear();
+    for (const auto& [name, v] : values) g.overrides[name] = Vec4{{v[0], v[1], v[2], v[3]}};
 }
 
 void set_atlas_textures(const ModelTextureCPU* diffuse, const ModelTextureCPU* normal) {
@@ -1366,6 +1375,8 @@ void render() {
                     bgfx::setUniform(h, v);
                     continue;
                 }
+                auto ov = g.overrides.find(u.name);
+                if (ov != g.overrides.end()) { bgfx::setUniform(h, ov->second.v); continue; }
                 auto mc = d.matConsts.find(u.name);
                 if (mc != d.matConsts.end()) { bgfx::setUniform(h, mc->second.v); continue; }
                 auto eg = kEngineUniforms.find(u.name);
@@ -1561,6 +1572,8 @@ bool bake_model_textures(ModelPreview& model) {
                     }
                     if (u.name == "CameraPosition") { bgfx::setUniform(uh, camPos); continue; }
                     if (u.name == "Time") { bgfx::setUniform(uh, timeVal); continue; }
+                    auto ov = g.overrides.find(u.name);
+                    if (ov != g.overrides.end()) { bgfx::setUniform(uh, ov->second.v); continue; }
                     auto mc = d.matConsts.find(u.name);
                     if (mc != d.matConsts.end()) { bgfx::setUniform(uh, mc->second.v); continue; }
                     auto eg = kEngineUniforms.find(u.name);
@@ -1958,6 +1971,8 @@ bool bake_model_atlas(ModelPreview& model, uint32_t resolution, const std::set<u
                     }
                     if (u.name == "CameraPosition") { bgfx::setUniform(uh, camPos); continue; }
                     if (u.name == "Time") { bgfx::setUniform(uh, timeVal); continue; }
+                    auto ov = g.overrides.find(u.name);
+                    if (ov != g.overrides.end()) { bgfx::setUniform(uh, ov->second.v); continue; }
                     auto mc = rd.matConsts.find(u.name);
                     if (mc != rd.matConsts.end()) { bgfx::setUniform(uh, mc->second.v); continue; }
                     auto eg = kEngineUniforms.find(u.name);

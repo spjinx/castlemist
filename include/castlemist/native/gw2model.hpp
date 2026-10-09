@@ -1128,6 +1128,8 @@ public:
         // which is why the Collision layer toggle looks like it does nothing.
         // Resolving it needs the client's geometryIndex semantics: the arrays are
         // NOT parallel (179282 has 48 collisions but only 11 geometries).
+        // parseHavok() below reads them for the world layer
+        // (docs/research/gw2-world-frame.md §7); this reader is the old path's.
         for (const char* an : {"geometries", "obsModels", "propModels", "zoneModels"}) {
             size_t ao; json af;
             uint32_t n = 0;
@@ -1135,6 +1137,111 @@ public:
             out.counts.push_back({an, n});
         }
         out.counts.push_back({"collisions", cn});
+        return out;
+    }
+
+    /// @brief One havk collision placement (docs/research/gw2-world-frame.md §7):
+    ///        an `obsModels`, `propModels` or `zoneModels` entry, as stored.
+    struct HavokPlacement {
+        uint32_t geometryIndex = 0;            ///< index into MapHavok::geometryAnimations
+        float translate[3] = {}, rotate[3] = {};
+        float scale = 1;                       ///< 1 where the struct has no `scale` (obsModels)
+        std::string group;                     ///< "obs" | "prop" | "zone"
+        bool hasSequence = false;              ///< the struct has a qword `sequence` (propModels)
+        uint64_t sequence = 0;                 ///< `sequence` as stored: the animation it plays (§7.1)
+    };
+
+    /// @brief The `havk` chunk's hulls and placements, unresolved
+    ///        (docs/research/gw2-world-frame.md §7). Indices are kept as stored;
+    ///        world::build_collision range-checks them.
+    struct MapHavok {
+        bool present = false;                                  ///< the map has a havk chunk
+        std::vector<MapCollision> hulls;                       ///< collisions[i] in hull-local space (verts, indices)
+        std::vector<std::vector<uint32_t>> geometryAnimations; ///< geometries[i].animations[]
+        std::vector<std::vector<uint32_t>> animationCollisions;///< animations[i].collisionIndices[]
+        std::vector<uint64_t> animationSequences;              ///< animations[i].sequence (empty if no such field)
+        std::vector<HavokPlacement> placements;                ///< obsModels, propModels, zoneModels, in that order
+    };
+
+    /// @brief Read `havk` by template field name, version-agnostic: nested
+    ///        struct names come from each field's own `element`.
+    ///
+    /// Unlike parseMapCollision() this keeps one hull per `collisions[]` entry
+    /// and reads the placement arrays, so the hulls can be placed. An array
+    /// whose header would run past the file reads as empty.
+    MapHavok parseHavok() {
+        MapHavok out;
+        std::string root; uint16_t ver = 0;
+        const size_t h = findChunk("havk", &root, &ver);
+        if (!h || root.empty()) return out;
+        out.present = true;
+
+        const FieldArray coll = fieldArray(root, "collisions", h);
+        out.hulls.resize(coll.n);
+        for (uint32_t i = 0; i < coll.n; ++i) {
+            const size_t e = coll.base + (size_t)i * coll.stride;
+            MapCollision& hull = out.hulls[i];
+            const FieldArray v = fieldArray(coll.type, "vertices", e);
+            const FieldArray ix = fieldArray(coll.type, "indices", e);
+            if (v.stride == 12) {
+                hull.verts.reserve(3ull * v.n);
+                for (uint32_t k = 0; k < 3 * v.n; ++k) hull.verts.push_back(rdf(v.base + 4ull * k));
+            }
+            if (ix.stride == 2) {
+                hull.indices.reserve(ix.n);
+                for (uint32_t k = 0; k < ix.n; ++k) hull.indices.push_back(rd16(ix.base + 2ull * k));
+            }
+            hull.present = !hull.verts.empty() && !hull.indices.empty();
+        }
+
+        // A dword array field of each element of `arr`, one list per element.
+        auto dwordLists = [&](const FieldArray& arr, const char* name, std::vector<std::vector<uint32_t>>& lists) {
+            lists.resize(arr.n);
+            for (uint32_t i = 0; i < arr.n; ++i) {
+                const FieldArray a = fieldArray(arr.type, name, arr.base + (size_t)i * arr.stride);
+                if (a.stride != 4) continue;
+                lists[i].reserve(a.n);
+                for (uint32_t k = 0; k < a.n; ++k) lists[i].push_back(rd32(a.base + 4ull * k));
+            }
+        };
+        dwordLists(fieldArray(root, "geometries", h), "animations", out.geometryAnimations);
+        const FieldArray anims = fieldArray(root, "animations", h);
+        dwordLists(anims, "collisionIndices", out.animationCollisions);
+        // A qword field `name` of struct `type`: its offset, or false.
+        auto qwordField = [&](const std::string& type, const char* name, size_t& o) {
+            json fj;
+            return fieldOffset(type, name, o, fj) && fj.value("kind", std::string()) == "qword";
+        };
+        size_t oSeq = 0;
+        if (qwordField(anims.type, "sequence", oSeq)) {
+            out.animationSequences.reserve(anims.n);
+            for (uint32_t i = 0; i < anims.n; ++i)
+                out.animationSequences.push_back(rd64(anims.base + (size_t)i * anims.stride + oSeq));
+        }
+
+        for (const auto& [arrayName, group] : {std::pair<const char*, const char*>{"obsModels", "obs"},
+                                               {"propModels", "prop"}, {"zoneModels", "zone"}}) {
+            const FieldArray m = fieldArray(root, arrayName, h);
+            size_t oT = 0, oR = 0, oS = 0, oG = 0, oQ = 0; json fj;
+            const bool hQ = qwordField(m.type, "sequence", oQ);
+            const bool hT = fieldOffset(m.type, "translate", oT, fj), hR = fieldOffset(m.type, "rotate", oR, fj),
+                       hS = fieldOffset(m.type, "scale", oS, fj), hG = fieldOffset(m.type, "geometryIndex", oG, fj);
+            if (!hG) continue;
+            out.placements.reserve(out.placements.size() + m.n);
+            for (uint32_t i = 0; i < m.n; ++i) {
+                const size_t e = m.base + (size_t)i * m.stride;
+                HavokPlacement p;
+                p.group = group;
+                p.geometryIndex = rd32(e + oG);
+                for (int k = 0; k < 3; ++k) {
+                    if (hT) p.translate[k] = rdf(e + oT + 4 * k);
+                    if (hR) p.rotate[k] = rdf(e + oR + 4 * k);
+                }
+                if (hS) p.scale = rdf(e + oS);
+                if (hQ) { p.hasSequence = true; p.sequence = rd64(e + oQ); }
+                out.placements.push_back(std::move(p));
+            }
+        }
         return out;
     }
 
@@ -1531,6 +1638,9 @@ public:
         float rot[3] = {0, 0, 0}; // Euler angles (radians)
         float scale = 1.0f;
         float bounds[4] = {0, 0, 0, 0};
+        // The prp2 array this placement came from: "propArray", "propAnimArray",
+        // "propMetaArray" or "propInstanceArray" (a base placement or one of its transforms).
+        std::string group;
     };
 
     // Map terrain: a height-map grid (GW2 is Z-up, so heights are the Z axis).
@@ -1543,6 +1653,21 @@ public:
         float rect[4] = {0, 0, 0, 0};     // map world rect (x0,y0,x1,y1) from the parm chunk
         bool hasRect = false;
     };
+
+    /// @brief Every chunk in the packfile, in file order, as (fourcc, version).
+    std::vector<std::pair<std::string, uint16_t>> chunkList() const {
+        std::vector<std::pair<std::string, uint16_t>> out;
+        size_t pos = rd16(6); // headerSize
+        while (pos + 16 <= n_) {
+            char fourcc[5] = {0};
+            std::memcpy(fourcc, d_ + pos, 4);
+            const size_t next = pos + 8 + rd32(pos + 4);
+            if (next <= pos || next > n_) break;   // a truncated final chunk is not listed
+            out.emplace_back(fourcc, rd16(pos + 8));
+            pos = next;
+        }
+        return out;
+    }
 
     MapTerrain parseTerrain() {
         MapTerrain out;
@@ -1573,6 +1698,183 @@ public:
         return out;
     }
 
+    /// @brief `trn.materials` -> the terrain's texture table and per-chunk
+    ///        materials (docs/research/gw2-world-frame.md §4).
+    ///
+    /// Read by template field name, version-agnostic: nested struct names come
+    /// from each field's own `target` / `element` / `type`.
+    struct MapTerrainMaterials {
+        bool present = false;
+        /// One `texFileArray` entry, as stored.
+        struct Tex {
+            uint32_t token = 0;          ///< `tokenName` (base-23 Token: "color", "blend", "normal", ...)
+            uint32_t flags = 0;          ///< the first `flags` field (dword)
+            uint32_t fileId = 0;         ///< `filename`; 0 for a paged-image page reference
+            uint32_t coord[2] = {0, 0};  ///< the second `flags` field (dword2): page-image coord, in chunks (§4.2)
+            uint32_t layer = 0;          ///< `layer`: paged-image layer (0xFFFFFFFF for a texture file)
+        };
+        std::vector<uint32_t> texFileIds;  ///< materials.texFileArray[].filename (0 kept)
+        std::vector<Tex> texFiles;         ///< the same entries in full
+        struct Chunk {
+            uint32_t materialFileId = 0;          ///< loResMaterial.materialFile
+            std::vector<uint32_t> texIndices;     ///< loResMaterial.texIndexArray
+            uint32_t hiMaterialFileId = 0;        ///< hiResMaterial.materialFile
+            std::vector<uint32_t> hiTexIndices;   ///< hiResMaterial.texIndexArray
+            uint8_t tiling[3] = {0, 0, 0};        ///< `tiling`, as stored (meaning UNPROVEN, §4.4)
+            int tilingCount = 0;                  ///< bytes of `tiling` this version has (1 or 3)
+            bool hasUvData = false;               ///< `uvData` pointer is non-null
+        };
+        std::vector<Chunk> chunks;  ///< per terrain chunk, chunk order (index = cy * chunksX + cx)
+        uint32_t pimgFileId = 0;    ///< materials.pagedImage: the terrain's paged image (PIMG) file
+    };
+
+    MapTerrainMaterials parseTerrainMaterials() {
+        MapTerrainMaterials out;
+        std::string root; uint16_t ver = 0;
+        size_t trn = findChunk("trn", &root, &ver);
+        if (!trn || root.empty()) return out;
+        auto sub = [](const json& fj, const char* key) -> std::string {
+            return (fj.contains(key) && fj[key].is_object()) ? fj[key].value("struct", std::string()) : std::string();
+        };
+        size_t off; json f;
+        if (!fieldOffset(root, "materials", off, f)) return out;
+        const std::string mt = sub(f, "target");
+        const size_t m = follow(trn + off);
+        if (!m || mt.empty()) return out;
+        out.present = true;
+        if (fieldOffset(mt, "pagedImage", off, f)) out.pimgFileId = decodeFilenameAt(m + off);
+
+        // texFileArray
+        if (fieldOffset(mt, "texFileArray", off, f)) {
+            const std::string tt = sub(f, "element");
+            const int ts = typeSize(tt);
+            uint32_t n = 0; size_t base = arrayAt(m + off, n);
+            if (!base || ts <= 0 || base + (uint64_t)n * ts > n_) n = 0;
+            // The template names two fields of this struct `flags`: a dword, then
+            // a dword2 that holds the page coord (§4.2). Find each by name + kind.
+            auto named = [&](const char* name, const char* kind, size_t& o) {
+                if (!types_->contains(tt)) return false;
+                size_t at = 0;
+                for (const auto& fj : (*types_)[tt]["fields"]) {
+                    if (fj.value("name", std::string()) == name && fj.value("kind", std::string()) == kind) { o = at; return true; }
+                    at += fieldSize(fj);
+                }
+                return false;
+            };
+            size_t oTok = 0, oFl = 0, oFn = 0, oCo = 0, oLa = 0;
+            const bool hTok = named("tokenName", "dword", oTok), hFl = named("flags", "dword", oFl),
+                       hFn = named("filename", "filename", oFn), hCo = named("flags", "dword2", oCo),
+                       hLa = named("layer", "dword", oLa);
+            for (uint32_t i = 0; i < n; ++i) {
+                const size_t e = base + (size_t)i * ts;
+                MapTerrainMaterials::Tex t;
+                if (hTok) t.token = rd32(e + oTok);
+                if (hFl) t.flags = rd32(e + oFl);
+                if (hFn) t.fileId = decodeFilenameAt(e + oFn);
+                if (hCo) { t.coord[0] = rd32(e + oCo); t.coord[1] = rd32(e + oCo + 4); }
+                if (hLa) t.layer = rd32(e + oLa);
+                out.texFileIds.push_back(t.fileId);
+                out.texFiles.push_back(t);
+            }
+        }
+
+        // materials[] (one per chunk): tiling, hiResMaterial, loResMaterial, uvData
+        if (fieldOffset(mt, "materials", off, f)) {
+            const std::string ct = sub(f, "element");
+            const int cs = typeSize(ct);
+            uint32_t n = 0; size_t base = arrayAt(m + off, n);
+            if (!base || cs <= 0 || base + (uint64_t)n * cs > n_) n = 0;
+            auto readMat = [&](size_t e, const char* name, uint32_t& file, std::vector<uint32_t>& idx) {
+                size_t o; json fj;
+                if (!fieldOffset(ct, name, o, fj)) return;
+                const std::string at = fj.value("type", std::string());
+                size_t fo; json ff;
+                if (fieldOffset(at, "materialFile", fo, ff)) file = decodeFilenameAt(e + o + fo);
+                if (fieldOffset(at, "texIndexArray", fo, ff)) {
+                    uint32_t k = 0; size_t ib = arrayAt(e + o + fo, k);
+                    if (!ib || ib + 4ull * k > n_) k = 0;
+                    for (uint32_t j = 0; j < k; ++j) idx.push_back(rd32(ib + 4u * j));
+                }
+            };
+            out.chunks.reserve(n);
+            for (uint32_t i = 0; i < n; ++i) {
+                const size_t e = base + (size_t)i * cs;
+                MapTerrainMaterials::Chunk c;
+                readMat(e, "loResMaterial", c.materialFileId, c.texIndices);
+                readMat(e, "hiResMaterial", c.hiMaterialFileId, c.hiTexIndices);
+                size_t o; json fj;
+                if (fieldOffset(ct, "tiling", o, fj)) {
+                    c.tilingCount = fj.value("kind", std::string()) == "array" ? std::min(3, fj.value("count", 0)) : 1;
+                    for (int k = 0; k < c.tilingCount; ++k) c.tiling[k] = d_[e + o + k];
+                }
+                if (fieldOffset(ct, "uvData", o, fj)) c.hasUvData = follow(e + o) != 0;
+                out.chunks.push_back(std::move(c));
+            }
+        }
+        return out;
+    }
+
+    /// @brief A PIMG paged image's `PGTB` table: its layers and stripped pages
+    ///        (docs/research/gw2-world-frame.md §4.2).
+    struct MapPagedImage {
+        bool present = false;
+        struct Layer { uint32_t strippedDims[2] = {0, 0}; uint32_t strippedFormat = 0; };
+        struct Page {
+            uint32_t layer = 0;
+            uint32_t coord[2] = {0, 0};   ///< page coord (pages, not chunks)
+            uint32_t fileId = 0;          ///< `filename`; 0 = no texture (see solidColor)
+            uint32_t flags = 0;
+            uint8_t solidColor[4] = {0, 0, 0, 0};
+        };
+        std::vector<Layer> layers;
+        std::vector<Page> strippedPages;
+    };
+
+    MapPagedImage parsePagedImage() {
+        MapPagedImage out;
+        std::string root; uint16_t ver = 0;
+        size_t p = findChunk("PGTB", &root, &ver);
+        if (!p || root.empty()) return out;
+        out.present = true;
+        auto sub = [](const json& fj) -> std::string {
+            return (fj.contains("element") && fj["element"].is_object()) ? fj["element"].value("struct", std::string())
+                                                                           : std::string();
+        };
+        size_t off; json f;
+        if (fieldOffset(root, "layers", off, f)) {
+            const std::string lt = sub(f);
+            const int ls = typeSize(lt);
+            uint32_t n = 0; size_t base = arrayAt(p + off, n);
+            if (!base || ls <= 0 || base + (uint64_t)n * ls > n_) n = 0;
+            for (uint32_t i = 0; i < n; ++i) {
+                const size_t e = base + (size_t)i * ls;
+                MapPagedImage::Layer l;
+                size_t o; json fj;
+                if (fieldOffset(lt, "strippedDims", o, fj)) { l.strippedDims[0] = rd32(e + o); l.strippedDims[1] = rd32(e + o + 4); }
+                if (fieldOffset(lt, "strippedFormat", o, fj)) l.strippedFormat = rd32(e + o);
+                out.layers.push_back(l);
+            }
+        }
+        if (fieldOffset(root, "strippedPages", off, f)) {
+            const std::string pt = sub(f);
+            const int ps = typeSize(pt);
+            uint32_t n = 0; size_t base = arrayAt(p + off, n);
+            if (!base || ps <= 0 || base + (uint64_t)n * ps > n_) n = 0;
+            for (uint32_t i = 0; i < n; ++i) {
+                const size_t e = base + (size_t)i * ps;
+                MapPagedImage::Page pg;
+                size_t o; json fj;
+                if (fieldOffset(pt, "layer", o, fj)) pg.layer = rd32(e + o);
+                if (fieldOffset(pt, "coord", o, fj)) { pg.coord[0] = rd32(e + o); pg.coord[1] = rd32(e + o + 4); }
+                if (fieldOffset(pt, "filename", o, fj)) pg.fileId = decodeFilenameAt(e + o);
+                if (fieldOffset(pt, "flags", o, fj)) pg.flags = rd32(e + o);
+                if (fieldOffset(pt, "solidColor", o, fj)) for (int k = 0; k < 4; ++k) pg.solidColor[k] = d_[e + o + k];
+                out.strippedPages.push_back(pg);
+            }
+        }
+        return out;
+    }
+
     // Map water: the rendered water-surface mesh(es) from the `watr` chunk --
     // distinct from the flat gameplay water-plane height parseMapCollision()
     // already reads out of `havk` (that one is a single number for physics;
@@ -1589,17 +1891,39 @@ public:
         std::vector<float> points;  // x,y pairs, at height `z` in map space
     };
     struct MapWater {
-        bool present = false;
+        bool present = false;                 ///< at least one surface was read
+        bool chunk = false;                   ///< the map has a `watr` chunk
+        uint16_t version = 0;                 ///< its chunk version
+        bool hasSurfacesField = false;        ///< the version has `waterSurfaces` (V1; V0 has not)
+        bool hasPlane = false;                ///< `waterPlaneZ` read (V1)
+        float planeZ = 0;                     ///< `waterPlaneZ` as stored, map-space z
+        uint32_t flags = 0;                   ///< `waterFlags` as stored (V1)
         std::vector<MapWaterSurface> surfaces;
+        /// Why part of a present chunk was not read ("" = nothing skipped):
+        /// no template root for its version, or a surface struct without the
+        /// fields read here.
+        std::string problem;
     };
 
     MapWater parseWater() {
         MapWater out;
         std::string root; uint16_t ver = 0;
         size_t w = findChunk("watr", &root, &ver);
-        if (!w || root.empty()) return out;
+        if (!w) return out;
+        out.chunk = true;
+        out.version = ver;
+        if (root.empty()) {
+            out.problem = "no template struct for watr v" + std::to_string(ver) + "; chunk not read";
+            return out;
+        }
         size_t off; json f;
+        if (fieldOffset(root, "waterPlaneZ", off, f) && f.value("kind", std::string()) == "float") {
+            out.planeZ = rdf(w + off);
+            out.hasPlane = true;
+        }
+        if (fieldOffset(root, "waterFlags", off, f) && f.value("kind", std::string()) == "dword") out.flags = rd32(w + off);
         if (!fieldOffset(root, "waterSurfaces", off, f)) return out;
+        out.hasSurfacesField = true;
         std::string st = f["element"].value("struct", std::string());
         int ss = typeSize(st);
         uint32_t sn = 0; size_t sbase = arrayAt(w + off, sn);
@@ -1607,6 +1931,8 @@ public:
         size_t zo, flo, vo; json zf, flf, vf;
         if (ss <= 0 || !fieldOffset(st, "waterSurfaceZ", zo, zf) ||
             !fieldOffset(st, "waterSurfaceFlags", flo, flf) || !fieldOffset(st, "vertices", vo, vf)) {
+            out.problem = std::to_string(sn) + " waterSurfaces not read: surface struct '" + st +
+                          "' lacks waterSurfaceZ, waterSurfaceFlags or vertices";
             return out;
         }
         for (uint32_t i = 0; sbase && i < sn; ++i) {
@@ -1696,6 +2022,128 @@ public:
         }
         out.present = !out.chains.empty();
         return out;
+    }
+
+    /// @brief The `havk` chunk's water fields (docs/research/gw2-world-frame.md §6).
+    struct MapHavokWater {
+        bool present = false;                 ///< the map has a havk chunk
+        bool hasSurfaceZ = false;             ///< the version has `waterSurfaceZ` (15+)
+        float surfaceZ = 0;                   ///< `waterSurfaceZ` as stored, map-space z
+        uint32_t waterVolumes = 0;            ///< `waterVolumes` count (15+; not read further)
+    };
+
+    /// @brief Read havk's water height and water-volume count by field name,
+    ///        without its hulls (parseHavok reads those).
+    MapHavokWater parseHavokWater() {
+        MapHavokWater out;
+        std::string root; uint16_t ver = 0;
+        const size_t h = findChunk("havk", &root, &ver);
+        if (!h || root.empty()) return out;
+        out.present = true;
+        size_t off; json f;
+        if (fieldOffset(root, "waterSurfaceZ", off, f) && f.value("kind", std::string()) == "float") {
+            out.surfaceZ = rdf(h + off);
+            out.hasSurfaceZ = true;
+        }
+        out.waterVolumes = fieldArray(root, "waterVolumes", h).n;
+        return out;
+    }
+
+    /// @brief River centrelines from the `rive` chunk (docs/research/gw2-world-frame.md §6.3).
+    struct MapRivers {
+        struct River {
+            std::string name;                 ///< `name` ("" where the version has none)
+            std::vector<float> points;        ///< `points`: x,y,z triples, map space
+        };
+        bool present = false;                 ///< at least one river was read
+        uint16_t version = 0;
+        std::vector<River> rivers;
+        uint32_t droppedPoints = 0;           ///< rivers whose `points` element is not 12 bytes (not read)
+    };
+
+    /// @brief Read each river's name and centreline points by field name.
+    ///
+    /// Width, tessellation and materials are not read: older versions store
+    /// them as named fields, but the test maps' versions (5, 6) keep them in a
+    /// `properties` bag keyed by unnamed hashes.
+    MapRivers parseRivers() {
+        MapRivers out;
+        std::string root; uint16_t ver = 0;
+        const size_t r = findChunk("rive", &root, &ver);
+        if (!r || root.empty()) return out;
+        out.version = ver;
+        const FieldArray rv = fieldArray(root, "rivers", r);
+        for (uint32_t i = 0; i < rv.n; ++i) {
+            const size_t e = rv.base + (size_t)i * rv.stride;
+            MapRivers::River river;
+            size_t o; json fj;
+            if (fieldOffset(rv.type, "name", o, fj) && fj.value("kind", std::string()) == "wchar_ptr")
+                river.name = readWString(follow(e + o));
+            const FieldArray pts = fieldArray(rv.type, "points", e);
+            if (pts.stride == 12) {
+                river.points.reserve(3ull * pts.n);
+                for (uint32_t k = 0; k < 3 * pts.n; ++k) river.points.push_back(rdf(pts.base + 4ull * k));
+            } else if (pts.n) {
+                ++out.droppedPoints;
+            }
+            out.rivers.push_back(std::move(river));
+        }
+        out.present = !out.rivers.empty();
+        return out;
+    }
+
+    /// @brief Sizes of the `env` arrays attach_environment does not attach.
+    struct MapEnvCounts {
+        bool present = false;                 ///< env chunk with a template root
+        uint32_t lightingPresets = 0;         ///< dataGlobal `lighting` entries
+        uint32_t localBlocks = 0;             ///< `dataLocalArray` entries (per-zone overrides)
+        uint32_t overrideBlocks = 0;          ///< `dataOverrideArray` entries
+    };
+
+    MapEnvCounts countEnv() {
+        MapEnvCounts out;
+        std::string root; uint16_t ver = 0;
+        const size_t env = findChunk("env", &root, &ver);
+        if (!env || root.empty()) return out;
+        out.present = true;
+        out.localBlocks = fieldArray(root, "dataLocalArray", env).n;
+        out.overrideBlocks = fieldArray(root, "dataOverrideArray", env).n;
+        size_t off; json f;
+        if (fieldOffset(root, "dataGlobal", off, f) && f.value("kind", std::string()) == "ptr" &&
+            f.contains("target") && f["target"].is_object()) {
+            const size_t g = follow(env + off);
+            const std::string gt = f["target"].value("struct", std::string());
+            if (g && !gt.empty()) out.lightingPresets = fieldArray(gt, "lighting", g).n;
+        }
+        return out;
+    }
+
+    /// @brief How many water presets (PackMapEnvDataWater) the `env` chunk
+    ///        holds: `water` of dataGlobal, of each dataLocalArray entry and of
+    ///        each dataOverrideArray entry. They are not read further.
+    uint32_t countEnvWaterPresets() {
+        std::string root; uint16_t ver = 0;
+        const size_t env = findChunk("env", &root, &ver);
+        if (!env || root.empty()) return 0;
+        // `water` count of one env data block of type `t` at `at`.
+        auto waterIn = [&](const std::string& t, size_t at) -> uint32_t {
+            size_t o; json fj;
+            if (t.empty() || !at || !fieldOffset(t, "water", o, fj)) return 0;
+            const std::string k = fj.value("kind", std::string());
+            if (k != "ptr_array_ptr" && k != "array_ptr") return 0;
+            uint32_t n = 0;
+            return arrayAt(at + o, n) ? n : 0;
+        };
+        uint32_t total = 0;
+        size_t off; json f;
+        if (fieldOffset(root, "dataGlobal", off, f) && f.value("kind", std::string()) == "ptr" &&
+            f.contains("target") && f["target"].is_object())
+            total += waterIn(f["target"].value("struct", std::string()), follow(env + off));
+        for (const char* arr : {"dataLocalArray", "dataOverrideArray"}) {
+            const FieldArray a = fieldArray(root, arr, env);
+            for (uint32_t i = 0; i < a.n; ++i) total += waterIn(a.type, a.base + (size_t)i * a.stride);
+        }
+        return total;
     }
 
     // Map navigation mesh, bounding-box level only: from `nm15` (falling back
@@ -1911,6 +2359,7 @@ public:
             uint32_t n = 0; size_t base = arrayAt(prp + off, n);
             for (uint32_t i = 0; base && objSize > 0 && i < n; ++i) {
                 MapProp p; readProp(objType, base + (size_t)i * objSize, p);
+                p.group = arrayName;
                 if (p.fileId) out.push_back(p);
             }
         }
@@ -1922,6 +2371,7 @@ public:
             for (uint32_t i = 0; base && instSize > 0 && i < n; ++i) {
                 size_t e = base + (size_t)i * instSize;
                 MapProp p; readProp(instType, e, p);
+                p.group = "propInstanceArray";
                 if (!p.fileId) continue;
                 out.push_back(p); // the base placement
                 // Extra transforms[] (position/rotation/scale) reusing the same model.
@@ -1932,7 +2382,7 @@ public:
                     uint32_t tn = 0; size_t tb = arrayAt(e + to, tn);
                     for (uint32_t j = 0; tb && trSize > 0 && j < tn; ++j) {
                         size_t te = tb + (size_t)j * trSize;
-                        MapProp q; q.fileId = p.fileId;
+                        MapProp q; q.fileId = p.fileId; q.group = p.group;
                         size_t o; json f;
                         if (fieldOffset(trType, "position", o, f)) for (int k=0;k<3;++k) q.pos[k] = rdf(te+o+4*k);
                         if (fieldOffset(trType, "rotation", o, f)) for (int k=0;k<3;++k) q.rot[k] = rdf(te+o+4*k);
@@ -2668,6 +3118,24 @@ private:
             o += fieldSize(f);
         }
         return false;
+    }
+
+    /// @brief An `array_ptr` field resolved: element struct name (empty for a
+    ///        scalar element), first element, count and stride.
+    struct FieldArray { std::string type; size_t base = 0; uint32_t n = 0; int stride = 0; };
+    /// Field `name` of struct `typeName` at `at`, by template name. Absent
+    /// field, unknown element size, or a count that would run past the file:
+    /// an empty FieldArray (n = 0).
+    FieldArray fieldArray(const std::string& typeName, const char* name, size_t at) const {
+        FieldArray a;
+        size_t o = 0; json f;
+        if (!fieldOffset(typeName, name, o, f) || f.value("kind", std::string()) != "array_ptr") return a;
+        const json& el = f.contains("element") ? f["element"] : json();
+        if (el.is_object()) { a.type = el.value("struct", std::string()); a.stride = typeSize(a.type); }
+        else if (el.is_string()) a.stride = scalarSize(el.get<std::string>());
+        a.base = arrayAt(at + o, a.n);
+        if (!a.base || a.stride <= 0 || a.base + (uint64_t)a.n * a.stride > n_) { a.n = 0; a.base = 0; }
+        return a;
     }
 
     // Resolve a versioned struct name (`base` + "V<n>") to the exact variant for

@@ -717,6 +717,7 @@ void open_character_dialog(HWND owner) {
     refill_keys();
     if (!g_ch_keys.list().empty())
         set_status(L"Pick a key and click Fetch characters. (Goes online: api.guildwars2.com only.)");
+    if (std::wstring warn = data_status_export_warning(); !warn.empty()) set_status(warn);
     ShowWindow(g_ch_wnd, SW_SHOW);
 }
 

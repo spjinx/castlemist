@@ -50,6 +50,7 @@ names an address, that is `Gw2-64.exe` with ASLR disabled, imagebase
 | [gw2-cloth-system.md](gw2-cloth-system.md) | the Verlet/PBD cloth solver, reconstructed |
 | [gw2-particle-system.md](gw2-particle-system.md) | baked emitters in MODL cloudData/lightData |
 | [gw2-material-channels.md](gw2-material-channels.md) | what each channel of a model's textures means per shader (AMAT): the profile table the VRChat export is built on, plus a per-model survey. The same diffuse alpha is "interior weight" in one shader and "shine" in the next, so channels cannot be read without the AMAT |
+| [gw2-shader-dyes.md](gw2-shader-dyes.md) | mounts dye **in the pixel shader**, not in a texture: a `dyemask` (RGBA = channels 1-4) and twelve `hsmnt*` affine rows in the MODL constants. The CPU dye matrix maps onto them exactly; also what a material/shader editing UI could change, and how |
 | [gw2-model-lods.md](gw2-model-lods.md) | index-buffer LODs inside one MODL, where the switch distances live (prp2 lod1/lod2, MODL lodOverride), and how to export them for a Unity LODGroup |
 | [poiyomi-10-importer.md](poiyomi-10-importer.md) | Poiyomi Toon 10 facts for the Unity importer: shader name, exact property names, presets, keywords and locking, and the editor APIs that build materials and a prefab |
 
@@ -95,6 +96,7 @@ real time to establish.
 | ---- | --------------- |
 | [gw2-login-flow.md](gw2-login-flow.md) | the three-gate STS / Portal / AuthSrv login and where credentials are actually validated |
 | [gw2-map-loader-gates.md](gw2-map-loader-gates.md) | the 13-state map loader, and which two states are genuinely server-gated |
+| [emu-ghidra-migration.md](emu-ghidra-migration.md) | what ties `tools/emu` to IDA (its addresses, not its code), proof that the RC4 patch VA is already stale on both installed clients and that a byte signature finds it on both, how little of the IDA annotation export survives a patch, and the plan to move to Ghidra |
 | [gw2-net-crypto.md](gw2-net-crypto.md) | per-connection RC4 over MsgConn, keyed through the TLS/RSA handshake |
 | [gw2-param-system.md](gw2-param-system.md) | the 194-entry command-line table. `-map` exists but is never read |
 

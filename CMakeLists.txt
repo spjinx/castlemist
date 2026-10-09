@@ -141,6 +141,10 @@ castlemist_add_layer(exportgltf DEPS castlemist::extract ext::stb ext::json)
 # Recorded in the VRChat export's materials.json.
 target_compile_definitions(castlemist_exportgltf PRIVATE CASTLEMIST_VERSION_STRING="${PROJECT_VERSION}")
 
+# world turns a GW2 map into one renderer-free WorldScene (terrain, props,
+# collision, water, environment) on top of extract's parsers.
+castlemist_add_layer(world DEPS castlemist::extract ext::json)
+
 # ripper turns a character manifest into exported pieces: composite lookup,
 # dye baking and atlas cropping on top of extract + exportgltf.
 castlemist_add_layer(ripper DEPS castlemist::character castlemist::extract castlemist::exportgltf

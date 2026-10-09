@@ -15,6 +15,7 @@ namespace castlemist::db {
 bool open(const std::wstring& db_path, std::string& err);
 void close();
 bool is_open();
+std::wstring path();          // the open database file, empty when none is open
 
 std::wstring dat_path();      // meta.dat_path (the archive this index was built from)
 size_t       entry_count();

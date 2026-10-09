@@ -19,7 +19,7 @@
 #     kind "ptr"           -> +"target":<elem>                (0x10)
 #   <elem> = string primitif  ATAU  { "struct":"<typeKey>" }
 # =====================================================================
-import ida_bytes, ida_segment, idc, json, os
+import ida_bytes, ida_nalt, ida_segment, idc, json, os
 
 OUT_PATH = r"./gw2_packfile.json"
 
@@ -127,6 +127,23 @@ def build_vmap(nver, tab):
         if desc: vmap[str(i)]=build_struct(desc)
     return vmap
 
+def source_info():
+    """Which client build this template describes; castlemist's Data status
+    window compares peTimestamp with the installed Gw2-64.exe. Read from the
+    input file on disk (IDA does not always map the PE header)."""
+    path = ida_nalt.get_input_file_path() or ""
+    src = {"exe": os.path.basename(path), "tool": "ida"}
+    try:
+        with open(path, "rb") as f:
+            hdr = f.read(0x1000)
+        off = int.from_bytes(hdr[0x3C:0x40], "little")
+        if hdr[off:off + 4] == b"PE\0\0":
+            src["peTimestamp"] = int.from_bytes(hdr[off + 8:off + 12], "little")
+        src["size"] = os.path.getsize(path)
+    except OSError:
+        pass
+    return src
+
 def main():
     # 1) kumpulkan semua chunk_info (TANPA dedup) beserta alamatnya
     infos=[]  # (addr,name,nver,tab)
@@ -190,7 +207,7 @@ def main():
             lst.append({"tab":"0x%X"%tab,"nver":nv,"usedBy":sorted(usedby[name][tab]),"versions":vmap})
         strucTabs[name]=lst
 
-    doc={"format":"gw2packfile","pointerSize":64,
+    doc={"format":"gw2packfile","pointerSize":64,"source":source_info(),
          "fileTypes":fileTypes,"chunks":chunks,"strucTabs":strucTabs,"types":types}
     with open(OUT_PATH,"w", encoding="utf-8") as f:
         json.dump(doc,f,separators=(",",":"))

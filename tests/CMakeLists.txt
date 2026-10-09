@@ -71,7 +71,7 @@ target_compile_definitions(cm_test_character PRIVATE
     CM_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 
 castlemist_add_test(db
-    SOURCES test_db_index.cpp test_db_type_names.cpp
+    SOURCES test_db_index.cpp test_db_type_names.cpp test_db_data_status.cpp
     DEPS    castlemist::db ext::sqlite)
 
 castlemist_add_test(media
@@ -92,6 +92,19 @@ castlemist_add_test(dat
     DEPS    castlemist::extract castlemist::exportgltf)
 set_tests_properties(dat PROPERTIES TIMEOUT 600)
 
+castlemist_add_test(world
+    SOURCES test_world.cpp
+    DEPS    castlemist::world)
+
+# World-layer tests against a real Gw2.dat; skip when it is absent.
+castlemist_add_test(world_dat
+    SOURCES test_world_dat.cpp
+    DEPS    castlemist::world castlemist::extract)
+set_tests_properties(world_dat PROPERTIES TIMEOUT 900)
+# T3D reference numbers (tools/world/README.md), read in place.
+target_compile_definitions(cm_test_world_dat PRIVATE
+    CM_WORLD_REF_DIR="${PROJECT_SOURCE_DIR}/tests/world_ref")
+
 castlemist_add_test(sim
     SOURCES test_sim_cloth.cpp
     DEPS    castlemist::sim)
@@ -102,7 +115,7 @@ castlemist_add_test(exportgltf
     PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/exportgltf")
 
 castlemist_add_test(ripper
-    SOURCES test_ripper_dye.cpp test_ripper_atlas.cpp test_ripper_export.cpp test_ripper_skeleton.cpp test_ripper_assemble.cpp test_ripper_look.cpp
+    SOURCES test_ripper_dye.cpp test_ripper_shader_dye.cpp test_ripper_atlas.cpp test_ripper_export.cpp test_ripper_skeleton.cpp test_ripper_assemble.cpp test_ripper_look.cpp
     DEPS    castlemist::ripper ext::json ext::stb)
 target_compile_definitions(cm_test_ripper PRIVATE
     CM_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
@@ -114,6 +127,6 @@ castlemist_add_test(render
 
 castlemist_add_test(ui
     SOURCES test_ui_layout.cpp test_ui_content_map_service.cpp test_ui_character_state.cpp
-            test_ui_content_links.cpp
+            test_ui_content_links.cpp test_ui_data_status.cpp
     DEPS    castlemist::ui
     PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/ui")
