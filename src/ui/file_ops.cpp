@@ -15,6 +15,7 @@
 
 #include "castlemist/db/index_builder.h"
 #include "castlemist/exportgltf/gltf_export.h"
+#include "castlemist/exportgltf/sky_export.h"
 #include "castlemist/format/struct_template.h"
 #include "castlemist/format/strs_keys.h"
 #include "castlemist/render/gw2bgfx_view.h"
@@ -598,6 +599,108 @@ void on_vrchat_model_done(HWND hwnd, LPARAM lparam) {
            ", warnings: " + std::to_string(r.warnings.size());
     if (!r.warnings.empty()) msg += " (see materials.json)";
     MessageBoxW(hwnd, utf8_to_wide(msg).c_str(), L"VRChat export finished",
+                r.warnings.empty() ? MB_ICONINFORMATION : MB_ICONWARNING);
+}
+
+// Only one skybox export at a time.
+std::atomic<bool> g_skybox_export_running{false};
+
+// "Export Skybox (Map)...": the dat stage (parse the env chunk, decode the sky
+// textures) runs here on the UI thread, which owns g_app->data_gw2; the bake and
+// PNG writing run on a thread. Same save dialog as the VRChat export.
+void do_export_skybox_map(HWND hwnd) {
+    namespace sky = castlemist::exportgltf::sky;
+    if (!g_app->has_loaded_entry || g_app->current_entry.kind != PreviewKind::Map ||
+        g_app->current_entry.decompressed.empty()) {
+        MessageBoxW(hwnd, L"Select a map entry first.", L"castlemist", MB_ICONINFORMATION);
+        return;
+    }
+    if (g_skybox_export_running.load()) {
+        MessageBoxW(hwnd, L"A skybox export is already running; wait for it to finish.", L"castlemist",
+                    MB_ICONINFORMATION);
+        return;
+    }
+    auto tpl = castlemist::tpl::get_or_auto_load();
+    if (!tpl) {
+        MessageBoxW(hwnd, L"Load the struct template first (File > Load Struct JSON...).", L"castlemist",
+                    MB_ICONINFORMATION);
+        return;
+    }
+    uint32_t fileId = 0;
+    {
+        const std::vector<uint32_t> fids = get_by_file_id(g_app->data_gw2, g_app->current_mft_index + 1);
+        if (!fids.empty()) fileId = fids.front();
+    }
+
+    wchar_t path[MAX_PATH] = L"";
+    swprintf(path, MAX_PATH, L"map_%u", fileId);
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwnd;
+    ofn.lpstrTitle = L"Export Skybox - the file name becomes the folder name";
+    ofn.lpstrFilter = L"Skybox export folder\0*.*\0";
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOTESTFILECREATE;
+    if (!GetSaveFileNameW(&ofn)) return;
+
+    std::wstring full = path;
+    const size_t slash = full.find_last_of(L"\\/");
+    std::wstring parent = slash == std::wstring::npos ? L"." : full.substr(0, slash);
+    std::wstring stem = slash == std::wstring::npos ? full : full.substr(slash + 1);
+    const size_t dot = stem.find_last_of(L'.');
+    if (dot != std::wstring::npos && dot > 0) stem.resize(dot);
+    if (stem.empty()) stem = L"sky";
+
+    // The dat stage: g_app->data_gw2 is only safe on this thread.
+    auto inputs = std::make_shared<sky::SkyInputs>();
+    SetWindowTextW(g_app->hwnd_status_label, L"Reading the map's sky textures...");
+    HCURSOR old_cursor = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+    try {
+        *inputs = sky::load_sky_inputs(g_app->data_gw2, g_app->current_entry.decompressed, *tpl, fileId);
+    } catch (const std::exception& e) {
+        SetCursor(old_cursor);
+        SetWindowTextW(g_app->hwnd_status_label, L"Skybox export failed.");
+        MessageBoxW(hwnd, utf8_to_wide(e.what()).c_str(), L"Skybox export failed", MB_ICONERROR);
+        return;
+    }
+    SetCursor(old_cursor);
+
+    const std::string parentUtf8 = wide_to_utf8(parent), nameUtf8 = wide_to_utf8(stem);
+    SetWindowTextW(g_app->hwnd_status_label, L"Baking the skybox...");
+    g_skybox_export_running = true;
+    std::thread([hwnd, inputs, parentUtf8, nameUtf8]() {
+        sky::SkyExportReport rep;
+        try {
+            rep = sky::write_skybox(*inputs, parentUtf8, nameUtf8);
+        } catch (const std::exception& e) {
+            rep = {};
+            rep.error = e.what();
+        }
+        auto* result = new sky::SkyExportReport(std::move(rep));
+        if (!PostMessageW(hwnd, WM_APP_SKYBOX_EXPORT_DONE, 0, reinterpret_cast<LPARAM>(result))) delete result;
+        g_skybox_export_running = false;
+    }).detach();
+}
+
+void on_skybox_export_done(HWND hwnd, LPARAM lparam) {
+    std::unique_ptr<castlemist::exportgltf::sky::SkyExportReport> owned(
+        reinterpret_cast<castlemist::exportgltf::sky::SkyExportReport*>(lparam));
+    const auto& r = *owned;
+    if (!r.ok) {
+        SetWindowTextW(g_app->hwnd_status_label, L"Skybox export failed.");
+        const std::string why = r.error == "no sky" ? std::string("This map has no sky to export.") : r.error;
+        MessageBoxW(hwnd, utf8_to_wide(why).c_str(), L"Skybox export failed", MB_ICONERROR);
+        return;
+    }
+    SetWindowTextW(g_app->hwnd_status_label, L"Skybox export finished.");
+    std::string msg = "Wrote the folder:\n" + r.folder + "\n\nModes written: " + std::to_string(r.modesWritten) +
+                      ", raw skyboxes found: " + std::to_string(r.rawSkyboxes) +
+                      ", warnings: " + std::to_string(r.warnings.size());
+    if (!r.warnings.empty()) msg += " (see sky.json)";
+    msg += "\n\nUse baked/equirect.png with Skybox/Panoramic, or the six faces with Skybox/6 Sided "
+           "(slots in sky.json).";
+    MessageBoxW(hwnd, utf8_to_wide(msg).c_str(), L"Skybox export finished",
                 r.warnings.empty() ? MB_ICONINFORMATION : MB_ICONWARNING);
 }
 

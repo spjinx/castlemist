@@ -1,7 +1,9 @@
 #ifndef CASTLEMIST_GW2BGFX_VIEW_H
 #define CASTLEMIST_GW2BGFX_VIEW_H
 
+#include <array>
 #include <cstdint>
+#include <map>
 #include <set>
 #include <string>
 #include <windows.h>
@@ -49,6 +51,17 @@ void on_resize(int width, int height);
 /// @param mft_index Index into @p dat 's MFT list -- i.e. `baseId - 1`.
 /// @return false and fills @p error if the entry is not a usable model.
 bool set_model(Gw2Dat& dat, uint32_t mft_index, std::string& error);
+
+/// @brief Stand-ins for the character armor atlas the game fills at runtime: a
+///        material `diffuse` / `normal` slot naming fileId 0 samples these
+///        instead of white. Taken by the next set_model(); nullptr clears one.
+///        See ripper::build_armor_preview.
+void set_atlas_textures(const ModelTextureCPU* diffuse, const ModelTextureCPU* normal);
+
+/// @brief Uniform values, by bgfx uniform name, that win over every draw's own
+///        material constants: the viewer's shader dyes (`hsmnt*`, see
+///        ripper/shader_dye.h). Kept across set_model(); an empty map clears.
+void set_uniform_overrides(const std::map<std::string, std::array<float, 4>>& values);
 
 void clear_model();
 bool has_model();

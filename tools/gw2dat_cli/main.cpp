@@ -13,6 +13,9 @@
 //   parse    (--dat <path> (--index N | --file-id N) | --data <bin>) --template <json>
 //                                            [--max-depth D] [--max-nodes N] [--out <json>]
 //   sniff    --dat <path> (--index N | --file-id N)
+//   skybox   --dat <path> --file-id N --template <json> --out <dir> [--name NAME]
+//            [--size <face px>] [--equirect <width px>]
+//            -- a map's sky as Unity skybox images in <out>/<name> (default map_<fileId>)
 //   character (--key-name NAME | --key KEY) [--character NAME] [--tab N]
 //            [--out <json>] [--cmap <content_map.bin>]
 //            -- lists an account's characters, or resolves one character's
@@ -75,6 +78,7 @@
 #include "castlemist/db/index_db.h"
 #include "castlemist/extract/entry_extractor.h"
 #include "castlemist/exportgltf/gltf_export.h"
+#include "castlemist/exportgltf/sky_export.h"
 #include "castlemist/ripper/assemble.h"
 #include "castlemist/ripper/look.h"
 #include "castlemist/ripper/vrchat.h"
@@ -1430,6 +1434,39 @@ void cmd_map(const Args& a) {
     emit(j);
 }
 
+std::string utf8_arg(const char* flag);  // below: --flag value as UTF-8
+
+// Export a map's sky as Unity skybox images: <out>/<name>/sky.json plus
+// <mode>/baked/ (equirect + six faces) and <mode>/skybox/ (the stored cube).
+void cmd_skybox(const Args& a) {
+    namespace sky = castlemist::exportgltf::sky;
+    std::string tpl_path = need(a, "template");
+    std::ifstream tin(tpl_path, std::ios::binary);
+    if (!tin) fail("cannot open template: " + tpl_path);
+    json tpl;
+    try { tin >> tpl; } catch (const std::exception& ex) { fail(std::string("template JSON error: ") + ex.what()); }
+
+    uint32_t fileId = static_cast<uint32_t>(to_u64(need(a, "file-id")));
+    std::string out = utf8_arg("--out").empty() ? need(a, "out") : utf8_arg("--out");
+    std::string name = has(a, "name") ? utf8_arg("--name") : "map_" + std::to_string(fileId);
+
+    sky::SkyExportOptions opt;
+    if (has(a, "size")) opt.faceSize = static_cast<int>(to_u64(a.at("size")));
+    if (has(a, "equirect")) opt.equirectWidth = static_cast<int>(to_u64(a.at("equirect")));
+    if (opt.faceSize < 1 || opt.equirectWidth < 2) fail("--size and --equirect must be positive");
+
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    uint32_t idx = 0;
+    std::vector<uint8_t> data = extract_bytes(dat, a, idx);
+    sky::SkyInputs in = sky::load_sky_inputs(dat, data, tpl, fileId);
+    sky::SkyExportReport rep = sky::write_skybox(in, out, name, opt);
+    json j = sky::report_json(rep);
+    std::fputs(j.dump().c_str(), stdout);
+    std::fputc('\n', stdout);
+    if (!rep.ok) std::exit(1);
+}
+
 // Dump the skeleton + embedded animation of a MODL packfile (validation aid).
 void cmd_skel(const Args& a) {
     std::string tpl_path = need(a, "template");
@@ -2384,8 +2421,8 @@ void cmd_world(const Args& a) {
 int main(int argc, char** argv) {
     if (argc < 2) {
         fail("usage: gw2dat_cli <info|list|lookup|resolve|extract|texture|parse|sniff|"
-             "compress|decompress|encode-texture|scananim|character|character-export|"
-             "character-assemble|world> [--flags]");
+             "compress|decompress|encode-texture|scananim|map|skybox|world|character|character-export|"
+             "character-assemble> [--flags]");
     }
     std::string cmd = argv[1];
     Args a = parse_args(argc, argv, 2);
@@ -2401,6 +2438,7 @@ int main(int argc, char** argv) {
         else if (cmd == "model") cmd_model(a);
         else if (cmd == "skel") cmd_skel(a);
         else if (cmd == "map") cmd_map(a);
+        else if (cmd == "skybox") cmd_skybox(a);
         else if (cmd == "world") cmd_world(a);
         else if (cmd == "scanpf") cmd_scanpf(a);
         else if (cmd == "scancloth") cmd_scancloth(a);

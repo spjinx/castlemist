@@ -27,6 +27,12 @@ void on_resize(int width, int height);
 void set_model(const ModelPreview& model);
 void clear_model();
 
+/// Re-uploads the current model's material textures (reconstruction and game
+/// shader) from @p model -- the same model set_model() took, with its textures
+/// or material texture choices changed (e.g. re-dyed armor). Geometry, camera,
+/// gizmo and animation state are left alone.
+void refresh_model_materials(const ModelPreview& model);
+
 /// --- map / multi-model scene -----------------------------------------------
 /// Map content layers (each independently toggleable).
 enum SceneLayer {

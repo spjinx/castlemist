@@ -33,6 +33,7 @@ HMENU build_menu() {
                 L"Export glTF (Model, &Baked UV Atlas)...");
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_VRCHAT_MODEL, L"Export for &VRChat (Model)...");
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_GLTF_MAP, L"Export glTF (&Map)...");
+    AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_SKYBOX_MAP, L"Export S&kybox (Map)...");
     AppendMenuW(g_file_menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXIT, L"E&xit");
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_COMPRESSED, MF_GRAYED | MF_DISABLED);
@@ -41,6 +42,7 @@ HMENU build_menu() {
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MODEL_ATLAS, MF_GRAYED | MF_DISABLED);
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_VRCHAT_MODEL, MF_GRAYED | MF_DISABLED);
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MAP, MF_GRAYED | MF_DISABLED);
+    EnableMenuItem(g_file_menu, ID_FILE_EXPORT_SKYBOX_MAP, MF_GRAYED | MF_DISABLED);
 
     HMENU tools_menu = CreatePopupMenu();
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DECODE_LINK, L"&Decode Chat Link... ([&...])");
@@ -639,6 +641,10 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             CreateWindowExW(0, L"BUTTON", L"Full-res tex", WS_CHILD | BS_AUTOCHECKBOX | BS_PUSHLIKE, 0, 0, 0, 0, hwnd,
                              reinterpret_cast<HMENU>(ID_TEX_FULLRES), g_hinstance, nullptr);
         SendMessageW(g_app->hwnd_tex_fullres, BM_SETCHECK, BST_CHECKED, 0);
+        // Armor dye channels (the rebuilt atlas is re-baked in place).
+        g_app->hwnd_armor_dyes =
+            CreateWindowExW(0, L"BUTTON", L"Dyes", WS_CHILD, 0, 0, 0, 0, hwnd,
+                             reinterpret_cast<HMENU>(ID_ARMOR_DYES), g_hinstance, nullptr);
         // Light pre-pass toggle (Shader mode): real deferred directional lighting
         // vs the flat light-buffer stand-in. Defaults ON to match the renderer.
         g_app->hwnd_light_toggle =
@@ -1170,6 +1176,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     case WM_APP_VRCHAT_MODEL_DONE:
         on_vrchat_model_done(hwnd, lparam);
         return 0;
+    case WM_APP_SKYBOX_EXPORT_DONE:
+        on_skybox_export_done(hwnd, lparam);
+        return 0;
     case WM_APP_CMAP_DONE:
         on_main_cmap_done(hwnd);
         return 0;
@@ -1262,6 +1271,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             return 0;
         case ID_FILE_EXPORT_GLTF_MAP:
             do_export_gltf_map(hwnd);
+            return 0;
+        case ID_FILE_EXPORT_SKYBOX_MAP:
+            do_export_skybox_map(hwnd);
             return 0;
         case ID_FILE_EXIT:
             DestroyWindow(hwnd);
@@ -1574,6 +1586,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                 update_audio_info(audio_selected_index());
                 update_audio_seek_ui(true);
             }
+            return 0;
+        case ID_ARMOR_DYES:
+            open_dye_dialog(hwnd);
             return 0;
         case ID_TEX_FULLRES: {
             bool full = SendMessageW(g_app->hwnd_tex_fullres, BM_GETCHECK, 0, 0) == BST_CHECKED;

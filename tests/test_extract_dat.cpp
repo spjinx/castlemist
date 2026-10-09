@@ -630,6 +630,48 @@ CM_TEST(mapsky, no_env_chunk) {
     CHECK(s.modes.empty());
 }
 
+// gw2-sky.md §7.1: F0 = 3072 * max(3, round(trn.swapDistance / 3072)), 24576
+// without a trn chunk. Values from the §7.1 table.
+CM_TEST(mapsky, sky_distance_from_trn) {
+    CHECK_EQ(map_sky(187611).skyDistance, 36864.0f);
+    CHECK_EQ(map_sky(3264516).skyDistance, 70656.0f);
+    CHECK_EQ(map_sky(3134778).skyDistance, 24576.0f);
+}
+
+// gw2-sky.md §8.2: starFile 187544 is a PF packfile with chunk STAR v0 --
+// S = 0.125, 1699 stars of {e0, e1, u0, u1, v0, v1}, atlas fileId 187543.
+CM_TEST(mapstars, star_file_187544) {
+    if (!ensure_template()) SKIP("no gw2_packfile.json struct template");
+    std::vector<uint8_t> bytes = packfile_by_file_id(187544);
+    auto st = castlemist::model::Extractor(bytes, *castlemist::tpl::get()).parseStars();
+    CHECK(st.present);
+    CHECK_EQ(st.scale, 0.125f);
+    CHECK_EQ(st.stars.size(), size_t{1699});
+    CHECK_EQ(st.atlas, 187543u);
+    float e1min = 10, e1max = -10, e0min = 10, e0max = -10;
+    bool rectsOk = true;
+    for (const auto& s : st.stars) {
+        e0min = std::min(e0min, s.e0); e0max = std::max(e0max, s.e0);
+        e1min = std::min(e1min, s.e1); e1max = std::max(e1max, s.e1);
+        rectsOk = rectsOk && s.u0 >= 0 && s.u1 <= 1 && s.v0 >= 0 && s.v1 <= 1 && s.u1 > s.u0 && s.v1 > s.v0;
+    }
+    // §8.2: e0 in [-1.557, 4.702], e1 in [0, 1.549].
+    CHECK_NEAR(e0min, -1.557f, 1e-3f);
+    CHECK_NEAR(e0max, 4.702f, 1e-3f);
+    CHECK_NEAR(e1min, 0.0f, 1e-3f);
+    CHECK_NEAR(e1max, 1.549f, 1e-3f);
+    CHECK(rectsOk);
+}
+
+// A map packfile has no STAR chunk.
+CM_TEST(mapstars, no_star_chunk) {
+    if (!ensure_template()) SKIP("no gw2_packfile.json struct template");
+    std::vector<uint8_t> bytes = packfile_by_file_id(187611);
+    auto st = castlemist::model::Extractor(bytes, *castlemist::tpl::get()).parseStars();
+    CHECK_FALSE(st.present);
+    CHECK(st.stars.empty());
+}
+
 
 // ---- skybox export, end to end (load_sky_inputs -> write_skybox) ----
 
@@ -664,10 +706,20 @@ bool png_dims(const fs::path& p, int& w, int& h) {
 }
 
 /// Modes the export should write for @p s: those with a whole panorama or cube
-/// that don't repeat an earlier one (same textures and, gw2-sky.md §5, the same
-/// Brightness: day* for modes 0/2, night* for 1/3).
+/// that don't repeat an earlier one (same textures and, gw2-sky.md §3, the
+/// same attribute set: day* for modes 0/2, night* for 1/3 -- or day and night
+/// sets that agree on what the bake reads).
 int distinct_sky_modes(const castlemist::model::Extractor::MapSky& s) {
-    auto brightness = [&](size_t i) { return i % 2 ? s.params.nightBrightness : s.params.dayBrightness; };
+    const auto& p = s.params;
+    bool dayIsNight = p.dayBrightness == p.nightBrightness && p.dayStarDensity == p.nightStarDensity &&
+                      p.dayHazeBottom == p.nightHazeBottom && p.dayHazeFalloff == p.nightHazeFalloff &&
+                      p.dayHazeDensity == p.nightHazeDensity && p.dayLightIntensity == p.nightLightIntensity;
+    for (const auto& c : s.cards)
+        dayIsNight = dayIsNight && c.day.texture == c.night.texture && c.day.azimuth == c.night.azimuth &&
+                     c.day.latitude == c.night.latitude && c.day.density == c.night.density &&
+                     c.day.brightness == c.night.brightness && c.day.scale[0] == c.night.scale[0] &&
+                     c.day.scale[1] == c.night.scale[1] &&
+                     std::equal(c.day.textureUV, c.day.textureUV + 4, c.night.textureUV);
     int n = 0;
     for (size_t j = 0; j < s.modes.size(); ++j) {
         const auto& b = s.modes[j];
@@ -676,7 +728,7 @@ int distinct_sky_modes(const castlemist::model::Extractor::MapSky& s) {
         for (size_t i = 0; i < j && !alias; ++i) {
             const auto& a = s.modes[i];
             alias = (a.hasPanorama() || a.hasCube()) && a.ne == b.ne && a.sw == b.sw && a.top == b.top &&
-                    std::equal(a.cube, a.cube + 6, b.cube) && brightness(i) == brightness(j);
+                    std::equal(a.cube, a.cube + 6, b.cube) && (i % 2 == j % 2 || dayIsNight);
         }
         if (!alias) ++n;
     }
@@ -702,6 +754,52 @@ CM_TEST(skyexport_dat, map_187611) {
     CHECK(fs::exists(parent / "Sky" / "sky.json"));
     std::printf("      187611: modesWritten %d (dayBrightness %g, nightBrightness %g)\n", r.modesWritten,
                 in.sky.params.dayBrightness, in.sky.params.nightBrightness);
+
+    // Stars (gw2-sky.md §8) and texture cards (§9): the star file is a STAR
+    // packfile, not a texture, and its DDS atlas decodes.
+    CHECK(in.stars.present);
+    CHECK_EQ(in.stars.stars.size(), size_t{1699});
+    CHECK(in.textures.count(187543) == 1);
+    for (const std::string& w : in.decodeWarnings) CHECK(w.find("187544") == std::string::npos);
+    nlohmann::json j;
+    {
+        std::ifstream f(parent / "Sky" / "sky.json");
+        j = nlohmann::json::parse(f, nullptr, false);
+    }
+    CHECK(j.is_object());
+    const auto& p = in.sky.params;
+    std::printf("      187611: star density day %g night %g; haze day %g/%g/%g night %g/%g/%g\n",
+                p.dayStarDensity, p.nightStarDensity, p.dayHazeBottom, p.dayHazeFalloff, p.dayHazeDensity,
+                p.nightHazeBottom, p.nightHazeFalloff, p.nightHazeDensity);
+    for (size_t i = 0; i < in.sky.cards.size(); ++i) {
+        const auto& c = in.sky.cards[i];
+        std::printf("      card %zu flags %u mat %u | day tex %u az %g lat %g sc %g,%g den %g br %g li %g hz %g mh %g "
+                    "uv %g,%g,%g,%g | night tex %u az %g lat %g sc %g,%g den %g br %g li %g hz %g mh %g\n",
+                    i, c.flags, c.materialFile, c.day.texture, c.day.azimuth, c.day.latitude, c.day.scale[0],
+                    c.day.scale[1], c.day.density, c.day.brightness, c.day.lightIntensity, c.day.hazeDensity,
+                    c.day.minHaze, c.day.textureUV[0], c.day.textureUV[1], c.day.textureUV[2],
+                    c.day.textureUV[3], c.night.texture, c.night.azimuth, c.night.latitude, c.night.scale[0],
+                    c.night.scale[1], c.night.density, c.night.brightness, c.night.lightIntensity,
+                    c.night.hazeDensity, c.night.minHaze);
+    }
+    if (j.is_object()) {
+        // §8.1: the star mesh is hidden while the mode's StarDensity is 0, so
+        // "stars" is in a mode's layers exactly when its density is non-zero.
+        for (int mode = 0; mode < 2; ++mode) {
+            const auto& m = j["modes"][mode];
+            const bool stars = (mode ? p.nightStarDensity : p.dayStarDensity) != 0;
+            nlohmann::json want = stars ? nlohmann::json::array({"base", "stars", "cards"})
+                                        : nlohmann::json::array({"base", "cards"});
+            CHECK(m["layers"] == want);
+            CHECK_EQ(m["skyDistance"].get<float>(), 36864.0f);
+            if (stars) {
+                CHECK_EQ(m["sources"]["stars"]["file"].get<int>(), 187544);
+                CHECK_EQ(m["sources"]["stars"]["atlas"].get<int>(), 187543);
+            }
+            CHECK(!m["sources"]["cards"].empty());
+            std::printf("      187611 %s: %s\n", m["name"].get<std::string>().c_str(), m["layers"].dump().c_str());
+        }
+    }
     fs::remove_all(parent);
 }
 

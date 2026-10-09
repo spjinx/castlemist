@@ -154,8 +154,12 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
         // filled from the composite atlas) and keep only those layers. Roles are
         // the material's token up to its first '_' ("mask", "decal", "glow", ...).
         std::vector<MaterialTextureSlot> slots;
-        for (const auto& t : m.textures)
+        for (const auto& t : m.textures) {
             slots.push_back({t.fileId, castlemist::model::detokenizeName64(t.token), t.uvIndex});
+            if (t.fileId != 0) continue;
+            if (slots.back().role == "diffuse") mat.atlasDiffuseUv = static_cast<int8_t>(t.uvIndex);
+            else if (slots.back().role == "normal") mat.atlasNormalUv = static_cast<int8_t>(t.uvIndex);
+        }
         const std::set<uint32_t> layerFiles = layer_only_files(slots);
         long bestDiffuseArea = -1, bestNormalArea = -1;
         for (uint32_t fid : mat.textureFileIds) {
