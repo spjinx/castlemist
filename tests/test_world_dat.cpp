@@ -735,6 +735,8 @@ CM_TEST(world_dat, water_sources_per_map) {
         CHECK(warning_starting(scene, "env: " + std::to_string(want.envPresets) + " water presets") != nullptr);
         // The plane is a height with no outline: its coverage is named UNPROVEN.
         CHECK_EQ(warning_starting(scene, "watr: waterPlaneZ has no outline") != nullptr, want.plane);
+        CHECK_EQ(warning_starting(scene, "watr: waterFlags 1 kept as stored; meaning UNPROVEN") != nullptr, want.plane);
+        CHECK(warning_starting(scene, "watr: no template") == nullptr);
         CHECK_EQ(warning_starting(scene, "rive: ") != nullptr, want.rivers > 0);
         CHECK(warning_starting(scene, "watr V0 not read") == nullptr);
     }
@@ -818,8 +820,10 @@ void maybe_write_mask(const WetMask& m, const std::string& name) {
 // looking at those pictures, and says only that the region is one coherent
 // body of plausible size: at most half the map (with up = +Z it would be 90%
 // and 75%), at least 1%, and one 4-connected component holding at least half
-// of it. It cannot prove the level is exactly planeZ: that rests on watr and
-// havk storing the same height (water_sources_per_map).
+// of it. This places the water at about z = 0. It cannot show the game
+// draws at waterPlaneZ: both maps store 0, a float's default, so "drawn at
+// waterPlaneZ" and "water at 0, field happens to be 0" look the same
+// (UNPROVEN, note §6.2).
 CM_TEST(world_dat, water_plane_traces_water_bodies) {
     for (uint32_t id : {192711u, 191000u}) {
         castlemist::world::WorldScene scene = load_map_water(id);
@@ -838,17 +842,17 @@ CM_TEST(world_dat, water_plane_traces_water_bodies) {
     }
 }
 
-// §6.2: props over the water float near the plane. Props that stand over
-// terrain lying at least 64 units below the plane and are not on that terrain
-// (|z - h| >= 16): boats, buoys, docks, reeds. The criterion stated before
-// measuring -- the 16-unit band centred on planeZ is their most common
-// height -- was FALSE on both maps (Queensdale peaks 8-24 below the plane,
-// Lion's Arch 24-40 above it, on its docks; note §6.2). What holds, and is
-// asserted (chosen after seeing the histogram): the 112-unit window centred
-// on planeZ holds at least twice as many of them as any other 112-unit
-// window from planeZ - 1024 to planeZ + 1024. Supporting evidence for a
-// level within tens of units of planeZ, not a proof of planeZ itself.
-CM_TEST(world_dat, water_plane_is_where_props_float) {
+// §6.2, a printed MEASUREMENT and REGRESSION GUARD, NOT EVIDENCE of the
+// water level. Props that stand over terrain lying at least 64 units below
+// the plane and are not on that terrain (|z - h| >= 16), by height. The
+// criterion stated before measuring -- the 16-unit band centred on planeZ is
+// their most common height -- was FALSE on both maps (Queensdale peaks 8-24
+// below the plane, Lion's Arch 24-40 above it, on docks, which are not
+// water). The window check below was shaped around this data (a 112-unit
+// window chosen after seeing Lion's Arch's dock peak), so it only guards the
+// reader against changing these numbers; the water evidence is the terrain
+// mask (water_plane_traces_water_bodies).
+CM_TEST(world_dat, water_props_over_water_heights) {
     for (uint32_t id : {192711u, 191000u}) {
         castlemist::world::WorldScene scene = load_map_water(id);
         MapUnderTest m = load_map_terrain(id);
@@ -879,7 +883,7 @@ CM_TEST(world_dat, water_plane_is_where_props_float) {
                     id, over);
         for (int b = kMid - 6; b <= kMid + 6; ++b) std::printf(" %+d:%zu", (b - kMid) * 16, band[b]);
         std::printf("\n    map %u: window around the plane %zu, best other window %zu\n", id, atPlane, bestOther);
-        CHECK(atPlane >= 2 * bestOther);
+        CHECK(atPlane >= 2 * bestOther);   // regression guard only (fitted to this data)
     }
 }
 
@@ -967,12 +971,23 @@ CM_TEST(world_dat, water_rivers_read_as_stored) {
     CHECK_EQ(inside, total);
 }
 
-// The environment: every test map has a sky and a day light rig.
+// §6.5: every test map has a sky and a day light rig, and the warning names
+// the lighting presets and per-zone blocks that are not attached. The block
+// counts are the dataLocalArray lengths of `gw2dat_cli parse` (29, 25, 12;
+// no dataOverrideArray entries); the preset count is dataGlobal `lighting`.
 CM_TEST(world_dat, environment_sky_present) {
-    for (uint32_t id : kTestMaps) {
-        castlemist::world::WorldScene scene = load_map_water(id);
+    struct Want { uint32_t id; uint32_t presets, local; };
+    for (const Want& want : {Want{192711, 3, 29}, Want{191000, 3, 25}, Want{1151420, 3, 12}}) {
+        castlemist::world::WorldScene scene = load_map_water(want.id);
         CHECK(scene.environment.sky.present);
         CHECK(scene.environment.light.present);
         CHECK(warning_starting(scene, "env: no sky") == nullptr);
+        CHECK(warning_starting(scene, "env: no light rig") == nullptr);
+        const std::string expected = "env: " + std::to_string(want.presets - 1) +
+                                     " other dataGlobal lighting presets and " + std::to_string(want.local) +
+                                     " per-zone blocks (" + std::to_string(want.local) + " dataLocalArray, 0 ";
+        const std::string* w = warning_starting(scene, "env: " + std::to_string(want.presets - 1) + " other");
+        if (w) std::printf("    map %u warning: %s\n", want.id, w->c_str());
+        CHECK(warning_starting(scene, expected) != nullptr);
     }
 }

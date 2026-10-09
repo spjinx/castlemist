@@ -499,6 +499,9 @@ CM_TEST(world, water_copies_sources_and_names_gaps) {
     CHECK(w.shore.present);
     CHECK_EQ(w.shore.chains.size(), size_t(1));
     CHECK_EQ(warnings_starting(scene, "watr: waterPlaneZ has no outline"), size_t(1));
+    CHECK_EQ(warnings_starting(scene, "watr: waterFlags 3 kept as stored; meaning UNPROVEN"), size_t(1));
+    CHECK_EQ(warnings_starting(scene, "shor: 1 shore chains read with field names after T3D's SHOR.ts; untested"),
+             size_t(1));
     CHECK_EQ(warnings_starting(scene, "watr: 1 waterSurfaces"), size_t(1));
     CHECK_EQ(warnings_starting(scene, "rive: 1 rivers"), size_t(1));
     CHECK_EQ(warnings_starting(scene, "havk: 2 waterVolumes not read"), size_t(1));
@@ -523,4 +526,50 @@ CM_TEST(world, water_plane_havk_disagree_warns) {
     CHECK_EQ(scene.water.planeZ, 0.0f);
     CHECK_EQ(scene.water.havkSurfaceZ, 40.0f);
     CHECK_EQ(warnings_starting(scene, "water: watr waterPlaneZ"), size_t(1));
+}
+
+// §6: parts of a present chunk that could not be read are named: a watr
+// version without a template struct (instead of the V0 warning), and rivers
+// whose points are not float3.
+CM_TEST(world, water_unread_parts_named) {
+    castlemist::world::WaterSources in;
+    in.watr.chunk = true;
+    in.watr.version = 7;
+    in.watr.problem = "no template struct for watr v7; chunk not read";
+    in.rivers.droppedPoints = 2;
+    castlemist::world::WorldScene scene;
+    castlemist::world::build_water(in, scene);
+    CHECK_EQ(warnings_starting(scene, "watr: no template struct for watr v7"), size_t(1));
+    CHECK_EQ(warnings_starting(scene, "watr V0 not read"), size_t(0));
+    CHECK_EQ(warnings_starting(scene, "rive: 2 rivers' points not read"), size_t(1));
+    CHECK(!scene.water.hasPlane);
+}
+
+// §6.5: the sky and the one lighting preset are kept; the other presets and
+// the per-zone blocks are named with their counts.
+CM_TEST(world, environment_names_unattached) {
+    castlemist::world::EnvSources in;
+    in.sky.present = true;
+    in.sky.starFile = 42;
+    in.light.present = true;
+    in.light.lightCount = 2;
+    in.counts.present = true;
+    in.counts.lightingPresets = 3;
+    in.counts.localBlocks = 12;
+    in.counts.overrideBlocks = 1;
+    castlemist::world::WorldScene scene;
+    castlemist::world::build_environment(in, scene);
+    CHECK(scene.environment.sky.present);
+    CHECK_EQ(scene.environment.sky.starFile, uint32_t(42));
+    CHECK_EQ(scene.environment.light.lightCount, 2);
+    CHECK_EQ(scene.warnings.size(), size_t(1));
+    CHECK_EQ(warnings_starting(scene, "env: 2 other dataGlobal lighting presets and 13 per-zone blocks "
+                                      "(12 dataLocalArray, 1 dataOverrideArray"),
+             size_t(1));
+
+    castlemist::world::WorldScene empty;
+    castlemist::world::build_environment({}, empty);
+    CHECK_EQ(empty.warnings.size(), size_t(2));
+    CHECK_EQ(warnings_starting(empty, "env: no sky"), size_t(1));
+    CHECK_EQ(warnings_starting(empty, "env: no light rig"), size_t(1));
 }

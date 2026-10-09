@@ -87,8 +87,9 @@ struct River {
 
 /// @brief The map's water as the dat describes it (docs/research/gw2-world-frame.md §6).
 struct Water {
-    /// `watr` V1 `waterPlaneZ`: the map's water level, map-space z. It is a
-    /// height only; no chunk outlines the area it covers (§6.2).
+    /// `watr` V1 `waterPlaneZ` as stored, map-space z. A height only; no
+    /// chunk outlines the area it covers, and that the game draws its water
+    /// at this value is UNPROVEN (every test map stores 0, §6.2).
     bool hasPlane = false;
     float planeZ = 0;
     uint32_t planeFlags = 0;                ///< `watr` V1 `waterFlags` as stored (meaning UNPROVEN)

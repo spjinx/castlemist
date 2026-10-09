@@ -1828,15 +1828,23 @@ public:
         float planeZ = 0;                     ///< `waterPlaneZ` as stored, map-space z
         uint32_t flags = 0;                   ///< `waterFlags` as stored (V1)
         std::vector<MapWaterSurface> surfaces;
+        /// Why part of a present chunk was not read ("" = nothing skipped):
+        /// no template root for its version, or a surface struct without the
+        /// fields read here.
+        std::string problem;
     };
 
     MapWater parseWater() {
         MapWater out;
         std::string root; uint16_t ver = 0;
         size_t w = findChunk("watr", &root, &ver);
-        if (!w || root.empty()) return out;
+        if (!w) return out;
         out.chunk = true;
         out.version = ver;
+        if (root.empty()) {
+            out.problem = "no template struct for watr v" + std::to_string(ver) + "; chunk not read";
+            return out;
+        }
         size_t off; json f;
         if (fieldOffset(root, "waterPlaneZ", off, f) && f.value("kind", std::string()) == "float") {
             out.planeZ = rdf(w + off);
@@ -1852,6 +1860,8 @@ public:
         size_t zo, flo, vo; json zf, flf, vf;
         if (ss <= 0 || !fieldOffset(st, "waterSurfaceZ", zo, zf) ||
             !fieldOffset(st, "waterSurfaceFlags", flo, flf) || !fieldOffset(st, "vertices", vo, vf)) {
+            out.problem = std::to_string(sn) + " waterSurfaces not read: surface struct '" + st +
+                          "' lacks waterSurfaceZ, waterSurfaceFlags or vertices";
             return out;
         }
         for (uint32_t i = 0; sbase && i < sn; ++i) {
@@ -1977,6 +1987,7 @@ public:
         bool present = false;                 ///< at least one river was read
         uint16_t version = 0;
         std::vector<River> rivers;
+        uint32_t droppedPoints = 0;           ///< rivers whose `points` element is not 12 bytes (not read)
     };
 
     /// @brief Read each river's name and centreline points by field name.
@@ -2001,10 +2012,38 @@ public:
             if (pts.stride == 12) {
                 river.points.reserve(3ull * pts.n);
                 for (uint32_t k = 0; k < 3 * pts.n; ++k) river.points.push_back(rdf(pts.base + 4ull * k));
+            } else if (pts.n) {
+                ++out.droppedPoints;
             }
             out.rivers.push_back(std::move(river));
         }
         out.present = !out.rivers.empty();
+        return out;
+    }
+
+    /// @brief Sizes of the `env` arrays attach_environment does not attach.
+    struct MapEnvCounts {
+        bool present = false;                 ///< env chunk with a template root
+        uint32_t lightingPresets = 0;         ///< dataGlobal `lighting` entries
+        uint32_t localBlocks = 0;             ///< `dataLocalArray` entries (per-zone overrides)
+        uint32_t overrideBlocks = 0;          ///< `dataOverrideArray` entries
+    };
+
+    MapEnvCounts countEnv() {
+        MapEnvCounts out;
+        std::string root; uint16_t ver = 0;
+        const size_t env = findChunk("env", &root, &ver);
+        if (!env || root.empty()) return out;
+        out.present = true;
+        out.localBlocks = fieldArray(root, "dataLocalArray", env).n;
+        out.overrideBlocks = fieldArray(root, "dataOverrideArray", env).n;
+        size_t off; json f;
+        if (fieldOffset(root, "dataGlobal", off, f) && f.value("kind", std::string()) == "ptr" &&
+            f.contains("target") && f["target"].is_object()) {
+            const size_t g = follow(env + off);
+            const std::string gt = f["target"].value("struct", std::string());
+            if (g && !gt.empty()) out.lightingPresets = fieldArray(gt, "lighting", g).n;
+        }
         return out;
     }
 

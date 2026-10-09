@@ -698,10 +698,11 @@ just outside the map rect; they are kept, not clipped.
 
 ## 6. Water and environment
 
-**On Queensdale and Lion's Arch the visible water is one flat plane at the
-height `watr.waterPlaneZ` = 0. The terrain below it is the maps' rivers,
-lakes, bay and sea. No chunk outlines the area the plane covers: that is
-UNPROVEN. `havk.waterSurfaceZ` stores the same height. Neither map has
+**On Queensdale and Lion's Arch the visible water is at about map z = 0:
+the terrain below 0 is the maps' rivers, lakes, bay and sea. Both maps
+store `watr.waterPlaneZ` = 0 and `havk.waterSurfaceZ` = 0, so they cannot
+show that the game draws its water at `waterPlaneZ`. That link is UNPROVEN,
+and so is the area the water covers, which no chunk outlines. Neither map has
 `watr` surfaces, rivers or a shore chunk. Spirit Vale has no water plane.
 Its seven `rive` rivers are read as centrelines, but most float far above
 the ground, so whether they are drawn as water is UNPROVEN.** Implemented
@@ -740,8 +741,9 @@ water.
   - `water_matches_reference` and `water_sources_per_map` (§6.1).
   - `water_plane_traces_water_bodies`: set `CM_WORLD_DIAG_DIR=<dir>` and it
     also writes the §6.2 pictures as `water_mask_<id>.ppm`.
-  - `water_plane_is_where_props_float` (§6.2) and
-    `water_rivers_read_as_stored` (§6.3), which print their measurements.
+  - `water_props_over_water_heights` (§6.2, a printed measurement and
+    regression guard, not evidence) and `water_rivers_read_as_stored`
+    (§6.3), which print their measurements.
   - `environment_sky_present` (§6.5).
   - `cm_test_world water_*` tests the rules on hand-made input.
 - **T3D**: never reads `watr`. It draws one flat plane at three.js `Y = 0`,
@@ -769,12 +771,14 @@ plane and the havk height agree exactly on both maps that have them.
 exactly 3 presets, which matches the 3 lighting presets (time of day),
 though that pairing is not proven.
 
-### 6.2 The plane is the visible water; its coverage is UNPROVEN
+### 6.2 The visible water is at about z = 0; that it is drawn at `waterPlaneZ`, and where, is UNPROVEN
 
-1. *Two chunks, one height.* `watr` is the render-side water chunk and
+1. *Two chunks, one value.* `watr` is the render-side water chunk and
    `havk` the collision chunk. Both store 0 (`waterPlaneZ`,
-   `waterSurfaceZ`).
-2. *The terrain below the plane is the maps' water bodies.* On a 600-cell
+   `waterSurfaceZ`). 0 is also a float's default, so by the rule above
+   this agreement is **not evidence** that either field sets the water
+   height.
+2. *The terrain below z = 0 is the maps' water bodies.* On a 600-cell
    grid over the terrain (`world_dat.water_plane_traces_water_bodies`;
    cells whose terrain z > planeZ, since up = −Z, §1):
 
@@ -792,23 +796,31 @@ though that pairing is not proven.
 
    The test asserts only what can be stated without the pictures: between
    1% and 50% of the map, and one component holding at least half. Those
-   bounds were chosen after looking.
-3. *Props over the water sit near the plane.* Take the props over terrain
-   at least 64 below the plane that are not on that terrain (`|z − h| ≥
-   16`). They are 267 on Queensdale and 1368 on Lion's Arch.
-   - Counts by 16-unit band of `z − planeZ`:
-     - Queensdale: −16: 21, 0: 14, +16: 63; no other band above 3.
-     - Lion's Arch: −32: 108 (docks and walkways ~32 above the water),
-       −16: 15, 0: 23; the next largest is −96: 17.
-   - The criterion stated before measuring was "the band centred on planeZ
-     is the most common". It is **false** on both maps.
-   - What is asserted holds by a factor of 3: a 112-unit window centred on
-     planeZ holds at least twice as many as any other such window (105 vs
-     34; 183 vs 56). This criterion was chosen after seeing the histogram.
-   - This places the water within tens of units of planeZ. It does not
-     prove planeZ itself; item 1 does that.
+   bounds were chosen after looking. The mask is the evidence that the
+   water is at about z = 0. It cannot tell "drawn at `waterPlaneZ`" from
+   "water at 0, and the field happens to be 0".
 
-**UNPROVEN: the area the plane covers.** The dat gives a height only. A
+**Measurement, not evidence: props over the water.** Take the props over
+terrain at least 64 below z = 0 that are not on that terrain (`|z − h| ≥
+16`). They number 267 on Queensdale and 1368 on Lion's Arch.
+- Counts by 16-unit band of `z − planeZ`:
+  - Queensdale: −16: 21, 0: 14, +16: 63.
+  - Lion's Arch: −32: 108, −16: 15, 0: 23. The −32 band is docks and
+    walkways, which are not water.
+- The criterion stated before measuring was "the band centred on planeZ is
+  the most common". It is **false** on both maps.
+- `water_props_over_water_heights` keeps a 112-unit window check (105 vs 34;
+  183 vs 56). That window was shaped around Lion's Arch's dock peak, so it
+  is only a regression guard on these numbers. It is not evidence of the
+  water level.
+
+**UNPROVEN: that the water is drawn at `waterPlaneZ`.** Every test map that
+has the field stores 0. **What would prove it:** a map whose `waterPlaneZ`
+(or `havk.waterSurfaceZ`) is non-zero, and whose terrain-below-that-height
+mask and shoreline props agree with that value rather than with 0.
+`attach_water` names this in `warnings` and keeps `planeZ` as stored.
+
+**UNPROVEN: the area the water covers.** The dat gives a height only. A
 plane drawn over the whole map and depth-tested against the terrain looks
 the same as item 2's region. That is what T3D does and what the old viewer's
 flood fill (`src/extract/map_scene.cpp`, water where all four corners of a
@@ -819,7 +831,8 @@ this in `warnings`. **What would prove it:** the client's water draw call
 (its world matrix and extent, captured as `gw2-sky.md` did for the sky), or
 a capture of one of those small components in game.
 
-**`waterFlags`** is 1 on both maps; its meaning is UNPROVEN.
+**`waterFlags`** is 1 on both maps; its meaning is UNPROVEN (warned:
+`watr: waterFlags N kept as stored; meaning UNPROVEN`).
 **`waterSurfaceFlags`** cannot be interpreted: no test map has a surface.
 The relation between `havk.waterSurfaceZ` and the surfaces is therefore
 untested. On these maps havk's height equals the plane's.
@@ -869,7 +882,9 @@ as water is UNPROVEN.
 None of the three maps has a `shor` chunk. `parseShore` reads `chains[]`
 (offset, opacity, animation speed, edge size, flags, points, material,
 textures, after T3D's `SHOR.ts` field names) into `Water::shore` when a map
-has one. It is untested on real data here.
+has one. It is untested on real data here, so a present chunk is warned:
+`shor: N shore chains read with field names after T3D's SHOR.ts;
+untested ...`.
 
 ### 6.5 Environment
 
@@ -882,13 +897,30 @@ has one. It is untested on real data here.
 Both are present on all three maps (`world_dat.environment_sky_present`). A
 map without them gets a warning (`env: no sky ...`, `env: no light rig
 ...`). The env water presets (§6.1) are counted and named in `warnings`, not
-read. Per-zone `dataLocalArray` sky and lighting overrides are not attached
-either.
+read. Also not attached, and counted in one warning (`env: N other dataGlobal
+lighting presets and M per-zone blocks (...) not attached`):
+- the other dataGlobal `lighting` presets: 3 presets on every test map, so
+  2 are dropped;
+- the per-zone `dataLocalArray` and `dataOverrideArray` blocks, each with
+  its own sky and lighting: 29, 25 and 12 local blocks, and no override
+  blocks.
 
-### 6.6 Warnings `attach_water` emits
+These counts come from `Extractor::countEnv`. `build_environment` is the
+dat-free rule, tested by `cm_test_world environment_names_unattached`.
 
+### 6.6 Warnings `attach_water` / `attach_environment` emit
+
+- `watr: no template struct for watr vN; chunk not read`, or `watr: N
+  waterSurfaces not read: surface struct ... lacks ...`: a present chunk
+  that could not be read.
 - `watr V0 not read (...)`: a V0 `watr`, which has no `waterSurfaces`.
-- `watr: waterPlaneZ has no outline: ...`: the plane's coverage, §6.2.
+- `watr: waterPlaneZ has no outline: ...`: the water is drawn at
+  `waterPlaneZ` is UNPROVEN, and so is its coverage (§6.2).
+- `watr: waterFlags N kept as stored; meaning UNPROVEN`.
+- `rive: N rivers' points not read (...)`: `points` element not float3.
+- `shor: N shore chains read ... untested ...`: §6.4.
+- `env: N other dataGlobal lighting presets and M per-zone blocks (...) not
+  attached ...`: §6.5.
 - `watr: N waterSurfaces kept as stored; waterSurfaceFlags meaning UNPROVEN ...`
 - `water: watr waterPlaneZ A differs from havk waterSurfaceZ B ...`
 - `havk: N waterVolumes not read ...`

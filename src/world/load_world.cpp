@@ -30,16 +30,20 @@ void build_water(const WaterSources& in, WorldScene& out) {
     std::vector<std::string>& warn = out.warnings;
 
     // watr (§6.1). V0 stores waterFoamData/waterChunks, which nothing reads.
-    if (in.watr.chunk && !in.watr.hasSurfacesField)
+    if (!in.watr.problem.empty()) warn.push_back("watr: " + in.watr.problem);
+    if (in.watr.chunk && in.watr.problem.empty() && !in.watr.hasSurfacesField)
         warn.push_back("watr V0 not read (version " + std::to_string(in.watr.version) +
                        ": no waterSurfaces field; its waterChunks/waterFoamData are not decoded)");
     if (in.watr.hasPlane) {
         w.hasPlane = true;
         w.planeZ = in.watr.planeZ;
         w.planeFlags = in.watr.flags;
-        warn.push_back("watr: waterPlaneZ has no outline: z " + num(in.watr.planeZ) +
-                       " is the map's stored water level (terrain below it traces the map's lakes, rivers and sea, "
-                       "note §6.2), but the area the game draws it over is UNPROVEN");
+        warn.push_back("watr: waterPlaneZ has no outline: stored z " + num(in.watr.planeZ) +
+                       ". The visible water is at about z 0 on the test maps (terrain below 0 traces their lakes, "
+                       "rivers and sea, note §6.2), but every test map stores 0, so that the game draws its water at "
+                       "waterPlaneZ is UNPROVEN (proof: a map with a non-zero value that agrees with its terrain); "
+                       "the area it covers is UNPROVEN too");
+        warn.push_back("watr: waterFlags " + std::to_string(in.watr.flags) + " kept as stored; meaning UNPROVEN");
     }
     w.surfaces = in.watr.surfaces;
     if (!w.surfaces.empty())
@@ -66,9 +70,16 @@ void build_water(const WaterSources& in, WorldScene& out) {
                        "keyed by unnamed hashes in rive v" + std::to_string(in.rivers.version) +
                        ") are not read, so no river surface can be built; whether a river is drawn as water is "
                        "UNPROVEN (note §6.3)");
+    if (in.rivers.droppedPoints)
+        warn.push_back("rive: " + std::to_string(in.rivers.droppedPoints) +
+                       " rivers' points not read (element size is not 12 bytes / float3)");
 
     // shor (§6.4).
     w.shore = in.shore;
+    if (w.shore.present)
+        warn.push_back("shor: " + std::to_string(w.shore.chains.size()) +
+                       " shore chains read with field names after T3D's SHOR.ts; untested on real data "
+                       "(no test map has a shor chunk)");
 
     // env (§6.5).
     if (in.envWaterPresets)
@@ -96,21 +107,42 @@ void attach_water(castlemist::model::Extractor& ex, WorldScene& out) {
     build_water(in, out);
 }
 
-void attach_environment(castlemist::model::Extractor& ex, WorldScene& out) {
+void build_environment(const EnvSources& in, WorldScene& out) {
     Environment env;
+    env.sky = in.sky;
+    env.light = in.light;
+    if (!env.sky.present) out.warnings.push_back("env: no sky (no env chunk or no dataGlobal)");
+    if (!env.light.present) out.warnings.push_back("env: no light rig (no readable lighting preset)");
+    const uint32_t otherPresets = in.counts.lightingPresets > 1 ? in.counts.lightingPresets - 1 : 0;
+    const uint32_t zones = in.counts.localBlocks + in.counts.overrideBlocks;
+    if (otherPresets || zones)
+        out.warnings.push_back("env: " + std::to_string(otherPresets) +
+                               " other dataGlobal lighting presets and " + std::to_string(zones) +
+                               " per-zone blocks (" + std::to_string(in.counts.localBlocks) + " dataLocalArray, " +
+                               std::to_string(in.counts.overrideBlocks) +
+                               " dataOverrideArray: their own sky and lighting) not attached; only the dataGlobal "
+                               "sky and the brightest lighting preset are");
+    out.environment = std::move(env);
+}
+
+void attach_environment(castlemist::model::Extractor& ex, WorldScene& out) {
+    EnvSources in;
     try {
-        env.sky = ex.parseMapSky();
+        in.sky = ex.parseMapSky();
     } catch (const std::exception& e) {
         out.warnings.push_back(std::string("env: sky not read: ") + e.what());
     }
     try {
-        env.light = ex.parseMapEnv();   // auto preset: the brightest (the day rig)
+        in.light = ex.parseMapEnv();   // auto preset: the brightest (the day rig)
     } catch (const std::exception& e) {
         out.warnings.push_back(std::string("env: light not read: ") + e.what());
     }
-    if (!env.sky.present) out.warnings.push_back("env: no sky (no env chunk or no dataGlobal)");
-    if (!env.light.present) out.warnings.push_back("env: no light rig (no readable lighting preset)");
-    out.environment = std::move(env);
+    try {
+        in.counts = ex.countEnv();
+    } catch (const std::exception& e) {
+        out.warnings.push_back(std::string("env: preset and zone counts not read: ") + e.what());
+    }
+    build_environment(in, out);
 }
 
 } // namespace castlemist::world
