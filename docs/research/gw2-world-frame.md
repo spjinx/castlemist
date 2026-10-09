@@ -620,3 +620,78 @@ or coord is not the chunk's own; an index past `texFileArray` (names the
 chunk); a chunk with no colour texture; tokens not kept (`ramp`). On the three
 test maps every chunk resolves; the only warning is Spirit Vale's 25 `ramp`
 bindings.
+
+---
+
+## 5. Props: models, instances and the world matrix
+
+`build_props` (`src/world/props.cpp`) turns `Extractor::parseMapProps()` into
+`WorldScene::models` (distinct `fileId`s, first-seen order), `props` (one per
+placement, input order) and `motion.animatedProps` (indices of
+`group == "propAnimArray"`). `MapProp::group` is the `prp2` array the
+placement came from: `propArray`, `propAnimArray`, `propMetaArray`, or
+`propInstanceArray` (the base placement and each of its `transforms[]`).
+
+### 5.1 The transform (proven against the client)
+
+The rule is the client's, not a convention. It is the summary of
+`src/render/detail/math.h:160-189`: `Gw2-64.exe` builds a prop's world
+transform in one leaf helper (`sub_1409C8920` in the IDB, called from
+`PrContext_LoadPropModel` as `(out, scale, &prop->position, &prop->rotation)`;
+`PrProp` holds position at +32 and rotation at +44). It takes cos/sin of
+`rotation[0..2]` and writes a float3x4 as three 16-byte rows `[r0 r1 r2 | t]`,
+translation in each row's fourth column, i.e. the column-vector layout
+`p' = M·p + t`. With `cx = cos(rot[0])`, `sx = sin(rot[0])`, `cy`/`sy` for
+`rot[1]`, `cz`/`sz` for `rot[2]`:
+
+```
+[ cz*cy - sy*sx*sz   cz*sx*sy + sz*cy   -cx*sy ]
+[ -cx*sz             cz*cx               sx    ]
+[ cy*sx*sz + cz*sy   sz*sy - cz*cy*sx    cy*cx ]
+```
+
+which is `Ry(-r1) · Rx(-r0) · Rz(-r2)` for column vectors. The render layer's
+`sceneWorld` builds the same thing in a row-vector basis as
+`rotZ(-r2) · rotX(-r0) · rotY(-r1)`, the transpose; the matrix above is what
+`PropInstance::world` holds directly, so no transposition is needed.
+
+`PropInstance::world` is **column-major, column vectors, map space** (the same
+convention as §1.4): `world[col * 4 + row] = scale * M[row][col]`,
+translation `pos` in elements 12-14, bottom row `0 0 0 1`. Scale is uniform
+and multiplies the 3×3 only. `pos`, `rot`, `scale` are kept as stored. The
+pure test `world.prop_transform_matches_client` writes the matrix out from the
+formula above for `pos {10,20,30}`, `rot {0.3,-0.2,1.1}`, `scale 2` and
+compares within 1e-6.
+
+### 5.2 Agreement with T3D
+
+`world` in the T3D references is `A · M · L` with `A = (x,y,z) → (x,-z,-y)`
+taken back out of three.js space (`tools/world/README.md`, "`world` matrices"),
+column-major, so it is directly comparable. Procedure (`tests/test_world_dat.cpp`,
+`world_dat.props_match_reference`; reproduce with
+`GW2_TEST_DAT=<dat> build/debug/bin/cm_test_world_dat.exe world_dat`):
+
+1. Parse each test map's props, `build_props`, and bucket castlemist's props by
+   `group`.
+2. Bucket the reference's `props` (the first 50 of each group, file order, a
+   prop's `transforms[]` following it) by `group`. The groups are compared
+   one at a time because castlemist concatenates them as `propArray`,
+   `propAnimArray`, `propMetaArray`, `propInstanceArray` and T3D as
+   `propArray`, `propAnimArray`, `propInstanceArray`, `propMetaArray`.
+3. For the k-th prop of each group: `fileId` equal, `pos` within 0.01, all 16
+   `world` elements within 1e-4.
+
+Result: 150 of 150 props agree on each of 192711, 191000 and 1151420 (50 each
+of `propArray`, `propAnimArray`, `propInstanceArray`; no map has any
+`propMetaArray`). Largest difference: `world` 5.96e-07 / 7.15e-07 / 9.54e-07
+(the reference is rounded to 1e-6), `pos` 0. So castlemist's client transform
+and T3D's three.js `Euler(r0, -r2, -r1, "ZXY")` mapped back through `A` are
+the same matrix, as `math.h` already claimed to 1e-14 on its own data.
+
+### 5.3 Props sit inside the terrain
+
+`world_dat.props_inside_terrain_rects`: the share of prop `(x, y)` inside the
+union of the terrain's chunk rects (`build_terrain`, §3) is 11667 / 11687
+(99.83%) on 192711, 18532 / 18571 (99.79%) on 191000 and 2423 / 2425 (99.92%)
+on 1151420. The test requires at least 99%. The stragglers are placements
+just outside the map rect; they are kept, not clipped.

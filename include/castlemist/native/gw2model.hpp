@@ -1475,6 +1475,9 @@ public:
         float rot[3] = {0, 0, 0}; // Euler angles (radians)
         float scale = 1.0f;
         float bounds[4] = {0, 0, 0, 0};
+        // The prp2 array this placement came from: "propArray", "propAnimArray",
+        // "propMetaArray" or "propInstanceArray" (a base placement or one of its transforms).
+        std::string group;
     };
 
     // Map terrain: a height-map grid (GW2 is Z-up, so heights are the Z axis).
@@ -2032,6 +2035,7 @@ public:
             uint32_t n = 0; size_t base = arrayAt(prp + off, n);
             for (uint32_t i = 0; base && objSize > 0 && i < n; ++i) {
                 MapProp p; readProp(objType, base + (size_t)i * objSize, p);
+                p.group = arrayName;
                 if (p.fileId) out.push_back(p);
             }
         }
@@ -2043,6 +2047,7 @@ public:
             for (uint32_t i = 0; base && instSize > 0 && i < n; ++i) {
                 size_t e = base + (size_t)i * instSize;
                 MapProp p; readProp(instType, e, p);
+                p.group = "propInstanceArray";
                 if (!p.fileId) continue;
                 out.push_back(p); // the base placement
                 // Extra transforms[] (position/rotation/scale) reusing the same model.
@@ -2053,7 +2058,7 @@ public:
                     uint32_t tn = 0; size_t tb = arrayAt(e + to, tn);
                     for (uint32_t j = 0; tb && trSize > 0 && j < tn; ++j) {
                         size_t te = tb + (size_t)j * trSize;
-                        MapProp q; q.fileId = p.fileId;
+                        MapProp q; q.fileId = p.fileId; q.group = p.group;
                         size_t o; json f;
                         if (fieldOffset(trType, "position", o, f)) for (int k=0;k<3;++k) q.pos[k] = rdf(te+o+4*k);
                         if (fieldOffset(trType, "rotation", o, f)) for (int k=0;k<3;++k) q.rot[k] = rdf(te+o+4*k);

@@ -272,3 +272,77 @@ CM_TEST(world, terrain_material_index_out_of_range) {
     for (const auto& w : warnings) named = named || w.find("chunk 1 ") != std::string::npos;
     CHECK(named);
 }
+
+// ---- props (docs/research/gw2-world-frame.md §5) ----
+
+#include "castlemist/world/props.h"
+
+#include <cmath>
+
+namespace {
+
+castlemist::model::Extractor::MapProp make_prop(uint32_t id, const char* group, float x = 0, float y = 0, float z = 0) {
+    castlemist::model::Extractor::MapProp p;
+    p.fileId = id;
+    p.pos[0] = x; p.pos[1] = y; p.pos[2] = z;
+    p.group = group;
+    return p;
+}
+
+} // namespace
+
+// §5: the world matrix is the client's float3x4 (Gw2-64.exe, written out in
+// src/render/detail/math.h:168-172) times the scale, column-major.
+CM_TEST(world, prop_transform_matches_client) {
+    auto p = make_prop(7, "propArray", 10, 20, 30);
+    p.rot[0] = 0.3f; p.rot[1] = -0.2f; p.rot[2] = 1.1f;
+    p.scale = 2.0f;
+    castlemist::world::WorldScene scene;
+    castlemist::world::build_props({p}, scene);
+    CHECK_EQ(scene.props.size(), size_t(1));
+    if (scene.props.size() != 1) return;
+
+    const double cx = std::cos(0.3), sx = std::sin(0.3), cy = std::cos(-0.2), sy = std::sin(-0.2);
+    const double cz = std::cos(1.1), sz = std::sin(1.1);
+    // The client's rows [r0 r1 r2 | t], column vectors p' = M*p + t.
+    // (cx..sz above are cos/sin of rot[0..2] = 0.3, -0.2, 1.1.)
+    const double C[3][3] = {
+        {cz * cy - sy * sx * sz, cz * sx * sy + sz * cy, -cx * sy},
+        {-cx * sz, cz * cx, sx},
+        {cy * sx * sz + cz * sy, sz * sy - cz * cy * sx, cy * cx}};
+    const double t[3] = {10, 20, 30};
+    const float* w = scene.props[0].world;
+    for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 3; ++col) CHECK_NEAR(w[col * 4 + row], 2.0 * C[row][col], 1e-6);
+        CHECK_NEAR(w[12 + row], t[row], 1e-6);
+    }
+    CHECK_NEAR(w[3], 0, 0); CHECK_NEAR(w[7], 0, 0); CHECK_NEAR(w[11], 0, 0); CHECK_NEAR(w[15], 1, 0);
+    CHECK_NEAR(scene.props[0].pos[0], 10, 0);
+    CHECK_NEAR(scene.props[0].rot[2], 1.1, 1e-6);
+    CHECK_NEAR(scene.props[0].scale, 2, 0);
+}
+
+CM_TEST(world, props_dedupe_models) {
+    castlemist::world::WorldScene scene;
+    castlemist::world::build_props({make_prop(100, "propArray"), make_prop(200, "propArray"),
+                                    make_prop(100, "propInstanceArray")}, scene);
+    CHECK_EQ(scene.models.size(), size_t(2));
+    CHECK_EQ(scene.props.size(), size_t(3));
+    if (scene.models.size() != 2 || scene.props.size() != 3) return;
+    CHECK_EQ(scene.models[0].fileId, uint32_t(100));
+    CHECK_EQ(scene.models[1].fileId, uint32_t(200));
+    CHECK_EQ(scene.props[0].model, uint32_t(0));
+    CHECK_EQ(scene.props[1].model, uint32_t(1));
+    CHECK_EQ(scene.props[2].model, uint32_t(0));
+    CHECK(scene.props[2].group == "propInstanceArray");
+}
+
+CM_TEST(world, anim_props_recorded) {
+    castlemist::world::WorldScene scene;
+    castlemist::world::build_props({make_prop(1, "propArray"), make_prop(2, "propAnimArray"),
+                                    make_prop(3, "propMetaArray"), make_prop(4, "propAnimArray")}, scene);
+    CHECK_EQ(scene.motion.animatedProps.size(), size_t(2));
+    if (scene.motion.animatedProps.size() != 2) return;
+    CHECK_EQ(scene.motion.animatedProps[0], uint32_t(1));
+    CHECK_EQ(scene.motion.animatedProps[1], uint32_t(3));
+}

@@ -326,3 +326,83 @@ CM_TEST(world_dat, terrain_materials_match_reference) {
         }
     }
 }
+
+// ---- props (docs/research/gw2-world-frame.md §5) ----
+
+#include "castlemist/world/props.h"
+
+#include <algorithm>
+#include <map>
+
+// §5: per group, the first 50 props equal T3D's (fileId, pos within 0.01,
+// world within 1e-4). Compared per group because castlemist concatenates the
+// groups as propArray, propAnimArray, propMetaArray, propInstanceArray and
+// T3D as propArray, propAnimArray, propInstanceArray, propMetaArray.
+CM_TEST(world_dat, props_match_reference) {
+    for (uint32_t id : kTestMaps) {
+        nlohmann::json ref = world_ref(id);
+        MapUnderTest m = load_map_terrain(id);
+        castlemist::world::WorldScene scene;
+        castlemist::world::build_props(m.props, scene);
+        CHECK_EQ(scene.props.size(), m.props.size());
+
+        std::map<std::string, std::vector<const castlemist::world::PropInstance*>> mine;
+        for (const auto& p : scene.props) mine[p.group].push_back(&p);
+        std::map<std::string, std::vector<const nlohmann::json*>> theirs;
+        for (const auto& r : ref["props"]) theirs[r["group"].get<std::string>()].push_back(&r);
+
+        size_t compared = 0, bad = 0;
+        double maxWorld = 0, maxPos = 0;
+        for (const auto& [group, rows] : theirs) {
+            CHECK(mine.count(group) == 1);
+            if (!mine.count(group)) continue;
+            const auto& mp = mine[group];
+            CHECK_EQ(rows.size(), std::min<size_t>(50, ref["propCounts"][group].get<size_t>()));
+            CHECK(mp.size() >= rows.size());
+            for (size_t k = 0; k < rows.size() && k < mp.size(); ++k) {
+                const auto& r = *rows[k];
+                const auto& p = *mp[k];
+                ++compared;
+                bool ok = scene.models[p.model].fileId == r["fileId"].get<uint32_t>();
+                for (int i = 0; i < 3; ++i) ok = ok && std::fabs(p.pos[i] - r["pos"][i].get<float>()) <= 0.01f;
+                for (int i = 0; i < 16; ++i) {
+                    double d = std::fabs(p.world[i] - r["world"][i].get<float>());
+                    maxWorld = std::max(maxWorld, d);
+                    ok = ok && d <= 1e-4;
+                }
+                for (int i = 0; i < 3; ++i)
+                    maxPos = std::max(maxPos, (double)std::fabs(p.pos[i] - r["pos"][i].get<float>()));
+                if (!ok && bad++ < 3) {
+                    std::printf("    map %u %s[%zu] disagrees\n", id, group.c_str(), k);
+                    for (int i = 0; i < 16; ++i)
+                        std::printf("      world[%d] mine %.6f ref %.6f\n", i, p.world[i], r["world"][i].get<float>());
+                }
+            }
+        }
+        std::printf("    map %u: %zu props compared with T3D, %zu disagree (max |dworld| %.3g, max |dpos| %.3g)\n",
+                    id, compared, bad, maxWorld, maxPos);
+        CHECK(compared > 0);
+        CHECK_EQ(bad, size_t(0));
+    }
+}
+
+// §5: at least 99% of prop positions fall inside the terrain's union of chunk rects.
+CM_TEST(world_dat, props_inside_terrain_rects) {
+    for (uint32_t id : kTestMaps) {
+        MapUnderTest m = load_map_terrain(id);
+        CHECK(m.terrain.present);
+        castlemist::world::WorldScene scene;
+        castlemist::world::build_props(m.props, scene);
+        size_t in = 0;
+        for (const auto& p : scene.props) {
+            for (const auto& c : m.terrain.chunks)
+                if (p.pos[0] >= c.rect[0] && p.pos[0] <= c.rect[2] && p.pos[1] >= c.rect[1] && p.pos[1] <= c.rect[3]) {
+                    ++in;
+                    break;
+                }
+        }
+        std::printf("    map %u: %zu of %zu props inside the terrain rects\n", id, in, scene.props.size());
+        CHECK(!scene.props.empty());
+        CHECK(in * 100 >= scene.props.size() * 99);
+    }
+}
