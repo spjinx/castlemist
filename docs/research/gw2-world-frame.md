@@ -512,7 +512,9 @@ Measured on every chunk of the three maps:
   (197590, 197591) ×11, (421455, 421456) ×25, (1151159, 1151160) ×6 on Spirit
   Vale. So the textures and pages are the same at both levels; only the
   shader differs. Which one the game draws when (presumably by distance) is
-  **UNPROVEN** and does not change the textures. `materialFileId` stores the
+  **UNPROVEN** (proof: the client code that picks `loResMaterial` or
+  `hiResMaterial`, or an in-game capture of the shader per distance) and does
+  not change the textures. `materialFileId` stores the
   lo-res file, as T3D uses; `faderMaterial` (empty on Lion's Arch chunk 0) is
   not read.
 
@@ -544,7 +546,8 @@ Measured on every chunk of the three maps:
   `pickerScale = 1/n`. A page with no filename is a solid-colour page (T3D
   makes a 1 × 1 texture from `solidColor`, `TerrainRenderer.ts:283-290`):
   `pickerFileId` is 0 and `pickerSolid` holds the stored 4 bytes (channel
-  order UNPROVEN). On Spirit Vale 128 chunk-layer pairs use such pages.
+  order UNPROVEN; proof: the AMAT shader that samples the page, or a page
+  with a known `solidColor` compared with its in-game colour). On Spirit Vale 128 chunk-layer pairs use such pages.
 - Layers above 1 (none on the test maps) and `rawPages` (empty) are not read.
 
 ### 4.3 The chunk's sub-rect in its page: orientation
@@ -871,7 +874,8 @@ vertically at their (x, y):
 - Gorseval02 is a closed loop at constant z ≈ −3577, about 1600 above the
   ground.
 - The rest float hundreds of units up. That fits Spirit Vale's spectral
-  "soul rivers", but nothing here proves what they are.
+  "soul rivers", but nothing here proves what they are (proof: the `rive` property bag
+  decoded, or a river's in-game appearance next to its centreline).
 
 So `Water::rivers` holds the centrelines as stored, and `attach_water`
 warns that river surfaces cannot be built and that whether a river is drawn

@@ -1,11 +1,15 @@
 /// @file
-/// @brief Loading a map into a WorldScene. For now: the water and environment
-///        steps (docs/research/gw2-world-frame.md §6).
+/// @brief Loading a map into a WorldScene: load_world assembles terrain,
+///        props, collision, water and environment; the water and environment
+///        steps are docs/research/gw2-world-frame.md §6.
 /// @ingroup world
 #pragma once
 
+#include "castlemist/native/gw2dat.h"
 #include "castlemist/native/gw2model.hpp"
 #include "castlemist/world/world_scene.h"
+
+#include <nlohmann/json.hpp>
 
 #include <cstdint>
 
@@ -59,5 +63,25 @@ void build_environment(const EnvSources& in, WorldScene& out);
 ///        (parseMapEnv with the auto preset, the brightest), with the
 ///        warnings of build_environment. Never throws for bad data.
 void attach_environment(castlemist::model::Extractor& ex, WorldScene& out);
+
+/// @brief Load a map packfile into a WorldScene.
+///
+/// Runs terrain, terrain materials, props, collision, water and environment,
+/// each in its own `try`: one failing leaves its part empty and adds a named
+/// warning. `bounds` is `parm.rect` (§2). Every chunk in the packfile that no
+/// section reads is listed as `"chunk <fourcc> v<ver> not read"`, and a
+/// `"units: ..."` warning records that map units per metre are UNPROVEN
+/// (§1.3).
+/// @throws std::runtime_error on dat I/O failure, when @p mapFileId is not in
+///         the dat, or when the file is not a map: no `trn`, `parm`, `prp2`
+///         or `havk` chunk (`"file <id> is not a map packfile"`). Bad map
+///         data never throws.
+WorldScene load_world(Gw2Dat& dat, uint32_t mapFileId, const nlohmann::json& tpl);
+
+/// @brief A compact JSON description of a scene (no geometry):
+///        {map, bounds, terrain:{chunks:[x,y], resolvedMaterials}, models,
+///        props, animatedProps, collision:{meshes, instances},
+///        water:{surfaces}, sky, warnings}.
+nlohmann::json world_summary(const WorldScene& w);
 
 } // namespace castlemist::world

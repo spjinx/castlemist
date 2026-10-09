@@ -991,3 +991,52 @@ CM_TEST(world_dat, environment_sky_present) {
         CHECK(warning_starting(scene, expected) != nullptr);
     }
 }
+
+// ---- load_world (docs/research/gw2-world-frame.md §1-§7) ----
+
+#include "castlemist/world/load_world.h"
+
+#include <stdexcept>
+
+// Each test map loads whole: terrain with every chunk's material resolved,
+// props, and no section failed with an exception. The units warning is there
+// (§1.3), and the summary carries the same warnings.
+CM_TEST(world_dat, load_world_three_maps) {
+    Gw2Dat& dat = shared_dat();
+    if (!ensure_template()) SKIP("no struct template");
+    for (uint32_t id : kTestMaps) {
+        castlemist::world::WorldScene w = castlemist::world::load_world(dat, id, *castlemist::tpl::get());
+        CHECK_EQ(w.mapFileId, id);
+        CHECK(w.hasBounds);
+        CHECK(w.terrain.present);
+        CHECK(!w.terrain.chunks.empty());
+        CHECK(!w.props.empty());
+        size_t unresolved = 0;
+        for (const auto& c : w.terrain.chunks) unresolved += !c.material.resolved;
+        CHECK_EQ(unresolved, size_t(0));
+        for (const std::string& s : w.warnings) {
+            CHECK(s.rfind("exception", 0) != 0);
+            if (s.find("exception") != std::string::npos) std::printf("    map %u warning: %s\n", id, s.c_str());
+        }
+        const std::string* u = warning_starting(w, "units: ");
+        CHECK(u != nullptr);
+        if (u) CHECK(u->find("UNPROVEN") != std::string::npos);
+        nlohmann::json s = castlemist::world::world_summary(w);
+        CHECK_EQ(s["map"].get<uint32_t>(), id);
+        CHECK_EQ(s["warnings"].size(), w.warnings.size());
+        CHECK_EQ(s["terrain"]["resolvedMaterials"].get<size_t>(), w.terrain.chunks.size());
+    }
+}
+
+// A model packfile has none of trn, parm, prp2 and havk: not a map.
+CM_TEST(world_dat, not_a_map_throws) {
+    Gw2Dat& dat = shared_dat();
+    if (!ensure_template()) SKIP("no struct template");
+    bool threw = false;
+    try {
+        castlemist::world::load_world(dat, 2163020, *castlemist::tpl::get());   // a MODL fileId (test_extract_dat.cpp)
+    } catch (const std::runtime_error& e) {
+        threw = std::string(e.what()) == "file 2163020 is not a map packfile";
+    }
+    CHECK(threw);
+}

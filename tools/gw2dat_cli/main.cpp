@@ -79,6 +79,7 @@
 #include "castlemist/ripper/look.h"
 #include "castlemist/ripper/vrchat.h"
 #include "castlemist/ripper/character_export.h"
+#include "castlemist/world/load_world.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -2358,13 +2359,33 @@ void cmd_character_export(const Args& a) {
     emit(j);
 }
 
+/// world --dat <dat> --file-id <map> --template <json> [--out summary.json]
+void cmd_world(const Args& a) {
+    std::string tpl_path = need(a, "template");
+    std::ifstream tin(tpl_path, std::ios::binary);
+    if (!tin) fail("cannot open template: " + tpl_path);
+    json tpl;
+    try { tin >> tpl; } catch (const std::exception& ex) { fail(std::string("template JSON error: ") + ex.what()); }
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    const uint32_t fileId = static_cast<uint32_t>(to_u64(need(a, "file-id")));
+    json j = castlemist::world::world_summary(castlemist::world::load_world(dat, fileId, tpl));
+    j["ok"] = true;
+    if (has(a, "out")) {
+        std::ofstream of(a.at("out"), std::ios::binary);
+        if (!of) fail("cannot write --out: " + a.at("out"));
+        of << j.dump(2);
+    }
+    emit(j);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
         fail("usage: gw2dat_cli <info|list|lookup|resolve|extract|texture|parse|sniff|"
              "compress|decompress|encode-texture|scananim|character|character-export|"
-             "character-assemble> [--flags]");
+             "character-assemble|world> [--flags]");
     }
     std::string cmd = argv[1];
     Args a = parse_args(argc, argv, 2);
@@ -2380,6 +2401,7 @@ int main(int argc, char** argv) {
         else if (cmd == "model") cmd_model(a);
         else if (cmd == "skel") cmd_skel(a);
         else if (cmd == "map") cmd_map(a);
+        else if (cmd == "world") cmd_world(a);
         else if (cmd == "scanpf") cmd_scanpf(a);
         else if (cmd == "scancloth") cmd_scancloth(a);
         else if (cmd == "scananim") cmd_scananim(a);

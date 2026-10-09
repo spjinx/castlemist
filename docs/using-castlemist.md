@@ -138,6 +138,10 @@ gw2dat_cli texture --dat $dat --base-id 46403  --out icon.png        # decoded t
 gw2dat_cli model   --dat $dat --file-id 1766522 --template dumps\packfile\gw2_packfile.json --glb dagger.glb
 gw2dat_cli model   --dat $dat --file-id 1766522 --template dumps\packfile\gw2_packfile.json --vrchat out   # folder out\model_1766522 for VRChat
 
+# A whole map as one scene (terrain, props, collision, water, sky): a JSON summary
+# whose warnings include every dat chunk nothing reads yet
+gw2dat_cli world   --dat $dat --file-id 192711 --template dumps\packfile\gw2_packfile.json --out summary.json
+
 # What uses a file, with names and chat links (needs the content map; --names goes online)
 gw2dat_cli users --file-id 1200313 --names
 gw2dat_cli users --content-type 66 --content-id 7562                 # the reverse: a skin's files

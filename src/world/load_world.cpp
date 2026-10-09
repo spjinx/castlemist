@@ -4,7 +4,16 @@
 
 #include "castlemist/world/load_world.h"
 
+#include "castlemist/native/cmp_decompress_method0.hpp"
+#include "castlemist/world/collision.h"
+#include "castlemist/world/props.h"
+#include "castlemist/world/terrain.h"
+
+#include <algorithm>
 #include <exception>
+#include <memory>
+#include <set>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -143,6 +152,102 @@ void attach_environment(castlemist::model::Extractor& ex, WorldScene& out) {
         out.warnings.push_back(std::string("env: preset and zone counts not read: ") + e.what());
     }
     build_environment(in, out);
+}
+
+WorldScene load_world(Gw2Dat& dat, uint32_t mapFileId, const nlohmann::json& tpl) {
+    using Ex = castlemist::model::Extractor;
+    const std::string id = std::to_string(mapFileId);
+
+    const uint32_t base = get_by_base_id(dat, mapFileId);
+    if (base == 0 || base > dat.mft_data_list.size()) throw std::runtime_error("file " + id + " is not in the dat");
+    const MftData& e = dat.mft_data_list[base - 1];
+    std::vector<uint8_t> raw = read_entry_bytes(dat.file_info.file_path, e);   // I/O failure propagates
+
+    std::vector<uint8_t> bytes;
+    std::vector<std::pair<std::string, uint16_t>> chunks;
+    std::unique_ptr<Ex> ex;
+    try {
+        bytes = e.compression_flag ? castlemist::cmp::decompress_entry(raw) : raw;
+        ex = std::make_unique<Ex>(bytes, tpl);
+        chunks = ex->chunkList();
+    } catch (const std::exception& what) {
+        if (std::string(what.what()).find("template") != std::string::npos) throw;   // a bad template is an error
+        throw std::runtime_error("file " + id + " is not a map packfile");
+    }
+
+    // A file with none of the chunks a map is made of is not a map.
+    auto has = [&](const char* fourcc) {
+        return std::any_of(chunks.begin(), chunks.end(), [&](const auto& c) { return c.first == fourcc; });
+    };
+    if (!has("trn") && !has("parm") && !has("prp2") && !has("havk"))
+        throw std::runtime_error("file " + id + " is not a map packfile");
+
+    WorldScene w;
+    w.mapFileId = mapFileId;
+    // One failing section leaves its part empty and is named; the rest still load.
+    auto section = [&](const char* name, auto&& run) {
+        try {
+            run();
+        } catch (const std::exception& what) {
+            w.warnings.push_back(std::string("exception in ") + name + ": " + what.what() + "; section left empty");
+        }
+    };
+
+    section("terrain", [&] {
+        const Ex::MapTerrain trn = ex->parseTerrain();
+        w.terrain = build_terrain(trn, w.warnings);
+        if (trn.hasRect) {   // bounds = parm.rect as stored (§2)
+            std::copy(trn.rect, trn.rect + 4, w.bounds);
+            w.hasBounds = true;
+        } else {
+            w.warnings.push_back("parm: no rect; the map has no bounds (no rect is invented)");
+        }
+    });
+    section("terrain materials", [&] {
+        if (!w.terrain.present) return;
+        resolve_terrain_materials(w.terrain, ex->parseTerrainMaterials(), dat, tpl, w.warnings);
+    });
+    section("props", [&] { build_props(ex->parseMapProps(), w); });
+    section("collision", [&] { build_collision(ex->parseHavok(), w); });
+    section("water", [&] { attach_water(*ex, w); });
+    section("environment", [&] { attach_environment(*ex, w); });
+
+    // The chunks the sections above read, by the findChunk calls of the readers
+    // they use: parm and trn (parseTerrain, parseTerrainMaterials), prp2
+    // (parseMapProps), havk (parseHavok, parseHavokWater), watr, shor, rive
+    // (parseWater, parseShore, parseRivers) and env (parseMapSky, parseMapEnv,
+    // countEnv, countEnvWaterPresets). Every other chunk is named, not dropped.
+    static const std::set<std::string> kRead = {"parm", "trn", "prp2", "havk", "watr", "shor", "rive", "env"};
+    for (const auto& [fourcc, ver] : chunks)
+        if (!kRead.count(fourcc))
+            w.warnings.push_back("chunk " + fourcc + " v" + std::to_string(ver) + " not read");
+
+    w.warnings.push_back(
+        "units: map units per metre are UNPROVEN; coordinates are kept as stored (nothing in the template "
+        "names a unit; proof: the code that writes fAvatarPosition into the MumbleLink view with its factor, "
+        "or a measured in-game distance; note §1.3)");
+    return w;
+}
+
+nlohmann::json world_summary(const WorldScene& w) {
+    using nlohmann::json;
+    json j;
+    j["map"] = w.mapFileId;
+    j["bounds"] = w.hasBounds ? json::array({w.bounds[0], w.bounds[1], w.bounds[2], w.bounds[3]}) : json(nullptr);
+    size_t resolved = 0;
+    for (const auto& c : w.terrain.chunks) resolved += c.material.resolved;
+    j["terrain"] = {{"present", w.terrain.present},
+                    {"chunks", json::array({w.terrain.chunksX, w.terrain.chunksY})},
+                    {"resolvedMaterials", resolved}};
+    j["models"] = w.models.size();
+    j["props"] = w.props.size();
+    j["animatedProps"] = w.motion.animatedProps.size();
+    j["collision"] = {{"meshes", w.collision.meshes.size()}, {"instances", w.collision.instances.size()}};
+    j["water"] = {{"surfaces", w.water.surfaces.size()}};
+    j["sky"] = {{"present", w.environment.sky.present}, {"modes", w.environment.sky.modes.size()},
+                {"clouds", w.environment.sky.clouds.size()}, {"lightPresent", w.environment.light.present}};
+    j["warnings"] = w.warnings;
+    return j;
 }
 
 } // namespace castlemist::world

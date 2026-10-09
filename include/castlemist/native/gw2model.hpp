@@ -1598,6 +1598,21 @@ public:
         bool hasRect = false;
     };
 
+    /// @brief Every chunk in the packfile, in file order, as (fourcc, version).
+    std::vector<std::pair<std::string, uint16_t>> chunkList() const {
+        std::vector<std::pair<std::string, uint16_t>> out;
+        size_t pos = rd16(6); // headerSize
+        while (pos + 16 <= n_) {
+            char fourcc[5] = {0};
+            std::memcpy(fourcc, d_ + pos, 4);
+            out.emplace_back(fourcc, rd16(pos + 8));
+            const size_t next = pos + 8 + rd32(pos + 4);
+            if (next <= pos) break;
+            pos = next;
+        }
+        return out;
+    }
+
     MapTerrain parseTerrain() {
         MapTerrain out;
         // Map world rect (terrain placement) from the parm chunk.
