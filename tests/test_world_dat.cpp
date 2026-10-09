@@ -406,3 +406,251 @@ CM_TEST(world_dat, props_inside_terrain_rects) {
         CHECK(in * 100 >= scene.props.size() * 99);
     }
 }
+
+// ---- collision (docs/research/gw2-world-frame.md §7) ----
+
+#include "castlemist/world/collision.h"
+
+#include <array>
+#include <set>
+
+namespace {
+
+/// @brief Parse a map's havk chunk and build its Collision.
+castlemist::world::WorldScene load_map_collision(uint32_t file_id,
+                                                 castlemist::model::Extractor::MapHavok* raw = nullptr) {
+    if (!ensure_template()) SKIP("no struct template");
+    std::vector<uint8_t> bytes = packfile_by_file_id(file_id);
+    castlemist::model::Extractor ex(bytes, *castlemist::tpl::get());
+    castlemist::model::Extractor::MapHavok h = ex.parseHavok();
+    castlemist::world::WorldScene scene;
+    castlemist::world::build_collision(h, scene);
+    if (raw) *raw = std::move(h);
+    return scene;
+}
+
+} // namespace
+
+// §7.4: the instance count equals T3D's, per group and in total, and every
+// reference row (`sample`, the first 20 overall, and `sampleByGroup`, the
+// first 20 of each group) has an instance with the same (group, placement
+// index, collision index) whose world matrix equals T3D's within 1e-4.
+// The reference's `world` maps a hull vertex as stored to where T3D draws it,
+// z flip included (tools/world/README.md); §7.3 proves that flip, so the two
+// are compared as they are.
+CM_TEST(world_dat, collision_matches_reference) {
+    for (uint32_t id : kTestMaps) {
+        nlohmann::json ref = world_ref(id);
+        castlemist::world::WorldScene scene = load_map_collision(id);
+        // The reference has no collision warning on any test map.
+        for (const auto& w : scene.warnings) std::printf("    map %u warning: %s\n", id, w.c_str());
+        CHECK(scene.warnings.empty());
+        const auto& inst = scene.collision.instances;
+        CHECK_EQ(inst.size(), ref["collision"]["instances"].get<size_t>());
+        std::map<std::string, size_t> byGroup;
+        for (const auto& c : inst) ++byGroup[c.group];
+        for (const char* g : {"obs", "prop", "zone"})
+            CHECK_EQ(byGroup[g], ref["collision"]["instancesByGroup"][g].get<size_t>());
+
+        std::vector<const nlohmann::json*> rows;
+        for (const auto& r : ref["collision"]["sample"]) rows.push_back(&r);
+        for (const char* g : {"obs", "prop", "zone"})
+            for (const auto& r : ref["collision"]["sampleByGroup"][g]) rows.push_back(&r);
+        CHECK(rows.size() >= 20);
+
+        size_t compared = 0, bad = 0;
+        double maxWorld = 0;
+        for (const nlohmann::json* rp : rows) {
+            const auto& r = *rp;
+            const castlemist::world::CollisionInstance* mine = nullptr;
+            for (const auto& c : inst)
+                if (c.group == r["group"].get<std::string>() && c.placement == r["index"].get<uint32_t>() &&
+                    c.mesh == r["collisionIndex"].get<uint32_t>()) {
+                    mine = &c;
+                    break;
+                }
+            CHECK(mine != nullptr);
+            if (!mine) continue;
+            ++compared;
+            bool ok = true;
+            for (int i = 0; i < 16; ++i) {
+                const double d = std::fabs(mine->world[i] - r["world"][i].get<double>());
+                maxWorld = std::max(maxWorld, d);
+                ok = ok && d <= 1e-4;
+            }
+            if (!ok && bad++ < 3) {
+                std::printf("    map %u %s[%u] collision %u disagrees\n", id, mine->group.c_str(), mine->placement,
+                            mine->mesh);
+                for (int i = 0; i < 16; ++i)
+                    std::printf("      world[%d] mine %.6f ref %.6f\n", i, mine->world[i], r["world"][i].get<float>());
+            }
+        }
+        std::printf("    map %u: %zu instances, %zu reference rows compared, %zu disagree (max |dworld| %.3g)\n",
+                    id, inst.size(), compared, bad, maxWorld);
+        CHECK_EQ(compared, rows.size());
+        CHECK_EQ(bad, size_t(0));
+    }
+}
+
+// §7: at least 99% of collision instance origins fall inside the terrain's
+// union of chunk rects (the old reader left every hull at the map origin).
+CM_TEST(world_dat, collision_inside_terrain_rects) {
+    for (uint32_t id : kTestMaps) {
+        MapUnderTest m = load_map_terrain(id);
+        castlemist::world::WorldScene scene = load_map_collision(id);
+        size_t in = 0;
+        for (const auto& c : scene.collision.instances) {
+            const float x = c.world[12], y = c.world[13];
+            for (const auto& ch : m.terrain.chunks)
+                if (x >= ch.rect[0] && x <= ch.rect[2] && y >= ch.rect[1] && y <= ch.rect[3]) {
+                    ++in;
+                    break;
+                }
+        }
+        std::printf("    map %u: %zu of %zu collision instances inside the terrain rects\n", id, in,
+                    scene.collision.instances.size());
+        CHECK(!scene.collision.instances.empty());
+        CHECK(in * 100 >= scene.collision.instances.size() * 99);
+    }
+}
+
+namespace {
+
+/// Axis-aligned box; empty until a point is added.
+struct Box {
+    float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+    void add(const float* p) {
+        for (int k = 0; k < 3; ++k) { lo[k] = std::min(lo[k], p[k]); hi[k] = std::max(hi[k], p[k]); }
+    }
+    bool empty() const { return lo[0] > hi[0]; }
+    float extent(int k) const { return hi[k] - lo[k]; }
+};
+
+/// Intersection over union of two boxes (0 when either is flat or they miss).
+double box_iou(const Box& a, const Box& b) {
+    double inter = 1, va = 1, vb = 1;
+    for (int k = 0; k < 3; ++k) {
+        inter *= std::max(0.0, (double)std::min(a.hi[k], b.hi[k]) - std::max(a.lo[k], b.lo[k]));
+        va *= a.extent(k);
+        vb *= b.extent(k);
+    }
+    const double u = va + vb - inter;
+    return u > 0 ? inter / u : 0;
+}
+
+double median(std::vector<double> v) {
+    if (v.empty()) return 0;
+    std::sort(v.begin(), v.end());
+    return v[v.size() / 2];
+}
+
+/// The model's vertex box in its own (file) space, or an empty Box when the
+/// fileId is missing or does not parse.
+Box model_box(uint32_t file_id) {
+    Box b;
+    Gw2Dat& dat = shared_dat();
+    const uint32_t base = get_by_base_id(dat, file_id);
+    if (base == 0 || base > dat.mft_data_list.size()) return b;
+    try {
+        const MftData& e = dat.mft_data_list[base - 1];
+        std::vector<uint8_t> raw = read_entry_bytes(dat.file_info.file_path, e);
+        std::vector<uint8_t> bytes = e.compression_flag ? castlemist::cmp::decompress_entry(raw) : raw;
+        castlemist::model::Model mdl = castlemist::model::Extractor(bytes, *castlemist::tpl::get()).extract();
+        for (const auto& mesh : mdl.meshes)
+            for (const auto& v : mesh.vertices) {
+                const float p[3] = {v.px, v.py, v.pz};
+                b.add(p);
+            }
+    } catch (const std::exception&) {
+        return Box{};
+    }
+    return b;
+}
+
+} // namespace
+
+// §7.2-7.3: the hull scale and z sign, measured. A havk prop placement whose
+// translate, rotate and scale equal a prp2 prop's places that prop's model and
+// the placement's hulls with the same rotation and translation, so in the
+// placement's own frame the hull box times the factor must fit the model's
+// vertex box. On Queensdale, for up to 300 distinct (model, geometry) pairs:
+// the per-axis extent ratio model / hull, and the box IoU under each axis
+// sign map, diag(1, 1, -1) (z flipped) among them.
+CM_TEST(world_dat, collision_hulls_fit_visual_props) {
+    const uint32_t id = 192711;
+    castlemist::model::Extractor::MapHavok h;
+    load_map_collision(id, &h);
+    MapUnderTest m = load_map_terrain(id);
+
+    std::map<std::array<long, 3>, std::vector<const castlemist::model::Extractor::MapProp*>> byPos;
+    for (const auto& p : m.props)
+        byPos[{std::lround(p.pos[0] * 100), std::lround(p.pos[1] * 100), std::lround(p.pos[2] * 100)}].push_back(&p);
+
+    std::map<uint32_t, Box> models;
+    std::set<std::pair<uint32_t, uint32_t>> seen;
+    // iou[signs]: bit k set = axis k negated; kZFlip = diag(1, 1, -1).
+    constexpr int kZFlip = 4;
+    std::vector<double> ratio[3], iou[8];
+    size_t linked = 0, flipBetter = 0;
+    for (const auto& pl : h.placements) {
+        if (pl.group != "prop" || seen.size() >= 300) continue;
+        auto it = byPos.find({std::lround(pl.translate[0] * 100), std::lround(pl.translate[1] * 100),
+                              std::lround(pl.translate[2] * 100)});
+        if (it == byPos.end()) continue;
+        const castlemist::model::Extractor::MapProp* prop = nullptr;
+        for (const auto* q : it->second) {
+            bool same = std::fabs(q->scale - pl.scale) <= 1e-4f;
+            for (int k = 0; k < 3; ++k) same = same && std::fabs(q->rot[k] - pl.rotate[k]) <= 1e-4f;
+            if (same) { prop = q; break; }
+        }
+        if (!prop) continue;
+        ++linked;
+        if (pl.geometryIndex >= h.geometryAnimations.size() || h.geometryAnimations[pl.geometryIndex].empty())
+            continue;
+        if (!seen.insert({prop->fileId, pl.geometryIndex}).second) continue;
+        const uint32_t anim = h.geometryAnimations[pl.geometryIndex].back();
+        if (anim >= h.animationCollisions.size()) continue;
+        Box hull;
+        for (uint32_t ci : h.animationCollisions[anim])
+            if (ci < h.hulls.size())
+                for (size_t v = 0; v + 2 < h.hulls[ci].verts.size(); v += 3) hull.add(&h.hulls[ci].verts[v]);
+        if (hull.empty()) continue;
+        auto [mit, added] = models.try_emplace(prop->fileId);
+        if (added) mit->second = model_box(prop->fileId);
+        const Box& vis = mit->second;
+        if (vis.empty()) continue;
+
+        for (int k = 0; k < 3; ++k)
+            if (hull.extent(k) > 1e-3f) ratio[k].push_back(vis.extent(k) / hull.extent(k));
+        // The hull box under each of the 8 axis-sign maps diag(+-1, +-1, +-1), at 32x.
+        for (int signs = 0; signs < 8; ++signs) {
+            Box b;
+            for (int k = 0; k < 3; ++k) {
+                const float s = (signs >> k) & 1 ? -32.0f : 32.0f;
+                b.lo[k] = std::min(s * hull.lo[k], s * hull.hi[k]);
+                b.hi[k] = std::max(s * hull.lo[k], s * hull.hi[k]);
+            }
+            iou[signs].push_back(box_iou(vis, b));
+        }
+        if (iou[kZFlip].back() > iou[0].back()) ++flipBetter;
+    }
+    const size_t pairs = iou[0].size();
+    std::printf("    map %u: %zu prop placements linked to a prp2 prop, %zu (model, geometry) pairs measured\n", id,
+                linked, pairs);
+    std::printf("    model/hull extent ratio, median: x %.3f  y %.3f  z %.3f\n", median(ratio[0]),
+                median(ratio[1]), median(ratio[2]));
+    std::printf("    box IoU at 32x, median, by axis signs (x y z):");
+    for (int signs = 0; signs < 8; ++signs)
+        std::printf(" %c%c%c %.3f", signs & 1 ? '-' : '+', signs & 2 ? '-' : '+', signs & 4 ? '-' : '+',
+                    median(iou[signs]));
+    std::printf("\n    z flipped beats z kept in %zu of %zu pairs\n", flipBetter, pairs);
+    CHECK(pairs >= 100);
+    // The factor is measured, not fitted: each axis's median ratio must land
+    // within 1 of 32 (which excludes inches-per-metre 39.37, 16 and 64).
+    for (int k = 0; k < 3; ++k) CHECK(std::fabs(median(ratio[k]) - 32.0) <= 1.0);
+    // diag(1, 1, -1) fits, and fits better than every other sign map.
+    CHECK(median(iou[kZFlip]) >= 0.5);
+    for (int signs = 0; signs < 8; ++signs)
+        if (signs != kZFlip) CHECK(median(iou[signs]) < median(iou[kZFlip]));
+    CHECK(flipBetter * 10 >= pairs * 9);
+}

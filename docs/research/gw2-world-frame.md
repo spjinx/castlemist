@@ -1,6 +1,6 @@
 ---
 name: gw2-world-frame
-description: "The frame WorldScene keeps a GW2 map in (map space as stored): axes, handedness, Z sign, units, map bounds, the terrain chunk layout, terrain materials and blend pages, and the exact map -> Unity / map -> Blender conversions. Source of truth for castlemist::world and every later world export; anything unproven is marked UNPROVEN."
+description: "The frame WorldScene keeps a GW2 map in (map space as stored): axes, handedness, Z sign, units, map bounds, the terrain chunk layout, terrain materials and blend pages, prop and collision placements, and the exact map -> Unity / map -> Blender conversions. Source of truth for castlemist::world and every later world export; anything unproven is marked UNPROVEN."
 ---
 
 # GW2 world frame: axes, units, bounds
@@ -695,3 +695,172 @@ union of the terrain's chunk rects (`build_terrain`, §3) is 11667 / 11687
 (99.83%) on 192711, 18532 / 18571 (99.79%) on 191000 and 2423 / 2425 (99.92%)
 on 1151420. The test requires at least 99%. The stragglers are placements
 just outside the map rect; they are kept, not clipped.
+
+## 7. Collision: hulls placed by obs, prop and zone models
+
+**A `havk` placement (an `obsModels`, `propModels` or `zoneModels` entry)
+names a geometry. The geometry's last animation lists the hull indices. Each
+hull is placed by the client's prop transform (§5.1) at scale `32 · scale`
+(obs models: `32`), with the hull's z negated first: a hull vertex `v` as
+stored lands at `R · 32s · diag(1, 1, −1) · v + t` in map space. The ×32 and
+the z flip are proven on Queensdale against the visual props.
+`animations[last]` is T3D's rule and is UNPROVEN: the data says the
+animations are per-sequence collision states and that a prop placement names
+its own.** Implemented in `Extractor::parseHavok`
+(`include/castlemist/native/gw2model.hpp`, beside the old
+`parseMapCollision`, which is left as it was for the old path) and
+`build_collision` (`src/world/collision.cpp`).
+
+### Evidence base and how to reproduce it
+
+- **Template** (`dumps/packfile/gw2_packfile.json`, `havk` v16 root
+  `PackMapCollideV16`): `collisions[]` = `{indices: word[], vertices:
+  float3[], surfaces: word[], moppCodeData}`; `animations[]` = `{sequence:
+  qword, collisionIndices: dword[], blockerIndices: dword[]}`;
+  `geometries[]` = `{quantizedExtents: byte, animations: dword[],
+  navMeshIndex: word}`; `obsModels[]` = `{translate: float3, geometryIndex}`;
+  `propModels[]` = `{token: qword, sequence: qword, scale, translate,
+  rotate: float3, geometryIndex}`; `zoneModels[]` = `{scale, translate,
+  rotate, geometryIndex}`. The reader takes every field by name from the
+  element struct that its array field names, so other versions read the same
+  way. A struct without `scale` (obs) reads as 1; one without `rotate` reads
+  as 0.
+- **T3D**: `HavokRenderer.ts:189-204` (geometry → `animations[last]`,
+  commented "for now"), `:137-146` (missing animation or hull skipped),
+  `:244-262` (`compose` of translation, `Euler(r0, −r2, −r1, "ZXY")`, scale
+  `32 · scale`, or 1 when that is 0), `:288-292` (hull vertex
+  `(v0, v1, v2) → (v0, v2, −v1)` in three.js), `:373-375` (obs `scale = 1`).
+  Taken back to map space this is `world = A · M · L` of
+  `tools/world/README.md`.
+- **References**: `tests/world_ref/<id>.json` `collision` (the total and
+  per-group counts, and the first 20 rows overall and per group).
+- **In the repo** (`GW2_TEST_DAT=<dat> build/debug/bin/cm_test_world_dat.exe
+  world_dat`): `collision_hulls_fit_visual_props` (§7.2-7.3),
+  `collision_matches_reference` (§7.4) and `collision_inside_terrain_rects`;
+  also `cm_test_world collision_bad_indices_skipped` (§7.5).
+- **Census of `animations[]`** (§7.1): `tools/world/havk_sequences.mjs`, run as
+  `node tools/world/havk_sequences.mjs --t3d <t3d checkout> --map-bytes
+  <map bytes>` on bytes extracted as in `tools/world/README.md`. It reads the
+  map with T3D's parser package and prints numbers only.
+
+### 7.1 Which hulls a placement uses: `animations[last]` is UNPROVEN
+
+`build_collision` follows T3D: placement → `geometries[geometryIndex]` →
+`animations[last]` → that animation's `collisionIndices[]` → hulls. A geometry
+with no animation gives no instance (no test map has one). What the other
+`animations[]` entries are, from `havk_sequences.mjs`:
+
+| | 192711 | 191000 | 1151420 |
+| --- | --- | --- | --- |
+| geometries / animations / hulls | 1127 / 1873 / 1318 | 1192 / 1615 / 1292 | 332 / 551 / 388 |
+| geometries with 1 animation | 911 | 1068 | 277 |
+| geometries with 2+ animations, all `sequence`s distinct within it | 216 of 216 | 124 of 124 | 55 of 55 |
+| animations whose `sequence` is `192720390330` | 1127 | 1190 | 326 |
+| `propModels` whose `sequence` is `192720390330` | 8174 of 8301 | 12552 of 12669 | 1326 of 1395 |
+| `propModels` on a 2+ geometry: the animation its own `sequence` names is first / middle / **last** / missing | 680 / 508 / **311** / 0 | 422 / 230 / **533** / 6 | 45 / 58 / **60** / 5 |
+| prop rows from `animations[last]` / from the animation the placement's `sequence` names | 8510 / 8449 | 12758 / 12819 | 1693 / 1680 |
+
+- Every animation carries a `sequence` token, and the tokens within one
+  geometry are distinct. So a geometry's `animations[]` holds one collision
+  set per sequence. `192720390330` is on (nearly) every geometry and is the
+  `sequence` of most prop placements: it is the default.
+- `propModels.token` is the `guid` of a `prp2` base prop for 4903 of 8301
+  placements on 192711 (6389 / 12669 on 191000, 856 / 1395 on 1151420), and
+  every such prop has the same translate and scale. For the ones from
+  `propAnimArray`, the prop's `animSequence` equals the placement's `sequence`
+  in 211 / 211, 215 / 217 and 89 / 89 cases.
+- So a prop placement names the sequence it plays. T3D's rule gives a
+  placement another sequence's hulls whenever the named animation is not the
+  last one: 1188 placements on 192711, 652 on 191000 and 103 on 1151420.
+- `zoneModels` and `obsModels` carry no `sequence`. Obs geometries have one
+  animation, the default. Zone geometries have the default plus
+  `566482876922` (last) on 192711 and 191000, a set of six sequences (70
+  placements on 192711), or `566482876922` alone (1151420).
+- The tokens do not decode with the base-23 Token rule (§4.1), so the
+  sequences are unnamed. Which animation the client uses was not traced in the
+  executable.
+
+**Status.** The rule is kept as T3D's so the references compare row for row.
+For props, the data points to "the animation whose `sequence` equals the
+placement's own, else the default". That is a reading of the data, not the
+client's rule, and it is not implemented. What would prove it: the client
+code that picks a geometry's animation for a placement.
+
+### 7.2 Hull units: ×32 (proven)
+
+Hull vertices are in units of 1/32 map unit. `world_dat.collision_hulls_fit_visual_props`:
+
+1. On Queensdale, link each `propModels` placement to the `prp2` prop with the
+   same `pos` (within 0.01), `rot` and `scale` (within 1e-4). 653 placements
+   link. The first 300 distinct (model, geometry) pairs are measured, and 299
+   of them load.
+2. Both are placed with the same rotation and translation. So in the
+   placement's frame, the model's vertex box (all meshes, as stored) is
+   compared with the box of the placement's hulls (`animations[last]`).
+3. Per axis, ratio = model extent / hull extent; the median is taken over the
+   pairs.
+
+Result: **x 32.085, y 32.097, z 32.128.** No factor is fitted. The test
+asserts each median is within 1 of 32, which excludes 39.37 (inches per
+metre), 16 and 64. The models reach a little past their hulls, since
+collision shapes are simplified.
+
+This fixes the ratio of hull units to map units only. How long a map unit is
+stays UNPROVEN (§1.3). Scale is `32 · scale` for prop and zone placements and
+`32` for obs models, which have no `scale` field. T3D's fallback to scale 1
+when `32 · scale` is 0 is not carried over: no placement on the test maps has
+scale 0, and a zero scale is kept as the data says.
+
+### 7.3 Hull z points up: `diag(1, 1, −1)` (proven)
+
+For the same pairs, the hull box at ×32 under each of the eight axis sign maps
+`diag(±1, ±1, ±1)` is scored by its box IoU with the model box (median):
+
+| x y z | `+ + +` | `− + +` | `+ − +` | `− − +` | **`+ + −`** | `− + −` | `+ − −` | `− − −` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| IoU | 0.046 | 0.039 | 0.031 | 0.027 | **0.860** | 0.710 | 0.703 | 0.537 |
+
+Negating z fits best, and it beats keeping z in 294 of 299 pairs. So hulls are
+stored with up = +Z, the opposite of map space (§1.1), and the hull-local →
+map matrix is the prop transform times `diag(1, 1, −1)`. That is a
+reflection: **`CollisionInstance::world` has a negative determinant, so a
+hull triangle's winding reverses in map space.** T3D reaches the same matrix
+through its hull vertex mapping (`tools/world/README.md`:
+`A · L_havok = diag(1, 1, −1)`).
+
+### 7.4 Agreement with T3D
+
+`world_dat.collision_matches_reference` checks, per map:
+
+- The instance count and the per-group counts equal the reference.
+- Every reference row (`sample`, 20 rows, and `sampleByGroup`, 20 per group)
+  has an instance with the same (group, placement index in its group,
+  collision index).
+- That instance's `world` equals the reference's within 1e-4. The
+  reference's z flip is the one §7.3 proves, so the two are compared as they
+  are.
+
+Rows are matched by key, not by position, because T3D draws prop, zone, obs.
+
+| map | instances (obs / prop / zone) | rows compared | disagree | max \|Δworld\| |
+| --- | --- | --- | --- | --- |
+| 192711 | 13010 (109 / 8510 / 4391) | 80 | 0 | 3.08e-06 |
+| 191000 | 13075 (229 / 12758 / 88) | 80 | 0 | 1.95e-06 |
+| 1151420 | 2327 (66 / 1693 / 568) | 80 | 0 | 1.7e-05 |
+
+No test map produces a collision warning. `world_dat.collision_inside_terrain_rects`
+counts instance origins inside the union of chunk rects: 12998 / 13010
+(192711), 13063 / 13075 (191000), 2326 / 2327 (1151420). The test requires
+99%. The old reader left every hull at the origin.
+
+### 7.5 What `build_collision` does with bad data
+
+- It makes one `CollisionMesh` per hull, at the same index
+  (`CollisionInstance::mesh` is the havk collision index), with vertices as
+  stored. A triangle that indexes past its hull's vertices is dropped, as T3D
+  does (`HavokRenderer.ts:298-316`), and the drops are counted in one warning.
+- A placement whose `geometryIndex`, last animation index or any collision
+  index is out of range keeps whatever does resolve. It is counted once, in
+  one warning: "`N` collision placements reference a geometry, animation or
+  collision index out of range" (pure test `collision_bad_indices_skipped`).
+  T3D would throw on the bad geometry and silently skip the rest.

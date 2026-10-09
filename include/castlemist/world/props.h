@@ -15,6 +15,11 @@
 
 namespace castlemist::world {
 
+/// @brief The client's placement transform (§5.1) as a column-major map-space
+///        matrix: its 3x3 rotation of `rot` times `scale`, translation `pos`
+///        in elements 12-14. Shared by props and collision placements (§7).
+void client_world_matrix(const float pos[3], const float rot[3], float scale, float w[16]);
+
 /// @brief Fill `out.models` (distinct fileIds, in first-seen order),
 ///        `out.props` (one per input, in input order) and
 ///        `out.motion.animatedProps` (indices of `group == "propAnimArray"`).

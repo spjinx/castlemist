@@ -69,8 +69,13 @@ struct PropInstance {
 /// @brief A collision mesh in local space.
 struct CollisionMesh { std::vector<float> verts; std::vector<uint32_t> indices; };
 
-/// @brief One placed collision mesh.
-struct CollisionInstance { uint32_t mesh = 0; float world[16] = {}; std::string group; };   // "obs" | "prop" | "zone"
+/// @brief One placed collision mesh (docs/research/gw2-world-frame.md §7).
+struct CollisionInstance {
+    uint32_t mesh = 0;                      ///< index into Collision::meshes (= havk collision index)
+    float world[16] = {};                   ///< column-major, hull-local -> map space
+    std::string group;                      ///< "obs" | "prop" | "zone"
+    uint32_t placement = 0;                 ///< index of the placement in its group's havk model array
+};
 
 struct Collision { std::vector<CollisionMesh> meshes; std::vector<CollisionInstance> instances; };
 

@@ -1126,6 +1126,8 @@ public:
         // which is why the Collision layer toggle looks like it does nothing.
         // Resolving it needs the client's geometryIndex semantics: the arrays are
         // NOT parallel (179282 has 48 collisions but only 11 geometries).
+        // parseHavok() below reads them for the world layer
+        // (docs/research/gw2-world-frame.md §7); this reader is the old path's.
         for (const char* an : {"geometries", "obsModels", "propModels", "zoneModels"}) {
             size_t ao; json af;
             uint32_t n = 0;
@@ -1133,6 +1135,94 @@ public:
             out.counts.push_back({an, n});
         }
         out.counts.push_back({"collisions", cn});
+        return out;
+    }
+
+    /// @brief One havk collision placement (docs/research/gw2-world-frame.md §7):
+    ///        an `obsModels`, `propModels` or `zoneModels` entry, as stored.
+    struct HavokPlacement {
+        uint32_t geometryIndex = 0;            ///< index into MapHavok::geometryAnimations
+        float translate[3] = {}, rotate[3] = {};
+        float scale = 1;                       ///< 1 where the struct has no `scale` (obsModels)
+        std::string group;                     ///< "obs" | "prop" | "zone"
+    };
+
+    /// @brief The `havk` chunk's hulls and placements, unresolved
+    ///        (docs/research/gw2-world-frame.md §7). Indices are kept as stored;
+    ///        world::build_collision range-checks them.
+    struct MapHavok {
+        bool present = false;                                  ///< the map has a havk chunk
+        std::vector<MapCollision> hulls;                       ///< collisions[i] in hull-local space (verts, indices)
+        std::vector<std::vector<uint32_t>> geometryAnimations; ///< geometries[i].animations[]
+        std::vector<std::vector<uint32_t>> animationCollisions;///< animations[i].collisionIndices[]
+        std::vector<HavokPlacement> placements;                ///< obsModels, propModels, zoneModels, in that order
+    };
+
+    /// @brief Read `havk` by template field name, version-agnostic: nested
+    ///        struct names come from each field's own `element`.
+    ///
+    /// Unlike parseMapCollision() this keeps one hull per `collisions[]` entry
+    /// and reads the placement arrays, so the hulls can be placed. An array
+    /// whose header would run past the file reads as empty.
+    MapHavok parseHavok() {
+        MapHavok out;
+        std::string root; uint16_t ver = 0;
+        const size_t h = findChunk("havk", &root, &ver);
+        if (!h || root.empty()) return out;
+        out.present = true;
+
+        const FieldArray coll = fieldArray(root, "collisions", h);
+        out.hulls.resize(coll.n);
+        for (uint32_t i = 0; i < coll.n; ++i) {
+            const size_t e = coll.base + (size_t)i * coll.stride;
+            MapCollision& hull = out.hulls[i];
+            const FieldArray v = fieldArray(coll.type, "vertices", e);
+            const FieldArray ix = fieldArray(coll.type, "indices", e);
+            if (v.stride == 12) {
+                hull.verts.reserve(3ull * v.n);
+                for (uint32_t k = 0; k < 3 * v.n; ++k) hull.verts.push_back(rdf(v.base + 4ull * k));
+            }
+            if (ix.stride == 2) {
+                hull.indices.reserve(ix.n);
+                for (uint32_t k = 0; k < ix.n; ++k) hull.indices.push_back(rd16(ix.base + 2ull * k));
+            }
+            hull.present = !hull.verts.empty() && !hull.indices.empty();
+        }
+
+        // A dword array field of each element of `arr`, one list per element.
+        auto dwordLists = [&](const FieldArray& arr, const char* name, std::vector<std::vector<uint32_t>>& lists) {
+            lists.resize(arr.n);
+            for (uint32_t i = 0; i < arr.n; ++i) {
+                const FieldArray a = fieldArray(arr.type, name, arr.base + (size_t)i * arr.stride);
+                if (a.stride != 4) continue;
+                lists[i].reserve(a.n);
+                for (uint32_t k = 0; k < a.n; ++k) lists[i].push_back(rd32(a.base + 4ull * k));
+            }
+        };
+        dwordLists(fieldArray(root, "geometries", h), "animations", out.geometryAnimations);
+        dwordLists(fieldArray(root, "animations", h), "collisionIndices", out.animationCollisions);
+
+        for (const auto& [arrayName, group] : {std::pair<const char*, const char*>{"obsModels", "obs"},
+                                               {"propModels", "prop"}, {"zoneModels", "zone"}}) {
+            const FieldArray m = fieldArray(root, arrayName, h);
+            size_t oT = 0, oR = 0, oS = 0, oG = 0; json fj;
+            const bool hT = fieldOffset(m.type, "translate", oT, fj), hR = fieldOffset(m.type, "rotate", oR, fj),
+                       hS = fieldOffset(m.type, "scale", oS, fj), hG = fieldOffset(m.type, "geometryIndex", oG, fj);
+            if (!hG) continue;
+            out.placements.reserve(out.placements.size() + m.n);
+            for (uint32_t i = 0; i < m.n; ++i) {
+                const size_t e = m.base + (size_t)i * m.stride;
+                HavokPlacement p;
+                p.group = group;
+                p.geometryIndex = rd32(e + oG);
+                for (int k = 0; k < 3; ++k) {
+                    if (hT) p.translate[k] = rdf(e + oT + 4 * k);
+                    if (hR) p.rotate[k] = rdf(e + oR + 4 * k);
+                }
+                if (hS) p.scale = rdf(e + oS);
+                out.placements.push_back(std::move(p));
+            }
+        }
         return out;
     }
 
@@ -2794,6 +2884,24 @@ private:
             o += fieldSize(f);
         }
         return false;
+    }
+
+    /// @brief An `array_ptr` field resolved: element struct name (empty for a
+    ///        scalar element), first element, count and stride.
+    struct FieldArray { std::string type; size_t base = 0; uint32_t n = 0; int stride = 0; };
+    /// Field `name` of struct `typeName` at `at`, by template name. Absent
+    /// field, unknown element size, or a count that would run past the file:
+    /// an empty FieldArray (n = 0).
+    FieldArray fieldArray(const std::string& typeName, const char* name, size_t at) const {
+        FieldArray a;
+        size_t o = 0; json f;
+        if (!fieldOffset(typeName, name, o, f) || f.value("kind", std::string()) != "array_ptr") return a;
+        const json& el = f.contains("element") ? f["element"] : json();
+        if (el.is_object()) { a.type = el.value("struct", std::string()); a.stride = typeSize(a.type); }
+        else if (el.is_string()) a.stride = scalarSize(el.get<std::string>());
+        a.base = arrayAt(at + o, a.n);
+        if (!a.base || a.stride <= 0 || a.base + (uint64_t)a.n * a.stride > n_) { a.n = 0; a.base = 0; }
+        return a;
     }
 
     // Resolve a versioned struct name (`base` + "V<n>") to the exact variant for

@@ -35,6 +35,16 @@ The committed references were made from T3D commit `b3428b2`
 (`t3dCommit` in each file) on maps 192711 (Queensdale), 191000 (Lion's Arch)
 and 1151420 (Spirit Vale).
 
+## `havk_sequences.mjs`
+
+Prints the census behind `docs/research/gw2-world-frame.md` §7.1: what a havk
+geometry's `animations[]` entries are and which one a placement's own
+`sequence` names. Same T3D parser and map bytes as above, numbers only:
+
+```bash
+node tools/world/havk_sequences.mjs --t3d <t3d> --map-bytes <tmp>/192711.bin
+```
+
 ## Spaces
 
 - **Map space**: GW2 coordinates as stored in the map file.

@@ -346,3 +346,36 @@ CM_TEST(world, anim_props_recorded) {
     CHECK_EQ(scene.motion.animatedProps[0], uint32_t(1));
     CHECK_EQ(scene.motion.animatedProps[1], uint32_t(3));
 }
+
+// ---- collision (docs/research/gw2-world-frame.md §7) ----
+
+#include "castlemist/world/collision.h"
+
+// §7: a placement whose geometryIndex is out of range, and one whose
+// animation names a collision index out of range, are skipped: no instance,
+// one aggregated warning, no throw.
+CM_TEST(world, collision_bad_indices_skipped) {
+    castlemist::model::Extractor::MapHavok h;
+    h.present = true;
+    h.hulls.resize(1);
+    h.hulls[0].verts = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+    h.hulls[0].indices = {0, 1, 2};
+    h.geometryAnimations = {{0}};
+    h.animationCollisions = {{5}};             // hull 5 does not exist
+    castlemist::model::Extractor::HavokPlacement badGeometry;
+    badGeometry.geometryIndex = 7;             // only geometry 0 exists
+    badGeometry.group = "obs";
+    castlemist::model::Extractor::HavokPlacement badCollision;
+    badCollision.geometryIndex = 0;
+    badCollision.group = "prop";
+    h.placements = {badGeometry, badCollision};
+
+    castlemist::world::WorldScene scene;
+    castlemist::world::build_collision(h, scene);
+    CHECK(scene.collision.instances.empty());
+    size_t mentions = 0;
+    for (const auto& w : scene.warnings)
+        if (w.find("2 collision placements") != std::string::npos) ++mentions;
+    CHECK_EQ(scene.warnings.size(), size_t(1));
+    CHECK_EQ(mentions, size_t(1));
+}
