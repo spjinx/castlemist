@@ -138,3 +138,20 @@ CM_TEST(capped, bytes_sum) {
     t.mips.push_back(std::vector<uint8_t>(4 * 4 * 4));
     CHECK_EQ(t.bytes(), (size_t)320);
 }
+
+CM_TEST(capped, rejects_bad_max_size) {
+    Gw2Dat dat;
+    CappedTexture t;
+    CHECK(!decode_texture_capped(dat, 123, 0, t));
+    CHECK(t.mips.empty());
+    CHECK_EQ(t.fileId, (uint32_t)123);
+}
+
+CM_TEST(capped, halve_short_input_is_safe) {
+    std::vector<uint8_t> out;
+    int ow = 0, oh = 0;
+    castlemist::extract::halve_rgba(std::vector<uint8_t>(4, 9), 8, 8, out, ow, oh);
+    CHECK_EQ(ow, 1);
+    CHECK_EQ(oh, 1);
+    CHECK(out == std::vector<uint8_t>(4, 0));
+}

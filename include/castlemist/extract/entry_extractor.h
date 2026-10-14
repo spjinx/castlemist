@@ -223,6 +223,7 @@ size_t texture_entry(Gw2Dat& dat, uint32_t file_id, bool full);
 /// set_texture_full_res), halves with a box filter while the longest side
 /// exceeds `maxSize`, then builds box-filtered RGBA8 mips down to 4x4.
 /// `out.fileId` is set even on failure; a failure leaves `out.mips` empty.
+/// Returns false for `maxSize <= 0`. Never throws (safe on worker threads).
 bool decode_texture_capped(Gw2Dat& dat, uint32_t fileId, int maxSize, CappedTexture& out);
 
 /// @brief The model at `file_id`, built against the already-open `dat` --

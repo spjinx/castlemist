@@ -295,6 +295,11 @@ bool decode_texture_by_fileid_res(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU&
 }
 
 void halve_rgba(const std::vector<uint8_t>& in, int w, int h, std::vector<uint8_t>& out, int& ow, int& oh) {
+    if (w <= 0 || h <= 0 || in.size() < static_cast<size_t>(w) * h * 4) {
+        out.assign(4, 0);   // invalid input: one transparent texel, no reads
+        ow = oh = 1;
+        return;
+    }
     ow = std::max(1, w / 2);
     oh = std::max(1, h / 2);
     std::vector<uint8_t> res(static_cast<size_t>(ow) * oh * 4);
@@ -347,28 +352,36 @@ size_t texture_entry(Gw2Dat& dat, uint32_t file_id, bool full) {
 bool decode_texture_capped(Gw2Dat& dat, uint32_t fileId, int maxSize, CappedTexture& out) {
     out = CappedTexture{};
     out.fileId = fileId;
-    const size_t i0 = texture_entry(dat, fileId, /*full=*/false);
-    if (i0 == SIZE_MAX) return false;
-    ModelTextureCPU tex;
-    if (!decode_mft_atex(dat, i0, tex)) return false;
-    int w = tex.width, h = tex.height;
-    std::vector<uint8_t> px = std::move(tex.rgba);
-    const int cap = std::max(1, maxSize);
-    while (std::max(w, h) > cap && (w > 1 || h > 1)) {
-        std::vector<uint8_t> next;
-        int nw = 0, nh = 0;
-        halve_rgba(px, w, h, next, nw, nh);
-        px = std::move(next);
-        w = nw;
-        h = nh;
+    if (maxSize <= 0) return false;
+    try {
+        const size_t i0 = texture_entry(dat, fileId, /*full=*/false);
+        if (i0 == SIZE_MAX) return false;
+        ModelTextureCPU tex;
+        if (!decode_mft_atex(dat, i0, tex)) return false;   // sets tex.baseId = i0 + 1
+        int w = tex.width, h = tex.height;
+        std::vector<uint8_t> px = std::move(tex.rgba);
+        if (w <= 0 || h <= 0 || px.size() < static_cast<size_t>(w) * h * 4) return false;
+        while (std::max(w, h) > maxSize && (w > 1 || h > 1)) {
+            std::vector<uint8_t> next;
+            int nw = 0, nh = 0;
+            halve_rgba(px, w, h, next, nw, nh);
+            px = std::move(next);
+            w = nw;
+            h = nh;
+        }
+        out.mips = build_mips(std::move(px), w, h);
+        if (out.mips.empty()) return false;
+        out.baseId = tex.baseId;
+        out.width = w;
+        out.height = h;
+        out.isNormal = tex.isNormal;
+        out.hasCutout = !out.isNormal && compute_alpha_cutout(out.mips[0]);
+        out.looksLikeEffect = looks_like_effect(out.mips[0]);
+        return true;
+    } catch (...) {
+        const uint32_t id = out.fileId;
+        out = CappedTexture{};
+        out.fileId = id;
+        return false;
     }
-    out.mips = build_mips(std::move(px), w, h);
-    if (out.mips.empty()) return false;
-    out.baseId = tex.baseId;
-    out.width = w;
-    out.height = h;
-    out.isNormal = tex.isNormal;
-    out.hasCutout = !out.isNormal && compute_alpha_cutout(out.mips[0]);
-    out.looksLikeEffect = looks_like_effect(out.mips[0]);
-    return true;
 }
