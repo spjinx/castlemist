@@ -4,12 +4,14 @@
 #include "test_framework.h"
 
 #include "world_camera.h"
+#include "world_props.h"
 
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -66,6 +68,121 @@ CM_TEST(world_view, pixel_ray_round_trip) {
     const float right[3] = {0, -1, 0};
     CHECK(d[0] * right[0] + d[1] * right[1] + d[2] * right[2] > 0.0f);
     CHECK_NEAR(d[0] * d[0] + d[1] * d[1] + d[2] * d[2], 1.0f, 1e-5f);
+}
+
+namespace {
+
+/// A unit-ish cube (half-size @p h, centred on the origin): 24 vertices with
+/// face normals, 12 triangles, and one coarser LOD (two faces dropped).
+ModelPreview cube_model(float h = 50.0f) {
+    ModelMeshCPU m;
+    const float n[6][3] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+    for (int f = 0; f < 6; ++f) {
+        // Two tangent axes perpendicular to the face normal.
+        const int a = (f / 2 + 1) % 3, b = (f / 2 + 2) % 3;
+        const uint32_t base = static_cast<uint32_t>(m.vertices.size());
+        for (int c = 0; c < 4; ++c) {
+            GVertex v{};
+            float p[3] = {n[f][0] * h, n[f][1] * h, n[f][2] * h};
+            p[a] = (c & 1) ? h : -h;
+            p[b] = (c & 2) ? h : -h;
+            v.px = p[0]; v.py = p[1]; v.pz = p[2];
+            v.nx = n[f][0]; v.ny = n[f][1]; v.nz = n[f][2];
+            m.vertices.push_back(v);
+        }
+        m.indices.insert(m.indices.end(), {base, base + 1, base + 2, base + 1, base + 3, base + 2});
+    }
+    m.lodIndices.emplace_back(m.indices.begin(), m.indices.end() - 12);
+    m.vertexCount = static_cast<uint32_t>(m.vertices.size());
+    ModelPreview mp;
+    mp.meshes.push_back(std::move(m));
+    mp.radius = h * std::sqrt(3.0f);
+    return mp;
+}
+
+} // namespace
+
+CM_TEST(world_view, prepare_cube_ok) {
+    const PreparedModel p = prepare_world_model(cube_model());
+    CHECK(p.ok);
+    CHECK_EQ(p.verts.size(), size_t(24));
+    CHECK(p.lodRanges.size() >= 1);
+    CHECK_EQ(p.lodRanges.size(), size_t(2));
+    if (p.lodRanges.size() < 2) return;
+    CHECK_EQ(p.lodRanges[0].first, 0u);
+    CHECK_EQ(p.lodRanges[0].second, 36u);
+    CHECK_EQ(p.lodRanges[1].second, 24u);
+    CHECK_EQ(p.indices.size(), size_t(60));
+    CHECK_NEAR(p.radius, 50.0f * std::sqrt(3.0f), 1e-3f);
+    CHECK_NEAR(p.center[0], 0.0f, 1e-6f);
+    // AO is baked, with the 0.30 floor (0.30 * 255 = 76.5 -> 76 or 77).
+    for (const MapVtx& v : p.verts) {
+        CHECK(v.ao >= 76);
+        CHECK(v.ao <= 255);
+    }
+}
+
+CM_TEST(world_view, skips_empty_and_nan_models) {
+    ModelPreview empty;
+    CHECK_FALSE(prepare_world_model(empty).ok);
+
+    ModelPreview nan = cube_model();
+    nan.radius = std::nanf("");
+    CHECK_FALSE(prepare_world_model(nan).ok);
+
+    ModelPreview inf = cube_model();
+    inf.center[1] = INFINITY;
+    CHECK_FALSE(prepare_world_model(inf).ok);
+
+    // A mesh with vertices but no triangles draws nothing either.
+    ModelPreview noTris = cube_model();
+    noTris.meshes[0].indices.clear();
+    noTris.meshes[0].lodIndices.clear();
+    CHECK_FALSE(prepare_world_model(noTris).ok);
+}
+
+CM_TEST(world_view, column_major_world_to_row_vector) {
+    // M = T(10,20,30) * S(2,3,1), column-major, p' = M p.
+    float w[16] = {2, 0, 0, 0,  0, 3, 0, 0,  0, 0, 1, 0,  10, 20, 30, 1};
+    const Mat4 r = colmajor_to_rowvec(w);
+    const Vec3 a = transformPoint({1, 0, 0}, r);
+    CHECK_NEAR(a.x, 12.0f, 1e-6f);
+    CHECK_NEAR(a.y, 20.0f, 1e-6f);
+    CHECK_NEAR(a.z, 30.0f, 1e-6f);
+    const Vec3 b = transformPoint({0, 1, 2}, r);
+    CHECK_NEAR(b.x, 10.0f, 1e-6f);
+    CHECK_NEAR(b.y, 23.0f, 1e-6f);
+    CHECK_NEAR(b.z, 32.0f, 1e-6f);
+    CHECK_NEAR(max_column_length(w), 3.0f, 1e-6f);
+
+    // A 90-degree turn about Z (x -> y) with scale 2: p' = (-2y, 2x, 2z).
+    float q[16] = {0, 2, 0, 0,  -2, 0, 0, 0,  0, 0, 2, 0,  0, 0, 0, 1};
+    const Vec3 c = transformPoint({1, 0, 0}, colmajor_to_rowvec(q));
+    CHECK_NEAR(c.x, 0.0f, 1e-6f);
+    CHECK_NEAR(c.y, 2.0f, 1e-6f);
+    CHECK_NEAR(max_column_length(q), 2.0f, 1e-6f);
+}
+
+CM_TEST(world_view, prepare_collision_mesh_normals_and_bounds) {
+    castlemist::world::CollisionMesh m;
+    // A flat square at z = 5 in the XY plane, plus one out-of-range triangle.
+    m.verts = {0, 0, 5,  10, 0, 5,  0, 10, 5,  10, 10, 5};
+    m.indices = {0, 1, 2,  1, 3, 2,  0, 1, 9};
+    const PreparedModel p = prepare_collision_mesh(m);
+    CHECK(p.ok);
+    CHECK_EQ(p.verts.size(), size_t(4));
+    CHECK_EQ(p.indices.size(), size_t(6));
+    CHECK_EQ(p.lodRanges.size(), size_t(1));
+    CHECK_NEAR(p.center[0], 5.0f, 1e-5f);
+    CHECK_NEAR(p.center[2], 5.0f, 1e-5f);
+    CHECK_NEAR(p.radius, std::sqrt(50.0f), 1e-4f);
+    for (const MapVtx& v : p.verts) {
+        CHECK_EQ(int(v.ao), 255);
+        CHECK(v.nz == 0 || v.nz == 255);   // +-Z, consistent winding
+        CHECK_EQ(int(v.nz), int(p.verts[0].nz));
+    }
+    castlemist::world::CollisionMesh none;
+    CHECK_FALSE(prepare_collision_mesh(none).ok);
 }
 
 namespace {
@@ -184,4 +301,143 @@ CM_TEST(world_view, renders_two_terrain_chunks) {
     CHECK(var > 10.0);
     CHECK(notClear > count / 10);
     CHECK(notClear < count);   // some sky is left: the whole map is in frame
+}
+
+namespace {
+
+/// Pixels in a 24-bit BMP that are not the clear colour; -1 when unreadable.
+long count_not_clear(const std::string& path) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return -1;
+    std::vector<uint8_t> bmp;
+    uint8_t buf[4096];
+    for (size_t r; (r = std::fread(buf, 1, sizeof buf, f)) > 0;) bmp.insert(bmp.end(), buf, buf + r);
+    std::fclose(f);
+    if (bmp.size() <= 54 || bmp[0] != 'B' || bmp[1] != 'M') return -1;
+    int32_t bw = 0, bh = 0;
+    std::memcpy(&bw, &bmp[18], 4);
+    std::memcpy(&bh, &bmp[22], 4);
+    const int stride = (bw * 3 + 3) & ~3;
+    if (bmp.size() < 54 + static_cast<size_t>(stride) * bh) return -1;
+    long n = 0;
+    for (int y = 0; y < bh; ++y)
+        for (int x = 0; x < bw; ++x) {
+            const uint8_t* p = &bmp[54 + static_cast<size_t>(y) * stride + x * 3];
+            if (std::abs(p[0] - 33) + std::abs(p[1] - 28) + std::abs(p[2] - 25) > 6) ++n;
+        }
+    return n;
+}
+
+/// Five cubes in a row 500 units up (z = -500, up = -Z), one collision square
+/// under the first, and a water plane at z = -400 over the bounds. No terrain.
+castlemist::world::WorldScene props_scene() {
+    castlemist::world::WorldScene s;
+    s.hasBounds = true;
+    s.bounds[0] = -1500; s.bounds[1] = -300; s.bounds[2] = 2700; s.bounds[3] = 300;
+    s.models.push_back({1234});
+    for (int i = 0; i < 5; ++i) {
+        castlemist::world::PropInstance p;
+        p.model = 0;
+        const float k = (i == 2) ? 2.0f : 1.0f;   // the middle one is twice the size
+        p.world[0] = k; p.world[5] = k; p.world[10] = k; p.world[15] = 1;
+        p.world[12] = i * 300.0f; p.world[13] = 0; p.world[14] = -500;
+        s.props.push_back(p);
+    }
+    castlemist::world::CollisionMesh cm;
+    cm.verts = {-100, -100, 0,  100, -100, 0,  -100, 100, 0,  100, 100, 0};
+    cm.indices = {0, 1, 2,  1, 3, 2};
+    s.collision.meshes.push_back(cm);
+    castlemist::world::CollisionInstance ci;
+    ci.world[0] = ci.world[5] = ci.world[10] = ci.world[15] = 1;
+    ci.world[14] = -440;
+    s.collision.instances.push_back(ci);
+    s.water.hasPlane = true;
+    s.water.planeZ = -400;
+    return s;
+}
+
+} // namespace
+
+CM_TEST(world_view, renders_streamed_props_collision_and_water) {
+    HWND wnd = hidden_window(320, 240);
+    if (!wnd) SKIP("no window");
+    struct Closer { HWND h; ~Closer() { DestroyWindow(h); } } closer{wnd};
+    WorldView v;
+    if (!v.create(wnd)) SKIP("no D3D11 device (hardware or WARP)");
+    CHECK_FALSE(v.layer(WorldLayer::Collision));   // off by default
+    CHECK(v.layer(WorldLayer::Props));
+    CHECK(v.layer(WorldLayer::Water));
+
+    v.set_world(props_scene());
+    CHECK_EQ(v.stats().chunks, 0);
+    CHECK_EQ(v.stats().modelsLoaded, 0);
+    // R7: the props widen the framing extent, so the camera starts above them.
+    const WorldCamera cam = v.frame_all(nullptr);
+    CHECK(cam.pos[2] < -500.0f);
+
+    // Before any model arrives the props are skipped.
+    v.set_layer(WorldLayer::Water, false);
+    v.render(cam);
+    CHECK_EQ(v.stats().visible, 0);
+    CHECK_EQ(v.stats().draws, 0);
+
+    auto cube = std::make_shared<const ModelPreview>(cube_model());
+    v.add_models({{0u, cube}});
+    CHECK_EQ(v.stats().modelsLoaded, 1);
+    CHECK_EQ(v.stats().modelsFailed, 0);
+    // Out of range, null, and an already loaded model: two failures, no reload.
+    v.add_models({{9u, cube}, {0u, nullptr}, {0u, cube}});
+    CHECK_EQ(v.stats().modelsLoaded, 1);
+    CHECK_EQ(v.stats().modelsFailed, 2);
+
+    v.render(cam);
+    CHECK_EQ(v.stats().visible, 5);
+    CHECK(v.stats().draws > 0);
+    CHECK(v.stats().draws <= 2);   // one per (model, LOD) bucket, not per instance
+    CHECK_EQ(v.stats().modelsLoaded, 1);
+
+    char tmp[MAX_PATH] = {};
+    GetTempPathA(MAX_PATH, tmp);
+    const std::string onPath = std::string(tmp) + "cm_world_view_props_on.bmp";
+    const std::string offPath = std::string(tmp) + "cm_world_view_props_off.bmp";
+    CHECK(v.save_screenshot(onPath.c_str()));
+
+    v.set_layer(WorldLayer::Props, false);
+    v.render(cam);
+    CHECK_EQ(v.stats().visible, 0);
+    CHECK_EQ(v.stats().draws, 0);
+    CHECK(v.save_screenshot(offPath.c_str()));
+    v.set_layer(WorldLayer::Props, true);
+
+    const long on = count_not_clear(onPath), off = count_not_clear(offPath);
+    std::printf("      smoke: props on %ld px, props off %ld px not the clear colour (%s)\n", on, off, onPath.c_str());
+    CHECK(on > 500);
+    CHECK_EQ(off, 0L);
+
+    // Collision layer: one more instance and one more draw.
+    v.set_layer(WorldLayer::Collision, true);
+    v.render(cam);
+    CHECK_EQ(v.stats().visible, 6);
+    v.set_layer(WorldLayer::Collision, false);
+
+    // Water: one quad, drawn last.
+    v.render(cam);
+    const int drawsNoWater = v.stats().draws;
+    v.set_layer(WorldLayer::Water, true);
+    v.render(cam);
+    CHECK_EQ(v.stats().visible, 6);
+    CHECK_EQ(v.stats().draws, drawsNoWater + 1);
+    const std::string waterPath = std::string(tmp) + "cm_world_view_water.bmp";
+    CHECK(v.save_screenshot(waterPath.c_str()));
+    const long water = count_not_clear(waterPath);
+    std::printf("      smoke: with water %ld px not the clear colour (%s)\n", water, waterPath.c_str());
+    CHECK(water > on);
+    CHECK_FALSE(v.device_lost());
+
+    // A new world drops the loaded models.
+    v.set_world(props_scene());
+    CHECK_EQ(v.stats().modelsLoaded, 0);
+    v.set_layer(WorldLayer::Water, false);
+    v.render(cam);
+    CHECK_EQ(v.stats().visible, 0);
 }

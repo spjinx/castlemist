@@ -10,13 +10,19 @@
 
 #include <windows.h>
 
+#include <cstdint>
 #include <memory>
+#include <utility>
+#include <vector>
 
 #include "castlemist/world/world_scene.h"
+
+struct ModelPreview;   // castlemist/extract/model_types.h
 
 namespace castlemist::render {
 
 /// @brief What the view can draw; each can be toggled with WorldView::set_layer.
+///        Collision is off after create(); the rest are on.
 enum class WorldLayer { Terrain = 0, Props, Collision, Water, Count };
 
 /// @brief A free camera in map space (up = -Z). `fwd` and `up` need not be
@@ -31,9 +37,12 @@ struct WorldCamera {
 
 /// @brief Last frame's numbers, for a status bar.
 struct WorldViewStats {
-    int visible = 0, draws = 0, ktris = 0;   ///< items drawn, draw calls, triangles (thousands)
+    /// items drawn (terrain chunks + prop and collision instances + the water
+    /// plane), draw calls, triangles (thousands)
+    int visible = 0, draws = 0, ktris = 0;
     float ms = 0;                            ///< CPU time of the last render()
-    int modelsLoaded = 0, modelsFailed = 0, chunks = 0;   ///< chunks = terrain chunks uploaded
+    /// Models uploaded / rejected by add_models since set_world; chunks = terrain chunks uploaded.
+    int modelsLoaded = 0, modelsFailed = 0, chunks = 0;
 };
 
 /// @brief Draws one WorldScene into one window.
@@ -50,13 +59,23 @@ public:
     bool create(HWND surface);
     /// @brief Resizes the swap chain and depth buffer (no-op for w or h <= 0).
     void resize(int w, int h);
-    /// @brief Uploads the scene's terrain (one vertex buffer per chunk) and
-    ///        lighting. Replaces anything set before. Needs a created view
-    ///        (before create() no chunk is uploaded).
+    /// @brief Uploads the scene's terrain (one vertex buffer per chunk),
+    ///        collision meshes, water plane and lighting, and records every
+    ///        prop instance. Replaces anything set before, loaded models
+    ///        included. Needs a created view (before create() nothing is
+    ///        uploaded).
     void set_world(const castlemist::world::WorldScene& s);
+    /// @brief Uploads streamed prop models: each pair is (index into the
+    ///        scene's `models`, its decoded preview). Instances of a model are
+    ///        drawn once it has arrived. A null, out-of-range, empty or
+    ///        non-finite model counts as failed; a model already added
+    ///        (loaded or failed) is ignored. Does nothing before create() or
+    ///        while device_lost(). The CPU half runs across cores; call it on
+    ///        the thread that renders. The previews are kept (for picking).
+    void add_models(const std::vector<std::pair<uint32_t, std::shared_ptr<const ModelPreview>>>& batch);
     /// @brief Culls, draws and presents one frame.
     void render(const WorldCamera& cam);
-    /// @brief Shows or hides one layer (all are on after create()).
+    /// @brief Shows or hides one layer (all but Collision are on after create()).
     void set_layer(WorldLayer l, bool on);
     /// @brief Whether layer @p l is shown.
     bool layer(WorldLayer l) const;
@@ -70,7 +89,8 @@ public:
     /// @brief Writes the last frame (re-drawn with the last camera) as a
     ///        24-bit BMP. False with no device, no frame yet, or on I/O failure.
     bool save_screenshot(const char* bmpPath);
-    /// @brief A camera that frames the whole map from above, and a fly speed
+    /// @brief A camera that frames the whole map (terrain, bounds and prop
+    ///        positions) from above, and a fly speed
     ///        hint (map units per second) when @p speedHint is non-null.
     WorldCamera frame_all(float* speedHint) const;
 
