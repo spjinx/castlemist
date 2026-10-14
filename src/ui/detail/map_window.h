@@ -71,4 +71,8 @@ struct MapWinHeadless {
 ///        handle on the same path. @p headless is copied.
 void open_map_window(HWND owner, uint32_t mapFileId, const MapWinHeadless* headless = nullptr);
 
+/// @brief Tools > Map Window...: asks for a map fileId (default: the selected
+///        entry's fileId when it is a map) and opens the window on it.
+void prompt_map_window(HWND owner);
+
 } // namespace castlemist::ui

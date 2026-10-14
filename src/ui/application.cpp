@@ -11,6 +11,7 @@
 ///     process exits silently after ~2 seconds with no window and no WER event.
 
 #include "detail/app_state.h"
+#include "detail/map_window.h"
 
 #include <ole2.h>
 
@@ -20,6 +21,7 @@
 #include "castlemist/ui/application.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstdio>
 #include <cwchar>
 #include <thread>
@@ -776,16 +778,53 @@ int run(HINSTANCE hInstance, int cmd_show) {
         }
     }
 
+    // Debug: GW2_MAPWIN=<map fileId> loads the dat (GW2_DAT, as GW2_AUTOLOAD)
+    // and opens the Map window on that map. The window itself waits until
+    // every model is loaded or failed (at most 600 s), renders one 1280x720
+    // frame to GW2_MAPWIN_SHOT (default shot_mapwin.bmp), writes one stats
+    // line to mapwin.txt and closes the app. Everything runs through the
+    // normal message loop below; nothing here blocks the UI thread.
+    const bool mapwin_hook = std::getenv("GW2_MAPWIN") != nullptr;
+    if (mapwin_hook) {
+        const char* mw = std::getenv("GW2_MAPWIN");
+        MapWinHeadless h;
+        const char* shot = std::getenv("GW2_MAPWIN_SHOT");
+        h.shotPath = shot && *shot ? shot : dump_path("shot_mapwin.bmp");
+        h.statsPath = dump_path("mapwin.txt");
+        h.quitWindow = hwnd;
+        try {
+            if (!g_app->dat_loaded) {
+                const char* dat_env = std::getenv("GW2_DAT");
+                load_dat_file(g_app->data_gw2,
+                              dat_env && *dat_env
+                                  ? dat_env
+                                  : "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Guild Wars 2\\Gw2.dat");
+                g_app->dat_loaded = true;
+            }
+            open_map_window(hwnd, static_cast<uint32_t>(std::strtoul(mw, nullptr, 10)), &h);
+        } catch (const std::exception& ex) {
+            if (FILE* f = std::fopen(h.statsPath.c_str(), "wb")) {
+                std::fprintf(f, "map=%s ok=0 error=\"dat: %s\"\n", mw, ex.what());
+                std::fclose(f);
+            }
+            PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        }
+    }
+
     // Best-effort: open the index under dumps/index/ so the browser comes up
     // already indexed against the latest Gw2.dat build (File > Open Index DB
     // overrides). Runs here -- after the window is shown and past the headless
     // GW2_* self-test hooks (which return early) -- rather than in WM_CREATE, so
     // its synchronous .dat MFT load can't abort window creation and doesn't
     // interfere with the debug hooks. Exceptions are contained.
-    try {
-        try_autoload_index(hwnd);
-    } catch (const std::exception&) {
-        // Fall back to manual File > Open Index DB; the app still runs.
+    // (Not under GW2_MAPWIN: its synchronous dat load would only delay the
+    // headless run, which needs nothing from the index.)
+    if (!mapwin_hook) {
+        try {
+            try_autoload_index(hwnd);
+        } catch (const std::exception&) {
+            // Fall back to manual File > Open Index DB; the app still runs.
+        }
     }
     request_data_status_refresh();
 

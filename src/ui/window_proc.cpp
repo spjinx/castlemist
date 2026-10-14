@@ -2,6 +2,7 @@
 /// @brief The menu bar and the three window procedures.
 
 #include "detail/app_state.h"
+#include "detail/map_window.h"
 
 #include "castlemist/core/text.h"
 
@@ -50,6 +51,7 @@ HMENU build_menu() {
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DOWNLOAD_NAMES, L"Download all game &names (GW2 API)");
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DECODE_TOKEN,
                 L"Decode &Token / Filename Bytes...");
+    AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_MAP_WINDOW, L"&Map Window... (fly / walk a map)");
     AppendMenuW(tools_menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DATA_STATUS, L"Data &status... (is everything current?)");
 
@@ -1258,6 +1260,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             return 0;
         case ID_TOOLS_DATA_STATUS:
             open_data_status_dialog(hwnd);
+            return 0;
+        case ID_TOOLS_MAP_WINDOW:
+            prompt_map_window(hwnd);
             return 0;
         case ID_DATA_BADGE:
             if (HIWORD(wparam) == STN_CLICKED) open_data_status_dialog(hwnd);

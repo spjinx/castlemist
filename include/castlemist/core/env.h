@@ -24,6 +24,8 @@ namespace castlemist::core {
 /// | `GW2_GAMESHOT=1`         | with AUTOLOAD, also screenshot the "Game 1:1" view |
 /// | `GW2_DYES=id/mat,...`    | with AUTOLOAD, re-dye armor channels in place, screenshot |
 /// | `GW2_SCENE=<baseId>`     | load a map/scene instead of a single model |
+/// | `GW2_MAPWIN=<fileId>`    | open the Map window on that map; when every model is in (max 600 s), save a 1280x720 shot, log `mapwin.txt`, quit |
+/// | `GW2_MAPWIN_SHOT=<bmp>`  | with MAPWIN, where the shot goes (default `shot_mapwin.bmp` in the dump dir) |
 /// | `GW2_SCENEGAME=1`        | force game-shader materials on the loaded scene |
 /// | `GW2_AUDIOTEST=<mftIdx>` | probe/play an audio entry, log `audiotest.txt` |
 /// | `GW2_VIDEOTEST=<mftIdx>` | open a Bink entry and dump frame info |
