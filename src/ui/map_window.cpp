@@ -207,7 +207,6 @@ struct MapWin {
     std::vector<std::pair<uint32_t, std::shared_ptr<const ModelPreview>>> models;
     size_t modelsArrived = 0;
     int workers = 0, workersDone = 0;
-    std::string workerError;
 
     FlyState fly;
     float fovY = 1.15f, farDist = 40000;
@@ -461,7 +460,7 @@ void on_world(MapWin& m, std::unique_ptr<MapWinWorldMsg> r) {
     mapwin_start_collision(m.wnd, m.gen, m.scene);
     if (!m.scene->models.empty()) {
         std::vector<uint32_t> order = castlemist::world::model_load_order(*m.scene, m.fly.pos);
-        m.workers = mapwin_start_models(m.wnd, m.gen, m.datPath, m.scene, std::move(order));
+        m.workers = mapwin_start_models(m.wnd, m.gen, std::move(r->dat), m.scene, std::move(order));
     }
     m.dirty = true;
     update_status(m);
@@ -490,7 +489,6 @@ void on_models(MapWin& m, std::unique_ptr<MapWinModelsMsg> r) {
         for (auto& p : r->batch) m.models.push_back(std::move(p));
         m.dirty = true;
     }
-    if (!r->workerError.empty()) m.workerError = r->workerError;
     if (r->workerDone) ++m.workersDone;
     if (m.scene && (m.modelsArrived >= models_total(m) || (m.workers && m.workersDone >= m.workers))) {
         if (m.modelsSeconds == 0)
@@ -500,7 +498,6 @@ void on_models(MapWin& m, std::unique_ptr<MapWinModelsMsg> r) {
         swprintf(buf, 256, L"Map %u: %d models loaded, %d failed (models %.1f s after the world)", m.mapFileId,
                  st.modelsLoaded, st.modelsFailed, m.modelsSeconds);
         m.stage = buf;
-        if (!m.workerError.empty()) m.stage += L"; a worker could not open the dat: " + widen(m.workerError);
     }
     maybe_capture(m);
 }

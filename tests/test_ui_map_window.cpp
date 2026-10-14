@@ -159,12 +159,12 @@ CM_TEST(map_window, input_maps_movement_keys) {
     CHECK_EQ(map_win_key('X'), -1);
 }
 
-CM_TEST(map_window, pool_size_is_capped) {
+CM_TEST(map_window, pool_size_is_hw_minus_one) {
     CHECK_EQ(mapwin_pool_size(0), 1);    // hardware_concurrency() may report 0
     CHECK_EQ(mapwin_pool_size(1), 1);
     CHECK_EQ(mapwin_pool_size(2), 1);
     CHECK_EQ(mapwin_pool_size(9), 8);
-    CHECK_EQ(mapwin_pool_size(32), 8);
+    CHECK_EQ(mapwin_pool_size(32), 31);
 }
 
 CM_TEST(map_window, wait_workers_with_none_running) {

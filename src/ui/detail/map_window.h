@@ -67,8 +67,9 @@ struct MapWinHeadless {
 };
 
 /// @brief Opens the Map window on @p mapFileId (closing one already open).
-///        Needs a loaded dat (g_app->data_gw2); each worker opens its own
-///        handle on the same path. @p headless is copied.
+///        Needs a loaded dat (g_app->data_gw2); the loader parses its own
+///        copy from the same path, which the model pool then shares.
+///        @p headless is copied.
 void open_map_window(HWND owner, uint32_t mapFileId, const MapWinHeadless* headless = nullptr);
 
 /// @brief Tools > Map Window...: asks for a map fileId (default: the selected

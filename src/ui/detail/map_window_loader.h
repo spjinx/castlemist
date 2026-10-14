@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "castlemist/native/gw2dat.h"
 #include "castlemist/world/walk.h"
 #include "castlemist/world/world_scene.h"
 
@@ -37,7 +38,8 @@ uint64_t mapwin_generation();
 uint64_t mapwin_next_generation();
 
 /// @brief Model pool workers for @p hw hardware threads:
-///        min(max(1, hw - 1), 8). Each worker holds its own dat index.
+///        max(1, hw - 1). The workers share one parsed dat, so the count
+///        does not multiply its index.
 int mapwin_pool_size(unsigned hw);
 
 /// @brief Waits up to @p ms for every Map window thread to finish (call after
@@ -55,6 +57,7 @@ struct MapWinWorldMsg {
     std::shared_ptr<const castlemist::world::WorldScene> scene;   ///< null on error
     std::string error;
     double seconds = 0;   ///< dat open + load_world
+    std::shared_ptr<Gw2Dat> dat;   ///< the parsed dat the world came from, for the model pool (read-only)
 };
 
 /// @brief WM_APP_MAPWIN_COLLISION: the walk index of the scene.
@@ -71,7 +74,6 @@ struct MapWinModelsMsg {
     uint64_t gen = 0;
     std::vector<std::pair<uint32_t, std::shared_ptr<const ModelPreview>>> batch;
     bool workerDone = false;
-    std::string workerError;   ///< set when the worker could not open the dat
 };
 
 /// @brief Opens a Gw2Dat on @p datPath and runs load_world on @p mapFileId
@@ -83,10 +85,10 @@ void mapwin_start_world(HWND wnd, uint64_t gen, std::string datPath, uint32_t ma
 void mapwin_start_collision(HWND wnd, uint64_t gen, std::shared_ptr<const castlemist::world::WorldScene> scene);
 
 /// @brief Starts the model pool: mapwin_pool_size(hardware_concurrency) workers,
-///        each with its own Gw2Dat, take models from @p order through one
+///        sharing the one parsed, read-only @p dat, take models from @p order through one
 ///        shared cursor and post batches of up to 32 or every 250 ms.
 /// @return the number of workers started (each posts workerDone once).
-int mapwin_start_models(HWND wnd, uint64_t gen, std::string datPath,
+int mapwin_start_models(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat,
                         std::shared_ptr<const castlemist::world::WorldScene> scene, std::vector<uint32_t> order);
 
 } // namespace castlemist::ui

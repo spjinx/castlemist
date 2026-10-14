@@ -54,10 +54,11 @@ uint64_t mapwin_generation() { return g_gen.load(); }
 uint64_t mapwin_next_generation() { return ++g_gen; }
 
 int mapwin_pool_size(unsigned hw) {
-    // Each worker opens its own Gw2Dat, and each copy of the MFT index is
-    // ~50-70 MB: 31 workers held 1.5-2 GB for nothing. Prop loading is bound
-    // by decoding, not by I/O, and 8 workers already saturate it.
-    return std::min(std::max(1, static_cast<int>(hw) - 1), 8);
+    // Every worker shares the one parsed dat (mapwin_start_models), so the
+    // thread count no longer multiplies the ~50-70 MB MFT index. Loading
+    // still scales past 8 threads (1151420: 68 s with 31 workers, 114 s
+    // with 8), so no cap.
+    return std::max(1, static_cast<int>(hw) - 1);
 }
 
 void mapwin_free_payload(UINT msg, LPARAM lparam) {
@@ -87,12 +88,13 @@ void mapwin_start_world(HWND wnd, uint64_t gen, std::string datPath, uint32_t ma
         try {
             auto tpl = castlemist::tpl::get_or_auto_load();
             if (!tpl) throw std::runtime_error("no struct template (gw2_packfile.json) found; File > Load Struct JSON...");
-            Gw2Dat dat;
-            load_dat_file(dat, datPath);
+            auto dat = std::make_shared<Gw2Dat>();
+            load_dat_file(*dat, datPath);
             if (cancelled(gen)) { delete r; return; }
             auto scene = std::make_shared<castlemist::world::WorldScene>(
-                castlemist::world::load_world(dat, mapFileId, *tpl));
+                castlemist::world::load_world(*dat, mapFileId, *tpl));
             r->scene = std::move(scene);
+            r->dat = std::move(dat);   // handed on to the model pool, read-only from here
         } catch (const std::exception& e) {
             r->error = e.what();
         } catch (...) {
@@ -121,27 +123,27 @@ void mapwin_start_collision(HWND wnd, uint64_t gen, std::shared_ptr<const castle
     }).detach();
 }
 
-int mapwin_start_models(HWND wnd, uint64_t gen, std::string datPath,
+int mapwin_start_models(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat,
                         std::shared_ptr<const castlemist::world::WorldScene> scene, std::vector<uint32_t> order) {
+    // One parsed dat for every worker, as build_map_scene does
+    // (src/extract/map_scene.cpp, "Load the unique models IN PARALLEL"):
+    // load_dat_file closes the dat's own stream, read_entry_bytes opens a
+    // file handle per read, and the lookups load_model_by_fileid makes
+    // (get_by_base_id, get_by_file_id, the texture pair resolution) only read
+    // the MFT tables. The template is shared behind tpl's mutex; the only
+    // mutable static on the texture path is the atomic full-res flag.
+    // Workers hold the shared_ptr, so the dat outlives the window while any
+    // of them still runs.
     const int workers = mapwin_pool_size(std::thread::hardware_concurrency());
     auto cursor = std::make_shared<std::atomic<size_t>>(0);
     auto list = std::make_shared<const std::vector<uint32_t>>(std::move(order));
     for (int w = 0; w < workers; ++w) {
-        std::thread([wnd, gen, datPath, scene, cursor, list]() {
+        std::thread([wnd, gen, dat, scene, cursor, list]() {
             LiveThread live;
             constexpr size_t kBatch = 32;
             constexpr auto kInterval = std::chrono::milliseconds(250);
             auto* batch = new MapWinModelsMsg;
             batch->gen = gen;
-            Gw2Dat dat;
-            try {
-                load_dat_file(dat, datPath);
-            } catch (const std::exception& e) {
-                batch->workerDone = true;
-                batch->workerError = e.what();
-                post(wnd, WM_APP_MAPWIN_MODELS, gen, batch);
-                return;
-            }
             auto lastPost = Clock::now();
             while (!cancelled(gen)) {
                 const size_t i = cursor->fetch_add(1);
@@ -151,7 +153,7 @@ int mapwin_start_models(HWND wnd, uint64_t gen, std::string datPath,
                 if (mi < scene->models.size()) {
                     try {
                         std::shared_ptr<ModelPreview> m =
-                            load_model_by_fileid(dat, scene->models[mi].fileId, /*want_game=*/false);
+                            load_model_by_fileid(*dat, scene->models[mi].fileId, /*want_game=*/false);
                         if (m) {
                             // The map view draws geometry only (textures are
                             // sub-project 3); drop the decoded pixels and clips
