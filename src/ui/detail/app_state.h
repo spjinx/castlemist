@@ -83,6 +83,7 @@ constexpr UINT_PTR ID_TOOLS_CHARACTER = 1019;      // Character Ripper (GW2 API)
 constexpr UINT_PTR ID_TOOLS_DOWNLOAD_NAMES = 1020; // fetch every game name into content_names.tsv
 constexpr UINT_PTR ID_TOOLS_DECODE_TOKEN = 1015;   // token/filename-bytes decoder popup
 constexpr UINT_PTR ID_TOOLS_DATA_STATUS = 1021;    // Data status window: is every export input current?
+constexpr UINT_PTR ID_TOOLS_MAP_WINDOW = 1022;     // Map Window: fly/walk one map (ui/map_window.cpp)
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL = 1016; // Export glTF... (single model, plain decoded textures)
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MAP = 1017;   // Export glTF... (whole map scene)
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL_ATLAS = 1018; // Export glTF... (single model, baked to a fresh UV atlas)
@@ -311,6 +312,22 @@ constexpr UINT_PTR ID_DS_FIX = 2202;
 constexpr UINT_PTR ID_DS_KEYS = 2203;
 constexpr UINT_PTR ID_DS_REFRESH = 2204;
 constexpr UINT_PTR ID_DS_CLOSE = 2205;
+// Map window (map_window.cpp): its toolbar, surface, status line and warnings panel.
+constexpr UINT_PTR ID_MW_WALK = 2210;
+constexpr UINT_PTR ID_MW_FLY = 2211;
+constexpr UINT_PTR ID_MW_TERRAIN = 2212;
+constexpr UINT_PTR ID_MW_PROPS = 2213;
+constexpr UINT_PTR ID_MW_COLLISION = 2214;
+constexpr UINT_PTR ID_MW_WATER = 2215;
+constexpr UINT_PTR ID_MW_RESET = 2216;
+constexpr UINT_PTR ID_MW_WARNINGS = 2217;
+constexpr int ID_MW_SURFACE = 2218;
+constexpr int ID_MW_STATUS = 2219;
+constexpr int ID_MW_WARN_EDIT = 2220;
+/// Map window timers (on the map window, not the main one): the 16 ms frame
+/// pump and the ~4 Hz status line.
+constexpr UINT_PTR TIMER_MW_FRAME = 6;
+constexpr UINT_PTR TIMER_MW_STATUS = 7;
 /// Re-checks the dat on disk now and then, so a patch applied while castlemist
 /// is open shows up without a click.
 constexpr UINT_PTR TIMER_DATA_STATUS = 5;
@@ -348,6 +365,12 @@ constexpr UINT WM_APP_SKYBOX_EXPORT_DONE = WM_APP + 17;
 constexpr UINT WM_APP_DATA_STATUS_REFRESH = WM_APP + 18;
 /// The checks finished; lparam = heap std::vector<DataRow>*, owned by the handler.
 constexpr UINT WM_APP_DATA_STATUS_DONE = WM_APP + 19;
+/// Map window worker results. lparam is a heap payload the map window takes
+/// ownership of (map_window.cpp); each carries the window generation and is
+/// dropped when it no longer matches.
+constexpr UINT WM_APP_MAPWIN_WORLD = WM_APP + 20;
+constexpr UINT WM_APP_MAPWIN_MODELS = WM_APP + 21;
+constexpr UINT WM_APP_MAPWIN_COLLISION = WM_APP + 22;
 
 enum class MiddleTab { Compressed = 0, Decompressed = 1, Structure = 2, Preview = 3 };
 

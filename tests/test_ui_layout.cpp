@@ -126,6 +126,19 @@ const Id kIds[] = {
     {"ID_DS_REFRESH", ID_DS_REFRESH},
     {"ID_DS_CLOSE", ID_DS_CLOSE},
     {"ID_PROGRESS", ID_PROGRESS},
+
+    {"ID_TOOLS_MAP_WINDOW", ID_TOOLS_MAP_WINDOW},
+    {"ID_MW_WALK", ID_MW_WALK},
+    {"ID_MW_FLY", ID_MW_FLY},
+    {"ID_MW_TERRAIN", ID_MW_TERRAIN},
+    {"ID_MW_PROPS", ID_MW_PROPS},
+    {"ID_MW_COLLISION", ID_MW_COLLISION},
+    {"ID_MW_WATER", ID_MW_WATER},
+    {"ID_MW_RESET", ID_MW_RESET},
+    {"ID_MW_WARNINGS", ID_MW_WARNINGS},
+    {"ID_MW_SURFACE", ID_MW_SURFACE},
+    {"ID_MW_STATUS", ID_MW_STATUS},
+    {"ID_MW_WARN_EDIT", ID_MW_WARN_EDIT},
 };
 
 } // namespace
@@ -162,6 +175,7 @@ CM_TEST(timers, have_distinct_ids) {
     CHECK_NE(TIMER_ANIM, TIMER_AUDIO);
     CHECK_NE(TIMER_ANIM, TIMER_VIDEO);
     CHECK_NE(TIMER_AUDIO, TIMER_VIDEO);
+    CHECK_NE(TIMER_MW_FRAME, TIMER_MW_STATUS);
 }
 
 // The two WM_APP messages carry different payload contracts; sharing a value
@@ -170,6 +184,14 @@ CM_TEST(app_messages, are_distinct_and_above_wm_app) {
     CHECK(WM_APP_EXTRACT_DONE >= WM_APP);
     CHECK(WM_APP_CMAP_DONE >= WM_APP);
     CHECK_NE(WM_APP_EXTRACT_DONE, WM_APP_CMAP_DONE);
+    const UINT mapwin[] = {WM_APP_MAPWIN_WORLD, WM_APP_MAPWIN_MODELS, WM_APP_MAPWIN_COLLISION};
+    for (UINT m : mapwin) {
+        CHECK(m > WM_APP_DATA_STATUS_DONE);   // above every message the main window uses
+        CHECK(m != WM_APP + 10 && m != WM_APP + 12);   // look_dialog's own
+    }
+    CHECK_NE(WM_APP_MAPWIN_WORLD, WM_APP_MAPWIN_MODELS);
+    CHECK_NE(WM_APP_MAPWIN_MODELS, WM_APP_MAPWIN_COLLISION);
+    CHECK_NE(WM_APP_MAPWIN_WORLD, WM_APP_MAPWIN_COLLISION);
 }
 
 CM_TEST(layout_metrics, are_positive_and_self_consistent) {
