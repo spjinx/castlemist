@@ -28,10 +28,11 @@ One executable per layer, so a failure names the layer immediately and a
 | `format` | DDS header and pitch, chat-link decoding, strs framing |
 | `db` | The index SQL, on a fixture DB **and** on the real index |
 | `extract` | Signature sniffing, content classification, summary parsers, `parallel_for` |
-| `render` | Row-vector matrix convention, projection, quaternion pose maths |
+| `render` | Row-vector matrix convention, projection, quaternion pose maths; `world_view`: camera matrices, pixel rays, prop upload and pick triangles, and a WARP-device render of terrain, streamed props, collision and water |
 | `sim` | Cloth pinning, clamping, and that anchors never drift |
 | `media` | Audio/video probe and reject paths |
-| `ui` | Control-id uniqueness, timer and message ids, theme brush caching |
+| `ui` | Control-id uniqueness, timer and message ids, theme brush caching; `map_window`: fly-camera and walk-delta maths, key map, model-pool size |
+| `world` | `world_walk`: `CollisionIndex` raycasts and the `Walker` (settle, wall slide, step-up, ledge fall, jump, fall safety, ceiling, swept fall); `world_stream`: `model_load_order` and `chunk_normals` |
 | `dat` | End-to-end extraction against a real `Gw2.dat` |
 
 ### The framework
@@ -89,6 +90,30 @@ Others, same shape: `GW2_GIZMOTEST=1` exercises gizmo hit-testing,
 GW2_SCENEGAME=1` loads a map with the game's own shaders, `GW2_AUDIOTEST=2861`
 probes and plays an entry into `audiotest.txt`, and
 `GW2_PARSETEST=118599,119671` runs the summary parsers into `parsetest.txt`.
+
+### The Map window
+
+`GW2_MAPWIN=<map fileId>` loads the dat (`GW2_DAT`, as `GW2_AUTOLOAD`), opens
+the Map window on that map, waits until every model is loaded or has failed (at
+most 600 s), renders one 1280x720 frame, writes one stats line to `mapwin.txt`
+in the dump directory, and quits. `GW2_MAPWIN_SHOT=<bmp>` picks where the frame
+goes (default `shot_mapwin.bmp` in the dump directory).
+
+```bash
+GW2_DAT="E:\Games\gw2\Guild Wars 2\Gw2.dat" GW2_DUMP_DIR=dumps/mapwin \nGW2_MAPWIN=192711 GW2_MAPWIN_SHOT=dumps/mapwin/queensdale.bmp \n  ./build/debug/bin/castlemist.exe
+```
+
+The struct template is found by climbing from the exe's directory (up to the
+repository's `dumps/packfile/`) and from the working directory, so run it from
+the repository root or leave the build tree in place.
+
+Loading dominates the run. Measured totals (world + collision + all models):
+Queensdale (192711) about 163 s, Lion's Arch (191000) about 183 s, Spirit Vale
+(1151420) about 65 s. Each prop's dat lookup is a linear MFT scan and its
+textures are decoded and then discarded, so props stream in slowly; sub-project
+3's texture cache is the natural fix. Interactive input (fly, walk, pick, the
+layer toggles, the prompt) has only been exercised by this capture and the unit
+tests, not driven by hand.
 
 Lighting and tone-mapping knobs (`GW2_LIGHT`, `GW2_POSTEXP`, `GW2_POSTGAMMA`,
 `GW2_AUTOEXP`, ...) are for eyeballing a change, not for assertions.

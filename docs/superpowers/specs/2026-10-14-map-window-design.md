@@ -185,3 +185,44 @@ listed in a read-only panel (toggle).
 
 Textures and game materials (sub-project 3), animated props (3), export (4),
 removing the old map path (after 3).
+
+## Amendments (2026-10-14, after implementation)
+
+What shipped differs from the text above in these points. The text above is
+left as written; this list wins where they disagree.
+
+- **Ground ray starts at the eye (R6).** `Walker` casts down from the eye, not
+  from `eyeHeight` above it, with length `2 * eyeHeight` plus the frame's fall.
+  Surfaces above the head are never ground. This deviates from T3D's
+  `findGroundY` on purpose: T3D would teleport the walker onto a ceiling.
+- **Walker additions.** The ground check is swept (from the higher of the old
+  and new eye, so a fast fall cannot skip the floor), runs only while vertical
+  velocity is <= 0, and the fall speed is clamped to `maxFall`.
+- **Collision upload is lazy (R8).** Collision GPU buffers upload on the first
+  Collision-layer enable (or first render with it on), not in `set_world`. The
+  CPU copy is released afterwards; `WorldViewStats::collisionMeshes` is 0 until
+  then.
+- **Water plane without a parm rect (R9).** With `water.hasPlane` but no
+  `hasBounds`, the plane covers the scene extent.
+- **Model loader (R13).** All model workers share one parsed, read-only
+  `Gw2Dat` (the world loader's), instead of one handle each. The pool is
+  `max(1, hardware_concurrency - 1)`, uncapped.
+- **Framing (R7).** `frame_all`'s extent includes prop translations, so a map
+  with no terrain frames its props.
+- **Walk speed.** Walk has its own speed (300 units/s to start, wheel-adjusted
+  in [20, 20000]), not the fly speed.
+- **No toolbar button.** There is no "Map Window" button in the main window.
+  Only **Tools > Map Window...** opens it, defaulting to the selected map entry.
+- **`WM_APP_MAPWIN_COLLISION`.** An extra message (`WM_APP + 22`) delivers the
+  collision index, built off the UI thread after the world arrives, so Walk
+  becomes available when it lands.
+- **Device recovery.** `WorldView::device_lost()` reports a removed device; the
+  window recreates the view and re-adds the loaded models.
+- **`pick()` returns the `scene.props` index** (`InstCPU::source`), not a
+  per-view instance number.
+- **Load-time gap.** Props stream in over 60-175 s per map. Each lookup is a
+  linear MFT scan and textures are decoded then discarded. Recorded as a
+  follow-up; sub-project 3's texture cache is the natural fix.
+- **Not tried by hand.** Interactive input (fly, walk, pick, layer toggles, the
+  prompt) has only been exercised by the headless capture and the unit tests,
+  not driven by hand.

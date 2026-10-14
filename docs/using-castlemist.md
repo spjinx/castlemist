@@ -115,6 +115,7 @@ copy any of it.
 | Character Ripper... | fetch and export your characters (getting-started §8) |
 | Download all game names | fetch every name at once (getting-started §7) |
 | Decode Token / Filename Bytes... | decode the game's packed token and filename values (research aid) |
+| Map Window... | open a map in its own window to fly over or walk on (see below) |
 | Data status... | whether each file an export reads is current for the open Gw2.dat (see below) |
 
 #### Data status
@@ -138,6 +139,64 @@ and a fix button:
 what a file was built from, usually because it predates this check. Rebuilding
 it once stamps it. The stamps live in `data_stamps.json` beside the exe.
 The Character Ripper repeats any stale rows in its status line when it opens.
+
+#### Map Window
+
+A separate top-level window that loads a whole map (terrain, props, collision,
+water) and lets you fly over it or walk on it. It needs an open `.dat` and the
+struct template (`gw2_packfile.json`).
+
+**Opening it.** **Tools > Map Window...** asks for a map fileId and fills in the
+selected entry's when that entry is a map. There is no toolbar button in the
+main window. Only one Map window is open at a time; opening another replaces it.
+
+**Loading.** The terrain appears first. Props then stream in nearest-first from
+where the camera starts, on a pool of worker threads, so the view fills in
+around you. A full map takes a while (see "Load time" in
+[testing](testing.md#headless-hooks)); you can fly or walk the whole time.
+
+**Controls**
+
+| input | does |
+| ----- | ---- |
+| W A S D | move |
+| Q / E | down / up (fly only) |
+| Shift / Ctrl | fast (x6) / slow (x0.15) |
+| right-drag | look |
+| wheel | change speed (fly and walk each keep their own) |
+| Tab | switch walk / fly |
+| Space | jump (walk only) |
+| left-click | pick the prop under the cursor |
+| F, or **Reset** | frame the whole map from above |
+
+**Walk vs fly.** Fly is a free camera. Walk puts the camera at eye height on
+the ground, with gravity, jumping, sliding along walls and stepping up low
+ledges against the map's own collision, plus its terrain heightfield. Walk uses
+its own speed (300 map units per second to start), not the fly speed. Walk is
+available once the collision index has finished building; Tab says so in the
+status line if it is not, or if there is no ground under the camera (fly over
+the map first). A fall that goes too far returns you to the last safe ground.
+
+**Layers.** The **Terrain**, **Props**, **Collision** and **Water** check boxes
+show or hide each layer. Collision is off by default: it is the map's physics
+mesh, often about a million triangles, and uploads to the GPU only the first
+time you turn it on. The water is a single plane at the stored height.
+
+**Picking.** Left-click (without dragging) a prop to open its model in the main
+window's preview, with the usual Full / Shader / Game 1:1 views, dyes and
+exports. The status line says which prop and model fileId. Props that have not
+loaded yet, and hidden layers, cannot be picked.
+
+**Status line and warnings.** The bottom line shows the load stage, models
+loaded of total (and any that failed), then visible items, draw calls,
+kilotriangles, frame time in ms, position, mode and speed. The **Warnings**
+button toggles a panel listing everything `load_world` could not read (the
+same list `gw2dat_cli world` puts in its summary). A map that fails to load
+shows its error in the status line and leaves the window open.
+
+Props are drawn with simple shading (a hemisphere and sun light from the map's
+own lighting, ambient occlusion baked per model), not textures or the game's
+materials; terrain and water are likewise untextured.
 
 ### View
 

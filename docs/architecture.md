@@ -9,6 +9,7 @@ app       WinMain, 13 lines                                    (executable)
  +-- ui         window procs, layout, widgets, content browser, dialogs
       +-- render     Direct3D 11: image, model, map scene, gizmo, particles
       |    +-- sim        the GW2 cloth solver and its mesh bridge
+      |    +-- world      WorldScene, collision, walking, prop streaming
       +-- exportgltf  binary glTF (.glb) writer (models, maps, animation)
       +-- extract    MFT entry -> previewable payload (the format dispatcher)
       |    +-- media      audio (dr_mp3 / stb_vorbis) and Bink video
@@ -22,7 +23,12 @@ Each layer is one DLL in the development presets and one archive in the release
 presets; `CASTLEMIST_SHARED_LAYERS` picks. Nothing in the code depends on which,
 because symbols are exported wholesale rather than annotated.
 
-`sim` is the one edge that does not read like the picture: it sits beside
+`render` -> `world` is the map window's edge: `WorldView` draws a
+`castlemist::world::WorldScene` directly, and `world` itself sits on `extract`
+(it loads maps through the same packfile readers). Like `sim`, it is a
+sideways edge that the picture shows as a branch of `render`.
+
+`sim` is the other edge that does not read like the picture: it sits beside
 `render` but depends on `extract`, because the solver is fed a `ModelMeshCPU`
 straight out of model extraction. `exportgltf` sits beside it for the same
 reason: it turns a `ModelPreview`/`MapScene` into a binary glTF (`.glb`) file
@@ -123,6 +129,11 @@ the layer, declared next to the comments that explain it.
 | `gizmo.cpp` | the Blender-style transform gizmo and grid |
 | `scene.cpp` | map drawing, picking, the inset preview |
 | `model_renderer.cpp` | the single-model entry point and the orbit camera |
+| `world_view.cpp` | `WorldView`: the map window's own device, swap chain, terrain chunks, water, layers, picking |
+| `world_draw.cpp/.h` | `WorldView`'s instanced draw: per-instance culling, LOD and draw batches |
+| `world_props.cpp/.h` | streamed prop models: upload, per-model AO, instance lists, pick triangles |
+| `world_camera.cpp/.h` | `WorldCamera` -> view/projection matrices and the pixel-to-ray maths |
+| `detail/mesh_bake.h` | the AO baker, vertex flattener and frustum planes, shared by the fly view and `WorldView` |
 
 `detail/math.h` is row-major with a **row-vector** convention (`v * M`), matching
 `tools/viewer/gw2viewer.cpp` exactly so that castlemist's own shaders and the game's DXBC
@@ -131,12 +142,28 @@ shaders see byte-identical matrices. Translation lives in the matrix's last row.
 `detail/shaders.h` holds every HLSL source string, so a shader can be found and
 diffed without reading pipeline code.
 
+### world
+
+`castlemist::world`: one `WorldScene` per map (`load_world`), in map space
+(left-handed, +X east, +Y north, up = -Z). Besides the scene and its readers:
+
+- `walk.h` -- `CollisionIndex` (collision and terrain triangles in map space,
+  bucketed into an XY grid, with `raycast`) and `Walker`, the first-person
+  controller (gravity, jump, slide, step-up, fall safety). Pure: no GPU, no dat.
+- `stream.h` -- `model_load_order`, the nearest-instance-first order in which
+  the map window loads prop models.
+- `terrain_mesh.h` -- `chunk_normals`, seam-aware per-sample terrain normals.
+
 ### ui
 
 `castlemist::ui`, split by area of the window, sharing `src/ui/detail/app_state.h`:
 `theme`, `layout`, `listview_util`, `view_controls`, `audio_ui`, `video_ui`,
 `content_browser`, `preview`, `file_ops`, `chat_link_dialog`, `index_ui`,
-`window_proc`, `application`.
+`window_proc`, `application`, and `map_window` (with `map_window_loader` and
+`map_window_prompt`): the Map window, a separate top-level window with its own
+`WorldView`, worker threads and input handling. Its fly-camera and walk-delta
+maths are plain functions in `detail/map_window.h` so the `ui` suite can test
+them without a window.
 
 `AppState` is one struct because the window has one selected entry. The header
 also holds the control-id table, which a unit test checks for collisions —
