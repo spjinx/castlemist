@@ -93,8 +93,19 @@ struct ModelTextureCPU {
     bool hasCutout = false;
 };
 
+/// @brief One texture transform of a material, as stored (mirrors castlemist::model::MatTexTransform).
+struct ModelTexTransformCPU {
+    uint32_t flags = 0;
+    uint8_t  uvIndex = 0, columns = 0, rows = 0;
+    uint16_t count = 0;
+    float    fps = 0;
+    float    scroll[2] = {0, 0}, scrollFreq[2] = {0, 0}, scale[2] = {0, 0}, scaleFreq[2] = {0, 0};
+    float    rotate = 0, rotate2 = 0;
+};
+
 /// @brief A model material as the reconstruction renderer needs it.
 struct ModelMaterialCPU {
+    std::vector<ModelTexTransformCPU> texTransforms; ///< Copied as stored.
     uint32_t index = 0;                   ///< Material slot, matches ModelMeshCPU::materialIndex.
     float tint[4] = {1, 1, 1, 1};         ///< Flat colour multiplier.
     bool isEffect = false;                ///< Additive/translucent effect material.
@@ -480,6 +491,8 @@ struct ModelPreview {
     std::vector<castlemist::granny::Anim> animClips;   ///< Decoded clips (name, duration, tracks).
     /// @brief Parallel to @ref animClips: source fileId, 0 = this model's own bank.
     std::vector<uint32_t> animClipBank;
+    /// @brief Parallel to @ref animClips: the token64 of each decoded clip (animationTokens lists every clip).
+    std::vector<uint64_t> animClipTokens;
     /// @brief fileIds of the external animation banks this model imports.
     ///
     /// Populated whether or not the load succeeded, so a UI can show an

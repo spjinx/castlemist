@@ -170,6 +170,18 @@ std::vector<uint8_t> load_modl_bytes_by_fileid(Gw2Dat& dat, uint32_t fileId);
 std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& modl_bytes, Gw2Dat& dat,
                                                   const nlohmann::json& tpl, bool want_game = false);
 
+/// @brief As above, with full load options (decodeTextures=false keeps textures header-only).
+std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& modl_bytes, Gw2Dat& dat,
+                                                  const nlohmann::json& tpl, const ModelLoadOptions& opts);
+
+/// @brief Record `clips` on `out`: animationTokens gets every clip; animClips,
+///        animClipBank and animClipTokens get the ones `decode` returns valid.
+void append_decoded_clips(const std::vector<castlemist::model::AnimClip>& clips, ModelPreview& out,
+                          const std::function<castlemist::granny::Anim(const castlemist::model::AnimClip&)>& decode);
+
+/// @brief Header-only texture: fileId, baseId, size, fmt, mipCount, isNormal; `rgba` left empty.
+bool peek_texture_by_fileid(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out);
+
 /// @brief Overload that opens its own archive handle, for background threads with no shared Gw2Dat.
 std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& modl_bytes,
                                                   const std::string& dat_path,

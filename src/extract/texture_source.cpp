@@ -203,6 +203,27 @@ bool decode_texture_full_res(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out,
     return true;
 }
 
+bool peek_texture_by_fileid(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out) {
+    uint32_t base = get_by_base_id(dat, fileId);
+    if (base == 0 || base - 1 >= dat.mft_data_list.size()) return false;
+    std::vector<uint8_t> bytes;
+    if (!read_mft_atex_bytes(dat, base - 1, bytes)) return false;
+    try {
+        castlemist::atex::Texture t = castlemist::atex::parse(bytes.data(), bytes.size());
+        if (t.width <= 0 || t.height <= 0) return false;
+        out.fileId = fileId;
+        out.baseId = base;
+        out.width = t.width;
+        out.height = t.height;
+        out.fmt = t.fmt_name;
+        out.mipCount = static_cast<int>(t.mips.size());
+        out.isNormal = is_normal_format(t.fmt_name);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 bool decode_texture_by_fileid_res(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out, bool want_full) {
     uint32_t base = get_by_base_id(dat, fileId);
     if (base == 0 || base - 1 >= dat.mft_data_list.size()) {

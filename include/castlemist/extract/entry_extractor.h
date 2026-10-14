@@ -223,6 +223,17 @@ size_t texture_entry(Gw2Dat& dat, uint32_t file_id, bool full);
 ///        `want_game` = false skips the game (bgfx) shaders, as a map load does:
 ///        tracing them costs an AMAT walk per material.
 std::shared_ptr<ModelPreview> load_model_by_fileid(Gw2Dat& dat, uint32_t file_id, bool want_game = true);
+
+/// @brief How a model is loaded.
+struct ModelLoadOptions {
+    bool wantGame = true;       ///< Also trace the game (bgfx) shaders per material.
+    /// @brief false = header-only textures: fileId/baseId/size/format/mips/isNormal
+    ///        filled, `rgba` empty, decoded later by the caller (a capped cache).
+    bool decodeTextures = true;
+};
+
+/// @brief As the bool overload, with explicit options.
+std::shared_ptr<ModelPreview> load_model_by_fileid(Gw2Dat& dat, uint32_t file_id, const ModelLoadOptions& opts);
 bool texture_full_res();              ///< Current preference.
 /// @}
 
