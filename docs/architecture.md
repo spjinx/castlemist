@@ -151,7 +151,9 @@ diffed without reading pipeline code.
   bucketed into an XY grid, with `raycast`) and `Walker`, the first-person
   controller (gravity, jump, slide, step-up, fall safety). Pure: no GPU, no dat.
 - `stream.h` -- `model_load_order`, the nearest-instance-first order in which
-  the map window loads prop models.
+  the map window loads prop models; `rank_models`, the same rule over a subset;
+  and `ModelQueue`, the thread-safe remainder that the map window re-sorts
+  around the moving camera while its workers pop from the front.
 - `terrain_mesh.h` -- `chunk_normals`, seam-aware per-sample terrain normals.
 
 ### ui

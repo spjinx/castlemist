@@ -207,6 +207,25 @@ left as written; this list wins where they disagree.
 - **Model loader (R13).** All model workers share one parsed, read-only
   `Gw2Dat` (the world loader's), instead of one handle each. The pool is
   `max(1, hardware_concurrency - 1)`, uncapped.
+- **Streaming follows the live camera (final review).** The pool pops from a
+  `world::ModelQueue` (a mutex-guarded remainder, nearest first). The window
+  re-sorts the not-yet-taken models with `rank_models` (the rule of
+  `model_load_order`, applied to a subset) from the current camera, at most
+  once a second and only after the camera moved more than 500 map units. A
+  taken model never returns to the queue.
+- **The Map window is unowned (final review).** It is a top-level window with
+  no owner, so a pick's preview in the main window can come to the front and
+  minimising the main window leaves it alone. The main window destroys it
+  from its own `WM_DESTROY`.
+- **Exit while loading.** After the message loop, `run()` waits up to 3 s for
+  the Map window's threads. If one is still inside `load_world`, which cannot
+  be cancelled, the process ends with `ExitProcess` after flushing, without
+  static teardown.
+- **Headless waits for collision too.** The `GW2_MAPWIN` capture happens when
+  every model is in and the collision index has come back (or after 600 s).
+  The stats line also reports `add_models` time per batch on the UI thread
+  (`add_batches`, `add_ms_median`, `add_ms_max`). A headless window closed
+  before its capture writes an `ok=0` line saying so.
 - **Framing (R7).** `frame_all`'s extent includes prop translations, so a map
   with no terrain frames its props.
 - **Walk speed.** Walk has its own speed (300 units/s to start, wheel-adjusted

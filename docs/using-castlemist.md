@@ -149,9 +149,11 @@ struct template (`gw2_packfile.json`).
 **Opening it.** **Tools > Map Window...** asks for a map fileId and fills in the
 selected entry's when that entry is a map. There is no toolbar button in the
 main window. Only one Map window is open at a time; opening another replaces it.
+It is a separate desktop window (not kept above the main one), so clicking a
+prop brings its preview up in the main window in front of it.
 
 **Loading.** The terrain appears first. Props then stream in nearest-first from
-where the camera starts, on a pool of worker threads, so the view fills in
+wherever the camera is (the queue re-sorts as you move), on a pool of worker threads, so the view fills in
 around you. A full map takes about 1 to 3 minutes (measured totals are in
 [testing](testing.md#the-map-window)); you can fly or walk the whole time.
 

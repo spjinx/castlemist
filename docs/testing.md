@@ -32,7 +32,7 @@ One executable per layer, so a failure names the layer immediately and a
 | `sim` | Cloth pinning, clamping, and that anchors never drift |
 | `media` | Audio/video probe and reject paths |
 | `ui` | Control-id uniqueness, timer and message ids, theme brush caching; `map_window`: fly-camera and walk-delta maths, key map, model-pool size |
-| `world` | `world_walk`: `CollisionIndex` raycasts and the `Walker` (settle, wall slide, step-up, ledge fall, jump, fall safety, ceiling, swept fall); `world_stream`: `model_load_order` and `chunk_normals` |
+| `world` | `world_walk`: `CollisionIndex` raycasts and the `Walker` (settle, wall slide, step-up, ledge fall, jump, fall safety, ceiling, swept fall); `world_stream`: `model_load_order`, `rank_models`, `ModelQueue` (re-sorting around a new camera, never repeating a taken model) and `chunk_normals` |
 | `dat` | End-to-end extraction against a real `Gw2.dat` |
 
 ### The framework
@@ -94,9 +94,13 @@ probes and plays an entry into `audiotest.txt`, and
 ### The Map window
 
 `GW2_MAPWIN=<map fileId>` loads the dat (`GW2_DAT`, as `GW2_AUTOLOAD`), opens
-the Map window on that map, waits until every model is loaded or has failed (at
-most 600 s), renders one 1280x720 frame, writes one stats line to `mapwin.txt`
-in the dump directory, and quits. `GW2_MAPWIN_SHOT=<bmp>` picks where the frame
+the Map window on that map, waits until every model is loaded or has failed and
+the collision index is built (at most 600 s), renders one 1280x720 frame, writes
+one stats line to `mapwin.txt` in the dump directory, and quits. The line includes
+the UI-thread time of each `add_models` batch (`add_batches`, `add_ms_median`,
+`add_ms_max`). If the window is closed before the capture, the line says so
+with `ok=0`. The window is a normal desktop window: input given to it during the
+run (a key press, a drag) moves the camera that the capture uses. `GW2_MAPWIN_SHOT=<bmp>` picks where the frame
 goes (default `shot_mapwin.bmp` in the dump directory).
 
 The dump directory is not created for you; `dumps/mapwin` must already exist.
