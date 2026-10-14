@@ -107,6 +107,10 @@ std::vector<uint8_t> read_entry_bytes(const std::string& file_path, const MftDat
 std::vector<uint8_t> extract_compressed_data(Gw2Dat& data_gw2, uint32_t mft_index);
 
 std::vector<uint32_t> search_by_base_id(Gw2Dat& data_gw2, uint32_t base_id);
+// get_by_base_id / get_by_file_id binary-search the two lists, so they require
+// mft_file_id_data_list sorted by file_id and mft_base_id_data_list sorted by
+// base_id -- exactly how load_dat_file leaves them. Returns 0 / empty on a miss;
+// with repeated file_ids, get_by_base_id returns the first equal entry.
 uint32_t get_by_base_id(Gw2Dat& data_gw2, uint32_t file_id);
 std::vector<uint32_t> get_by_file_id(Gw2Dat& data_gw2, uint32_t base_id);
 std::vector<uint32_t> search_by_file_id(Gw2Dat& data_gw2, uint32_t file_id);

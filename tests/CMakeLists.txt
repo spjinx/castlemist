@@ -42,6 +42,7 @@ endfunction()
 
 castlemist_add_test(native
     SOURCES test_native_method0.cpp test_native_amat.cpp test_native_pose.cpp
+            test_native_dat_lookup.cpp
     DEPS    castlemist::native)
 
 castlemist_add_test(core
