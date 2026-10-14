@@ -229,6 +229,10 @@ struct ModelLoadOptions {
     bool wantGame = true;       ///< Also trace the game (bgfx) shaders per material.
     /// @brief false = header-only textures: fileId/baseId/size/format/mips/isNormal
     ///        filled, `rgba` empty, decoded later by the caller (a capped cache).
+    ///        With false, ModelTextureCPU::channels and hasCutout stay at their
+    ///        defaults (they are measured from pixels) and `rgba` stays empty.
+    ///        mipCount is exact for single-mip entries and otherwise the full chain
+    ///        count for the size (the mip table is not read).
     bool decodeTextures = true;
 };
 

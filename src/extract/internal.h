@@ -179,6 +179,18 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
 void append_decoded_clips(const std::vector<castlemist::model::AnimClip>& clips, ModelPreview& out,
                           const std::function<castlemist::granny::Anim(const castlemist::model::AnimClip&)>& decode);
 
+/// @brief What the first bytes of an (uncompressed) ATEX say.
+struct AtexHeader {
+    int width = 0, height = 0;
+    std::string fmt;            ///< Format label, as ModelTextureCPU::fmt.
+    uint32_t firstMipSize = 0;  ///< dataSize of mip 0 (0 when the prefix is too short for it).
+};
+/// @brief Parse width/height/format (+ mip 0 size) from at least 12 bytes. False on bad magic/fourCC.
+bool parse_atex_header(const uint8_t* data, size_t n, AtexHeader& out);
+/// @brief Mip count for an ATEX of `totalSize` decompressed bytes, from its header alone:
+///        1 when mip 0 fills the file, else the full chain down to 1x1.
+int estimate_mip_count(const AtexHeader& h, size_t totalSize);
+
 /// @brief Header-only texture: fileId, baseId, size, fmt, mipCount, isNormal; `rgba` left empty.
 bool peek_texture_by_fileid(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out);
 

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <fstream>
 #include <span>
 #include <string>
 
@@ -45,17 +46,80 @@ static bool read_mft_atex_bytes(Gw2Dat& dat, size_t i0, std::vector<uint8_t>& by
     }
 }
 
-// Peek an entry's ATEX dimensions + format from the header only (no pixel decode).
-static bool peek_mft_atex(Gw2Dat& dat, size_t i0, int& w, int& h, std::string& fmt) {
+bool parse_atex_header(const uint8_t* data, size_t n, AtexHeader& out) {
+    if (n < 12) return false;
+    uint8_t head[8];
+    std::memcpy(head, data, 8);
+    if (head[0] == 'C') head[0] = 'A';   // CTEX -> ATEX alias
+    static const char* MAG[] = {"ATEX", "ATTX", "ATEC", "ATEP", "ATEU", "ATET"};
+    bool ok = false;
+    for (auto* m : MAG) if (!std::memcmp(head, m, 4)) ok = true;
+    if (!ok) return false;
+    const int fe = castlemist::atex::fourcc_to_enum(head + 4);
+    if (fe < 0) return false;
+    out.fmt = castlemist::atex::format_name(fe);
+    out.width = data[8] | (data[9] << 8);
+    out.height = data[10] | (data[11] << 8);
+    out.firstMipSize = 0;
+    if (n >= 16) std::memcpy(&out.firstMipSize, data + 12, 4);
+    return out.width > 0 && out.height > 0;
+}
+
+int estimate_mip_count(const AtexHeader& h, size_t totalSize) {
+    if (h.firstMipSize >= 8 && static_cast<size_t>(12) + h.firstMipSize + 8 > totalSize) return 1;
+    int n = 1;
+    for (int m = std::max(h.width, h.height); m > 1; m >>= 1) ++n;
+    return n;
+}
+
+// Header of an entry's ATEX without reading or inflating the whole thing: the
+// first 0x10000 raw bytes only, and for compressed entries just the first few
+// output bytes of the bitstream (decompress_method0 stops at output_size). Any
+// failure falls back to the full read, so the answer never differs.
+static bool peek_mft_header(Gw2Dat& dat, size_t i0, AtexHeader& h, size_t* totalSize = nullptr) {
+    if (i0 >= dat.mft_data_list.size()) return false;
+    const MftData& e = dat.mft_data_list[i0];
+    try {
+        if (e.size > 8) {
+            const size_t want = std::min<size_t>(e.size, 0x10000);
+            std::vector<uint8_t> raw(want);
+            std::ifstream file(dat.file_info.file_path, std::ios::binary);
+            if (file.is_open()) {
+                file.seekg(static_cast<std::streamoff>(e.offset));
+                file.read(reinterpret_cast<char*>(raw.data()), static_cast<std::streamsize>(want));
+                if (file.gcount() == static_cast<std::streamsize>(want)) {
+                    std::vector<uint8_t> stripped = castlemist::cmp::strip_crc32(std::span<const uint8_t>(raw));
+                    std::vector<uint8_t> head;
+                    size_t total = 0;
+                    if (e.compression_flag == 0) {
+                        head = std::move(stripped);
+                        total = e.size - (e.size / 0x10000 + 1) * 4;
+                    } else if (stripped.size() >= 8) {
+                        total = stripped[4] | (stripped[5] << 8) | (stripped[6] << 16) | (static_cast<size_t>(stripped[7]) << 24);
+                        head = castlemist::cmp::decompress_method0(std::span<const uint8_t>(stripped).subspan(8),
+                                                                    std::min<size_t>(total, 16));
+                    }
+                    if (parse_atex_header(head.data(), head.size(), h)) {
+                        if (totalSize) *totalSize = total;
+                        return true;
+                    }
+                }
+            }
+        }
+    } catch (const std::exception&) { /* fall through to the full read */ }
     std::vector<uint8_t> bytes;
     if (!read_mft_atex_bytes(dat, i0, bytes)) return false;
-    try {
-        castlemist::atex::Texture t = castlemist::atex::parse(bytes.data(), bytes.size());
-        w = t.width; h = t.height; fmt = t.fmt_name;
-        return w > 0 && h > 0;
-    } catch (const std::exception&) {
-        return false;
-    }
+    if (!parse_atex_header(bytes.data(), bytes.size(), h)) return false;
+    if (totalSize) *totalSize = bytes.size();
+    return true;
+}
+
+// Peek an entry's ATEX dimensions + format from the header only (no pixel decode).
+static bool peek_mft_atex(Gw2Dat& dat, size_t i0, int& w, int& h, std::string& fmt) {
+    AtexHeader hd;
+    if (!peek_mft_header(dat, i0, hd)) return false;
+    w = hd.width; h = hd.height; fmt = hd.fmt;
+    return true;
 }
 
 // Given the entry a fileId resolved to (i0), find the full/reduced member of its
@@ -206,22 +270,17 @@ bool decode_texture_full_res(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out,
 bool peek_texture_by_fileid(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out) {
     uint32_t base = get_by_base_id(dat, fileId);
     if (base == 0 || base - 1 >= dat.mft_data_list.size()) return false;
-    std::vector<uint8_t> bytes;
-    if (!read_mft_atex_bytes(dat, base - 1, bytes)) return false;
-    try {
-        castlemist::atex::Texture t = castlemist::atex::parse(bytes.data(), bytes.size());
-        if (t.width <= 0 || t.height <= 0) return false;
-        out.fileId = fileId;
-        out.baseId = base;
-        out.width = t.width;
-        out.height = t.height;
-        out.fmt = t.fmt_name;
-        out.mipCount = static_cast<int>(t.mips.size());
-        out.isNormal = is_normal_format(t.fmt_name);
-        return true;
-    } catch (const std::exception&) {
-        return false;
-    }
+    AtexHeader hd;
+    size_t total = 0;
+    if (!peek_mft_header(dat, base - 1, hd, &total)) return false;
+    out.fileId = fileId;
+    out.baseId = base;
+    out.width = hd.width;
+    out.height = hd.height;
+    out.fmt = hd.fmt;
+    out.mipCount = estimate_mip_count(hd, total);
+    out.isNormal = is_normal_format(hd.fmt);
+    return true;
 }
 
 bool decode_texture_by_fileid_res(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out, bool want_full) {
