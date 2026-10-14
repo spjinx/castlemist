@@ -275,3 +275,42 @@ animation; per-placement `constants`, `blitTextures` and `color` (recorded,
 not applied); rivers and shore surfaces; collision that follows animated
 props; shadows and screen-space AO; BC re-encoding of textures; zone models;
 placed effects and particles (effects project); export (sub-project 4).
+
+## Amendments before planning (2026-10-14, controller)
+
+Written after sub-project 2 shipped, before the plan. This list wins where it
+disagrees with the text above.
+
+- **Names follow what sub-project 2 built.** The instanced draw lives in
+  `src/render/world_draw.{h,cpp}` (`InstancedBatch`, `cull_into`,
+  `draw_buckets`), CPU prep in `src/render/world_props.{h,cpp}`
+  (`prepare_world_model`, `PreparedModel`, `ray_model_hit`), the flattener
+  and AO baker in `src/render/detail/mesh_bake.{h,cpp}` (`MapVtx`, `flatten`,
+  `bake_ao`), the camera maths in `src/render/world_camera.h`. Loading lives
+  in `src/ui/map_window_loader.{h,cpp}` (shared parsed `Gw2Dat`, `ModelQueue`
+  re-sorted around the live camera). The material passes extend these files
+  rather than duplicating them; `world_materials.{h,cpp}` holds only the new
+  texture cache and material state.
+- **Sub-project 2's load-time follow-ups are part of this sub-project**,
+  because the texture cache changes the same loader path:
+  1. `ModelLoadOptions{wantGame, decodeTextures}` as specified; the map window
+     loads geometry without texture decode and decodes each texture once,
+     capped, through the cache.
+  2. **CPU prep moves to the workers.** `prepare_world_model` (flatten, AO
+     bake, and now the per-submesh ranges and `MatVtx`/`SkinVtx`) runs on the
+     model-load worker; `WorldView::add_models` takes already-prepared models
+     and only creates GPU buffers on the UI thread. Measured before: one
+     `add_models` batch blocked the UI thread 2.86 s on Queensdale.
+  3. **fileId lookup by index.** `load_model_by_fileid` and the texture
+     lookups resolve fileId → MFT entry through a hash index built once per
+     parsed `Gw2Dat` (today each lookup scans ~800k entries). The index is
+     built before the worker pool starts and is read-only afterwards, so the
+     shared-dat rule (sub-project 2, R13) still holds.
+  Target, measured by the headless stats line: Queensdale models streamed in
+  well under the sub-project 2 figure of 156 s, with the UI thread's largest
+  `add_models` batch under 50 ms.
+- **Headless hook names.** `GW2_MAPWIN_SHADING` and `GW2_MAPWIN_TIME` join the
+  env table in `include/castlemist/core/env.h`, like `GW2_MAPWIN`.
+- **The headless stats line gains** `textures`, `textureMB`, `animated`,
+  `unresolvedClips`, and the per-batch `add_models` max/median it already
+  measures.
