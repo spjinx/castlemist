@@ -97,7 +97,7 @@ bool ask_file_id(HWND owner, uint32_t& io) {
         SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         return c;
     };
-    mk(L"STATIC", L"Map fileId (e.g. 192711 Queensdale, 1151420 Lion's Arch):", SS_LEFT, 12, 12, 316, 18, 0);
+    mk(L"STATIC", L"Map fileId (e.g. 192711 Queensdale, 191000 Lion's Arch):", SS_LEFT, 12, 12, 316, 18, 0);
     wchar_t init[16] = L"";
     if (io) swprintf(init, 16, L"%u", io);
     p.edit = mk(L"EDIT", init, ES_NUMBER | ES_AUTOHSCROLL | WS_TABSTOP, 12, 34, 316, 22, 0, WS_EX_CLIENTEDGE);

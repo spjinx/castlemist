@@ -412,7 +412,8 @@ void maybe_capture(MapWin& m) {
     if (!m.headless || m.captured) return;
     const double elapsed = std::chrono::duration<double>(Clock::now() - m.opened).count();
     const bool failed = !m.error.empty() && !m.scene;
-    const bool modelsDone = m.scene && m.modelsArrived >= models_total(m);
+    const bool modelsDone = m.scene && (m.modelsArrived >= models_total(m) ||
+                                        (m.workers > 0 && m.workersDone >= m.workers));
     if (failed || modelsDone || elapsed >= kHeadlessTimeout) headless_capture(m);
 }
 
@@ -670,9 +671,11 @@ LRESULT CALLBACK MapWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         }
         if (LOWORD(wparam) != ID_MW_WARNINGS) SetFocus(m->surface);   // keys go back to the view
         return 0;
-    case WM_ACTIVATE:
+    case WM_ACTIVATE: {
+        const LRESULT r = DefWindowProcW(hwnd, msg, wparam, lparam);
         if (m && LOWORD(wparam) != WA_INACTIVE) SetFocus(m->surface);
-        return 0;
+        return r;
+    }
     case WM_CLOSE: DestroyWindow(hwnd); return 0;
     case WM_DESTROY: destroy_state(hwnd); return 0;
     }
@@ -773,7 +776,8 @@ void open_map_window(HWND owner, uint32_t mapFileId, const MapWinHeadless* headl
 
     m->viewOk = m->view.create(m->surface);
     if (!m->viewOk) {
-        MessageBoxW(owner, L"Could not create a Direct3D 11 device for the Map window.", L"Map Window", MB_ICONERROR);
+        if (!m->headless)
+            MessageBoxW(owner, L"Could not create a Direct3D 11 device for the Map window.", L"Map Window", MB_ICONERROR);
         if (m->headless) {
             m->error = "Direct3D device creation failed";
             headless_capture(*m);
