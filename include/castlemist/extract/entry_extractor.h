@@ -217,6 +217,14 @@ bool decode_texture_full(Gw2Dat& dat, uint32_t file_id, ModelTextureCPU& out, in
 ///        unrelated texture next door. SIZE_MAX for an unknown fileId.
 size_t texture_entry(Gw2Dat& dat, uint32_t file_id, bool full);
 
+/// @brief Decode a texture once for a capped cache.
+///
+/// Takes the reduced member of the full/reduced pair (independent of
+/// set_texture_full_res), halves with a box filter while the longest side
+/// exceeds `maxSize`, then builds box-filtered RGBA8 mips down to 4x4.
+/// `out.fileId` is set even on failure; a failure leaves `out.mips` empty.
+bool decode_texture_capped(Gw2Dat& dat, uint32_t fileId, int maxSize, CappedTexture& out);
+
 /// @brief The model at `file_id`, built against the already-open `dat` --
 ///        unlike extract_entry(), which reopens (re-parses) the whole dat for
 ///        every model it builds. nullptr if it isn't a model or fails to load.

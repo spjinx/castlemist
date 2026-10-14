@@ -90,3 +90,51 @@ CM_TEST(model_load, header_from_prefix_matches_full) {
     bad[0] = 'Z';
     CHECK_FALSE(parse_atex_header(bad.data(), bad.size(), h));
 }
+
+// ---- decode_texture_capped helpers ----
+
+CM_TEST(capped, halve_box_filters) {
+    std::vector<uint8_t> in = {0,0,0,255, 255,0,0,255, 255,0,0,255, 0,0,0,255};
+    std::vector<uint8_t> out;
+    int ow = 0, oh = 0;
+    castlemist::extract::halve_rgba(in, 2, 2, out, ow, oh);
+    CHECK_EQ(ow, 1);
+    CHECK_EQ(oh, 1);
+    CHECK_EQ(out.size(), (size_t)4);
+    CHECK_EQ((int)out[0], 128);
+    CHECK_EQ((int)out[3], 255);
+}
+
+CM_TEST(capped, halve_odd_clamps) {
+    std::vector<uint8_t> out;
+    int ow = 0, oh = 0;
+    castlemist::extract::halve_rgba(std::vector<uint8_t>(3 * 1 * 4, 7), 3, 1, out, ow, oh);
+    CHECK_EQ(ow, 1);
+    CHECK_EQ(oh, 1);
+    CHECK_EQ(out.size(), (size_t)4);
+    castlemist::extract::halve_rgba(std::vector<uint8_t>(1 * 5 * 4, 7), 1, 5, out, ow, oh);
+    CHECK_EQ(ow, 1);
+    CHECK_EQ(oh, 2);
+    CHECK_EQ(out.size(), (size_t)8);
+}
+
+CM_TEST(capped, mips_stop_at_4x4) {
+    using castlemist::extract::build_mips;
+    auto m = build_mips(std::vector<uint8_t>(32 * 8 * 4, 1), 32, 8);
+    CHECK_EQ(m.size(), (size_t)4);
+    CHECK_EQ(m[1].size(), (size_t)(16 * 4 * 4));
+    CHECK_EQ(m[2].size(), (size_t)(8 * 2 * 4));
+    CHECK_EQ(m[3].size(), (size_t)(4 * 1 * 4));
+    CHECK_EQ(build_mips(std::vector<uint8_t>(4 * 4 * 4, 1), 4, 4).size(), (size_t)1);
+    auto s = build_mips(std::vector<uint8_t>(6 * 3 * 4, 1), 6, 3);
+    CHECK_EQ(s.size(), (size_t)2);
+    CHECK_EQ(s[1].size(), (size_t)(3 * 1 * 4));
+    CHECK_EQ(build_mips(std::vector<uint8_t>(1 * 64 * 4, 1), 1, 64).size(), (size_t)5);
+}
+
+CM_TEST(capped, bytes_sum) {
+    CappedTexture t;
+    t.mips.push_back(std::vector<uint8_t>(8 * 8 * 4));
+    t.mips.push_back(std::vector<uint8_t>(4 * 4 * 4));
+    CHECK_EQ(t.bytes(), (size_t)320);
+}

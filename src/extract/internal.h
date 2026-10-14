@@ -191,6 +191,12 @@ bool parse_atex_header(const uint8_t* data, size_t n, AtexHeader& out);
 ///        1 when mip 0 fills the file, else the full chain down to 1x1.
 int estimate_mip_count(const AtexHeader& h, size_t totalSize);
 
+/// @brief 2x2 box-average halving of RGBA8 (rounded); ow = max(1, w/2), oh = max(1, h/2); odd edges clamp.
+void halve_rgba(const std::vector<uint8_t>& in, int w, int h, std::vector<uint8_t>& out, int& ow, int& oh);
+
+/// @brief Mip chain from `level0` (RGBA8), halving until both sides are <= 4. Level 0 is first.
+std::vector<std::vector<uint8_t>> build_mips(std::vector<uint8_t> level0, int w, int h);
+
 /// @brief Header-only texture: fileId, baseId, size, fmt, mipCount, isNormal; `rgba` left empty.
 bool peek_texture_by_fileid(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out);
 

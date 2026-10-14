@@ -93,6 +93,17 @@ struct ModelTextureCPU {
     bool hasCutout = false;
 };
 
+/// @brief A texture decoded once for a capped cache: RGBA8 mip chain down to 4x4.
+struct CappedTexture {
+    uint32_t fileId = 0;
+    uint32_t baseId = 0;                     ///< The entry decoded (the reduced member when GW2 ships one).
+    int width = 0, height = 0;               ///< Mip 0.
+    std::vector<std::vector<uint8_t>> mips;  ///< RGBA8; empty = decode failed.
+    bool isNormal = false, hasCutout = false, looksLikeEffect = false;
+    /// @brief Sum of mips[i].size().
+    size_t bytes() const { size_t n = 0; for (const auto& m : mips) n += m.size(); return n; }
+};
+
 /// @brief One texture transform of a material, as stored (mirrors castlemist::model::MatTexTransform).
 struct ModelTexTransformCPU {
     uint32_t flags = 0;
