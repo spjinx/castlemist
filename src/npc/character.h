@@ -1,5 +1,5 @@
 /// @file
-/// @brief Reads the catalogue-relevant fields of one character object (type 9) from a cntc pack.
+/// @brief Reads the catalogue-relevant fields of one character object (type 67) from a cntc pack.
 ///
 /// Layer-internal (not installed under include/). Offsets are relative to the object's begin.
 

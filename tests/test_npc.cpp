@@ -7,6 +7,7 @@
 #include "castlemist/npc/catalogue.h"
 #include "castlemist/npc/tokens.h"
 #include "character.h"
+#include "decompress.h"
 #include "pack.h"
 
 #include <cstdint>
@@ -320,6 +321,74 @@ CM_TEST(npc_catalogue, load_rejects_wrong_version) {
     CHECK(!load(path).has_value());
     std::filesystem::remove(path);
     CHECK(!load(path).has_value());
+}
+
+CM_TEST(npc_catalogue, load_rejects_a_cache_without_npcs) {
+    auto path = std::filesystem::temp_directory_path() / "cm_npc_catalogue_nonpcs.json";
+    { std::ofstream(path) << R"({"version":1,"warnings":[]})"; }
+    CHECK(!load(path).has_value());
+    { std::ofstream(path) << R"({"version":1,"warnings":[],"npcs":{}})"; }
+    CHECK(!load(path).has_value());
+    { std::ofstream(path) << R"({"version":1,"warnings":[],"npcs":[]})"; }
+    CHECK(load(path).has_value());
+    std::filesystem::remove(path);
+}
+
+CM_TEST(npc_catalogue, corrupt_compressed_input_gives_empty_bytes_without_throwing) {
+    // 8-byte header claiming a large output, then garbage that is not a valid method-0 stream.
+    std::vector<uint8_t> raw = {0, 0, 0, 0, 0x00, 0x10, 0x00, 0x00};
+    for (int i = 0; i < 40; ++i) raw.push_back(static_cast<uint8_t>(0xA5 ^ (i * 37)));
+    std::vector<uint8_t> out = {1};
+    bool threw = false;
+    try {
+        out = decompress_cntc(raw, true);
+    } catch (...) {
+        threw = true;
+    }
+    CHECK(!threw);
+    CHECK(out.empty());
+    CHECK(decompress_cntc(std::vector<uint8_t>{1, 2, 3}, true).empty());
+}
+
+// fileRefs pack (900) that also carries a character with a +200 weapon ref to file index 2.
+static std::vector<uint8_t> cat_refs_and_char_pack(uint32_t data_id) {
+    PackBuilder b;
+    const size_t ptrs = 300, pairs = ptrs + 16;
+    b.put_selfrel(ptrs, pairs);
+    b.put_selfrel(ptrs + 8, pairs + 4);
+    b.put_bytes(pairs, {0xF3, 0x02, 0x00, 0x01});
+    b.put_bytes(pairs + 4, {0x08, 0x04, 0x00, 0x01});
+    b.set_dynarray(2, 2, ptrs);
+    b.put_u32(200, 67);
+    b.ensure(216);
+    b.set_dynarray(3, 1, 200);
+    b.put_u32(220, 200);
+    b.put_u32(224, 2);
+    b.set_dynarray(5, 1, 220);
+    const size_t c = 400;
+    b.put_u32(c + 16, 67);
+    b.put_u32(c + 40, data_id);
+    b.ensure(c + 300);
+    b.set_dynarray(10, 300, c);
+    return b.d;
+}
+
+CM_TEST(npc_catalogue, a_corrupt_middle_pack_does_not_shift_cross_pack_refs) {
+    cmap::clear();
+    std::vector<uint8_t> garbage(64, 0x5A);
+    std::vector<cmap::PackBytes> packs = {{1, 900, cat_refs_and_char_pack(4242)},
+                                          {2, 901, garbage},
+                                          {3, 902, cat_item_pack(76158)}};
+    cmap::build_from_packs({packs[0], packs[2]});
+    Catalogue c = build_catalogue(packs, stub_container);
+    CHECK_EQ(c.warnings.size(), size_t(1));
+    const NpcRecord* r = c.find(4242);
+    CHECK(r != nullptr);
+    if (r) {
+        CHECK_EQ(r->weapons.size(), size_t(1));
+        if (!r->weapons.empty()) CHECK_EQ(r->weapons[0].item, 76158u);
+    }
+    cmap::clear();
 }
 
 CM_TEST(npc, decodes_a_packed_clip_name) {

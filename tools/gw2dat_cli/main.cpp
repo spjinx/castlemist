@@ -1930,7 +1930,7 @@ castlemist::npc::Catalogue ensure_npc(const Args& a) {
         return b ? castlemist::db::lookup(b).container : std::string();
     };
     npc::Catalogue cat = npc::build_catalogue(dat.file_info.file_path, entries, file_ids, container_of, nullptr);
-    npc::save(cat, cache);
+    if (!cat.npcs.empty()) npc::save(cat, cache);  // never cache an empty (failed) build
     return cat;
 }
 
@@ -1938,7 +1938,7 @@ json npc_json(const castlemist::npc::NpcRecord& n) {
     json weapons = json::array();
     for (const auto& w : n.weapons)
         weapons.push_back({{"slot", w.slot}, {"item", w.item}, {"skin", w.skin}, {"model", w.model}});
-    return {{"id", n.id}, {"codename", n.codename}, {"model", n.model}, {"race", n.race},
+    return {{"id", n.id}, {"codename", n.codename}, {"model", n.model}, {"sound_script", n.sound_script}, {"race", n.race},
             {"modifier", n.modifier}, {"weapons", weapons}, {"skills", n.skills}};
 }
 
@@ -1971,7 +1971,9 @@ void cmd_npc_show(const Args& a) {
     if (!n) fail("no npc with id " + std::to_string(id));
     json j = npc_json(*n);
     json clips = json::array();
-    if (n->model && has(a, "dat")) {
+    if (n->model && !has(a, "dat")) {
+        j["clips_note"] = "pass --dat to list clips";
+    } else if (n->model) {
         Gw2Dat dat;
         load_dat_file(dat, a.at("dat"));
         if (auto pv = load_model_by_fileid(dat, n->model))
@@ -1980,7 +1982,7 @@ void cmd_npc_show(const Args& a) {
                                  {"prefix", castlemist::npc::clip_prefix(c.name)}, {"duration", c.duration}});
     }
     j["ok"] = true;
-    j["clips"] = clips;
+    if (!j.contains("clips_note")) j["clips"] = clips;
     emit(j);
 }
 

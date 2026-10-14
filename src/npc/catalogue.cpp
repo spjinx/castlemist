@@ -1,6 +1,7 @@
 #include "castlemist/npc/catalogue.h"
 
 #include "character.h"
+#include "decompress.h"
 #include "pack.h"
 
 #include "castlemist/native/cmp_decompress_method0.hpp"
@@ -13,19 +14,25 @@
 
 namespace castlemist::npc {
 
+namespace detail {
+
+std::vector<uint8_t> decompress_cntc(std::span<const uint8_t> raw, bool compressed) {
+    std::vector<uint8_t> s = castlemist::cmp::strip_crc32(raw);
+    if (!compressed) return s;
+    if (s.size() < 8) return {};
+    uint32_t u = s[4] | (s[5] << 8) | (s[6] << 16) | (static_cast<uint32_t>(s[7]) << 24);
+    try {
+        return castlemist::cmp::decompress_method0(std::span<const uint8_t>(s).subspan(8), u);
+    } catch (const std::exception&) {
+        return {};  // corrupt stream: the caller records "unreadable" and continues
+    }
+}
+
+}  // namespace detail
+
 namespace {
 
 namespace cmap = castlemist::cmap;
-
-/// Decompresses one MFT entry to raw file bytes, the way cmap::build does.
-std::vector<uint8_t> decompress_entry(const std::string& dat_path, const MftData& e) {
-    std::vector<uint8_t> raw = read_entry_bytes(dat_path, e);
-    std::vector<uint8_t> s = castlemist::cmp::strip_crc32(std::span<const uint8_t>(raw));
-    if (e.compression_flag == 0) return s;
-    if (s.size() < 8) return {};
-    uint32_t u = s[4] | (s[5] << 8) | (s[6] << 16) | (static_cast<uint32_t>(s[7]) << 24);
-    return castlemist::cmp::decompress_method0(std::span<const uint8_t>(s).subspan(8), u);
-}
 
 constexpr uint32_t kCharacterType = 67;
 
@@ -75,6 +82,14 @@ Catalogue build_catalogue(const std::vector<cmap::PackBytes>& packs, const Conta
         if (!p.bytes.empty()) parsed = detail::parse_pack(p.bytes, p.base_id, p.file_id);
         if (!parsed) {
             cat.warnings.push_back("pack " + std::to_string(p.base_id) + ": unreadable");
+            // Keep the slot: cross-pack refs count packs in file_id order, so dropping one would
+            // shift every later target.
+            if (p.file_id != 0) {
+                detail::Pack placeholder;
+                placeholder.base_id = p.base_id;
+                placeholder.file_id = p.file_id;
+                set.packs.push_back(std::move(placeholder));
+            }
             continue;
         }
         set.packs.push_back(std::move(*parsed));
@@ -135,7 +150,8 @@ Catalogue build_catalogue(const std::string& dat_path, const std::vector<MftData
         cmap::PackBytes p;
         p.base_id = static_cast<uint32_t>(entries[i].original_index) + 1;
         p.file_id = i < file_ids.size() ? file_ids[i] : 0;
-        p.bytes = decompress_entry(dat_path, entries[i]);
+        std::vector<uint8_t> raw = read_entry_bytes(dat_path, entries[i]);  // open failures propagate
+        p.bytes = detail::decompress_cntc(raw, entries[i].compression_flag != 0);
         packs.push_back(std::move(p));
         if (progress) progress(i + 1, total);
     }
@@ -179,7 +195,8 @@ std::optional<Catalogue> load(const std::filesystem::path& path) {
         if (!doc.contains("version") || doc["version"] != 1) return std::nullopt;
         Catalogue c;
         if (doc.contains("warnings")) c.warnings = doc["warnings"].get<std::vector<std::string>>();
-        if (doc.contains("npcs")) {
+        if (!doc.contains("npcs") || !doc["npcs"].is_array()) return std::nullopt;
+        {
             for (const json& j : doc["npcs"]) {
                 NpcRecord n;
                 n.id = j.at("id").get<uint32_t>();
