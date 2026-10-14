@@ -121,7 +121,7 @@ target_compile_definitions(cm_test_ripper PRIVATE
     CM_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 
 castlemist_add_test(render
-    SOURCES test_render_math.cpp test_render_preview_rig.cpp
+    SOURCES test_render_math.cpp test_render_preview_rig.cpp test_render_world_view.cpp
     DEPS    castlemist::render
     PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/render")
 

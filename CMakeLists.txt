@@ -151,7 +151,7 @@ target_compile_definitions(castlemist_exportgltf PRIVATE CASTLEMIST_VERSION_STRI
 castlemist_add_layer(ripper DEPS castlemist::character castlemist::extract castlemist::exportgltf
                                  castlemist::format castlemist::db ext::json ext::stb)
 
-castlemist_add_layer(render DEPS castlemist::extract castlemist::sim
+castlemist_add_layer(render DEPS castlemist::extract castlemist::sim castlemist::world
                                  d3d11 dxgi d3dcompiler dxguid)
 
 # The "Game 1:1" surface. PRIVATE: nothing above render needs bgfx headers --
