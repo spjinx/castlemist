@@ -99,6 +99,8 @@ most 600 s), renders one 1280x720 frame, writes one stats line to `mapwin.txt`
 in the dump directory, and quits. `GW2_MAPWIN_SHOT=<bmp>` picks where the frame
 goes (default `shot_mapwin.bmp` in the dump directory).
 
+The dump directory is not created for you; `dumps/mapwin` must already exist.
+
 ```bash
 GW2_DAT="E:\Games\gw2\Guild Wars 2\Gw2.dat" GW2_DUMP_DIR=dumps/mapwin \
 GW2_MAPWIN=192711 GW2_MAPWIN_SHOT=dumps/mapwin/queensdale.bmp \

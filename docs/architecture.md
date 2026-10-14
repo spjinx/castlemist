@@ -7,7 +7,7 @@ downward only, and CMake enforces it: a layer can only include what its
 ```
 app       WinMain, 13 lines                                    (executable)
  +-- ui         window procs, layout, widgets, content browser, dialogs
-      +-- render     Direct3D 11: image, model, map scene, gizmo, particles
+      +-- render     Direct3D 11: image, model, map scene, gizmo, particles, the map window's WorldView
       |    +-- sim        the GW2 cloth solver and its mesh bridge
       |    +-- world      WorldScene, collision, walking, prop streaming
       +-- exportgltf  binary glTF (.glb) writer (models, maps, animation)

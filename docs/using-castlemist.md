@@ -152,8 +152,8 @@ main window. Only one Map window is open at a time; opening another replaces it.
 
 **Loading.** The terrain appears first. Props then stream in nearest-first from
 where the camera starts, on a pool of worker threads, so the view fills in
-around you. A full map takes a while (see "Load time" in
-[testing](testing.md#headless-hooks)); you can fly or walk the whole time.
+around you. A full map takes about 1 to 3 minutes (measured totals are in
+[testing](testing.md#the-map-window)); you can fly or walk the whole time.
 
 **Controls**
 
@@ -166,7 +166,7 @@ around you. A full map takes a while (see "Load time" in
 | wheel | change speed (fly and walk each keep their own) |
 | Tab | switch walk / fly |
 | Space | jump (walk only) |
-| left-click | pick the prop under the cursor |
+| left-click | pick the prop under the cursor (a click that moves more than 4 px is not a pick) |
 | F, or **Reset** | frame the whole map from above |
 
 **Walk vs fly.** Fly is a free camera. Walk puts the camera at eye height on
@@ -179,7 +179,7 @@ the map first). A fall that goes too far returns you to the last safe ground.
 
 **Layers.** The **Terrain**, **Props**, **Collision** and **Water** check boxes
 show or hide each layer. Collision is off by default: it is the map's physics
-mesh, often about a million triangles, and uploads to the GPU only the first
+mesh, 988,986 triangles on Queensdale (2,078,522 with the terrain), and uploads to the GPU only the first
 time you turn it on. The water is a single plane at the stored height.
 
 **Picking.** Left-click (without dragging) a prop to open its model in the main
