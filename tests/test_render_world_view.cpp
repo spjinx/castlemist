@@ -518,3 +518,49 @@ CM_TEST(world_view, renders_streamed_props_collision_and_water) {
     CHECK_EQ(v.stats().collisionMeshes, 1);
     CHECK_EQ(v.stats().visible, 1);   // the collision square; no models yet
 }
+
+// The Map window's device-recovery sequence: create() again on the same view,
+// then set_world and add_models again, then the owner re-applies its layers.
+CM_TEST(world_view, recreate_then_reload_restores_the_view) {
+    HWND wnd = hidden_window(320, 240);
+    if (!wnd) SKIP("no window");
+    struct Closer { HWND h; ~Closer() { DestroyWindow(h); } } closer{wnd};
+    WorldView v;
+    if (!v.create(wnd)) SKIP("no D3D11 device (hardware or WARP)");
+    auto cube = std::make_shared<const ModelPreview>(cube_model());
+    v.set_world(props_scene());
+    v.add_models({{0u, cube}});
+    const WorldCamera cam = v.frame_all(nullptr);
+    v.set_layer(WorldLayer::Water, false);
+    v.render(cam);
+    CHECK_EQ(v.stats().modelsLoaded, 1);
+    CHECK_EQ(v.stats().visible, 5);
+
+    // The owner's layer choice before the "loss": props off, collision on.
+    const bool props = false, coll = true, water = false;
+
+    // Recovery: a second create() resets everything...
+    if (!v.create(wnd)) SKIP("second D3D11 device could not be created");
+    CHECK_FALSE(v.device_lost());
+    CHECK_EQ(v.stats().modelsLoaded, 0);
+    CHECK_EQ(v.stats().modelsFailed, 0);
+    CHECK_EQ(v.stats().visible, 0);
+    CHECK_EQ(v.stats().collisionMeshes, 0);
+    CHECK(v.layer(WorldLayer::Props));            // back to the defaults
+    CHECK_FALSE(v.layer(WorldLayer::Collision));
+
+    // ...then the world, the kept models and the owner's layers come back.
+    v.resize(320, 240);
+    v.set_world(props_scene());
+    v.add_models({{0u, cube}});
+    CHECK_EQ(v.stats().modelsLoaded, 1);
+    v.set_layer(WorldLayer::Props, props);
+    v.set_layer(WorldLayer::Collision, coll);
+    v.set_layer(WorldLayer::Water, water);
+    CHECK_EQ(v.stats().collisionMeshes, 1);
+    v.render(cam);
+    CHECK_EQ(v.stats().visible, 1);   // only the collision square: props are off
+    v.set_layer(WorldLayer::Props, true);
+    v.render(cam);
+    CHECK_EQ(v.stats().visible, 6);   // the five props are back too
+}
