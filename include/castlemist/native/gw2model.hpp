@@ -2208,8 +2208,11 @@ public:
     /// @brief The `env` chunk's global water presets: env -> dataGlobal (ptr)
     ///        -> `water`, inline (`array_ptr`) or one pointer per element
     ///        (`ptr_array_ptr`). Each field by template name. Empty when the
-    ///        chunk, the pointer or the field is missing; a preset that reads
-    ///        out of bounds is dropped.
+    ///        chunk, the pointer or the field is missing, or when the stored
+    ///        count would run past the file. Otherwise the result keeps the
+    ///        stored indices (size == the stored count, so it pairs with a
+    ///        lighting presetIndex): a preset that is null or cannot be read is
+    ///        a default MapEnvWater, and one bad textureFilenames entry is 0.
     std::vector<MapEnvWater> parseMapEnvWater() {
         std::vector<MapEnvWater> out;
         std::string root; uint16_t ver = 0;
@@ -2241,9 +2244,9 @@ public:
         out.reserve(n);
         for (uint32_t i = 0; i < n; ++i) {
             const size_t e = byPtr ? follow(base + (size_t)i * ptr_) : base + (size_t)i * ws;
-            if (!e || e + (uint64_t)ws > n_) continue;
+            MapEnvWater w;
+            if (!e || e + (uint64_t)ws > n_) { out.push_back(std::move(w)); continue; }
             try {
-                MapEnvWater w;
                 w.waterFlags = rdDword(wt, "waterFlags", e);
                 w.animAmplitude = rdFloat1(wt, "animAmplitude", e);
                 w.animChoppiness = rdFloat1(wt, "animChoppiness", e);
@@ -2269,7 +2272,11 @@ public:
                     if (fOff(wt, "textureFilenames", e, a, fj)) {
                         uint32_t k = 0; const size_t tb = arrayAt(a, k);
                         if (tb && tb + (uint64_t)k * ptr_ <= n_)
-                            for (uint32_t j = 0; j < k; ++j) w.textureFileIds.push_back(decodeFilenameAt(tb + (size_t)j * ptr_));
+                            for (uint32_t j = 0; j < k; ++j) {
+                                uint32_t id = 0;
+                                try { id = decodeFilenameAt(tb + (size_t)j * ptr_); } catch (const std::exception&) {}
+                                w.textureFileIds.push_back(id);
+                            }
                     }
                 }
                 const FieldArray toks = fieldArray(wt, "constantTokens", e);
@@ -2287,8 +2294,8 @@ public:
                 byte4("foamColor1", e, w.foamColor1);
                 w.bumpTextureFileId = file("bumpTexture", e);
                 w.patternTextureFileId = file("patternTexture", e);
-                out.push_back(std::move(w));
-            } catch (const std::exception&) {}
+            } catch (const std::exception&) { w = MapEnvWater{}; }
+            out.push_back(std::move(w));
         }
         return out;
     }

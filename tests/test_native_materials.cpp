@@ -354,6 +354,78 @@ CM_TEST(native_materials, env_water_presets_inline) {
     checkWater(Extractor(bytes, envTemplate("array_ptr")).parseMapEnvWater());
 }
 
+namespace {
+
+/// @brief env chunk whose `water` is a ptr_array_ptr of `n` presets (no
+///        lighting). Preset `nullAt` gets a null pointer; `storedCount`
+///        overrides the stored count when non-zero.
+std::vector<uint8_t> envWaterFile(int n, int nullAt, uint32_t storedCount = 0) {
+    Payload p;
+    const size_t root = p.alloc(4);
+    const size_t g = p.alloc(16);
+    p.ptr(root, g);
+    const size_t ptrs = p.alloc(4 * size_t(n));
+    p.arr(g + 8, storedCount ? storedCount : uint32_t(n), ptrs);
+    for (int k = 0; k < n; ++k) {
+        if (k == nullAt) continue;
+        const size_t w = p.alloc(kWater);
+        p.ptr(ptrs + 4 * k, w);
+        writeWater(p, w, k);
+    }
+    return make_packfile("mapc", "env", 76, p.b);
+}
+
+} // namespace
+
+// Indices are kept: Task 13 pairs water[presetIndex] with the lighting, so a
+// preset that cannot be read is a default entry, not a gap.
+CM_TEST(native_materials, env_water_null_preset_keeps_indices) {
+    const auto bytes = envWaterFile(3, 1);
+    const auto water = Extractor(bytes, envTemplate("ptr_array_ptr")).parseMapEnvWater();
+    CHECK_EQ(water.size(), size_t{3});
+    CHECK_EQ(water[0].waterFlags, uint32_t{0x10});
+    CHECK_NEAR(water[0].bumpTile[0], 5.0, 1e-6);
+    CHECK_EQ(water[1].waterFlags, uint32_t{0});
+    CHECK_NEAR(water[1].bumpTile[0], 0.0, 1e-6);
+    CHECK_EQ(water[1].materialFileId, uint32_t{0});
+    CHECK(water[1].textureFileIds.empty());
+    CHECK_EQ(water[2].waterFlags, uint32_t{0x12});
+    CHECK_NEAR(water[2].bumpTile[0], 7.0, 1e-6);
+    CHECK_EQ(water[2].textureFileIds.size(), size_t{2});
+}
+
+// A stored count far past the file is bounded (no presets) and does not throw.
+CM_TEST(native_materials, env_water_oversized_count_is_bounded) {
+    const auto bytes = envWaterFile(2, -1, 1000000);
+    const auto water = Extractor(bytes, envTemplate("ptr_array_ptr")).parseMapEnvWater();
+    CHECK(water.empty());
+}
+
+// One textureFilenames entry pointing past the file reads as 0; the rest of
+// the preset is kept.
+CM_TEST(native_materials, env_water_bad_texture_entry_keeps_preset) {
+    auto bytes = envWaterFile(1, -1);
+    const auto good = Extractor(bytes, envTemplate("ptr_array_ptr")).parseMapEnvWater();
+    CHECK_EQ(good.size(), size_t{1});
+    CHECK_EQ(good[0].textureFileIds.size(), size_t{2});
+    // Payload layout of envWaterFile(1, -1): root 4, global 16, ptrs 4, then the
+    // preset (kWater), its materialFilename target (8), then the texture array:
+    // entry 0 null, entry 1 -> fileId 1. Point entry 1 far past the file.
+    const size_t payloadAt = 12 + 16;                       // file header + chunk header
+    const size_t texArray = payloadAt + 4 + 16 + 4 + kWater + 8;
+    const uint32_t far = 0x7FFFFFF0u;
+    for (int i = 0; i < 4; ++i) bytes[texArray + 4 + i] = uint8_t(far >> (8 * i));
+    const auto water = Extractor(bytes, envTemplate("ptr_array_ptr")).parseMapEnvWater();
+    CHECK_EQ(water.size(), size_t{1});
+    CHECK_EQ(water[0].textureFileIds.size(), size_t{2});
+    CHECK_EQ(water[0].textureFileIds[1], uint32_t{0});
+    CHECK_EQ(water[0].waterFlags, uint32_t{0x10});
+    CHECK_EQ(water[0].materialFileId, uint32_t{1});
+    CHECK_EQ(water[0].constantTokens.size(), size_t{1});
+    CHECK_NEAR(water[0].foamSpawn, 0.75, 1e-6);
+    CHECK_EQ(water[0].bumpTextureFileId, uint32_t{1});
+}
+
 CM_TEST(native_materials, env_water_absent_is_empty) {
     const auto bytes = make_packfile("mapc", "parm", 1, std::vector<uint8_t>(16, 0));
     json t; t["types"] = json::object();
