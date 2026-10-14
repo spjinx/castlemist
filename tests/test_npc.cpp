@@ -4,6 +4,7 @@
 #include "test_framework.h"
 
 #include "castlemist/npc/tokens.h"
+#include "character.h"
 #include "pack.h"
 
 #include <cstdint>
@@ -97,6 +98,39 @@ std::vector<uint8_t> tiny_pack(uint32_t type, bool with_file_refs, bool with_ext
     b.set_dynarray(10, 64, content);
     b.ensure(content + 64);
     return b.d;
+}
+
+/// Inverse of decode_token: 5-bit groups, low first, 'a' = 1.
+uint64_t pack_token(const std::string& s) {
+    uint64_t v = 0;
+    for (size_t i = 0; i < s.size(); ++i) v |= static_cast<uint64_t>(s[i] - 'a' + 1) << (5 * i);
+    return v;
+}
+
+struct TObj { uint32_t type, begin, data_id; };
+struct TRef { uint32_t slot, target; };  ///< Absolute content offsets; local ref.
+
+/// A pack of `objs` (content size 1200) with local refs, parsed.
+Pack make_char_pack(const std::vector<TObj>& objs, const std::vector<TRef>& refs,
+                    const std::vector<std::pair<uint32_t, uint64_t>>& u64s,
+                    const std::vector<std::pair<uint32_t, uint32_t>>& u32s) {
+    PackBuilder b;
+    const size_t ie = 100, lo = 400, content = 600;
+    b.set_dynarray(3, static_cast<uint32_t>(objs.size()), ie);
+    for (size_t i = 0; i < objs.size(); ++i) {
+        b.put_u32(ie + i * 16, objs[i].type);
+        b.put_u32(ie + i * 16 + 4, objs[i].begin);
+    }
+    b.set_dynarray(4, static_cast<uint32_t>(refs.size()), lo);
+    for (size_t i = 0; i < refs.size(); ++i) b.put_u32(lo + i * 4, refs[i].slot);
+    b.set_dynarray(10, 1200, content);
+    b.ensure(content + 1200);
+    for (auto& o : objs) b.put_u32(content + o.begin + 40, o.data_id);
+    for (auto& r : refs) b.put_u32(content + r.slot, r.target);
+    for (auto& [pos, v] : u64s) b.put_i64(content + pos, static_cast<int64_t>(v));
+    for (auto& [pos, v] : u32s) b.put_u32(content + pos, v);
+    auto pack = parse_pack(b.d, 1, 1);
+    return *pack;
 }
 
 }  // namespace
@@ -210,4 +244,44 @@ CM_TEST(npc_pack, a_truncated_pack_is_a_warning_not_a_crash) {
     std::vector<uint8_t> cut(full.begin(), full.begin() + 40);
     CHECK(!parse_pack(cut, 1, 1).has_value());
     CHECK(!parse_pack({}, 1, 1).has_value());
+}
+
+CM_TEST(npc_character, reads_weapons_skills_race_and_modifier) {
+    PackSet set;
+    set.packs.push_back(make_char_pack(
+        {{9, 0, 4242}, {35, 700, 76158}, {64, 800, 5491}},
+        {{200, 700}, {120, 800}},
+        {{632, pack_token("humanfemale")}, {88, pack_token("undead")}},
+        {{700 + 44, 24}}));
+    set.finish();
+    const Object* c = set.packs[0].object_at(0);
+    CHECK(c != nullptr);
+    CharacterFields f = read_character(set, 0, *c);
+    CHECK_EQ(f.id, 4242u);
+    CHECK_EQ(f.weapons.size(), size_t(1));
+    CHECK_EQ(f.weapons[0].first, 200u);
+    CHECK_EQ(f.weapons[0].second, 76158u);
+    CHECK_EQ(f.skills.size(), size_t(1));
+    CHECK_EQ(f.skills[0], 5491u);
+    CHECK_EQ(f.race, std::string("humanfemale"));
+    CHECK_EQ(f.modifier, std::string("undead"));
+}
+
+CM_TEST(npc_character, drops_a_slot_ref_whose_target_has_the_wrong_type) {
+    PackSet set;
+    set.packs.push_back(make_char_pack(
+        {{9, 0, 1}, {140, 700, 2}, {35, 800, 3}},
+        {{192, 700}, {168, 800}}, {}, {{800 + 44, 24}}));
+    set.finish();
+    CharacterFields f = read_character(set, 0, *set.packs[0].object_at(0));
+    CHECK(f.weapons.empty());
+    CHECK(f.skills.empty());
+}
+
+CM_TEST(npc_character, a_non_weapon_item_is_not_a_weapon) {
+    PackSet set;
+    set.packs.push_back(make_char_pack({{9, 0, 1}, {35, 700, 2}}, {{200, 700}}, {}, {{700 + 44, 0}}));
+    set.finish();
+    CharacterFields f = read_character(set, 0, *set.packs[0].object_at(0));
+    CHECK(f.weapons.empty());
 }
