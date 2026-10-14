@@ -138,10 +138,16 @@ CM_TEST(world_view, renders_two_terrain_chunks) {
 
     v.resize(400, 300);
     v.render(cam);
+    CHECK_FALSE(v.device_lost());
+    const WorldViewStats before = v.stats();
     char tmp[MAX_PATH] = {};
     GetTempPathA(MAX_PATH, tmp);
     const std::string path = std::string(tmp) + "cm_world_view_smoke.bmp";
     CHECK(v.save_screenshot(path.c_str()));
+    // The screenshot's redraw leaves the presented frame's stats alone (ms
+    // would differ between two draws).
+    CHECK(v.stats().ms == before.ms);
+    CHECK_EQ(v.stats().visible, before.visible);
 
     FILE* f = std::fopen(path.c_str(), "rb");
     CHECK(f != nullptr);

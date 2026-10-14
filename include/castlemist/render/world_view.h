@@ -56,9 +56,17 @@ public:
     void set_world(const castlemist::world::WorldScene& s);
     /// @brief Culls, draws and presents one frame.
     void render(const WorldCamera& cam);
+    /// @brief Shows or hides one layer (all are on after create()).
     void set_layer(WorldLayer l, bool on);
+    /// @brief Whether layer @p l is shown.
     bool layer(WorldLayer l) const;
+    /// @brief Numbers from the last presented frame, plus upload counts.
     WorldViewStats stats() const;
+    /// @brief True after the device was removed or reset (e.g. a TDR) or the
+    ///        targets could not be rebuilt on resize. render(), resize() and
+    ///        save_screenshot() then do nothing; the owner should call create()
+    ///        and set_world() again (create() clears the flag).
+    bool device_lost() const;
     /// @brief Writes the last frame (re-drawn with the last camera) as a
     ///        24-bit BMP. False with no device, no frame yet, or on I/O failure.
     bool save_screenshot(const char* bmpPath);

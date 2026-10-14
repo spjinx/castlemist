@@ -105,6 +105,7 @@ struct WorldView::Impl {
     WorldViewStats st;
     WorldCamera lastCam;
     bool hasFrame = false;
+    bool lost = false;   ///< Device removed/reset or targets unrecoverable; owner must create() again.
     LARGE_INTEGER freq{};
 
     Impl() {
@@ -365,15 +366,18 @@ bool WorldView::create(HWND surface) {
 }
 
 void WorldView::resize(int w, int h) {
-    if (!d->swap || w <= 0 || h <= 0) return;
+    if (d->lost || !d->swap || w <= 0 || h <= 0) return;
     d->ctx->OMSetRenderTargets(0, nullptr, nullptr);
     d->rtv.Reset();
     d->dsv.Reset();
     d->ctx->Flush();
     d->w = w;
     d->h = h;
-    if (FAILED(d->swap->ResizeBuffers(0, static_cast<UINT>(w), static_cast<UINT>(h), DXGI_FORMAT_UNKNOWN, 0))) return;
-    d->create_targets();
+    // Either failure leaves the view without targets; report it as a lost
+    // device so the owner recreates it rather than drawing nothing forever.
+    if (FAILED(d->swap->ResizeBuffers(0, static_cast<UINT>(w), static_cast<UINT>(h), DXGI_FORMAT_UNKNOWN, 0)) ||
+        !d->create_targets())
+        d->lost = true;
 }
 
 void WorldView::set_world(const castlemist::world::WorldScene& s) {
@@ -401,11 +405,12 @@ void WorldView::set_world(const castlemist::world::WorldScene& s) {
 }
 
 void WorldView::render(const WorldCamera& cam) {
-    if (!d->ctx || !d->rtv || !d->dsv) return;
+    if (d->lost || !d->ctx || !d->rtv || !d->dsv) return;
     d->draw(cam);
     d->lastCam = cam;
     d->hasFrame = true;
-    d->swap->Present(1, 0);
+    const HRESULT hr = d->swap->Present(1, 0);   // DXGI_STATUS_OCCLUDED is not an error
+    if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) d->lost = true;
 }
 
 void WorldView::set_layer(WorldLayer l, bool on) {
@@ -420,11 +425,16 @@ bool WorldView::layer(WorldLayer l) const {
 
 WorldViewStats WorldView::stats() const { return d->st; }
 
+bool WorldView::device_lost() const { return d->lost; }
+
 bool WorldView::save_screenshot(const char* bmpPath) {
-    if (!bmpPath || !d->ctx || !d->rtv || !d->dsv || !d->hasFrame) return false;
+    if (d->lost || !bmpPath || !d->ctx || !d->rtv || !d->dsv || !d->hasFrame) return false;
     // A DISCARD swap chain's back buffer is undefined after Present, so the
     // last frame is drawn again (same camera) and read before presenting.
+    // The redraw must not change what stats() reports about the presented frame.
+    const WorldViewStats keep = d->st;
     d->draw(d->lastCam);
+    d->st = keep;
     ComPtr<ID3D11Texture2D> back;
     if (FAILED(d->swap->GetBuffer(0, IID_PPV_ARGS(&back)))) return false;
     D3D11_TEXTURE2D_DESC td;
