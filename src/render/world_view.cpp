@@ -3,10 +3,8 @@
 ///        instanced props, collision and water layers.
 ///
 /// Shares nothing with the main renderer's globals (detail/state.h): every
-/// device object lives in WorldView::Impl. The instanced draw follows the fly
-/// view's render_fly (map_fly.cpp): distance + frustum sphere cull, LOD by
-/// screen size, buckets by (mesh, LOD), one dynamic instance buffer, one
-/// DrawIndexedInstanced per bucket.
+/// device object lives in WorldView::Impl. The instanced draw (props,
+/// collision, water) lives in world_draw.cpp.
 
 #include "castlemist/render/world_view.h"
 
@@ -15,6 +13,7 @@
 
 #include "detail/mesh_bake.h"
 #include "world_camera.h"
+#include "world_draw.h"
 #include "world_props.h"
 #include "world_view_shaders.h"
 
@@ -68,47 +67,6 @@ struct ChunkGPU {
     float radius = 0;
 };
 
-/// Per-instance stream entry (the fly view's MapInstGPU): the three world
-/// columns of the row-vector world matrix, then rgb tint + alpha.
-struct InstGPU {
-    float r0[4], r1[4], r2[4], tint[4];
-};
-static_assert(sizeof(InstGPU) == 64, "the instance input layout hardcodes a 64-byte stride");
-
-/// One uploaded instanced mesh (a prop model, a collision mesh or the water quad).
-struct MeshGPU {
-    ComPtr<ID3D11Buffer> vb, ib;
-    std::vector<std::pair<uint32_t, uint32_t>> lodRanges;   ///< (first index, count)
-    float center[3] = {0, 0, 0};   ///< model-space sphere
-    float radius = 0;
-    bool ok = false;
-};
-
-/// One placed instance. `ready` once its mesh is uploaded (props stream in).
-struct InstCPU {
-    uint32_t mesh = 0;
-    Mat4 world{};          ///< row-vector (p' = p W), from colmajor_to_rowvec
-    float scale = 1;       ///< max_column_length of the instance matrix
-    float centerW[3] = {0, 0, 0};
-    float radiusW = 0;
-    bool ready = false;
-};
-
-/// Places @p in's world sphere from its mesh: centre through the matrix,
-/// radius times the largest column length.
-void place(InstCPU& in, const MeshGPU& m) {
-    const Vec3 c = transformPoint({m.center[0], m.center[1], m.center[2]}, in.world);
-    in.centerW[0] = c.x; in.centerW[1] = c.y; in.centerW[2] = c.z;
-    in.radiusW = m.radius * in.scale;
-    in.ready = std::isfinite(c.x) && std::isfinite(c.y) && std::isfinite(c.z) && std::isfinite(in.radiusW);
-}
-
-bool finite16(const float w[16]) {
-    for (int k = 0; k < 16; ++k)
-        if (!std::isfinite(w[k])) return false;
-    return true;
-}
-
 /// The shared index buffer for one sample count.
 struct GridIB {
     ComPtr<ID3D11Buffer> ib;
@@ -146,8 +104,6 @@ struct WorldView::Impl {
     ComPtr<ID3D11VertexShader> vsInst;
     ComPtr<ID3D11PixelShader> psInst;
     ComPtr<ID3D11InputLayout> ilInst;
-    ComPtr<ID3D11Buffer> instVB;
-    uint32_t instCap = 0;
     ComPtr<ID3D11BlendState> bsAlpha;
     ComPtr<ID3D11DepthStencilState> dssNoWrite;   ///< water: depth-tested, not written
     int w = 1, h = 1;
@@ -168,16 +124,7 @@ struct WorldView::Impl {
     std::vector<MeshGPU> waterMesh;
     std::vector<InstCPU> waterInst;
 
-    /// One (mesh, LOD) draw for this frame.
-    struct Bucket {
-        const MeshGPU* mesh;
-        int lod;
-        const float* tint;
-        float alpha;
-        std::vector<const InstCPU*> insts;
-    };
-    std::vector<Bucket> buckets;   ///< rebuilt every frame
-    std::vector<int> bucketOf;
+    InstancedBatch batch;   ///< this frame's instanced draw
 
     // Lighting (MapEnvRig layout; defaults are the fly view's).
     float sunDir[3], sunColor[3], fillColor[3];
@@ -295,28 +242,6 @@ struct WorldView::Impl {
     /// While lost, nothing touches the device (device_lost() semantics).
     bool gpu_ok() const { return dev && !lost; }
 
-    /// Immutable vertex + index buffers for one prepared mesh.
-    bool upload_mesh(const PreparedModel& p, MeshGPU& out) {
-        if (!p.ok || p.verts.empty() || p.indices.empty()) return false;
-        D3D11_BUFFER_DESC bd{};
-        bd.Usage = D3D11_USAGE_IMMUTABLE;
-        bd.ByteWidth = static_cast<UINT>(p.verts.size() * sizeof(MapVtx));
-        bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-        D3D11_SUBRESOURCE_DATA sd{p.verts.data(), 0, 0};
-        MeshGPU m;
-        if (FAILED(dev->CreateBuffer(&bd, &sd, &m.vb))) return false;
-        bd.ByteWidth = static_cast<UINT>(p.indices.size() * sizeof(uint32_t));
-        bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
-        sd.pSysMem = p.indices.data();
-        if (FAILED(dev->CreateBuffer(&bd, &sd, &m.ib))) return false;
-        m.lodRanges = p.lodRanges;
-        std::memcpy(m.center, p.center, sizeof m.center);
-        m.radius = p.radius;
-        m.ok = true;
-        out = std::move(m);
-        return true;
-    }
-
     /// One quad over [x0,x1] x [y0,y1] at height z, facing up (-Z), with one
     /// identity instance.
     void build_water(float x0, float y0, float x1, float y1, float z) {
@@ -335,124 +260,12 @@ struct WorldView::Impl {
         q.radius = std::max(0.5f * std::hypot(x1 - x0, y1 - y0), 1.0f);
         q.ok = true;
         MeshGPU m;
-        if (!upload_mesh(q, m)) return;
+        if (!upload_mesh(dev.Get(), q, m)) return;
         waterMesh.push_back(std::move(m));
         InstCPU in;
         in.world = identity();
         place(in, waterMesh[0]);
         waterInst.push_back(in);
-    }
-
-    bool ensure_inst_capacity(uint32_t need) {
-        if (instVB && instCap >= need) return true;
-        const uint32_t cap = std::max<uint32_t>(need + need / 2, 4096);
-        D3D11_BUFFER_DESC bd{};
-        bd.Usage = D3D11_USAGE_DYNAMIC;
-        bd.ByteWidth = cap * sizeof(InstGPU);
-        bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-        bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        ComPtr<ID3D11Buffer> nb;
-        if (FAILED(dev->CreateBuffer(&bd, nullptr, &nb))) return false;
-        instVB = nb;
-        instCap = cap;
-        return true;
-    }
-
-    /// Culls @p insts (distance, then frustum sphere), picks a LOD by screen
-    /// size as render_fly does, and appends them to this frame's buckets.
-    /// Returns how many survived.
-    int cull_into(const std::vector<InstCPU>& insts, const std::vector<MeshGPU>& meshes, const float* tint,
-                  float alpha, const WorldCamera& cam, float farD, const float planes[6][4]) {
-        bucketOf.assign(meshes.size() * 4, -1);
-        int visible = 0;
-        for (const InstCPU& in : insts) {
-            if (!in.ready || in.mesh >= meshes.size()) continue;   // model not streamed in yet
-            const MeshGPU& m = meshes[in.mesh];
-            if (!m.ok) continue;
-            const float dx = in.centerW[0] - cam.pos[0], dy = in.centerW[1] - cam.pos[1],
-                        dz = in.centerW[2] - cam.pos[2];
-            const float d2 = dx * dx + dy * dy + dz * dz, reach = farD + in.radiusW;
-            if (d2 > reach * reach) continue;   // one compare; rejects most of a big map
-            bool out = false;
-            for (int p = 0; p < 6 && !out; ++p)
-                out = planes[p][0] * in.centerW[0] + planes[p][1] * in.centerW[1] + planes[p][2] * in.centerW[2] +
-                          planes[p][3] < -in.radiusW;
-            if (out) continue;
-            const int maxLod = static_cast<int>(m.lodRanges.size()) - 1;
-            int lod = 0;
-            if (maxLod > 0) {
-                const float sr = in.radiusW / std::sqrt(std::max(d2, 1e-4f));   // ~ tan(angular radius)
-                lod = (sr > 0.20f) ? 0 : (sr > 0.06f ? 1 : (sr > 0.02f ? 2 : 3));
-                lod = std::min(lod, maxLod);
-            }
-            const size_t key = static_cast<size_t>(in.mesh) * 4 + static_cast<size_t>(lod);
-            if (bucketOf[key] < 0) {
-                bucketOf[key] = static_cast<int>(buckets.size());
-                buckets.push_back({&m, lod, tint, alpha, {}});
-            }
-            buckets[static_cast<size_t>(bucketOf[key])].insts.push_back(&in);
-            ++visible;
-        }
-        return visible;
-    }
-
-    /// Uploads every bucketed instance in one Map and issues one
-    /// DrawIndexedInstanced per bucket; translucent buckets (pushed last)
-    /// switch to alpha blending without depth writes. Returns draw calls.
-    int draw_buckets(size_t& tris) {
-        uint32_t total = 0;
-        for (const Bucket& b : buckets) total += static_cast<uint32_t>(b.insts.size());
-        if (total == 0 || !ensure_inst_capacity(total)) return 0;
-        D3D11_MAPPED_SUBRESOURCE ms;
-        if (FAILED(ctx->Map(instVB.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return 0;
-        auto* dst = static_cast<InstGPU*>(ms.pData);
-        std::vector<uint32_t> first(buckets.size());
-        uint32_t off = 0;
-        for (size_t b = 0; b < buckets.size(); ++b) {
-            first[b] = off;
-            for (const InstCPU* in : buckets[b].insts) {
-                // Column c of the row-vector W (W[r][c] = m[r*4+c]), so that
-                // world_c = dot((p,1), column c) -- the fly view's pack_inst.
-                const float* m = in->world.m;
-                InstGPU& o = dst[off++];
-                float* cols[3] = {o.r0, o.r1, o.r2};
-                for (int c = 0; c < 3; ++c)
-                    for (int r = 0; r < 4; ++r) cols[c][r] = m[r * 4 + c];
-                for (int k = 0; k < 3; ++k) o.tint[k] = buckets[b].tint[k];
-                o.tint[3] = buckets[b].alpha;
-            }
-        }
-        ctx->Unmap(instVB.Get(), 0);
-
-        ctx->IASetInputLayout(ilInst.Get());
-        ctx->VSSetShader(vsInst.Get(), nullptr, 0);
-        ctx->PSSetShader(psInst.Get(), nullptr, 0);
-        bool blending = false;
-        int draws = 0;
-        for (size_t b = 0; b < buckets.size(); ++b) {
-            const Bucket& bk = buckets[b];
-            if (bk.lod >= static_cast<int>(bk.mesh->lodRanges.size())) continue;
-            const auto range = bk.mesh->lodRanges[static_cast<size_t>(bk.lod)];
-            if (range.second == 0) continue;
-            if (bk.alpha < 1.0f && !blending) {
-                ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xffffffff);
-                ctx->OMSetDepthStencilState(dssNoWrite.Get(), 0);
-                blending = true;
-            }
-            ID3D11Buffer* vbs[] = {bk.mesh->vb.Get(), instVB.Get()};
-            const UINT strides[] = {sizeof(MapVtx), sizeof(InstGPU)};
-            const UINT offsets[] = {0, first[b] * static_cast<UINT>(sizeof(InstGPU))};
-            ctx->IASetVertexBuffers(0, 2, vbs, strides, offsets);
-            ctx->IASetIndexBuffer(bk.mesh->ib.Get(), DXGI_FORMAT_R32_UINT, 0);
-            ctx->DrawIndexedInstanced(range.second, static_cast<UINT>(bk.insts.size()), range.first, 0, 0);
-            ++draws;
-            tris += static_cast<size_t>(range.second / 3) * bk.insts.size();
-        }
-        if (blending) {
-            ctx->OMSetBlendState(nullptr, nullptr, 0xffffffff);
-            ctx->OMSetDepthStencilState(dss.Get(), 0);
-        }
-        return draws;
     }
 
     const GridIB* grid_ib(int n) {
@@ -597,14 +410,15 @@ struct WorldView::Impl {
 
         // Props, then collision, then water: the translucent plane goes last
         // so everything under it is already in the depth buffer.
-        buckets.clear();
+        batch.clear();
         if (layers[static_cast<int>(WorldLayer::Props)])
-            visible += cull_into(props, models, kPropTint, 1.0f, cam, farD, planes);
+            visible += batch.cull_into(props, models, kPropTint, 1.0f, cam, farD, planes);
         if (layers[static_cast<int>(WorldLayer::Collision)])
-            visible += cull_into(colInsts, colMeshes, kCollisionTint, 1.0f, cam, farD, planes);
+            visible += batch.cull_into(colInsts, colMeshes, kCollisionTint, 1.0f, cam, farD, planes);
         if (layers[static_cast<int>(WorldLayer::Water)])
-            visible += cull_into(waterInst, waterMesh, kWaterTint, kWaterAlpha, cam, farD, planes);
-        draws += draw_buckets(tris);
+            visible += batch.cull_into(waterInst, waterMesh, kWaterTint, kWaterAlpha, cam, farD, planes);
+        const InstPipeline pl{ilInst.Get(), vsInst.Get(), psInst.Get(), bsAlpha.Get(), dssNoWrite.Get(), dss.Get()};
+        draws += batch.draw(dev.Get(), ctx.Get(), pl, tris);
 
         st.visible = visible;
         st.draws = draws;
@@ -720,22 +534,7 @@ void WorldView::set_world(const castlemist::world::WorldScene& s) {
     if (!d->gpu_ok()) return;
 
     // Collision: each mesh prepared across cores, uploaded once.
-    const auto& C = s.collision;
-    {
-        std::vector<PreparedModel> prep(C.meshes.size());
-        parallel_for(C.meshes.size(), [&](size_t i) { prep[i] = prepare_collision_mesh(C.meshes[i]); });
-        d->colMeshes.resize(C.meshes.size());
-        for (size_t i = 0; i < prep.size(); ++i) d->upload_mesh(prep[i], d->colMeshes[i]);
-    }
-    for (const auto& ci : C.instances) {
-        if (ci.mesh >= d->colMeshes.size() || !d->colMeshes[ci.mesh].ok || !finite16(ci.world)) continue;
-        InstCPU in;
-        in.mesh = ci.mesh;
-        in.world = colmajor_to_rowvec(ci.world);
-        in.scale = max_column_length(ci.world);
-        place(in, d->colMeshes[ci.mesh]);
-        if (in.ready) d->colInsts.push_back(in);
-    }
+    upload_collision(d->dev.Get(), s.collision, d->colMeshes, d->colInsts);
 
     // Water: one plane at the stored height over the map bounds (or, with no
     // bounds, the extent so far). Where the game draws water is UNPROVEN (§6.2).
@@ -764,7 +563,7 @@ void WorldView::add_models(const std::vector<std::pair<uint32_t, std::shared_ptr
     parallel_for(todo.size(), [&](size_t k) { prep[k] = prepare_world_model(*batch[todo[k]].second); });
     for (size_t k = 0; k < todo.size(); ++k) {
         const uint32_t m = batch[todo[k]].first;
-        if (!d->upload_mesh(prep[k], d->models[m])) { ++d->st.modelsFailed; continue; }
+        if (!upload_mesh(d->dev.Get(), prep[k], d->models[m])) { ++d->st.modelsFailed; continue; }
         ++d->st.modelsLoaded;
         d->previews[m] = batch[todo[k]].second;
         for (uint32_t pi : d->instOf[m]) place(d->props[pi], d->models[m]);
