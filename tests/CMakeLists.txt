@@ -109,6 +109,11 @@ castlemist_add_test(sim
     SOURCES test_sim_cloth.cpp
     DEPS    castlemist::sim)
 
+castlemist_add_test(npc
+    SOURCES test_npc.cpp
+    DEPS    castlemist::npc
+    PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/npc")
+
 castlemist_add_test(exportgltf
     SOURCES test_exportgltf_writer.cpp test_exportgltf_vrchat.cpp test_exportgltf_sky.cpp
     DEPS    castlemist::exportgltf ext::json
