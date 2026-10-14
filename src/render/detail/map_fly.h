@@ -27,26 +27,13 @@
 #include "castlemist/render/model_renderer.h"
 
 #include "detail/math.h"
+#include "detail/mesh_bake.h"
 
 namespace castlemist::render {
 
 using Microsoft::WRL::ComPtr;
 
-/// @brief One static map vertex: 16 bytes, versus GVertex's 144.
-///
-/// Nine times smaller than the renderer's general vertex, which matters here
-/// because a map is bandwidth-bound long before it is ALU-bound. Everything the
-/// shading needs is position, normal and occlusion; UVs, tangents, bitangents
-/// and skinning weights are all dead weight for a mesh-only view.
-struct MapVtx {
-    float px, py, pz;         ///< Model-space position (offset 0).
-    /// @name Normal + AO, packed as R8G8B8A8_UNORM at offset 12
-    /// @brief `nx/ny/nz` are `normal * 0.5 + 0.5`; `ao` is the baked occlusion.
-    /// @{
-    uint8_t nx, ny, nz, ao;
-    /// @}
-};
-static_assert(sizeof(MapVtx) == 16, "MapVtx must stay 16 bytes -- the input layout hardcodes the stride");
+// MapVtx (the 16-byte static vertex) lives in detail/mesh_bake.h.
 
 /// @brief Per-instance stream entry: the world transform, as three float4s.
 ///
