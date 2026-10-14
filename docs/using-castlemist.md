@@ -179,7 +179,7 @@ the map first). A fall that goes too far returns you to the last safe ground.
 
 **Layers.** The **Terrain**, **Props**, **Collision** and **Water** check boxes
 show or hide each layer. Collision is off by default: it is the map's physics
-mesh, 988,986 triangles on Queensdale (2,078,522 with the terrain), and uploads to the GPU only the first
+mesh, 988,986 triangles on Queensdale (world_dat test output; 2,078,522 with the terrain), and uploads to the GPU only the first
 time you turn it on. The water is a single plane at the stored height.
 
 **Picking.** Left-click (without dragging) a prop to open its model in the main

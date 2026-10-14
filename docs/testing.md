@@ -111,9 +111,18 @@ The struct template is found by climbing from the exe's directory (up to the
 repository's `dumps/packfile/`) and from the working directory, so run it from
 the repository root or leave the build tree in place.
 
-Loading dominates the run. Measured totals (world + collision + all models):
-Queensdale (192711) about 163 s, Lion's Arch (191000) about 183 s, Spirit Vale
-(1151420) about 65 s. Each prop's dat lookup is a linear MFT scan and its
+Loading dominates the run. Measured 2026-10-14, debug build, against the
+2026-10-14 client (the stats line in `mapwin.txt`; "total" is world +
+collision + all models):
+
+| map | fileId | models loaded/failed | models s | total s | collision tris (incl. terrain) |
+| --- | ------ | -------------------- | -------- | ------- | ------------------------------ |
+| Queensdale | 192711 | 2146/35 | 155.7 | 162.6 | 2,078,522 |
+| Lion's Arch | 191000 | 1651/48 | 174.8 | 182.6 | 4,939,935 |
+| Spirit Vale | 1151420 | 380/12 | 60.0 | 65.0 | 2,529,506 |
+
+Lion's Arch was measured before the loader shared one dat (R13); the other two
+rows were measured after. Each prop's dat lookup is a linear MFT scan and its
 textures are decoded and then discarded, so props stream in slowly; sub-project
 3's texture cache is the natural fix. Interactive input (fly, walk, pick, the
 layer toggles, the prompt) has only been exercised by this capture and the unit

@@ -220,7 +220,7 @@ left as written; this list wins where they disagree.
   window recreates the view and re-adds the loaded models.
 - **`pick()` returns the `scene.props` index** (`InstCPU::source`), not a
   per-view instance number.
-- **Load-time gap.** Models stream in over 60-156 s per map (total load 65-183 s on the three test maps, see docs/testing.md). Each lookup is a
+- **Load-time gap.** Models stream in over 60-175 s per map (total 65-183 s; see docs/testing.md, The Map window). Each lookup is a
   linear MFT scan and textures are decoded then discarded. Recorded as a
   follow-up; sub-project 3's texture cache is the natural fix.
 - **Not tried by hand.** Interactive input (fly, walk, pick, layer toggles, the
