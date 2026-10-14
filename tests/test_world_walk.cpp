@@ -434,3 +434,36 @@ CM_TEST(walk, large_dt_is_clamped_no_tunnel) {
     CHECK(r.grounded);
     CHECK_NEAR(a[2], -120.0f, 0.5f);
 }
+
+CM_TEST(walk, sweep_catches_fast_fall) {
+    const auto idx = flat_floor();
+    Walker w(&idx);
+    float pos[3] = {0, 0, -7000};   // < maxFall from the fallback, > 400 per frame at the end
+    w.reset(pos);
+    float maxDrop = 0;
+    bool tooLow = false;
+    for (int i = 0; i < 300; ++i) {
+        const float before = pos[2];
+        w.step(pos, kNoMove, 0.1f);
+        maxDrop = std::max(maxDrop, pos[2] - before);
+        if (pos[2] > -120.0f + 0.5f) tooLow = true;
+    }
+    CHECK(maxDrop > 400.0f);   // a single frame really did exceed the unswept ray reach
+    CHECK_FALSE(tooLow);
+    CHECK(w.grounded());
+    CHECK_NEAR(pos[2], -120.0f, 0.5f);
+}
+
+CM_TEST(walk, low_ceiling_is_not_ground) {
+    std::vector<float> t;
+    quad(t, -1000, -1000, 1000, 1000, 0);
+    quad(t, -1000, -1000, 1000, 1000, -200);
+    const auto idx = CollisionIndex::from_triangles(t, {});
+    Walker w(&idx);
+    float pos[3] = {0, 0, -120};
+    w.reset(pos);
+    StepResult r;
+    for (int i = 0; i < 120; ++i) r = w.step(pos, kNoMove, kDt);
+    CHECK(r.grounded);
+    CHECK_NEAR(pos[2], -120.0f, 0.5f);
+}

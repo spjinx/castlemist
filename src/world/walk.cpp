@@ -246,7 +246,7 @@ bool Walker::snap_to_ground(float pos[3]) {
     pos[2] = hit->point[2] - p_.eyeHeight;
     grounded_ = true;
     vy_ = 0;
-    for (int a = 0; a < 3; ++a) safe_[a] = pos[a];
+    for (int a = 0; a < 3; ++a) safe_[a] = fallback_[a] = pos[a];
     hasSafe_ = true;
     return true;
 }
@@ -263,11 +263,16 @@ bool Walker::blocked(const float pos[3], float mx, float my) const {
 }
 
 bool Walker::ground_check(float pos[3], float prevZ) {
-    // Sweep from the higher of the old/new eye so a fast fall cannot skip the floor.
+    // Deliberately differs from T3D's findGroundY: the ray starts at the eye, not
+    // eyeHeight above it, so a ceiling within eyeHeight above the eye is never
+    // taken for ground (T3D would teleport the walker onto it). Steps the wall
+    // probes allow lie between the eye and the feet, so step-ups still work.
+    // The ray is swept from the higher of the old/new eye so a fast fall cannot
+    // skip the floor; length = this frame's travel + 2*eyeHeight.
     const float top = std::min(prevZ, pos[2]), bottom = std::max(prevZ, pos[2]);
-    const float o[3] = {pos[0], pos[1], top - p_.eyeHeight};
+    const float o[3] = {pos[0], pos[1], top};
     const float down[3] = {0, 0, 1};
-    const auto hit = index_->raycast(o, down, (bottom - top) + 3 * p_.eyeHeight, kHitAll);
+    const auto hit = index_->raycast(o, down, (bottom - top) + 2 * p_.eyeHeight, kHitAll);
     if (!hit) return false;
     const float target = hit->point[2] - p_.eyeHeight;
     if (target - pos[2] > p_.groundSnap) return false;   // eye is still above the ground
@@ -294,6 +299,8 @@ StepResult Walker::step(float pos[3], const float horizontalDelta[2], float dt) 
     if (jumpRequested_ && grounded_) vy_ = p_.jumpVelocity;
     jumpRequested_ = false;
     const float prevZ = pos[2];
+    // maxFall doubles as terminal velocity (units/s): with dt <= maxDt a frame moves
+    // at most maxFall*maxDt, which the swept ground ray covers.
     vy_ = std::max(vy_ - p_.gravity * dt, -p_.maxFall);
     pos[2] -= vy_ * dt;
 
