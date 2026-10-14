@@ -100,8 +100,8 @@ in the dump directory, and quits. `GW2_MAPWIN_SHOT=<bmp>` picks where the frame
 goes (default `shot_mapwin.bmp` in the dump directory).
 
 ```bash
-GW2_DAT="E:\Games\gw2\Guild Wars 2\Gw2.dat" GW2_DUMP_DIR=dumps/mapwin 
-GW2_MAPWIN=192711 GW2_MAPWIN_SHOT=dumps/mapwin/queensdale.bmp 
+GW2_DAT="E:\Games\gw2\Guild Wars 2\Gw2.dat" GW2_DUMP_DIR=dumps/mapwin \
+GW2_MAPWIN=192711 GW2_MAPWIN_SHOT=dumps/mapwin/queensdale.bmp \
   ./build/debug/bin/castlemist.exe
 ```
 
