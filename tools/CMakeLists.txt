@@ -45,7 +45,7 @@ castlemist_add_tool(gw2index
 # -----------------------------------------------------------------------------
 castlemist_add_tool(gw2dat_cli
     SOURCES gw2dat_cli/main.cpp
-    DEPS    castlemist::native castlemist::character castlemist::ripper castlemist::db castlemist::world ext::json ext::stb shell32)
+    DEPS    castlemist::native castlemist::character castlemist::ripper castlemist::db castlemist::world castlemist::npc ext::json ext::stb shell32)
 
 # -----------------------------------------------------------------------------
 # world_measure_terrain / world_measure_materials -- the measurement programs

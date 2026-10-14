@@ -76,6 +76,8 @@
 #include "castlemist/character/look_store.h"
 #include "castlemist/character/manifest_json.h"
 #include "castlemist/db/index_db.h"
+#include "castlemist/npc/catalogue.h"
+#include "castlemist/npc/tokens.h"
 #include "castlemist/extract/entry_extractor.h"
 #include "castlemist/exportgltf/gltf_export.h"
 #include "castlemist/exportgltf/sky_export.h"
@@ -1902,6 +1904,86 @@ void ensure_cmap(const Args& a) {
     castlemist::cmap::save(cmap_file.wstring());
 }
 
+// The NPC catalogue: the JSON cache beside the exe (or --npc-cache); failing that,
+// built from the dat's content packs (needs the content map), cached.
+castlemist::npc::Catalogue ensure_npc(const Args& a) {
+    namespace npc = castlemist::npc;
+    std::filesystem::path cache = has(a, "npc-cache") ? std::filesystem::path(utf8_arg("--npc-cache"))
+                                                      : exe_dir() / "npc_catalogue.json";
+    if (std::optional<npc::Catalogue> c = npc::load(cache)) return std::move(*c);
+    ensure_cmap(a);
+    if (!castlemist::cmap::built()) fail("no content map: pass --cmap, or --dat with an index DB");
+    open_index(a);
+    if (!castlemist::db::is_open()) fail("no index DB: pass --index");
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    std::vector<MftData> entries;
+    std::vector<uint32_t> file_ids;
+    for (uint32_t b : castlemist::db::query_base_ids("", "cntc", 0, false, false, 100000)) {
+        if (b == 0 || b - 1 >= dat.mft_data_list.size()) continue;
+        entries.push_back(dat.mft_data_list[b - 1]);
+        std::vector<uint32_t> f = get_by_file_id(dat, b);
+        file_ids.push_back(f.empty() ? 0 : *std::min_element(f.begin(), f.end()));
+    }
+    auto container_of = [&](uint32_t fid) {
+        uint32_t b = get_by_base_id(dat, fid);
+        return b ? castlemist::db::lookup(b).container : std::string();
+    };
+    npc::Catalogue cat = npc::build_catalogue(dat.file_info.file_path, entries, file_ids, container_of, nullptr);
+    npc::save(cat, cache);
+    return cat;
+}
+
+json npc_json(const castlemist::npc::NpcRecord& n) {
+    json weapons = json::array();
+    for (const auto& w : n.weapons)
+        weapons.push_back({{"slot", w.slot}, {"item", w.item}, {"skin", w.skin}, {"model", w.model}});
+    return {{"id", n.id}, {"codename", n.codename}, {"model", n.model}, {"race", n.race},
+            {"modifier", n.modifier}, {"weapons", weapons}, {"skills", n.skills}};
+}
+
+// The NPC catalogue: --model F (body model fileId), --race R, --limit N (default 100).
+void cmd_npc_list(const Args& a) {
+    castlemist::npc::Catalogue cat = ensure_npc(a);
+    const size_t limit = has(a, "limit") ? static_cast<size_t>(to_u64(a.at("limit"))) : 100;
+    const bool by_model = has(a, "model");
+    const uint32_t model = by_model ? static_cast<uint32_t>(to_u64(a.at("model"))) : 0;
+    const std::string race = has(a, "race") ? a.at("race") : std::string();
+    json npcs = json::array();
+    for (const auto& n : cat.npcs) {
+        if (npcs.size() >= limit) break;
+        if (by_model && n.model != model) continue;
+        if (has(a, "race") && n.race != race) continue;
+        npcs.push_back(npc_json(n));
+    }
+    const castlemist::npc::Coverage c = cat.coverage();
+    emit({{"ok", true},
+          {"coverage", {{"npcs", c.npcs}, {"with_model", c.with_model}, {"with_race", c.with_race},
+                        {"with_weapons", c.with_weapons}, {"with_skills", c.with_skills}}},
+          {"warnings", cat.warnings}, {"npcs", npcs}});
+}
+
+// One NPC, plus its body model's animation clips (needs --dat).
+void cmd_npc_show(const Args& a) {
+    castlemist::npc::Catalogue cat = ensure_npc(a);
+    const uint32_t id = static_cast<uint32_t>(to_u64(need(a, "id")));
+    const castlemist::npc::NpcRecord* n = cat.find(id);
+    if (!n) fail("no npc with id " + std::to_string(id));
+    json j = npc_json(*n);
+    json clips = json::array();
+    if (n->model && has(a, "dat")) {
+        Gw2Dat dat;
+        load_dat_file(dat, a.at("dat"));
+        if (auto pv = load_model_by_fileid(dat, n->model))
+            for (const auto& c : pv->animClips)
+                clips.push_back({{"name", c.name}, {"group", castlemist::npc::clip_group(c.name)},
+                                 {"prefix", castlemist::npc::clip_prefix(c.name)}, {"duration", c.duration}});
+    }
+    j["ok"] = true;
+    j["clips"] = clips;
+    emit(j);
+}
+
 // What uses a file: the content objects that list --file-id (or --base-id's
 // fileIds) as an asset, each with its chat link and the items that grant it.
 // --names adds display names from the public GW2 API (goes online, no key).
@@ -2453,6 +2535,8 @@ int main(int argc, char** argv) {
         else if (cmd == "cntc-dump") cmd_cntc_dump(a);
         else if (cmd == "palette") cmd_palette(a);
         else if (cmd == "users") cmd_users(a);
+        else if (cmd == "npc-list") cmd_npc_list(a);
+        else if (cmd == "npc-show") cmd_npc_show(a);
         else if (cmd == "look-options") cmd_look_options(a);
         else if (cmd == "composite-types") cmd_composite_types(a);
         else if (cmd == "look-set") cmd_look_set(a);
