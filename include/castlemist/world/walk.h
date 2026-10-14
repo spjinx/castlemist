@@ -62,4 +62,43 @@ private:
     void finish();                      ///< compute bounds and fill the grid
 };
 
+/// @brief Tunables for the Walker; defaults follow T3D's PhysicsController.
+struct WalkParams {
+    float gravity = 2800, jumpVelocity = 900, eyeHeight = 120, padding = 18,
+          groundSnap = 6, maxFall = 8000;
+    float probeBelowEye[3] = {0, 60, 108};   ///< wall probes, distance below the eye
+    float maxDt = 0.1f;                      ///< frame time clamp
+};
+
+/// @brief Outcome of one Walker step.
+struct StepResult {
+    bool grounded = false;
+    bool recovered = false;   ///< fell too far and was returned to a safe position
+    bool gaveUp = false;      ///< recovery failed: no ground at the safe/fallback position
+};
+
+/// @brief First-person walk controller over a CollisionIndex (up = -Z). `pos` is
+///        the eye position. Behaviour re-derived from T3D's PhysicsController
+///        (explorer/src/scene/physics-controller.ts, commit b3428b2).
+class Walker {
+public:
+    explicit Walker(const CollisionIndex* index, WalkParams p = {});
+    void reset(const float pos[3]);          ///< fallback = pos; clears motion
+    bool snap_to_ground(float pos[3]);       ///< highest surface under XY; eye = ground - eyeHeight
+    void jump() { jumpRequested_ = true; }   ///< honoured on the next step only if grounded
+    StepResult step(float pos[3], const float horizontalDelta[2], float dt);
+    bool grounded() const { return grounded_; }
+    float vertical_velocity() const { return vy_; }   ///< positive = moving up (toward -Z)
+
+private:
+    const CollisionIndex* index_;
+    WalkParams p_;
+    bool grounded_ = false, jumpRequested_ = false, hasSafe_ = false;
+    float vy_ = 0;
+    float fallback_[3] = {0, 0, 0}, safe_[3] = {0, 0, 0};
+
+    bool blocked(const float pos[3], float mx, float my) const;
+    bool ground_check(float pos[3], float prevZ);   ///< snaps pos z when within groundSnap
+};
+
 } // namespace castlemist::world

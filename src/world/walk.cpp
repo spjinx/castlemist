@@ -221,4 +221,106 @@ std::optional<RayHit> CollisionIndex::raycast(const float origin[3], const float
     return hit;
 }
 
+// ---- Walker ----------------------------------------------------------------
+// Behaviour follows T3D's PhysicsController (explorer/src/scene/physics-controller.ts,
+// commit b3428b2; GPL-3, re-derived here, not copied), adapted from Y-up to up = -Z.
+
+Walker::Walker(const CollisionIndex* index, WalkParams p) : index_(index), p_(p) {}
+
+void Walker::reset(const float pos[3]) {
+    for (int a = 0; a < 3; ++a) fallback_[a] = pos[a];
+    hasSafe_ = false;
+    grounded_ = false;
+    jumpRequested_ = false;
+    vy_ = 0;
+}
+
+bool Walker::snap_to_ground(float pos[3]) {
+    if (!index_ || index_->empty()) return false;
+    float lo[3], hi[3];
+    index_->bounds(lo, hi);
+    const float o[3] = {pos[0], pos[1], lo[2] - 1.0f};
+    const float down[3] = {0, 0, 1};
+    const auto hit = index_->raycast(o, down, hi[2] - lo[2] + 2.0f, kHitAll);
+    if (!hit) return false;
+    pos[2] = hit->point[2] - p_.eyeHeight;
+    grounded_ = true;
+    vy_ = 0;
+    for (int a = 0; a < 3; ++a) safe_[a] = pos[a];
+    hasSafe_ = true;
+    return true;
+}
+
+bool Walker::blocked(const float pos[3], float mx, float my) const {
+    const float dist = std::sqrt(mx * mx + my * my);
+    if (!(dist > 0)) return false;
+    const float dir[3] = {mx, my, 0};
+    for (float off : p_.probeBelowEye) {
+        const float o[3] = {pos[0], pos[1], pos[2] + off};
+        if (index_->raycast(o, dir, dist + p_.padding, kHitCollision)) return true;
+    }
+    return false;
+}
+
+bool Walker::ground_check(float pos[3], float prevZ) {
+    // Sweep from the higher of the old/new eye so a fast fall cannot skip the floor.
+    const float top = std::min(prevZ, pos[2]), bottom = std::max(prevZ, pos[2]);
+    const float o[3] = {pos[0], pos[1], top - p_.eyeHeight};
+    const float down[3] = {0, 0, 1};
+    const auto hit = index_->raycast(o, down, (bottom - top) + 3 * p_.eyeHeight, kHitAll);
+    if (!hit) return false;
+    const float target = hit->point[2] - p_.eyeHeight;
+    if (target - pos[2] > p_.groundSnap) return false;   // eye is still above the ground
+    pos[2] = target;                                     // standing, or snapped up/onto a step
+    return true;
+}
+
+StepResult Walker::step(float pos[3], const float horizontalDelta[2], float dt) {
+    StepResult res;
+    if (!index_) return res;
+    dt = std::clamp(dt, 0.0f, p_.maxDt);
+
+    // Horizontal: full delta, else each axis on its own (slide).
+    const float dx = horizontalDelta[0], dy = horizontalDelta[1];
+    if (dx != 0 || dy != 0) {
+        if (!blocked(pos, dx, dy)) { pos[0] += dx; pos[1] += dy; }
+        else {
+            if (dx != 0 && !blocked(pos, dx, 0)) pos[0] += dx;
+            if (dy != 0 && !blocked(pos, 0, dy)) pos[1] += dy;
+        }
+    }
+
+    // Vertical.
+    if (jumpRequested_ && grounded_) vy_ = p_.jumpVelocity;
+    jumpRequested_ = false;
+    const float prevZ = pos[2];
+    vy_ = std::max(vy_ - p_.gravity * dt, -p_.maxFall);
+    pos[2] -= vy_ * dt;
+
+    grounded_ = false;
+    if (vy_ <= 0 && ground_check(pos, prevZ)) {
+        grounded_ = true;
+        vy_ = 0;
+        for (int a = 0; a < 3; ++a) safe_[a] = pos[a];
+        hasSafe_ = true;
+    }
+
+    // Fall safety.
+    if (!grounded_) {
+        const float* ref = hasSafe_ ? safe_ : fallback_;
+        if (pos[2] > ref[2] + p_.maxFall) {
+            for (int a = 0; a < 3; ++a) pos[a] = ref[a];
+            vy_ = 0;
+            if (ground_check(pos, pos[2])) {
+                grounded_ = true;
+                res.recovered = true;
+            } else {
+                res.gaveUp = true;
+            }
+        }
+    }
+    res.grounded = grounded_;
+    return res;
+}
+
 } // namespace castlemist::world
