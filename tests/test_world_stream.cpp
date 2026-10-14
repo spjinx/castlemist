@@ -151,3 +151,66 @@ CM_TEST(terrain, normals_seam_continuous_y) {
         for (int c = 0; c < 3; ++c)
             CHECK_NEAR(a[(size_t(n - 1) * n + i) * 3 + c], b[size_t(i) * 3 + c], 1e-4);
 }
+
+CM_TEST(stream, rank_subset_by_camera) {
+    WorldScene s;
+    s.models.resize(5);
+    for (uint32_t i = 0; i < 4; ++i) add_prop(s, i, float(i) * 1000);   // model i at x = 1000 i; model 4 uninstanced
+    std::vector<uint32_t> subset = {4, 3, 1, 2};
+    const float camA[3] = {0, 0, 0};
+    rank_models(s, camA, subset);
+    CHECK(subset == (std::vector<uint32_t>{1, 2, 3, 4}));
+    const float camB[3] = {3100, 0, 0};
+    rank_models(s, camB, subset);
+    CHECK(subset == (std::vector<uint32_t>{3, 2, 1, 4}));
+}
+
+CM_TEST(stream, rank_subset_ties_by_index) {
+    WorldScene s;
+    s.models.resize(3);
+    add_prop(s, 2, 100);
+    add_prop(s, 0, -100);
+    add_prop(s, 1, 100);
+    std::vector<uint32_t> subset = {2, 1, 0};
+    const float cam[3] = {0, 0, 0};
+    rank_models(s, cam, subset);
+    CHECK(subset == (std::vector<uint32_t>{0, 1, 2}));
+}
+
+CM_TEST(stream, queue_follows_the_camera_and_never_repeats) {
+    WorldScene s;
+    s.models.resize(6);
+    for (uint32_t i = 0; i < 6; ++i) add_prop(s, i, float(i) * 1000);
+    const float start[3] = {0, 0, 0};
+    ModelQueue q(s, start);
+    CHECK_EQ(q.remaining(), size_t(6));
+    uint32_t m = 99;
+    CHECK(q.pop(m) && m == 0);
+    CHECK(q.pop(m) && m == 1);
+    // The camera flies to the far end: the remainder re-sorts around it.
+    const float far[3] = {5000, 0, 0};
+    q.reorder(far);
+    CHECK_EQ(q.remaining(), size_t(4));
+    std::vector<uint32_t> rest;
+    while (q.pop(m)) rest.push_back(m);
+    CHECK(rest == (std::vector<uint32_t>{5, 4, 3, 2}));   // 0 and 1 were taken: never again
+    CHECK_EQ(q.remaining(), size_t(0));
+    q.reorder(start);
+    CHECK_FALSE(q.pop(m));
+}
+
+CM_TEST(stream, queue_reorder_between_pops_keeps_every_model_once) {
+    WorldScene s;
+    s.models.resize(8);
+    for (uint32_t i = 0; i < 8; ++i) add_prop(s, i, float((i * 37) % 8) * 500);
+    const float c0[3] = {0, 0, 0}, c1[3] = {4000, 0, 0};
+    ModelQueue q(s, c0);
+    std::vector<int> seen(8, 0);
+    uint32_t m;
+    int step = 0;
+    while (q.pop(m)) {
+        ++seen[m];
+        q.reorder((step++ % 2) ? c0 : c1);
+    }
+    for (int c : seen) CHECK_EQ(c, 1);
+}
