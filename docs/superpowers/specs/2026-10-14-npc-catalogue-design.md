@@ -83,8 +83,9 @@ that moves a field shows up as a drop in coverage.
   model's imported animation banks. Clip names are the Granny names (e.g.
   `wgalunge08`).
 - For browsing, each clip gets a grouping key: the name with trailing digits
-  and spaces removed and, when it starts with three letters, those three
-  letters split off as a prefix (`wga` + `lunge`). This is only a grouping;
+  and spaces removed and, when it ended in a variant number and starts with
+  three letters, those three letters split off as a prefix (`wga` + `lunge`;
+  `zeropose` stays whole). This is only a grouping;
   how the client picks a clip for a skill is unproven, so nothing claims a
   skill-to-clip link.
 
