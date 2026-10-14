@@ -333,11 +333,28 @@ void apply_layer_buttons(MapWin& m) {
     m.dirty = true;
 }
 
+void headless_capture(MapWin& m);
+
+/// No device: as a first-time creation failure, a message (none when
+/// headless, which writes its ok=0 stats line instead), then the window
+/// closes. The close is posted, not done here, because callers of
+/// render_now keep using @p m until they return.
+void device_failed(MapWin& m, const char* why) {
+    m.viewOk = false;
+    m.error = why;
+    if (m.headless) {
+        if (!m.captured) headless_capture(m);
+    } else {
+        MessageBoxW(m.wnd, L"The Direct3D 11 device for the Map window was lost and could not be recreated.",
+                    L"Map Window", MB_ICONERROR);
+    }
+    PostMessageW(m.wnd, WM_CLOSE, 0, 0);
+}
+
 /// After a removed device: a new device, the world again, every model kept.
 void recover_device(MapWin& m) {
     if (!m.view.create(m.surface)) {
-        m.viewOk = false;
-        m.error = "Direct3D device lost and could not be recreated";
+        device_failed(m, "Direct3D device lost and could not be recreated");
         return;
     }
     RECT rc;
@@ -399,7 +416,7 @@ void headless_capture(MapWin& m) {
                   "map=%u ok=%d models=%zu loaded=%d failed=%d props=%zu visible=%d draws=%d ktris=%d ms=%.2f "
                   "chunks=%d collisionTris=%zu warnings=%zu world_s=%.2f collision_s=%.2f models_s=%.2f total_s=%.2f "
                   "shot=%d timeout=%d error=\"%s\"\n",
-                  m.mapFileId, m.scene ? 1 : 0, models_total(m), st.modelsLoaded, st.modelsFailed,
+                  m.mapFileId, (m.scene && m.viewOk) ? 1 : 0, models_total(m), st.modelsLoaded, st.modelsFailed,
                   m.scene ? m.scene->props.size() : size_t(0), st.visible, st.draws, st.ktris, st.ms, st.chunks,
                   m.coll ? m.coll->triangle_count() : size_t(0), m.scene ? m.scene->warnings.size() : size_t(0),
                   m.worldSeconds, m.collSeconds, m.modelsSeconds, elapsed, shot ? 1 : 0,
@@ -614,6 +631,12 @@ LRESULT CALLBACK SurfaceProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
 void destroy_state(HWND hwnd) {
     if (!g_mw || g_mw->wnd != hwnd) return;
     mapwin_next_generation();   // stop every worker of this window; late posts are dropped
+    // Payloads already queued for this window would be discarded with it,
+    // unfreed: take them out now. (Range: WORLD..COLLISION, all three.)
+    static_assert(WM_APP_MAPWIN_MODELS > WM_APP_MAPWIN_WORLD && WM_APP_MAPWIN_COLLISION > WM_APP_MAPWIN_MODELS);
+    MSG q;
+    while (PeekMessageW(&q, hwnd, WM_APP_MAPWIN_WORLD, WM_APP_MAPWIN_COLLISION, PM_REMOVE))
+        mapwin_free_payload(q.message, q.lParam);
     KillTimer(hwnd, TIMER_MW_FRAME);
     KillTimer(hwnd, TIMER_MW_STATUS);
     delete g_mw;
@@ -666,10 +689,10 @@ LRESULT CALLBACK MapWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         case ID_MW_COLLISION:
         case ID_MW_WATER: apply_layer_buttons(*m); break;
         case ID_MW_RESET: frame_map(*m); break;
-        case ID_MW_WARNINGS: layout(*m); break;
+        case ID_MW_WARNINGS: layout(*m); break;   // the panel never keeps focus
         default: return DefWindowProcW(hwnd, msg, wparam, lparam);
         }
-        if (LOWORD(wparam) != ID_MW_WARNINGS) SetFocus(m->surface);   // keys go back to the view
+        SetFocus(m->surface);   // keys (WASD, Space) go back to the view after any toolbar command
         return 0;
     case WM_ACTIVATE: {
         const LRESULT r = DefWindowProcW(hwnd, msg, wparam, lparam);

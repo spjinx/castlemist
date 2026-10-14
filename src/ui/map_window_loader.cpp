@@ -21,6 +21,17 @@ namespace {
 
 std::atomic<uint64_t> g_gen{0};
 
+/// Map window threads still running (mapwin_wait_workers).
+std::atomic<int> g_live{0};
+
+/// Counts one worker thread for its whole body.
+struct LiveThread {
+    LiveThread() { ++g_live; }
+    ~LiveThread() { --g_live; }
+    LiveThread(const LiveThread&) = delete;
+    LiveThread& operator=(const LiveThread&) = delete;
+};
+
 using Clock = std::chrono::steady_clock;
 
 double seconds_since(Clock::time_point t0) {
@@ -42,8 +53,34 @@ bool cancelled(uint64_t gen) { return g_gen.load() != gen; }
 uint64_t mapwin_generation() { return g_gen.load(); }
 uint64_t mapwin_next_generation() { return ++g_gen; }
 
+int mapwin_pool_size(unsigned hw) {
+    // Each worker opens its own Gw2Dat, and each copy of the MFT index is
+    // ~50-70 MB: 31 workers held 1.5-2 GB for nothing. Prop loading is bound
+    // by decoding, not by I/O, and 8 workers already saturate it.
+    return std::min(std::max(1, static_cast<int>(hw) - 1), 8);
+}
+
+void mapwin_free_payload(UINT msg, LPARAM lparam) {
+    switch (msg) {
+    case WM_APP_MAPWIN_WORLD: delete reinterpret_cast<MapWinWorldMsg*>(lparam); break;
+    case WM_APP_MAPWIN_COLLISION: delete reinterpret_cast<MapWinCollisionMsg*>(lparam); break;
+    case WM_APP_MAPWIN_MODELS: delete reinterpret_cast<MapWinModelsMsg*>(lparam); break;
+    default: break;
+    }
+}
+
+bool mapwin_wait_workers(int ms) {
+    const auto until = Clock::now() + std::chrono::milliseconds(ms);
+    while (g_live.load() > 0) {
+        if (Clock::now() >= until) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return true;
+}
+
 void mapwin_start_world(HWND wnd, uint64_t gen, std::string datPath, uint32_t mapFileId) {
     std::thread([wnd, gen, datPath = std::move(datPath), mapFileId]() {
+        LiveThread live;
         auto* r = new MapWinWorldMsg;
         r->gen = gen;
         const auto t0 = Clock::now();
@@ -68,6 +105,7 @@ void mapwin_start_world(HWND wnd, uint64_t gen, std::string datPath, uint32_t ma
 
 void mapwin_start_collision(HWND wnd, uint64_t gen, std::shared_ptr<const castlemist::world::WorldScene> scene) {
     std::thread([wnd, gen, scene = std::move(scene)]() {
+        LiveThread live;
         if (cancelled(gen)) return;
         const auto t0 = Clock::now();
         auto* r = new MapWinCollisionMsg;
@@ -85,12 +123,12 @@ void mapwin_start_collision(HWND wnd, uint64_t gen, std::shared_ptr<const castle
 
 int mapwin_start_models(HWND wnd, uint64_t gen, std::string datPath,
                         std::shared_ptr<const castlemist::world::WorldScene> scene, std::vector<uint32_t> order) {
-    const unsigned hc = std::thread::hardware_concurrency();
-    const int workers = std::max(1, static_cast<int>(hc) - 1);
+    const int workers = mapwin_pool_size(std::thread::hardware_concurrency());
     auto cursor = std::make_shared<std::atomic<size_t>>(0);
     auto list = std::make_shared<const std::vector<uint32_t>>(std::move(order));
     for (int w = 0; w < workers; ++w) {
         std::thread([wnd, gen, datPath, scene, cursor, list]() {
+            LiveThread live;
             constexpr size_t kBatch = 32;
             constexpr auto kInterval = std::chrono::milliseconds(250);
             auto* batch = new MapWinModelsMsg;

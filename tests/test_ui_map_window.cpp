@@ -4,6 +4,7 @@
 #include "test_framework.h"
 
 #include "detail/map_window.h"
+#include "detail/map_window_loader.h"
 
 #include <cmath>
 
@@ -156,4 +157,16 @@ CM_TEST(map_window, input_maps_movement_keys) {
     CHECK_EQ(map_win_key(VK_SHIFT), static_cast<int>(MW_FAST));
     CHECK_EQ(map_win_key(VK_CONTROL), static_cast<int>(MW_SLOW));
     CHECK_EQ(map_win_key('X'), -1);
+}
+
+CM_TEST(map_window, pool_size_is_capped) {
+    CHECK_EQ(mapwin_pool_size(0), 1);    // hardware_concurrency() may report 0
+    CHECK_EQ(mapwin_pool_size(1), 1);
+    CHECK_EQ(mapwin_pool_size(2), 1);
+    CHECK_EQ(mapwin_pool_size(9), 8);
+    CHECK_EQ(mapwin_pool_size(32), 8);
+}
+
+CM_TEST(map_window, wait_workers_with_none_running) {
+    CHECK(mapwin_wait_workers(0));
 }

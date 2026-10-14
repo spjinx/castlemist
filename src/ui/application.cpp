@@ -12,6 +12,7 @@
 
 #include "detail/app_state.h"
 #include "detail/map_window.h"
+#include "detail/map_window_loader.h"
 
 #include <ole2.h>
 
@@ -830,11 +831,18 @@ int run(HINSTANCE hInstance, int cmd_show) {
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        if (accel_table == nullptr || !TranslateAcceleratorW(hwnd, accel_table, &msg)) {
+        // The accelerator (Enter = Search) belongs to the main window only:
+        // Enter in another top-level window (the Map window) must not search.
+        const bool main_msg = msg.hwnd == hwnd || (msg.hwnd && GetAncestor(msg.hwnd, GA_ROOT) == hwnd);
+        if (accel_table == nullptr || !main_msg || !TranslateAcceleratorW(hwnd, accel_table, &msg)) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
     }
+    // Map window threads stop once the window's WM_DESTROY bumps the
+    // generation (model workers between models); give them a moment so none
+    // is still running into process teardown.
+    mapwin_wait_workers(3000);
     OleUninitialize();
     return static_cast<int>(msg.wParam);
 }

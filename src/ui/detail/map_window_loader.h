@@ -36,6 +36,19 @@ namespace castlemist::ui {
 uint64_t mapwin_generation();
 uint64_t mapwin_next_generation();
 
+/// @brief Model pool workers for @p hw hardware threads:
+///        min(max(1, hw - 1), 8). Each worker holds its own dat index.
+int mapwin_pool_size(unsigned hw);
+
+/// @brief Waits up to @p ms for every Map window thread to finish (call after
+///        the message loop, once WM_DESTROY has bumped the generation). True
+///        when none is left.
+bool mapwin_wait_workers(int ms);
+
+/// @brief Frees a worker payload by its message (WM_APP_MAPWIN_*); for
+///        draining the queue of a window being destroyed.
+void mapwin_free_payload(UINT msg, LPARAM lparam);
+
 /// @brief WM_APP_MAPWIN_WORLD: the loaded scene, or the load error.
 struct MapWinWorldMsg {
     uint64_t gen = 0;
@@ -69,7 +82,7 @@ void mapwin_start_world(HWND wnd, uint64_t gen, std::string datPath, uint32_t ma
 ///        WM_APP_MAPWIN_COLLISION.
 void mapwin_start_collision(HWND wnd, uint64_t gen, std::shared_ptr<const castlemist::world::WorldScene> scene);
 
-/// @brief Starts the model pool: max(1, hardware_concurrency - 1) workers,
+/// @brief Starts the model pool: mapwin_pool_size(hardware_concurrency) workers,
 ///        each with its own Gw2Dat, take models from @p order through one
 ///        shared cursor and post batches of up to 32 or every 250 ms.
 /// @return the number of workers started (each posts workerDone once).
