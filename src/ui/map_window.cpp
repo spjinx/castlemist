@@ -669,6 +669,13 @@ LRESULT CALLBACK SurfaceProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
 
 void destroy_state(HWND hwnd) {
     if (!g_mw || g_mw->wnd != hwnd) return;
+    if (g_mw->headless && !g_mw->captured) {
+        // Closed (by hand, or with the main window) before the capture: say
+        // so in the stats line rather than leaving no trace of the run.
+        g_mw->error = "window closed before the capture";
+        g_mw->viewOk = false;   // no render while being destroyed; ok=0
+        headless_capture(*g_mw);
+    }
     mapwin_next_generation();   // stop every worker of this window; late posts are dropped
     // Payloads already queued for this window would be discarded with it,
     // unfreed: take them out now. (Range: WORLD..COLLISION, all three.)
