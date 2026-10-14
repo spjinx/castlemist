@@ -34,7 +34,7 @@ Wire message = `[msgId u16 LE][fields per def]`, no length prefix.
 
 | # | Patch | Status |
 |---|---|---|
-| 2 | **RC4 → identity** — `32→8A` (`xor dl,[..]`→`mov dl,[..]`). Whole channel becomes plaintext. Found by signature; `0x140fef30c` (disable-ASLR) / `0x140ff446c` (live) on the 2026-10 clients | ✅ concrete, signature-anchored |
+| 2 | **RC4 → identity** — `32→8A` (`xor dl,[..]`→`mov dl,[..]`). Whole channel becomes plaintext. Found by signature; `0x140fef30c` (PE ts 1789758548), `0x140ff446c` (1790880995), `0x140ff4e1c` (1791828055, the 2026-10-14 patch) | ✅ concrete, signature-anchored |
 | 1 | Endpoint strings → `127.0.0.1` (`ArenaNetworks.com`, `NCPlatform.net`) | ⚠ best-effort string replace |
 | 3 | Force MsgConn mode 1 (alt to #2) | 🔧 documented, needs call-site disasm |
 | 4 | Portal→AuthSrv open trigger (run fully offline w/o portal) | ⛔ TODO — next RE step |
