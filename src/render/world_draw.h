@@ -37,6 +37,7 @@ struct MeshGPU {
 /// One placed instance. `ready` once its mesh is uploaded (props stream in).
 struct InstCPU {
     uint32_t mesh = 0;
+    uint32_t source = 0;   ///< index in the scene's list (props: what pick() returns)
     Mat4 world{};          ///< row-vector (p' = p W), from colmajor_to_rowvec
     float scale = 1;       ///< max_column_length of the instance matrix
     float centerW[3] = {0, 0, 0};

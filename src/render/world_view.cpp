@@ -117,7 +117,10 @@ struct WorldView::Impl {
     std::vector<std::shared_ptr<const ModelPreview>> previews;   ///< kept for picking
     std::vector<InstCPU> props;
     std::vector<std::vector<uint32_t>> instOf;                   ///< model -> indices into props
-    // Collision: every mesh uploaded once in set_world.
+    // Collision: set_world keeps the CPU copy; ensure_collision() uploads
+    // every mesh once, on first show (ruling R8), and releases the copy.
+    castlemist::world::Collision colSrc;
+    bool colPending = false;
     std::vector<MeshGPU> colMeshes;
     std::vector<InstCPU> colInsts;
     // Water: zero or one quad, one identity instance.
@@ -241,6 +244,17 @@ struct WorldView::Impl {
 
     /// While lost, nothing touches the device (device_lost() semantics).
     bool gpu_ok() const { return dev && !lost; }
+
+    /// Uploads the pending collision (once per set_world). While lost it
+    /// stays pending; the owner recreates the view anyway.
+    void ensure_collision() {
+        if (!colPending || !gpu_ok()) return;
+        upload_collision(dev.Get(), colSrc, colMeshes, colInsts);
+        colPending = false;
+        colSrc = castlemist::world::Collision{};   // release the CPU copy
+        st.collisionMeshes = static_cast<int>(
+            std::count_if(colMeshes.begin(), colMeshes.end(), [](const MeshGPU& m) { return m.ok; }));
+    }
 
     /// One quad over [x0,x1] x [y0,y1] at height z, facing up (-Z), with one
     /// identity instance.
@@ -487,6 +501,8 @@ void WorldView::set_world(const castlemist::world::WorldScene& s) {
     d->previews.assign(s.models.size(), nullptr);
     d->instOf.assign(s.models.size(), {});
     d->props.clear();
+    d->colSrc = castlemist::world::Collision{};
+    d->colPending = false;
     d->colMeshes.clear();
     d->colInsts.clear();
     d->waterMesh.clear();
@@ -515,10 +531,12 @@ void WorldView::set_world(const castlemist::world::WorldScene& s) {
     // Props: recorded now, drawn once add_models brings their model. The
     // extent grows by each translation (ruling R7), so a props-only map
     // frames its props rather than z = 0.
-    for (const auto& p : s.props) {
+    for (size_t pi = 0; pi < s.props.size(); ++pi) {
+        const auto& p = s.props[pi];
         if (p.model >= s.models.size() || !finite16(p.world)) continue;
         InstCPU in;
         in.mesh = p.model;
+        in.source = static_cast<uint32_t>(pi);
         in.world = colmajor_to_rowvec(p.world);
         in.scale = max_column_length(p.world);
         d->instOf[p.model].push_back(static_cast<uint32_t>(d->props.size()));
@@ -533,8 +551,10 @@ void WorldView::set_world(const castlemist::world::WorldScene& s) {
 
     if (!d->gpu_ok()) return;
 
-    // Collision: each mesh prepared across cores, uploaded once.
-    upload_collision(d->dev.Get(), s.collision, d->colMeshes, d->colInsts);
+    // Collision: ~1M triangles on a big map, off by default -- kept on the
+    // CPU here and uploaded when the layer is first shown (ruling R8).
+    d->colSrc = s.collision;
+    d->colPending = true;
 
     // Water: one plane at the stored height over the map bounds (or, with no
     // bounds, the extent so far). Where the game draws water is UNPROVEN (§6.2).
@@ -572,6 +592,7 @@ void WorldView::add_models(const std::vector<std::pair<uint32_t, std::shared_ptr
 
 void WorldView::render(const WorldCamera& cam) {
     if (d->lost || !d->ctx || !d->rtv || !d->dsv) return;
+    if (d->layers[static_cast<int>(WorldLayer::Collision)]) d->ensure_collision();
     d->draw(cam);
     d->lastCam = cam;
     d->hasFrame = true;
@@ -581,7 +602,44 @@ void WorldView::render(const WorldCamera& cam) {
 
 void WorldView::set_layer(WorldLayer l, bool on) {
     const int i = static_cast<int>(l);
-    if (i >= 0 && i < static_cast<int>(WorldLayer::Count)) d->layers[i] = on;
+    if (i < 0 || i >= static_cast<int>(WorldLayer::Count)) return;
+    d->layers[i] = on;
+    if (on && l == WorldLayer::Collision) d->ensure_collision();
+}
+
+int WorldView::pick(int sx, int sy, const WorldCamera& cam) const {
+    if (!d->layers[static_cast<int>(WorldLayer::Props)]) return -1;
+    float o[3], dir[3];
+    world_camera_ray(cam, d->w, d->h, sx, sy, o, dir);
+    // Sphere test first; candidates nearest-entry first, so the exact test
+    // stops once no remaining sphere can beat the best hit.
+    std::vector<std::pair<float, uint32_t>> cand;   // (sphere entry t, index into props)
+    for (uint32_t i = 0; i < d->props.size(); ++i) {
+        const InstCPU& in = d->props[i];
+        if (!in.ready || in.mesh >= d->previews.size() || !d->previews[in.mesh]) continue;
+        const float oc[3] = {in.centerW[0] - o[0], in.centerW[1] - o[1], in.centerW[2] - o[2]};
+        const float tca = oc[0] * dir[0] + oc[1] * dir[1] + oc[2] * dir[2];
+        const float d2 = oc[0] * oc[0] + oc[1] * oc[1] + oc[2] * oc[2] - tca * tca;
+        const float r2 = in.radiusW * in.radiusW;
+        if (!(d2 <= r2)) continue;   // also rejects NaN
+        const float thc = std::sqrt(r2 - d2);
+        if (tca + thc < 0) continue;   // behind the camera
+        cand.emplace_back(std::max(tca - thc, 0.0f), i);
+    }
+    std::sort(cand.begin(), cand.end());
+    int best = -1;
+    float bestT = 0;
+    for (const auto& [enter, i] : cand) {
+        if (best >= 0 && enter > bestT) break;
+        const InstCPU& in = d->props[i];
+        // in.world holds the scene's column-major bytes as-is (colmajor_to_rowvec).
+        const float t = ray_model_hit(*d->previews[in.mesh], in.world.m, o, dir);
+        if (t >= 0 && (best < 0 || t < bestT)) {
+            best = static_cast<int>(in.source);
+            bestT = t;
+        }
+    }
+    return best;
 }
 
 bool WorldView::layer(WorldLayer l) const {
@@ -598,6 +656,7 @@ bool WorldView::save_screenshot(const char* bmpPath) {
     // A DISCARD swap chain's back buffer is undefined after Present, so the
     // last frame is drawn again (same camera) and read before presenting.
     // The redraw must not change what stats() reports about the presented frame.
+    if (d->layers[static_cast<int>(WorldLayer::Collision)]) d->ensure_collision();
     const WorldViewStats keep = d->st;
     d->draw(d->lastCam);
     d->st = keep;

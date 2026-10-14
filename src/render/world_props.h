@@ -53,4 +53,14 @@ Mat4 colmajor_to_rowvec(const float w[16]);
 ///        (w[0..2], w[4..6], w[8..10]): the factor a bounding sphere grows by.
 float max_column_length(const float w[16]);
 
+/// @brief Nearest hit of the ray @p o + t @p d with @p m's LOD0 triangles
+///        (every mesh's `indices`) placed by @p worldColMajor (column-major,
+///        p' = M p, as PropInstance::world).
+///
+/// The ray goes into model space through the inverse matrix, unnormalized,
+/// so t is the same parameter on both sides: in world units when @p d is
+/// unit. Triangles are two-sided. Returns t >= 0, or -1 for no hit, a
+/// singular or non-finite matrix, or an empty model.
+float ray_model_hit(const ModelPreview& m, const float worldColMajor[16], const float o[3], const float d[3]);
+
 } // namespace castlemist::render

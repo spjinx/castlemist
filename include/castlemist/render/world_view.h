@@ -43,6 +43,9 @@ struct WorldViewStats {
     float ms = 0;                            ///< CPU time of the last render()
     /// Models uploaded / rejected by add_models since set_world; chunks = terrain chunks uploaded.
     int modelsLoaded = 0, modelsFailed = 0, chunks = 0;
+    /// Collision meshes on the GPU: 0 until the Collision layer is first shown
+    /// after set_world (they upload lazily, then stay).
+    int collisionMeshes = 0;
 };
 
 /// @brief Draws one WorldScene into one window.
@@ -60,10 +63,12 @@ public:
     /// @brief Resizes the swap chain and depth buffer (no-op for w or h <= 0).
     void resize(int w, int h);
     /// @brief Uploads the scene's terrain (one vertex buffer per chunk),
-    ///        collision meshes, water plane and lighting, and records every
-    ///        prop instance. Replaces anything set before, loaded models
-    ///        included. Needs a created view (before create() nothing is
-    ///        uploaded).
+    ///        water plane and lighting, records every prop instance, and keeps
+    ///        a CPU copy of the collision. Replaces anything set before, loaded
+    ///        models included. Needs a created view (before create() nothing is
+    ///        uploaded). The collision meshes upload on the first
+    ///        set_layer(Collision, true) or the first render() with that layer
+    ///        on (not while device_lost()); the CPU copy is then released.
     void set_world(const castlemist::world::WorldScene& s);
     /// @brief Uploads streamed prop models: each pair is (index into the
     ///        scene's `models`, its decoded preview). Instances of a model are
@@ -75,6 +80,12 @@ public:
     void add_models(const std::vector<std::pair<uint32_t, std::shared_ptr<const ModelPreview>>>& batch);
     /// @brief Culls, draws and presents one frame.
     void render(const WorldCamera& cam);
+    /// @brief The prop under pixel (@p sx, @p sy) (0,0 = top left of the
+    ///        surface) seen from @p cam: the index into the scene's `props`
+    ///        of the nearest loaded prop whose LOD0 triangles the pixel's ray
+    ///        hits, or -1 (none, or the Props layer is hidden). Terrain does
+    ///        not block it. CPU only; works while device_lost().
+    int pick(int sx, int sy, const WorldCamera& cam) const;
     /// @brief Shows or hides one layer (all but Collision are on after create()).
     void set_layer(WorldLayer l, bool on);
     /// @brief Whether layer @p l is shown.

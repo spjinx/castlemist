@@ -185,6 +185,48 @@ CM_TEST(world_view, prepare_collision_mesh_normals_and_bounds) {
     CHECK_FALSE(prepare_collision_mesh(none).ok);
 }
 
+CM_TEST(world_view, ray_model_hit_translated_cube) {
+    const ModelPreview cube = cube_model(0.5f);   // unit cube
+    const float w[16] = {1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  100, 0, 0, 1};
+    const float o[3] = {0, 0, 0}, d[3] = {1, 0, 0};
+    CHECK_NEAR(ray_model_hit(cube, w, o, d), 99.5f, 1e-3f);
+    // From the far side the nearer face is x = 100.5.
+    const float o2[3] = {200, 0, 0}, d2[3] = {-1, 0, 0};
+    CHECK_NEAR(ray_model_hit(cube, w, o2, d2), 99.5f, 1e-3f);
+}
+
+CM_TEST(world_view, ray_model_miss) {
+    const ModelPreview cube = cube_model(0.5f);
+    const float w[16] = {1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  100, 0, 0, 1};
+    const float o[3] = {0, 0, 0};
+    const float up[3] = {0, 0, -1}, back[3] = {-1, 0, 0};
+    CHECK_EQ(ray_model_hit(cube, w, o, up), -1.0f);
+    CHECK_EQ(ray_model_hit(cube, w, o, back), -1.0f);   // behind the origin
+    const float o2[3] = {0, 2, 0}, d[3] = {1, 0, 0};    // passes beside it
+    CHECK_EQ(ray_model_hit(cube, w, o2, d), -1.0f);
+    // A singular matrix, an empty model: no hit, no NaN.
+    const float zero[16] = {};
+    CHECK_EQ(ray_model_hit(cube, zero, o, d), -1.0f);
+    CHECK_EQ(ray_model_hit(ModelPreview{}, w, o, d), -1.0f);
+}
+
+CM_TEST(world_view, ray_model_hit_rotated_scaled) {
+    // A 90-degree turn about Z (x -> y) with scale 3, at (0, 50, 0): the unit
+    // cube spans y = 50 +- 1.5, so a +Y ray from the origin hits at 48.5 (t
+    // stays in world units, not the model's).
+    const ModelPreview cube = cube_model(0.5f);
+    const float w[16] = {0, 3, 0, 0,  -3, 0, 0, 0,  0, 0, 3, 0,  0, 50, 0, 1};
+    const float o[3] = {0, 0, 0}, d[3] = {0, 1, 0};
+    CHECK_NEAR(ray_model_hit(cube, w, o, d), 48.5f, 1e-3f);
+    // Non-uniform scale: x stretched 10x reaches x = 105 from a cube at 100.
+    const float s[16] = {10, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  100, 0, 0, 1};
+    const float o2[3] = {200, 0, 0}, d2[3] = {-1, 0, 0};
+    CHECK_NEAR(ray_model_hit(cube, s, o2, d2), 95.0f, 1e-3f);
+    // Only LOD0 counts: the coarse LOD drops two faces, LOD0 still has all six.
+    const float o3[3] = {0, 50, 100}, d3[3] = {0, 0, -1};
+    CHECK_NEAR(ray_model_hit(cube, w, o3, d3), 98.5f, 1e-3f);
+}
+
 namespace {
 
 /// A synthetic two-chunk map: rolling hills, chunks side by side east-west.
@@ -371,6 +413,8 @@ CM_TEST(world_view, renders_streamed_props_collision_and_water) {
     v.set_world(props_scene());
     CHECK_EQ(v.stats().chunks, 0);
     CHECK_EQ(v.stats().modelsLoaded, 0);
+    // R8: collision stays on the CPU until the layer is first shown.
+    CHECK_EQ(v.stats().collisionMeshes, 0);
     // R7: the props widen the framing extent, so the camera starts above them.
     const WorldCamera cam = v.frame_all(nullptr);
     CHECK(cam.pos[2] < -500.0f);
@@ -414,8 +458,31 @@ CM_TEST(world_view, renders_streamed_props_collision_and_water) {
     CHECK(on > 500);
     CHECK_EQ(off, 0L);
 
-    // Collision layer: one more instance and one more draw.
+    // Picking: straight down onto the middle (doubled) cube from 1500 above.
+    WorldCamera down;
+    down.pos[0] = 600; down.pos[1] = 0; down.pos[2] = -2000;
+    down.fwd[0] = 0; down.fwd[1] = 0; down.fwd[2] = 1;   // +Z is down
+    down.up[0] = 1; down.up[1] = 0; down.up[2] = 0;
+    CHECK_EQ(v.pick(160, 120, down), 2);
+    // Looking along the row from the west: the nearest cube (index 0) wins.
+    WorldCamera east;
+    east.pos[0] = -1000; east.pos[1] = 0; east.pos[2] = -500;
+    CHECK_EQ(v.pick(160, 120, east), 0);
+    // Empty sky (straight up) and a pixel beside the row miss.
+    WorldCamera sky = down;
+    sky.fwd[2] = -1;
+    CHECK_EQ(v.pick(160, 120, sky), -1);
+    CHECK_EQ(v.pick(0, 0, down), -1);
+    // Props layer off: nothing to pick.
+    v.set_layer(WorldLayer::Props, false);
+    CHECK_EQ(v.pick(160, 120, down), -1);
+    v.set_layer(WorldLayer::Props, true);
+
+    // Collision layer: uploaded on first show (R8); one more instance and one
+    // more draw.
+    CHECK_EQ(v.stats().collisionMeshes, 0);
     v.set_layer(WorldLayer::Collision, true);
+    CHECK_EQ(v.stats().collisionMeshes, 1);
     v.render(cam);
     CHECK_EQ(v.stats().visible, 6);
     v.set_layer(WorldLayer::Collision, false);
@@ -434,10 +501,20 @@ CM_TEST(world_view, renders_streamed_props_collision_and_water) {
     CHECK(water > on);
     CHECK_FALSE(v.device_lost());
 
-    // A new world drops the loaded models.
+    // A new world drops the loaded models (and so the picks).
     v.set_world(props_scene());
     CHECK_EQ(v.stats().modelsLoaded, 0);
+    CHECK_EQ(v.pick(160, 120, down), -1);
     v.set_layer(WorldLayer::Water, false);
     v.render(cam);
     CHECK_EQ(v.stats().visible, 0);
+
+    // With the collision layer already on, set_world still defers the upload
+    // to the first render.
+    v.set_layer(WorldLayer::Collision, true);
+    v.set_world(props_scene());
+    CHECK_EQ(v.stats().collisionMeshes, 0);
+    v.render(cam);
+    CHECK_EQ(v.stats().collisionMeshes, 1);
+    CHECK_EQ(v.stats().visible, 1);   // the collision square; no models yet
 }
