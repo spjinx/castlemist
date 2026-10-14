@@ -3,11 +3,15 @@
 
 #include "test_framework.h"
 
+#include "castlemist/format/content_map.h"
+#include "castlemist/npc/catalogue.h"
 #include "castlemist/npc/tokens.h"
 #include "character.h"
 #include "pack.h"
 
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <string>
 #include <vector>
@@ -133,7 +137,190 @@ Pack make_char_pack(const std::vector<TObj>& objs, const std::vector<TRef>& refs
     return *pack;
 }
 
+// ---- catalogue fixtures ----
+// fileRefs pack: [0] = 500, [1] = 777.
+std::vector<uint8_t> cat_file_refs_pack() {
+    PackBuilder b;
+    const size_t ptrs = 200, pairs = ptrs + 16;
+    b.put_selfrel(ptrs, pairs);
+    b.put_selfrel(ptrs + 8, pairs + 4);
+    b.put_bytes(pairs, {0xF3, 0x02, 0x00, 0x01});
+    b.put_bytes(pairs + 4, {0x08, 0x04, 0x00, 0x01});
+    b.set_dynarray(2, 2, ptrs);
+    b.put_u32(260, 1);
+    b.ensure(280);
+    b.set_dynarray(3, 1, 260);
+    b.ensure(400 + 64);
+    b.set_dynarray(10, 64, 400);
+    return b.d;
+}
+
+// One skin (type 66, dataId) with model slot +48 = fileRefs index 1 (777).
+std::vector<uint8_t> cat_skin_pack(uint32_t data_id) {
+    PackBuilder b;
+    b.put_u32(200, 66);
+    b.ensure(216);
+    b.set_dynarray(3, 1, 200);
+    b.put_u32(220, 48);
+    b.set_dynarray(6, 1, 220);
+    const size_t c = 300;
+    b.put_u32(c + 16, 66);
+    b.put_u32(c + 40, data_id);
+    b.put_u32(c + 48, 1);
+    b.ensure(c + 128);
+    b.set_dynarray(10, 128, c);
+    return b.d;
+}
+
+// One weapon item (type 35, +44 = 24) with a +176 external skin link to file index 1, offset 0.
+std::vector<uint8_t> cat_item_pack(uint32_t data_id) {
+    PackBuilder b;
+    b.put_u32(200, 35);
+    b.ensure(216);
+    b.set_dynarray(3, 1, 200);
+    b.put_u32(220, 176);
+    b.put_u32(224, 1);
+    b.set_dynarray(5, 1, 220);
+    b.put_u32(240, 64);
+    b.set_dynarray(6, 1, 240);
+    const size_t c = 300;
+    b.put_u32(c + 16, 35);
+    b.put_u32(c + 40, data_id);
+    b.put_u32(c + 44, 24);
+    b.put_u32(c + 64, 0);
+    b.put_u32(c + 176, 0);
+    b.ensure(c + 288);
+    b.set_dynarray(10, 288, c);
+    return b.d;
+}
+
+// One character (type 67): optional file slots +224/+240 (fileRefs 0, 1) and a +200 external
+// weapon ref to file index 2, offset 0.
+std::vector<uint8_t> cat_char_pack(uint32_t data_id, bool with_files, bool with_weapon) {
+    PackBuilder b;
+    b.put_u32(200, 67);
+    b.ensure(216);
+    b.set_dynarray(3, 1, 200);
+    if (with_weapon) {
+        b.put_u32(220, 200);
+        b.put_u32(224, 2);
+        b.set_dynarray(5, 1, 220);
+    }
+    if (with_files) {
+        b.put_u32(240, 224);
+        b.put_u32(244, 240);
+        b.set_dynarray(6, 2, 240);
+    }
+    const size_t c = 400;
+    b.put_u32(c + 16, 67);
+    b.put_u32(c + 40, data_id);
+    b.put_u32(c + 200, 0);
+    b.put_u32(c + 224, 0);
+    b.put_u32(c + 240, 1);
+    b.ensure(c + 300);
+    b.set_dynarray(10, 300, c);
+    return b.d;
+}
+
+std::string stub_container(uint32_t fid) { return fid == 500 ? "MODL" : fid == 777 ? "AMSP" : ""; }
+
 }  // namespace
+
+namespace cmap = castlemist::cmap;
+
+CM_TEST(npc_catalogue, builds_records_from_the_content_map_and_character_fields) {
+    cmap::clear();
+    std::vector<cmap::PackBytes> packs = {{1, 900, cat_file_refs_pack()},
+                                          {2, 901, cat_skin_pack(6506)},
+                                          {3, 902, cat_item_pack(76158)},
+                                          {4, 903, cat_char_pack(4242, true, true)}};
+    cmap::build_from_packs(packs);
+    Catalogue c = build_catalogue(packs, stub_container);
+    CHECK_EQ(c.npcs.size(), size_t(1));
+    const NpcRecord* r = c.find(4242);
+    CHECK(r != nullptr);
+    if (r) {
+        CHECK_EQ(r->model, 500u);
+        CHECK_EQ(r->sound_script, 777u);
+        CHECK_EQ(r->weapons.size(), size_t(1));
+        if (!r->weapons.empty()) {
+            CHECK_EQ(r->weapons[0].slot, 200u);
+            CHECK_EQ(r->weapons[0].item, 76158u);
+            CHECK_EQ(r->weapons[0].skin, 6506u);
+            CHECK_EQ(r->weapons[0].model, 777u);
+        }
+        CHECK_EQ(c.by_model(500).size(), size_t(1));
+    }
+    Coverage cov = c.coverage();
+    CHECK_EQ(cov.npcs, size_t(1));
+    CHECK_EQ(cov.with_model, size_t(1));
+    CHECK_EQ(cov.with_weapons, size_t(1));
+    cmap::clear();
+}
+
+CM_TEST(npc_catalogue, lists_a_character_the_content_map_does_not_hold) {
+    cmap::clear();
+    std::vector<cmap::PackBytes> packs = {{1, 900, cat_file_refs_pack()},
+                                          {2, 901, cat_skin_pack(6506)},
+                                          {4, 903, cat_char_pack(99, false, false)}};
+    cmap::build_from_packs(packs);
+    Catalogue c = build_catalogue(packs, stub_container);
+    CHECK_EQ(c.npcs.size(), size_t(1));
+    const NpcRecord* r = c.find(99);
+    CHECK(r != nullptr);
+    if (r) CHECK_EQ(r->model, 0u);
+    CHECK_EQ(c.coverage().with_model, size_t(0));
+    cmap::clear();
+}
+
+CM_TEST(npc_catalogue, without_a_content_map_the_catalogue_is_empty_with_a_warning) {
+    cmap::clear();
+    std::vector<cmap::PackBytes> packs = {{4, 903, cat_char_pack(99, false, false)}};
+    Catalogue c = build_catalogue(packs, stub_container);
+    CHECK(c.npcs.empty());
+    CHECK_EQ(c.warnings.size(), size_t(1));
+    if (!c.warnings.empty()) CHECK_EQ(c.warnings[0], std::string("content map not loaded"));
+}
+
+CM_TEST(npc_catalogue, round_trips_through_json) {
+    Catalogue c;
+    NpcRecord r;
+    r.id = 7; r.codename = "abc.def"; r.model = 11; r.sound_script = 12;
+    r.race = "charrmale"; r.modifier = "ghost";
+    r.weapons = {{200, 1, 2, 3}};
+    r.skills = {5, 6};
+    c.npcs.push_back(r);
+    c.warnings.push_back("w");
+    auto path = std::filesystem::temp_directory_path() / "cm_npc_catalogue_rt.json";
+    CHECK(save(c, path));
+    auto l = load(path);
+    CHECK(l.has_value());
+    if (l) {
+        CHECK_EQ(l->npcs.size(), size_t(1));
+        const NpcRecord& g = l->npcs[0];
+        CHECK_EQ(g.id, 7u);
+        CHECK_EQ(g.codename, std::string("abc.def"));
+        CHECK_EQ(g.model, 11u);
+        CHECK_EQ(g.sound_script, 12u);
+        CHECK_EQ(g.race, std::string("charrmale"));
+        CHECK_EQ(g.modifier, std::string("ghost"));
+        CHECK_EQ(g.weapons.size(), size_t(1));
+        CHECK_EQ(g.weapons[0].model, 3u);
+        CHECK_EQ(g.skills.size(), size_t(2));
+        CHECK_EQ(l->warnings.size(), size_t(1));
+    }
+    std::filesystem::remove(path);
+}
+
+CM_TEST(npc_catalogue, load_rejects_wrong_version) {
+    auto path = std::filesystem::temp_directory_path() / "cm_npc_catalogue_bad.json";
+    { std::ofstream(path) << R"({"version":2,"warnings":[],"npcs":[]})"; }
+    CHECK(!load(path).has_value());
+    { std::ofstream(path) << "not json"; }
+    CHECK(!load(path).has_value());
+    std::filesystem::remove(path);
+    CHECK(!load(path).has_value());
+}
 
 CM_TEST(npc, decodes_a_packed_clip_name) {
     CHECK_EQ(decode_token(0x80000029dd5604f7ULL), std::string("wgalunge"));
