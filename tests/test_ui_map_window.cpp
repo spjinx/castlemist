@@ -6,7 +6,10 @@
 #include "detail/map_window.h"
 #include "detail/map_window_loader.h"
 
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <thread>
 
 using namespace castlemist::ui;
 
@@ -167,6 +170,17 @@ CM_TEST(map_window, pool_size_is_hw_minus_one) {
     CHECK_EQ(mapwin_pool_size(32), 31);
 }
 
-CM_TEST(map_window, wait_workers_with_none_running) {
-    CHECK(mapwin_wait_workers(0));
+CM_TEST(map_window, wait_workers_waits_for_a_counted_thread) {
+    CHECK(mapwin_wait_workers(0));   // nothing running yet
+    std::atomic<bool> started{false}, release{false};
+    std::thread t([&] {
+        MapWinLiveThread live;   // the same RAII guard every worker body starts with
+        started = true;
+        while (!release) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    });
+    while (!started) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    CHECK_FALSE(mapwin_wait_workers(50));   // times out while it runs
+    release = true;
+    t.join();
+    CHECK(mapwin_wait_workers(1000));       // and succeeds once it ended
 }

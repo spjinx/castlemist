@@ -842,8 +842,17 @@ int run(HINSTANCE hInstance, int cmd_show) {
     // Map window threads stop once the window's WM_DESTROY bumps the
     // generation (model workers between models); give them a moment so none
     // is still running into process teardown.
-    mapwin_wait_workers(3000);
+    const bool workers_done = mapwin_wait_workers(3000);
     OleUninitialize();
+    if (!workers_done) {
+        // A Map window thread is still inside load_world (or one model load),
+        // which cannot be cancelled. Returning would run the CRT's static
+        // destructors under it (the struct template, the theme, ...); end the
+        // process without that teardown instead, after flushing what was
+        // written.
+        std::fflush(nullptr);
+        ExitProcess(static_cast<UINT>(msg.wParam));
+    }
     return static_cast<int>(msg.wParam);
 }
 

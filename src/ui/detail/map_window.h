@@ -67,6 +67,7 @@ struct MapWinHeadless {
 };
 
 /// @brief Opens the Map window on @p mapFileId (closing one already open).
+///        The window is top-level and unowned; @p owner only parents message boxes.
 ///        Needs a loaded dat (g_app->data_gw2); the loader parses its own
 ///        copy from the same path, which the model pool then shares.
 ///        @p headless is copied.
@@ -75,5 +76,11 @@ void open_map_window(HWND owner, uint32_t mapFileId, const MapWinHeadless* headl
 /// @brief Tools > Map Window...: asks for a map fileId (default: the selected
 ///        entry's fileId when it is a map) and opens the window on it.
 void prompt_map_window(HWND owner);
+
+/// @brief Destroys the Map window, if one is open (its WM_DESTROY bumps the
+///        worker generation). The main window calls it from its own
+///        WM_DESTROY: the Map window is not owned, so it is not destroyed
+///        with the main window.
+void close_map_window();
 
 } // namespace castlemist::ui

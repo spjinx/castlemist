@@ -186,6 +186,10 @@ constexpr int kWarnW = 460;
 constexpr int kSurfaceW = 1280, kSurfaceH = 720;   // the default (and headless) surface size
 constexpr float kWalkSpeed = 300;                  // map units per second, before Shift/Ctrl
 constexpr double kHeadlessTimeout = 600;           // seconds
+/// The model queue re-sorts around the camera at most this often, and only
+/// after the camera moved this far (map units) since the last sort.
+constexpr double kReorderSeconds = 1.0;
+constexpr float kReorderDistance = 500;
 
 const wchar_t* kWndClass = L"Gw2MapWindow";
 const wchar_t* kSurfaceClass = L"Gw2MapWindowSurface";
@@ -207,6 +211,13 @@ struct MapWin {
     std::vector<std::pair<uint32_t, std::shared_ptr<const ModelPreview>>> models;
     size_t modelsArrived = 0;
     int workers = 0, workersDone = 0;
+    /// The models not yet taken by the pool; re-sorted around the camera in tick().
+    std::shared_ptr<MapWinModelQueue> queue;
+    float reorderPos[3] = {0, 0, 0};
+    Clock::time_point lastReorder{};
+    /// UI-thread time of each add_models batch (ms), for the headless stats.
+    std::vector<float> addMs;
+    bool collDone = false;   ///< the collision build came back (index or error)
 
     FlyState fly;
     float fovY = 1.15f, farDist = 40000;
@@ -303,13 +314,13 @@ void enter_walk(MapWin& m) {
     }
     if (!m.walker) m.walker = std::make_unique<castlemist::world::Walker>(m.coll.get(), castlemist::world::WalkParams{});
     float p[3] = {m.fly.pos[0], m.fly.pos[1], m.fly.pos[2]};
+    m.walker->reset(p);   // clear motion before the snap, so the snap's ground state stands
     if (!m.walker->snap_to_ground(p)) {
         flash(m, L"Walk: no ground under the camera; fly over the map first.");
         enter_fly(m);
         return;
     }
     for (int k = 0; k < 3; ++k) m.fly.pos[k] = p[k];
-    m.walker->reset(m.fly.pos);
     m.walking = true;
     sync_mode_buttons(m);
     m.dirty = true;
@@ -410,15 +421,21 @@ void headless_capture(MapWin& m) {
         shot = m.view.save_screenshot(m.headless->shotPath.c_str());
     }
     const auto st = m.view.stats();
-    char line[1024];
+    std::vector<float> add = m.addMs;
+    std::sort(add.begin(), add.end());
+    const float addMax = add.empty() ? 0.0f : add.back();
+    const float addMedian = add.empty() ? 0.0f : add[add.size() / 2];
+    char line[1200];
     std::snprintf(line, sizeof line,
                   "map=%u ok=%d models=%zu loaded=%d failed=%d props=%zu visible=%d draws=%d ktris=%d ms=%.2f "
                   "chunks=%d collisionTris=%zu warnings=%zu world_s=%.2f collision_s=%.2f models_s=%.2f total_s=%.2f "
+                  "add_batches=%zu add_ms_median=%.2f add_ms_max=%.2f "
                   "shot=%d timeout=%d error=\"%s\"\n",
                   m.mapFileId, (m.scene && m.viewOk) ? 1 : 0, models_total(m), st.modelsLoaded, st.modelsFailed,
                   m.scene ? m.scene->props.size() : size_t(0), st.visible, st.draws, st.ktris, st.ms, st.chunks,
                   m.coll ? m.coll->triangle_count() : size_t(0), m.scene ? m.scene->warnings.size() : size_t(0),
-                  m.worldSeconds, m.collSeconds, m.modelsSeconds, elapsed, shot ? 1 : 0,
+                  m.worldSeconds, m.collSeconds, m.modelsSeconds, elapsed, add.size(), addMedian, addMax,
+                  shot ? 1 : 0,
                   elapsed >= kHeadlessTimeout ? 1 : 0, m.error.c_str());
     if (std::ofstream f(m.headless->statsPath, std::ios::binary); f) f << line;
     if (m.headless->quitWindow) PostMessageW(m.headless->quitWindow, WM_CLOSE, 0, 0);
@@ -430,7 +447,7 @@ void maybe_capture(MapWin& m) {
     const bool failed = !m.error.empty() && !m.scene;
     const bool modelsDone = m.scene && (m.modelsArrived >= models_total(m) ||
                                         (m.workers > 0 && m.workersDone >= m.workers));
-    if (failed || modelsDone || elapsed >= kHeadlessTimeout) headless_capture(m);
+    if (failed || (modelsDone && m.collDone) || elapsed >= kHeadlessTimeout) headless_capture(m);
 }
 
 void on_world(MapWin& m, std::unique_ptr<MapWinWorldMsg> r) {
@@ -459,8 +476,10 @@ void on_world(MapWin& m, std::unique_ptr<MapWinWorldMsg> r) {
     m.stage = buf;
     mapwin_start_collision(m.wnd, m.gen, m.scene);
     if (!m.scene->models.empty()) {
-        std::vector<uint32_t> order = castlemist::world::model_load_order(*m.scene, m.fly.pos);
-        m.workers = mapwin_start_models(m.wnd, m.gen, std::move(r->dat), m.scene, std::move(order));
+        m.queue = std::make_shared<MapWinModelQueue>(m.scene, m.fly.pos);
+        for (int k = 0; k < 3; ++k) m.reorderPos[k] = m.fly.pos[k];
+        m.lastReorder = Clock::now();
+        m.workers = mapwin_start_models(m.wnd, m.gen, std::move(r->dat), m.queue);
     }
     m.dirty = true;
     update_status(m);
@@ -468,11 +487,16 @@ void on_world(MapWin& m, std::unique_ptr<MapWinWorldMsg> r) {
 }
 
 void on_collision(MapWin& m, std::unique_ptr<MapWinCollisionMsg> r) {
+    m.collDone = true;
     m.coll = std::move(r->index);
     m.collSeconds = r->seconds;
     m.walker.reset();
     const bool any = m.coll && !m.coll->empty();
     EnableWindow(m.bWalk, any ? TRUE : FALSE);
+    if (!r->error.empty()) {
+        flash(m, L"Collision build failed: " + widen(r->error) + L"; Walk is off.", 30);
+        return;
+    }
     wchar_t buf[160];
     if (any)
         swprintf(buf, 160, L"Collision ready (%zu triangles, %.1f s): Walk is available (Tab).", m.coll->triangle_count(),
@@ -484,7 +508,11 @@ void on_collision(MapWin& m, std::unique_ptr<MapWinCollisionMsg> r) {
 
 void on_models(MapWin& m, std::unique_ptr<MapWinModelsMsg> r) {
     if (!r->batch.empty()) {
-        if (m.viewOk) m.view.add_models(r->batch);
+        if (m.viewOk) {
+            const auto t0 = Clock::now();
+            m.view.add_models(r->batch);
+            m.addMs.push_back(std::chrono::duration<float, std::milli>(Clock::now() - t0).count());
+        }
         m.modelsArrived += r->batch.size();
         for (auto& p : r->batch) m.models.push_back(std::move(p));
         m.dirty = true;
@@ -522,6 +550,20 @@ void tick(MapWin& m) {
         } else if (fly_step(m.fly, m.keys, dt)) {
             m.dirty = true;
         }
+    }
+    // Stream around the live camera: re-sort what the pool has not taken yet.
+    if (m.queue && now - m.lastReorder >= std::chrono::duration<double>(kReorderSeconds)) {
+        const float dx = m.fly.pos[0] - m.reorderPos[0], dy = m.fly.pos[1] - m.reorderPos[1],
+                    dz = m.fly.pos[2] - m.reorderPos[2];
+        if (dx * dx + dy * dy + dz * dz > kReorderDistance * kReorderDistance) {
+            if (m.queue->queue.remaining() == 0) {
+                m.queue.reset();   // all taken; the workers keep their own reference
+            } else {
+                m.queue->queue.reorder(m.fly.pos);
+                for (int k = 0; k < 3; ++k) m.reorderPos[k] = m.fly.pos[k];
+            }
+        }
+        m.lastReorder = now;
     }
     if (m.dirty && IsWindowVisible(m.wnd) && !IsIconic(m.wnd)) render_now(m);
 }
@@ -661,6 +703,7 @@ LRESULT CALLBACK MapWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         if (auto r = take<MapWinModelsMsg>(lparam, m)) on_models(*m, std::move(r));
         return 0;
     case WM_SIZE:
+        if (wparam == SIZE_MINIMIZED) return 0;   // keep the surface (and swap chain) at its size
         if (m) layout(*m);
         return 0;
     case WM_GETMINMAXINFO: {
@@ -725,6 +768,10 @@ void register_classes() {
 
 } // namespace
 
+void close_map_window() {
+    if (g_mw) DestroyWindow(g_mw->wnd);
+}
+
 void open_map_window(HWND owner, uint32_t mapFileId, const MapWinHeadless* headless) {
     if (g_mw) DestroyWindow(g_mw->wnd);   // one map window at a time
     if (!g_app || !g_app->dat_loaded) {
@@ -746,8 +793,11 @@ void open_map_window(HWND owner, uint32_t mapFileId, const MapWinHeadless* headl
     AdjustWindowRectEx(&r, style, FALSE, 0);
     wchar_t title[96];
     swprintf(title, 96, L"Map Window - %u", mapFileId);
+    // Not owned by the main window: an owned window always stays above its
+    // owner and minimises with it, which would hide the preview a pick opens
+    // there. The main window destroys it explicitly instead (close_map_window).
     m->wnd = CreateWindowExW(0, kWndClass, title, style, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left,
-                             r.bottom - r.top, owner, nullptr, g_hinstance, nullptr);
+                             r.bottom - r.top, nullptr, nullptr, g_hinstance, nullptr);
     if (!m->wnd) {
         g_mw = nullptr;
         delete m;

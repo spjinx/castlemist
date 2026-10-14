@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <exception>
+#include <stdexcept>
 #include <thread>
 
 #include "castlemist/extract/entry_extractor.h"
@@ -21,16 +22,8 @@ namespace {
 
 std::atomic<uint64_t> g_gen{0};
 
-/// Map window threads still running (mapwin_wait_workers).
+/// Map window threads still running (MapWinLiveThread, mapwin_wait_workers).
 std::atomic<int> g_live{0};
-
-/// Counts one worker thread for its whole body.
-struct LiveThread {
-    LiveThread() { ++g_live; }
-    ~LiveThread() { --g_live; }
-    LiveThread(const LiveThread&) = delete;
-    LiveThread& operator=(const LiveThread&) = delete;
-};
 
 using Clock = std::chrono::steady_clock;
 
@@ -41,14 +34,17 @@ double seconds_since(Clock::time_point t0) {
 /// @brief Hands @p payload to the window, or frees it: when the generation
 ///        has moved on, the window is gone, or the post fails.
 template <class T>
-void post(HWND wnd, UINT msg, uint64_t gen, T* payload) {
-    if (g_gen.load() != gen || !IsWindow(wnd) || !PostMessageW(wnd, msg, 0, reinterpret_cast<LPARAM>(payload)))
-        delete payload;
+void post(HWND wnd, UINT msg, uint64_t gen, std::unique_ptr<T> payload) {
+    if (g_gen.load() != gen || !IsWindow(wnd)) return;
+    if (PostMessageW(wnd, msg, 0, reinterpret_cast<LPARAM>(payload.get()))) payload.release();
 }
 
 bool cancelled(uint64_t gen) { return g_gen.load() != gen; }
 
 } // namespace
+
+MapWinLiveThread::MapWinLiveThread() { ++g_live; }
+MapWinLiveThread::~MapWinLiveThread() { --g_live; }
 
 uint64_t mapwin_generation() { return g_gen.load(); }
 uint64_t mapwin_next_generation() { return ++g_gen; }
@@ -79,52 +75,65 @@ bool mapwin_wait_workers(int ms) {
     return true;
 }
 
+// Every thread body below is wrapped in catch (...): nothing may reach
+// std::terminate from a detached worker, allocation failures included.
+
 void mapwin_start_world(HWND wnd, uint64_t gen, std::string datPath, uint32_t mapFileId) {
     std::thread([wnd, gen, datPath = std::move(datPath), mapFileId]() {
-        LiveThread live;
-        auto* r = new MapWinWorldMsg;
-        r->gen = gen;
-        const auto t0 = Clock::now();
+        MapWinLiveThread live;
         try {
-            auto tpl = castlemist::tpl::get_or_auto_load();
-            if (!tpl) throw std::runtime_error("no struct template (gw2_packfile.json) found; File > Load Struct JSON...");
-            auto dat = std::make_shared<Gw2Dat>();
-            load_dat_file(*dat, datPath);
-            if (cancelled(gen)) { delete r; return; }
-            auto scene = std::make_shared<castlemist::world::WorldScene>(
-                castlemist::world::load_world(*dat, mapFileId, *tpl));
-            r->scene = std::move(scene);
-            r->dat = std::move(dat);   // handed on to the model pool, read-only from here
-        } catch (const std::exception& e) {
-            r->error = e.what();
+            auto r = std::make_unique<MapWinWorldMsg>();
+            r->gen = gen;
+            const auto t0 = Clock::now();
+            try {
+                auto tpl = castlemist::tpl::get_or_auto_load();
+                if (!tpl)
+                    throw std::runtime_error("no struct template (gw2_packfile.json) found; File > Load Struct JSON...");
+                auto dat = std::make_shared<Gw2Dat>();
+                load_dat_file(*dat, datPath);
+                if (cancelled(gen)) return;
+                auto scene = std::make_shared<castlemist::world::WorldScene>(
+                    castlemist::world::load_world(*dat, mapFileId, *tpl));
+                r->scene = std::move(scene);
+                r->dat = std::move(dat);   // handed on to the model pool, read-only from here
+            } catch (const std::exception& e) {
+                r->error = e.what();
+            } catch (...) {
+                r->error = "unknown error";
+            }
+            r->seconds = seconds_since(t0);
+            post(wnd, WM_APP_MAPWIN_WORLD, gen, std::move(r));
         } catch (...) {
-            r->error = "unknown error";
+            // Out of memory before anything could be posted: the window stays
+            // at "Loading map..." (and a headless run times out).
         }
-        r->seconds = seconds_since(t0);
-        post(wnd, WM_APP_MAPWIN_WORLD, gen, r);
     }).detach();
 }
 
 void mapwin_start_collision(HWND wnd, uint64_t gen, std::shared_ptr<const castlemist::world::WorldScene> scene) {
     std::thread([wnd, gen, scene = std::move(scene)]() {
-        LiveThread live;
-        if (cancelled(gen)) return;
-        const auto t0 = Clock::now();
-        auto* r = new MapWinCollisionMsg;
-        r->gen = gen;
+        MapWinLiveThread live;
         try {
-            r->index = std::make_shared<castlemist::world::CollisionIndex>(
-                castlemist::world::CollisionIndex::build(*scene, /*includeTerrain=*/true));
-        } catch (const std::exception&) {
-            r->index = std::make_shared<castlemist::world::CollisionIndex>();   // empty: Walk stays off
+            if (cancelled(gen)) return;
+            const auto t0 = Clock::now();
+            auto r = std::make_unique<MapWinCollisionMsg>();
+            r->gen = gen;
+            try {
+                r->index = std::make_shared<castlemist::world::CollisionIndex>(
+                    castlemist::world::CollisionIndex::build(*scene, /*includeTerrain=*/true));
+            } catch (const std::exception& e) {
+                r->error = e.what();
+            } catch (...) {
+                r->error = "unknown error";
+            }
+            r->seconds = seconds_since(t0);
+            post(wnd, WM_APP_MAPWIN_COLLISION, gen, std::move(r));
+        } catch (...) {
         }
-        r->seconds = seconds_since(t0);
-        post(wnd, WM_APP_MAPWIN_COLLISION, gen, r);
     }).detach();
 }
 
-int mapwin_start_models(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat,
-                        std::shared_ptr<const castlemist::world::WorldScene> scene, std::vector<uint32_t> order) {
+int mapwin_start_models(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat, std::shared_ptr<MapWinModelQueue> queue) {
     // One parsed dat for every worker, as build_map_scene does
     // (src/extract/map_scene.cpp, "Load the unique models IN PARALLEL"):
     // load_dat_file closes the dat's own stream, read_entry_bytes opens a
@@ -132,52 +141,62 @@ int mapwin_start_models(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat,
     // (get_by_base_id, get_by_file_id, the texture pair resolution) only read
     // the MFT tables. The template is shared behind tpl's mutex; the only
     // mutable static on the texture path is the atomic full-res flag.
-    // Workers hold the shared_ptr, so the dat outlives the window while any
-    // of them still runs.
+    // Workers hold the shared_ptrs, so the dat and the queue (and its scene)
+    // outlive the window while any of them still runs.
     const int workers = mapwin_pool_size(std::thread::hardware_concurrency());
-    auto cursor = std::make_shared<std::atomic<size_t>>(0);
-    auto list = std::make_shared<const std::vector<uint32_t>>(std::move(order));
     for (int w = 0; w < workers; ++w) {
-        std::thread([wnd, gen, dat, scene, cursor, list]() {
-            LiveThread live;
-            constexpr size_t kBatch = 32;
-            constexpr auto kInterval = std::chrono::milliseconds(250);
-            auto* batch = new MapWinModelsMsg;
-            batch->gen = gen;
-            auto lastPost = Clock::now();
-            while (!cancelled(gen)) {
-                const size_t i = cursor->fetch_add(1);
-                if (i >= list->size()) break;
-                const uint32_t mi = (*list)[i];
-                std::shared_ptr<const ModelPreview> out;
-                if (mi < scene->models.size()) {
-                    try {
-                        std::shared_ptr<ModelPreview> m =
-                            load_model_by_fileid(*dat, scene->models[mi].fileId, /*want_game=*/false);
-                        if (m) {
-                            // The map view draws geometry only (textures are
-                            // sub-project 3); drop the decoded pixels and clips
-                            // so a big map's previews stay small.
-                            m->textures.clear();
-                            m->textures.shrink_to_fit();
-                            m->animClips.clear();
-                            m->animClips.shrink_to_fit();
-                            out = std::move(m);
+        std::thread([wnd, gen, dat, queue]() {
+            MapWinLiveThread live;
+            try {
+                const castlemist::world::WorldScene& scene = *queue->scene;
+                constexpr size_t kBatch = 32;
+                constexpr auto kInterval = std::chrono::milliseconds(250);
+                auto batch = std::make_unique<MapWinModelsMsg>();
+                batch->gen = gen;
+                auto lastPost = Clock::now();
+                uint32_t mi = 0;
+                // pop() takes the model nearest the camera as of the window's
+                // last reorder(): the order follows the camera as it moves.
+                while (!cancelled(gen) && queue->queue.pop(mi)) {
+                    std::shared_ptr<const ModelPreview> out;
+                    if (mi < scene.models.size()) {
+                        try {
+                            std::shared_ptr<ModelPreview> m =
+                                load_model_by_fileid(*dat, scene.models[mi].fileId, /*want_game=*/false);
+                            if (m) {
+                                // The map view draws geometry only (textures are
+                                // sub-project 3); drop the decoded pixels and clips
+                                // so a big map's previews stay small.
+                                m->textures.clear();
+                                m->textures.shrink_to_fit();
+                                m->animClips.clear();
+                                m->animClips.shrink_to_fit();
+                                out = std::move(m);
+                            }
+                        } catch (...) {
+                            // counted as failed (null)
                         }
-                    } catch (const std::exception&) {
-                        // counted as failed (null)
+                    }
+                    batch->batch.emplace_back(mi, std::move(out));
+                    if (batch->batch.size() >= kBatch || Clock::now() - lastPost >= kInterval) {
+                        post(wnd, WM_APP_MAPWIN_MODELS, gen, std::move(batch));
+                        batch = std::make_unique<MapWinModelsMsg>();
+                        batch->gen = gen;
+                        lastPost = Clock::now();
                     }
                 }
-                batch->batch.emplace_back(mi, std::move(out));
-                if (batch->batch.size() >= kBatch || Clock::now() - lastPost >= kInterval) {
-                    post(wnd, WM_APP_MAPWIN_MODELS, gen, batch);
-                    batch = new MapWinModelsMsg;
-                    batch->gen = gen;
-                    lastPost = Clock::now();
+                batch->workerDone = true;
+                post(wnd, WM_APP_MAPWIN_MODELS, gen, std::move(batch));
+            } catch (...) {
+                // Still tell the window this worker is done, if anything can be allocated.
+                try {
+                    auto done = std::make_unique<MapWinModelsMsg>();
+                    done->gen = gen;
+                    done->workerDone = true;
+                    post(wnd, WM_APP_MAPWIN_MODELS, gen, std::move(done));
+                } catch (...) {
                 }
             }
-            batch->workerDone = true;
-            post(wnd, WM_APP_MAPWIN_MODELS, gen, batch);
         }).detach();
     }
     return workers;

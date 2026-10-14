@@ -114,7 +114,8 @@ bool ask_file_id(HWND owner, uint32_t& io) {
             SendMessageW(p.wnd, WM_COMMAND, IDOK, 0);
             continue;
         }
-        if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE) {
+        if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE &&
+            (msg.hwnd == p.wnd || IsChild(p.wnd, msg.hwnd))) {
             p.done = true;
             continue;
         }

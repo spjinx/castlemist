@@ -1740,6 +1740,10 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         }
         return 0;
     case WM_DESTROY:
+        // The Map window is not owned by this one, so it is not destroyed
+        // with it: close it first, so its worker generation is bumped (and its
+        // threads start stopping) before the message loop exits.
+        close_map_window();
         KillTimer(hwnd, TIMER_ANIM);
         KillTimer(hwnd, TIMER_AUDIO);
         KillTimer(hwnd, TIMER_VIDEO);

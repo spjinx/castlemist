@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "castlemist/native/gw2dat.h"
+#include "castlemist/world/stream.h"
 #include "castlemist/world/walk.h"
 #include "castlemist/world/world_scene.h"
 
@@ -47,6 +48,25 @@ int mapwin_pool_size(unsigned hw);
 ///        when none is left.
 bool mapwin_wait_workers(int ms);
 
+/// @brief Counts one Map window thread for its whole body (RAII; what
+///        mapwin_wait_workers waits on). Every worker body starts with one.
+struct MapWinLiveThread {
+    MapWinLiveThread();
+    ~MapWinLiveThread();
+    MapWinLiveThread(const MapWinLiveThread&) = delete;
+    MapWinLiveThread& operator=(const MapWinLiveThread&) = delete;
+};
+
+/// @brief The models still to load and the scene they index, shared by the
+///        window (which reorder()s it as the camera moves) and the pool
+///        (which pops from the front). The scene outlives the queue.
+struct MapWinModelQueue {
+    MapWinModelQueue(std::shared_ptr<const castlemist::world::WorldScene> s, const float cam[3])
+        : scene(std::move(s)), queue(*scene, cam) {}
+    std::shared_ptr<const castlemist::world::WorldScene> scene;
+    castlemist::world::ModelQueue queue;
+};
+
 /// @brief Frees a worker payload by its message (WM_APP_MAPWIN_*); for
 ///        draining the queue of a window being destroyed.
 void mapwin_free_payload(UINT msg, LPARAM lparam);
@@ -63,7 +83,8 @@ struct MapWinWorldMsg {
 /// @brief WM_APP_MAPWIN_COLLISION: the walk index of the scene.
 struct MapWinCollisionMsg {
     uint64_t gen = 0;
-    std::shared_ptr<const castlemist::world::CollisionIndex> index;
+    std::shared_ptr<const castlemist::world::CollisionIndex> index;   ///< null when the build failed
+    std::string error;   ///< why the build failed
     double seconds = 0;
 };
 
@@ -85,10 +106,10 @@ void mapwin_start_world(HWND wnd, uint64_t gen, std::string datPath, uint32_t ma
 void mapwin_start_collision(HWND wnd, uint64_t gen, std::shared_ptr<const castlemist::world::WorldScene> scene);
 
 /// @brief Starts the model pool: mapwin_pool_size(hardware_concurrency) workers,
-///        sharing the one parsed, read-only @p dat, take models from @p order through one
-///        shared cursor and post batches of up to 32 or every 250 ms.
+///        sharing the one parsed, read-only @p dat, pop models from @p queue
+///        (nearest to the camera at the time each is taken) and post batches
+///        of up to 32 or every 250 ms.
 /// @return the number of workers started (each posts workerDone once).
-int mapwin_start_models(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat,
-                        std::shared_ptr<const castlemist::world::WorldScene> scene, std::vector<uint32_t> order);
+int mapwin_start_models(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat, std::shared_ptr<MapWinModelQueue> queue);
 
 } // namespace castlemist::ui
