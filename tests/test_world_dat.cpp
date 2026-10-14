@@ -1096,3 +1096,44 @@ CM_TEST(world_dat, not_a_map_throws) {
     }
     CHECK(threw);
 }
+
+// ---- walking (map window) ----
+
+#include "castlemist/world/walk.h"
+
+// A walker dropped at the middle of Queensdale's bounds finds the highest
+// surface under it, stays grounded with no input, and keeps its eye inside the
+// map rect. The index is built with terrain, so the middle of the map has
+// ground even where no collision hull sits.
+CM_TEST(world_dat, queensdale_walker_lands) {
+    Gw2Dat& dat = shared_dat();
+    if (!ensure_template()) SKIP("no struct template");
+    castlemist::world::WorldScene w = castlemist::world::load_world(dat, 192711, *castlemist::tpl::get());
+    CHECK(w.hasBounds);
+
+    castlemist::world::CollisionIndex idx = castlemist::world::CollisionIndex::build(w, true);
+    const size_t collisionTris = idx.triangle_count(castlemist::world::kHitCollision);
+    const size_t allTris = idx.triangle_count();
+    CHECK(collisionTris > 0);
+    CHECK(allTris > collisionTris);   // terrain triangles came along
+
+    float lo[3], hi[3];
+    idx.bounds(lo, hi);
+    float pos[3] = {(w.bounds[0] + w.bounds[2]) * 0.5f, (w.bounds[1] + w.bounds[3]) * 0.5f, lo[2] - 1000.0f};
+    std::printf("    bounds rect [%g %g %g %g]  index lo [%g %g %g] hi [%g %g %g]  tris collision %zu all %zu\n",
+                w.bounds[0], w.bounds[1], w.bounds[2], w.bounds[3], lo[0], lo[1], lo[2], hi[0], hi[1], hi[2],
+                collisionTris, allTris);
+
+    castlemist::world::Walker walker(&idx);
+    walker.reset(pos);
+    CHECK(walker.snap_to_ground(pos));
+    std::printf("    landed at eye [%g %g %g]\n", pos[0], pos[1], pos[2]);
+
+    const float none[2] = {0, 0};
+    for (int i = 0; i < 300; ++i) walker.step(pos, none, 1.0f / 60.0f);
+    std::printf("    after 300 steps eye [%g %g %g]\n", pos[0], pos[1], pos[2]);
+    CHECK(walker.grounded());
+    CHECK(pos[0] >= w.bounds[0] && pos[0] <= w.bounds[2]);
+    CHECK(pos[1] >= w.bounds[1] && pos[1] <= w.bounds[3]);
+    CHECK(pos[2] >= lo[2] && pos[2] <= hi[2]);
+}
