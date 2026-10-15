@@ -78,6 +78,10 @@ bool mapwin_shading_is_geometry(const std::string& text);
 /// @brief Status-line text: L"tex %d (%.1f MB)  anim %d/%d" (animated / unresolvedClips).
 std::wstring mapwin_material_status(const castlemist::render::WorldViewStats& st);
 
+/// @brief One clock step: unchanged when @p motionOn is false; else adds dt clamped to [0, 0.1] s
+///        (a stalled timer, e.g. a window drag, must not make the animation jump).
+double mapwin_clock_step(double clock, float dt, bool motionOn);
+
 /// @brief Opens the Map window on @p mapFileId (closing one already open).
 ///        The window is top-level and unowned; @p owner only parents message boxes.
 ///        Needs a loaded dat (g_app->data_gw2); the loader parses its own

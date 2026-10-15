@@ -641,14 +641,11 @@ void tick(MapWin& m) {
         }
         m.lastReorder = now;
     }
-    // The material clock: fixed for a headless run, else it runs while Motion is on.
-    if (m.viewOk) {
-        if (m.headless && m.headless->fixedTime) {
-            m.view.set_time(m.headless->time);
-        } else {
-            if (SendMessageW(m.bMotion, BM_GETCHECK, 0, 0) == BST_CHECKED) m.clock += dt;
-            m.view.set_time(m.clock);
-        }
+    // The material clock. A fixed headless time was set once at open and never
+    // changes, so nothing to do; otherwise it runs while Motion is on.
+    if (m.viewOk && !(m.headless && m.headless->fixedTime)) {
+        m.clock = mapwin_clock_step(m.clock, dt, SendMessageW(m.bMotion, BM_GETCHECK, 0, 0) == BST_CHECKED);
+        m.view.set_time(m.clock);
         if (m.view.animating()) m.dirty = true;
     }
     if (m.dirty && IsWindowVisible(m.wnd) && !IsIconic(m.wnd)) render_now(m);
@@ -875,6 +872,11 @@ bool mapwin_shading_is_geometry(const std::string& text) {
     return true;
 }
 
+double mapwin_clock_step(double clock, float dt, bool motionOn) {
+    if (!motionOn) return clock;
+    return clock + std::clamp(dt, 0.0f, 0.1f);
+}
+
 std::wstring mapwin_material_status(const castlemist::render::WorldViewStats& st) {
     wchar_t buf[96];
     swprintf(buf, 96, L"tex %d (%.1f MB)  anim %d/%d", st.textures, st.textureMB, st.animated, st.unresolvedClips);
@@ -938,7 +940,7 @@ void open_map_window(HWND owner, uint32_t mapFileId, const MapWinHeadless* headl
     m->bMaterials = mk(L"BUTTON", L"Materials", BS_AUTOCHECKBOX | BS_PUSHLIKE, next(75), y, 75, h, ID_MW_MATERIALS);
     m->bMotion = mk(L"BUTTON", L"Motion", BS_AUTOCHECKBOX | BS_PUSHLIKE, next(65), y, 65, h, ID_MW_MOTION);
     x += 12;
-    m->bReset =mk(L"BUTTON", L"Reset", BS_PUSHBUTTON, next(70), y, 70, h, ID_MW_RESET);
+    m->bReset = mk(L"BUTTON", L"Reset", BS_PUSHBUTTON, next(70), y, 70, h, ID_MW_RESET);
     m->bWarn = mk(L"BUTTON", L"Warnings", BS_AUTOCHECKBOX | BS_PUSHLIKE, next(80), y, 80, h, ID_MW_WARNINGS);
     x += 12;
     mk(L"STATIC",

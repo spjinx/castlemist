@@ -209,3 +209,10 @@ CM_TEST(map_window, material_status_text) {
     st.unresolvedClips = 1;
     CHECK(mapwin_material_status(st) == L"tex 12 (3.4 MB)  anim 5/1");
 }
+
+CM_TEST(map_window, clock_step) {
+    CHECK(mapwin_clock_step(1.0, 0.05f, false) == 1.0);
+    CHECK(std::fabs(mapwin_clock_step(1.0, 0.05f, true) - 1.05) < 1e-6);
+    CHECK(std::fabs(mapwin_clock_step(1.0, 5.0f, true) - 1.1) < 1e-6);   // a stall adds at most 0.1
+    CHECK(mapwin_clock_step(1.0, -2.0f, true) == 1.0);                    // negative dt is 0
+}
