@@ -5,6 +5,9 @@
 
 #pragma once
 
+#include <cstring>
+#include <string>
+
 namespace castlemist::render::world_shaders {
 
 /// @brief Terrain, untextured (the AO look): map-space TerrainVtx (no instance
@@ -337,5 +340,112 @@ float4 PSMain(VSOut i) : SV_Target {
     return float4(pow(saturate(col), 1.0 / 2.2), a);
 }
 )";
+
+/// @brief Skinned props (spec SkinnedPropPass): kPropMat's streams plus the
+///        SkinVtx stream (slot 2: bone indices UINT8x4, weights UNORM8x4),
+///        posed by one palette per (model, clip).
+///
+/// This is the vertex half only; prop_skinned_source() appends kPropMat's
+/// PSMain and kInstanced's PSMain (renamed PSAo) verbatim, so a skinned prop
+/// shades exactly as a static one in both the textured and the AO look.
+///
+/// Palette: `StructuredBuffer<float4x4>` at VS t1 (t0 is the PS diffuse),
+/// 16 floats per bone from granny::skinMatrix: row-major, row-vector
+/// (p' = p P, translation in the last row). A structured buffer's float4x4
+/// loads column-major, so the matrix read is P transposed and mul(M, p)
+/// is p P. SkinCB (b2) gives the bucket's base and bone count. Weights: an
+/// index >= the bone count drops its weight; a sum below 1e-3 is identity
+/// (an unskinned mesh); otherwise they are renormalised (Task 7 rounds each
+/// one to 1/255, so they sum to 254..256/255).
+inline constexpr const char* kPropSkinned = R"(
+cbuffer WorldCB : register(b0) {
+    row_major float4x4 uViewProj;
+    float3 uSunDir;     float uExposure;
+    float3 uSunCol;     float uAoStrength;
+    float3 uSkyCol;     float uFogStart;
+    float3 uGroundCol;  float uFogEnd;
+    float3 uFogCol;     float _pad0;
+    float3 uCamPos;     float _pad1;
+    float3 uAlbedo;     float _pad2;
+    float3 uMatSunCol;  float _pad3;   // calibrated light (detail/light_calib.h)
+    float3 uMatSkyCol;  float _pad4;
+};
+cbuffer MatCB : register(b1) {
+    float2 uUvOffset; float uUvSet; float uAlphaMode;
+    float uTextured;  float3 _mpad;
+};
+cbuffer SkinCB : register(b2) {
+    uint uPaletteBase; uint uBoneCount; uint2 _spad;
+};
+
+StructuredBuffer<float4x4> uPalette : register(t1);
+Texture2D tDiffuse : register(t0);
+SamplerState sWrap : register(s0);
+
+struct VSIn {
+    float3 pos : POSITION;   // model space, bind pose
+    float4 nao : NORMAL;     // xyz = normal*0.5+0.5, w = baked AO
+    float2 uv0 : TEXCOORD4;
+    float2 uv1 : TEXCOORD5;
+    float4 r0  : TEXCOORD0;  // world columns
+    float4 r1  : TEXCOORD1;
+    float4 r2  : TEXCOORD2;
+    float4 tint: TEXCOORD3;
+    uint4  bone: BLENDINDICES;
+    float4 wt  : BLENDWEIGHT;
+};
+struct VSOut {
+    float4 pos : SV_POSITION;
+    float3 nrm : NORMAL;
+    float2 aod : TEXCOORD0;  // x = AO, y = distance to camera
+    float4 tint: TEXCOORD1;
+    float2 uv  : TEXCOORD2;
+};
+
+VSOut VSMain(VSIn i) {
+    float4 w = i.wt;
+    [unroll] for (int k = 0; k < 4; ++k)
+        if (i.bone[k] >= uBoneCount) w[k] = 0;
+    float s = w.x + w.y + w.z + w.w;
+    float3 sp = i.pos;
+    float3 n  = i.nao.xyz * 2.0 - 1.0;
+    if (s >= 1e-3) {
+        w /= s;
+        float3 ap = 0, an = 0;
+        [unroll] for (int k2 = 0; k2 < 4; ++k2) {
+            if (w[k2] == 0) continue;
+            float4x4 M = uPalette[uPaletteBase + i.bone[k2]];   // P transposed: mul(M, v) = v P
+            ap += w[k2] * mul(M, float4(sp, 1.0)).xyz;
+            an += w[k2] * mul((float3x3)M, n);
+        }
+        sp = ap;
+        n  = an;
+    }
+    float4 p = float4(sp, 1.0);
+    float3 wp = float3(dot(p, i.r0), dot(p, i.r1), dot(p, i.r2));
+    float3 wn = float3(dot(n, i.r0.xyz), dot(n, i.r1.xyz), dot(n, i.r2.xyz));
+    VSOut o;
+    o.pos  = mul(float4(wp, 1.0), uViewProj);
+    o.nrm  = wn;
+    o.aod  = float2(i.nao.w, distance(wp, uCamPos));
+    o.tint = i.tint;
+    o.uv   = (uUvSet != 0 ? i.uv1 : i.uv0) + uUvOffset;
+    return o;
+}
+)";
+
+/// @brief kPropSkinned's whole source: its VS, then kPropMat's PSMain
+///        (textured) and kInstanced's PSMain as PSAo (the AO look), each
+///        copied from its own shader so the two cannot drift apart.
+inline std::string prop_skinned_source() {
+    auto ps_of = [](const char* src) {
+        const std::string s(src);
+        const size_t at = s.find("float4 PSMain(");
+        return at == std::string::npos ? std::string() : s.substr(at);
+    };
+    std::string ao = ps_of(kInstanced);
+    if (!ao.empty()) ao.replace(0, std::strlen("float4 PSMain"), "float4 PSAo");
+    return std::string(kPropSkinned) + ps_of(kPropMat) + ao;
+}
 
 } // namespace castlemist::render::world_shaders

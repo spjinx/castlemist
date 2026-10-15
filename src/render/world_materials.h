@@ -14,6 +14,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "castlemist/native/granny_pose.hpp"
+
 struct CappedTexture;      // castlemist/extract/model_types.h
 struct ModelMaterialCPU;   // castlemist/extract/model_types.h
 struct ModelTexTransformCPU;   // castlemist/extract/model_types.h
@@ -94,6 +96,29 @@ std::vector<PropMaterial> prop_materials(const ModelPreview& m, int* stillEntrie
 /// @brief Draw order for pass 2: indices of @p nearestDistance, farthest
 ///        first; equal distances keep index order.
 std::vector<size_t> blend_back_to_front(const std::vector<float>& nearestDistance);
+
+/// @brief One (model, clip) pose source (spec SkinnedPropPass), built in
+///        WorldView::add_models from the kept preview: the bones view
+///        {name, parent, localPos, localQuat, localScale, invWorld} of each
+///        ModelJoint (as skeleton.cpp's pose_bones), the clip and its tracks
+///        by name. The pointers borrow the preview, which the view keeps.
+struct PoseRig {
+    std::vector<castlemist::granny::PoseBone> bones;
+    const castlemist::granny::Anim* clip = nullptr;
+    std::unordered_map<std::string, int> trackByName;
+};
+
+/// @brief @p seconds wrapped into [0, @p duration) (fmod, negatives wrapped
+///        up), as gw2bgfx_view.cpp loops a clip. A duration <= 1e-6 or a
+///        non-finite input gives 0. Every instance starts at t = 0 (UNPROVEN
+///        phase, note section 5).
+double clip_time(double seconds, float duration);
+
+/// @brief The skin palette of @p rig at @p seconds (clip_time of the clip's
+///        duration): 16 floats per bone, granny::skinMatrix (row-major,
+///        row-vector, translation in the last row). A bone whose matrix is
+///        not finite gets identity, so the palette is always finite.
+void pose_palette(const PoseRig& rig, double seconds, std::vector<float>& palette);
 
 /// @brief One line per setting of @p s: its name and value, "UNPROVEN" or
 ///        "castlemist's choice", and the note section

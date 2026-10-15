@@ -737,3 +737,235 @@ CM_TEST(world_view, motion_off_freezes_time) {
     CHECK_EQ(v.time(), 2.5);
     CHECK(!v.animating());
 }
+
+// ---------------------------------------------------------------------------
+// Task 12: skinned props (spec SkinnedPropPass, note §5)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Two joints: a root at the origin and a child at (0, 0, 10) whose
+/// InverseWorld translates by -10 (row-vector, translation in the last row).
+void two_joints(std::vector<ModelJoint>& j) {
+    j.resize(2);
+    j[1].parent = 0;
+    j[1].pos[2] = 10;
+    j[1].localPos[2] = 10;
+    j[1].invWorld[14] = -10;
+    j[0].name = "root";
+    j[1].name = "child";
+}
+
+/// PoseRig over @p j with @p a, as add_models builds it.
+PoseRig rig_of(const std::vector<ModelJoint>& j, const castlemist::granny::Anim& a) {
+    PoseRig rig;
+    for (const ModelJoint& b : j)
+        rig.bones.push_back({b.name.c_str(), b.parent, b.localPos, b.localQuat, b.localScale, b.invWorld});
+    rig.clip = &a;
+    rig.trackByName = castlemist::granny::trackIndexByName(a);
+    return rig;
+}
+
+/// The child's position: (0, 0, 10) before t = 0.5, (0, 3000, 10) after
+/// (degree 0: held from each knot).
+castlemist::granny::Track jump_track() {
+    castlemist::granny::Track t;
+    t.name = "child";
+    t.pos.fmt = castlemist::granny::F_Constant32f;
+    t.pos.degree = 0;
+    t.pos.dim = 3;
+    t.pos.knots = {0.0f, 0.5f};
+    t.pos.controls = {0, 0, 10, 0, 3000, 10};
+    return t;
+}
+
+/// split_cube rigid-bound to joint 1 (weight 1, model_preview.cpp:329-333),
+/// @p joints joints (two_joints, then identity roots), clip "on" (463) of
+/// duration 1 with the child's track @p track (none when null).
+std::shared_ptr<const ModelPreview> rigged_cube(size_t joints, const castlemist::granny::Track* track = nullptr) {
+    auto mp = std::make_shared<ModelPreview>(*split_cube());
+    two_joints(mp->joints);
+    for (size_t k = 2; k < joints; ++k) {
+        ModelJoint e;
+        e.name = "extra" + std::to_string(k);
+        mp->joints.push_back(e);
+    }
+    for (ModelMeshCPU& m : mp->meshes) {
+        m.hasSkin = true;
+        for (GVertex& g : m.vertices) {
+            g.bidx[0] = 1; g.bidx[1] = g.bidx[2] = g.bidx[3] = 0;
+            g.bwt[0] = 1; g.bwt[1] = g.bwt[2] = g.bwt[3] = 0;
+        }
+    }
+    castlemist::granny::Anim a;
+    a.valid = true;
+    a.name = "on";
+    a.duration = 1;
+    if (track) a.tracks.push_back(*track);
+    mp->animClips = {a};
+    mp->animClipTokens = {463};
+    return mp;
+}
+
+WorldModelLoad skinned_load(std::shared_ptr<const ModelPreview> p) {
+    auto prep = prepare_world_model_shared(*p, true);
+    return WorldModelLoad(0u, std::move(p), std::move(prep));
+}
+
+/// Pixels of @p bmp (a save_screenshot BMP) that are not the clear colour.
+long non_clear(const std::vector<uint8_t>& bmp) {
+    long n = 0;
+    for (size_t i = 54; i + 2 < bmp.size(); i += 3) {
+        const int b = bmp[i], g = bmp[i + 1], r = bmp[i + 2];
+        if (std::abs(r - 26) + std::abs(g - 28) + std::abs(b - 33) > 6) ++n;
+    }
+    return n;
+}
+
+} // namespace
+
+CM_TEST(world_materials, pose_palette_bind_is_identity) {
+    std::vector<ModelJoint> j;
+    two_joints(j);
+    castlemist::granny::Anim a;
+    a.valid = true;
+    a.duration = 1;
+    const PoseRig rig = rig_of(j, a);
+    std::vector<float> pal;
+    pose_palette(rig, 0.3, pal);
+    CHECK_EQ(pal.size(), size_t{32});
+    for (size_t b = 0; b < 2 && pal.size() == 32; ++b)
+        for (int k = 0; k < 16; ++k) CHECK_NEAR(pal[b * 16 + k], (k % 5 == 0) ? 1.0f : 0.0f, 1e-5f);
+}
+
+CM_TEST(world_materials, pose_palette_zero_duration_no_nan) {
+    std::vector<ModelJoint> j;
+    two_joints(j);
+    castlemist::granny::Anim a;
+    a.valid = true;
+    a.duration = 0;
+    a.tracks.push_back(jump_track());
+    const PoseRig rig = rig_of(j, a);
+    std::vector<float> pal;
+    pose_palette(rig, 7.3, pal);
+    CHECK_EQ(pal.size(), size_t{32});
+    for (float f : pal) CHECK(std::isfinite(f));
+}
+
+CM_TEST(world_materials, clip_time_wraps) {
+    CHECK_NEAR(clip_time(2.5, 1.0f), 0.5, 1e-9);
+    CHECK_EQ(clip_time(3.0, 0.0f), 0.0);
+    CHECK_EQ(clip_time(0.0, 2.0f), 0.0);
+    CHECK_NEAR(clip_time(-0.25, 1.0f), 0.75, 1e-9);
+    CHECK_EQ(clip_time(std::nan(""), 1.0f), 0.0);
+}
+
+CM_TEST(world_materials, animated_instances_counted) {
+    for (const size_t joints : {size_t{2}, size_t{300}}) {
+        HWND wnd = hidden_window(160, 120);
+        if (!wnd) SKIP("no window");
+        struct Closer { HWND h; ~Closer() { if (h) DestroyWindow(h); } } closer{wnd};
+        WorldView v;
+        if (!v.create(wnd)) SKIP("no D3D11 device (hardware or WARP)");
+        castlemist::world::WorldScene s = cube_scene();
+        s.props[0].animSequence = 463;    // "on": the model's clip
+        s.props.push_back(s.props[0]);
+        s.props[1].animSequence = 6351;   // "off": not in the bank
+        s.props[1].world[13] = 300;
+        s.props.push_back(s.props[0]);
+        s.props[2].animSequence = 0;      // propArray: no clip
+        s.props[2].world[13] = -300;
+        v.set_world(s);
+        v.add_models({skinned_load(rigged_cube(joints))});
+        CHECK_EQ(v.stats().modelsLoaded, 1);
+        v.render(cube_camera());
+        CHECK_FALSE(v.device_lost());
+        bool warned = false;
+        for (const std::string& l : v.warnings())
+            warned = warned || (l.find("1 animated placement") != std::string::npos &&
+                                l.find("note \xc2\xa7" "5") != std::string::npos);
+        CHECK(warned);
+        WorldCamera cam = cube_camera();
+        int rect[4] = {0, 0, 0, 0};
+        if (joints == 2) {
+            CHECK_EQ(v.stats().animated, 1);
+            CHECK_EQ(v.stats().unresolvedClips, 1);
+            CHECK(v.animating());
+            CHECK(v.focus_animated(cam));
+            // 4x the radius (50 sqrt 3) back along the view direction from the cube's centre.
+            const float dx = cam.pos[0], dy = cam.pos[1], dz = cam.pos[2] + 500;
+            CHECK_NEAR(std::sqrt(dx * dx + dy * dy + dz * dz), 4.0f * 50.0f * std::sqrt(3.0f), 0.5f);
+            CHECK(v.animated_screen_rect(cam, rect));
+            CHECK(rect[2] > rect[0] && rect[3] > rect[1]);
+            v.set_motion(false);
+            CHECK_FALSE(v.animating());
+        } else {
+            CHECK_EQ(v.stats().animated, 0);
+            CHECK_EQ(v.stats().unresolvedClips, 2);
+            CHECK_FALSE(v.animating());
+            CHECK_FALSE(v.focus_animated(cam));
+            CHECK_FALSE(v.animated_screen_rect(cam, rect));
+        }
+    }
+}
+
+CM_TEST(world_materials, skinned_prop_follows_its_clip) {
+    HWND wnd = hidden_window(160, 120);
+    if (!wnd) SKIP("no window");
+    struct Closer { HWND h; ~Closer() { if (h) DestroyWindow(h); } } closer{wnd};
+    WorldView v;
+    if (!v.create(wnd)) SKIP("no D3D11 device (hardware or WARP)");
+    castlemist::world::WorldScene s = cube_scene();
+    s.props[0].animSequence = 463;
+    v.set_world(s);
+    const castlemist::granny::Track jump = jump_track();
+    v.add_models({skinned_load(rigged_cube(2, &jump))});
+    CHECK_EQ(v.stats().animated, 1);
+    const WorldCamera cam = cube_camera();
+    auto shot = [&](const char* name) {
+        v.render(cam);
+        const std::string p = temp_path(name);
+        CHECK(v.save_screenshot(p.c_str()));
+        return read_file(p);
+    };
+    v.set_time(0.1);   // bind pose: the cube where it stands
+    const std::vector<uint8_t> bind = shot("cm_wm_skin_bind.bmp");
+    v.set_time(1.7);   // wraps to 0.7: the child has jumped 3000 along +Y, out of view
+    const std::vector<uint8_t> moved = shot("cm_wm_skin_moved.bmp");
+    v.set_motion(false);   // time 0: bind pose again
+    const std::vector<uint8_t> frozen = shot("cm_wm_skin_frozen.bmp");
+    v.set_motion(true);
+    v.set_shading(WorldShading::Geometry);   // Geometry draws everything static
+    const std::vector<uint8_t> geo = shot("cm_wm_skin_geometry.bmp");
+    std::printf("    skinned_prop_follows_its_clip: bind %ld, moved %ld, frozen %ld, geometry %ld px\n",
+                non_clear(bind), non_clear(moved), non_clear(frozen), non_clear(geo));
+    CHECK(non_clear(bind) > 100);
+    CHECK_EQ(non_clear(moved), 0L);
+    CHECK(bind == frozen);
+    CHECK(non_clear(geo) > 100);
+
+    // Textured: kPropSkinned's PSMain, one draw per sub-range, same motion.
+    v.set_shading(WorldShading::Materials);
+    v.add_textures(cube_textures());
+    v.set_time(0.1);
+    const long texBind = non_clear(shot("cm_wm_skin_tex_bind.bmp"));
+    CHECK_EQ(v.stats().draws, 2);
+    CHECK_EQ(v.stats().materialsUntextured, 0);
+    v.set_time(0.7);
+    const long texMoved = non_clear(shot("cm_wm_skin_tex_moved.bmp"));
+    CHECK(texBind > 100);
+    CHECK_EQ(texMoved, 0L);
+
+    // In bind pose the skinned AO look is the static one, byte for byte.
+    HWND w2 = hidden_window(160, 120);
+    if (!w2) return;
+    Closer c2{w2};
+    WorldView st;
+    if (!st.create(w2)) return;
+    st.set_world(cube_scene());
+    st.add_models({{0u, split_cube()}});
+    st.render(cam);
+    const std::string ps = temp_path("cm_wm_skin_static.bmp");
+    CHECK(st.save_screenshot(ps.c_str()));
+    CHECK(read_file(ps) == bind);
+}

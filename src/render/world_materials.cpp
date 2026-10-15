@@ -240,4 +240,29 @@ std::vector<size_t> blend_back_to_front(const std::vector<float>& nearestDistanc
     return order;
 }
 
+double clip_time(double seconds, float duration) {
+    if (!(duration > 1e-6f) || !std::isfinite(seconds) || !std::isfinite(duration)) return 0.0;
+    // gw2bgfx_view.cpp's wrap: loop rather than clamp (the sampler does not loop).
+    const double d = duration;
+    double t = std::fmod(seconds, d);
+    if (t < 0.0) t += d;
+    return t < d ? t : 0.0;   // -tiny + d can round to d
+}
+
+void pose_palette(const PoseRig& rig, double seconds, std::vector<float>& palette) {
+    static const float kIdentity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    const size_t n = rig.bones.size();
+    palette.resize(n * 16);
+    std::vector<castlemist::granny::PoseXform> world;
+    const float t = static_cast<float>(clip_time(seconds, rig.clip ? rig.clip->duration : 0.0f));
+    castlemist::granny::composePose(rig.bones, rig.clip, t, world, rig.clip ? &rig.trackByName : nullptr);
+    for (size_t b = 0; b < n; ++b) {
+        float* m = palette.data() + b * 16;
+        castlemist::granny::skinMatrix(rig.bones[b], world[b], m);
+        bool finite = true;
+        for (int k = 0; k < 16; ++k) finite = finite && std::isfinite(m[k]);
+        if (!finite) std::copy(kIdentity, kIdentity + 16, m);
+    }
+}
+
 } // namespace castlemist::render

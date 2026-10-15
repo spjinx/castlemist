@@ -70,6 +70,14 @@ struct WorldViewStats {
     int materialsUntextured = 0;
     /// Loaded prop materials whose diffuse scrolls (texTransforms, note section 4).
     int scrollingMaterials = 0;
+    /// Loaded placements that play their clip (spec SkinnedPropPass): a
+    /// non-zero animSequence naming a clip of a model prepared with skin.
+    int animated = 0;
+    /// Loaded placements with a non-zero animSequence left in bind pose: it
+    /// names no clip of their model (the fallback rule is UNPROVEN, note
+    /// section 5), or the model has no skin stream (more than 256 joints, or
+    /// prepared without skin).
+    int unresolvedClips = 0;
 };
 
 /// @brief Draws one WorldScene into one window.
@@ -159,9 +167,22 @@ public:
     void set_time(double seconds);
     /// @brief Effective clock: motion ? the set_time value : 0.
     double time() const;
-    /// @brief Materials shading && motion && (a scrolling prop material or a
-    ///        water preset is loaded); the owner repaints on a timer while true.
+    /// @brief Materials shading && motion && (a scrolling prop material, a
+    ///        water preset or a playing animated placement is loaded); the
+    ///        owner repaints on a timer while true.
     bool animating() const;
+    /// @brief Verification hook: moves @p cam to frame the playing animated
+    ///        placement (stats().animated) whose world sphere centre is
+    ///        nearest @p cam's position, from 4x its radius back along @p
+    ///        cam's view direction (direction and up kept). False, and @p cam
+    ///        untouched, when none is loaded.
+    bool focus_animated(WorldCamera& cam) const;
+    /// @brief The pixel rect {left, top, right, bottom} (right and bottom
+    ///        exclusive, clamped to the surface) of the projected world sphere
+    ///        of the placement focus_animated would pick for @p cam. False
+    ///        when none is loaded, or the sphere is wholly behind the camera
+    ///        or off the surface.
+    bool animated_screen_rect(const WorldCamera& cam, int rect[4]) const;
     /// @brief Verification hook: chunk @p chunk's (index into the scene's
     ///        `terrain.chunks`) §1.2 albedo only (no light, fog or gamma),
     ///        linear, into a @p size x @p size RGBA8 UNORM offscreen target

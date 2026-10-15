@@ -21,6 +21,7 @@
 #include <wrl/client.h>
 
 #include <cstdint>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -63,6 +64,11 @@ struct InstCPU {
     float centerW[3] = {0, 0, 0};
     float radiusW = 0;
     bool ready = false;
+    uint64_t animSequence = 0;   ///< props: PropInstance::animSequence (0 = none)
+    /// Props: the clip of its model it plays (spec SkinnedPropPass), set by
+    /// add_models when animSequence resolves and the model has a skin
+    /// stream; -1 = static (drawn in bind pose).
+    int clip = -1;
 };
 
 /// Places @p in's world sphere from its mesh: centre through the matrix,
@@ -95,6 +101,14 @@ struct InstPipeline {
 
 /// Size of world_shaders::kPropMat's MatCB (register b1), for the owner's buffer.
 inline constexpr UINT kMatCBBytes = 32;
+/// Size of world_shaders::kPropSkinned's SkinCB (register b2): the bucket's
+/// palette base and bone count.
+inline constexpr UINT kSkinCBBytes = 16;
+
+/// Which props a cull takes: All ignores InstCPU::clip (Geometry, collision,
+/// water: everything static); Static only clip < 0; Skinned only clip >= 0,
+/// bucketed by (mesh, clip, LOD).
+enum class CullSkin { All, Static, Skinned };
 
 /// What draw_materials() binds: kPropMat for textured sub-ranges, the
 /// InstPipeline (kInstanced, the AO look) for the rest.
@@ -111,6 +125,9 @@ struct PropMatPipeline {
     bool srgb;                        ///< WorldMaterialSettings::srgbColourTextures
     double time = 0;                  ///< WorldView::time(): the material clock
     float scrollUnitSeconds = 1;      ///< WorldMaterialSettings::uvScrollUnitSeconds
+    /// Skinned batches only: SkinCB (b2, VS), written per bucket with its
+    /// palette base; the skin stream binds to slot 2. Null for static batches.
+    ID3D11Buffer* cbSkin = nullptr;
 };
 
 /// One frame's instanced draw: cull_into() for each layer (opaque first,
@@ -127,7 +144,14 @@ public:
     /// size as render_fly does, and appends them to this frame's buckets.
     /// Returns how many survived.
     int cull_into(const std::vector<InstCPU>& insts, const std::vector<MeshGPU>& meshes, const float* tint,
-                  float alpha, const WorldCamera& cam, float farD, const float planes[6][4]);
+                  float alpha, const WorldCamera& cam, float farD, const float planes[6][4],
+                  CullSkin which = CullSkin::All);
+    /// Skinned batches: the distinct (mesh index, clip) of this frame's
+    /// buckets, in first-seen order (one pose each, spec SkinnedPropPass).
+    std::vector<std::pair<uint32_t, int>> palette_keys();
+    /// Skinned batches: palette_keys()[k]'s palette starts at bone @p base[k]
+    /// of the frame's palette buffer and holds @p count[k] bones.
+    void set_palettes(const std::vector<uint32_t>& base, const std::vector<uint32_t>& count);
     /// Uploads every bucketed instance in one Map and issues one
     /// DrawIndexedInstanced per bucket; translucent buckets switch to alpha
     /// blending without depth writes. Adds to @p tris; returns draw calls.
@@ -157,13 +181,20 @@ private:
         float alpha;
         std::vector<const InstCPU*> insts;
         float nearD2;   ///< squared distance of the nearest instance's centre
+        int clip = -1;               ///< skinned buckets: the clip; -1 static
+        uint32_t meshIndex = 0;
+        int paletteKey = -1;         ///< index into palette_keys()
+        uint32_t paletteBase = 0, boneCount = 0;
     };
     bool ensure_capacity(ID3D11Device* dev, uint32_t need);
-    void bind_streams(ID3D11DeviceContext* ctx, size_t b) const;
+    /// Slots 0 and 1; for a skinned bucket with @p cbSkin also the skin
+    /// stream (slot 2) and its SkinCB.
+    void bind_streams(ID3D11DeviceContext* ctx, size_t b, ID3D11Buffer* cbSkin = nullptr) const;
 
     std::vector<Bucket> buckets_;   ///< rebuilt every frame
     std::vector<uint32_t> first_;   ///< per bucket: its first instance in instVB_ (upload())
     std::vector<int> bucketOf_;
+    std::unordered_map<uint64_t, int> skinBucketOf_;   ///< (mesh, clip, LOD) -> bucket, CullSkin::Skinned
     Microsoft::WRL::ComPtr<ID3D11Buffer> instVB_;
     uint32_t instCap_ = 0;
 };

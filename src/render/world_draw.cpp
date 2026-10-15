@@ -35,6 +35,12 @@ struct MatCB {
 };
 static_assert(sizeof(MatCB) == kMatCBBytes, "the owner creates MatCB's buffer with kMatCBBytes");
 
+/// world_shaders::kPropSkinned's SkinCB (register b2).
+struct SkinCB {
+    uint32_t base, count, _pad[2];
+};
+static_assert(sizeof(SkinCB) == kSkinCBBytes, "the owner creates SkinCB's buffer with kSkinCBBytes");
+
 } // namespace
 
 void place(InstCPU& in, const MeshGPU& m) {
@@ -119,11 +125,13 @@ bool InstancedBatch::ensure_capacity(ID3D11Device* dev, uint32_t need) {
 
 int InstancedBatch::cull_into(const std::vector<InstCPU>& insts, const std::vector<MeshGPU>& meshes,
                               const float* tint, float alpha, const WorldCamera& cam, float farD,
-                              const float planes[6][4]) {
+                              const float planes[6][4], CullSkin which) {
     bucketOf_.assign(meshes.size() * 4, -1);
+    skinBucketOf_.clear();
     int visible = 0;
     for (const InstCPU& in : insts) {
         if (!in.ready || in.mesh >= meshes.size()) continue;   // model not streamed in yet
+        if ((which == CullSkin::Static && in.clip >= 0) || (which == CullSkin::Skinned && in.clip < 0)) continue;
         const MeshGPU& m = meshes[in.mesh];
         if (!m.ok) continue;
         const float dx = in.centerW[0] - cam.pos[0], dy = in.centerW[1] - cam.pos[1],
@@ -142,17 +150,50 @@ int InstancedBatch::cull_into(const std::vector<InstCPU>& insts, const std::vect
             lod = (sr > 0.20f) ? 0 : (sr > 0.06f ? 1 : (sr > 0.02f ? 2 : 3));
             lod = std::min(lod, maxLod);
         }
-        const size_t key = static_cast<size_t>(in.mesh) * 4 + static_cast<size_t>(lod);
-        if (bucketOf_[key] < 0) {
-            bucketOf_[key] = static_cast<int>(buckets_.size());
-            buckets_.push_back({&m, lod, tint, alpha, {}, d2});
+        int* slot;
+        if (which == CullSkin::Skinned) {   // (mesh, clip, LOD)
+            const uint64_t key = (static_cast<uint64_t>(in.mesh) << 34) |
+                                 (static_cast<uint64_t>(static_cast<uint32_t>(in.clip)) << 2) |
+                                 static_cast<uint64_t>(lod);
+            slot = &skinBucketOf_.try_emplace(key, -1).first->second;
+        } else {
+            slot = &bucketOf_[static_cast<size_t>(in.mesh) * 4 + static_cast<size_t>(lod)];
         }
-        Bucket& bk = buckets_[static_cast<size_t>(bucketOf_[key])];
+        if (*slot < 0) {
+            *slot = static_cast<int>(buckets_.size());
+            Bucket nb{&m, lod, tint, alpha, {}, d2};
+            nb.meshIndex = in.mesh;
+            nb.clip = which == CullSkin::Skinned ? in.clip : -1;
+            buckets_.push_back(std::move(nb));
+        }
+        Bucket& bk = buckets_[static_cast<size_t>(*slot)];
         bk.insts.push_back(&in);
         bk.nearD2 = std::min(bk.nearD2, d2);
         ++visible;
     }
     return visible;
+}
+
+std::vector<std::pair<uint32_t, int>> InstancedBatch::palette_keys() {
+    std::vector<std::pair<uint32_t, int>> keys;
+    for (Bucket& b : buckets_) {
+        b.paletteKey = -1;
+        if (b.clip < 0) continue;
+        const std::pair<uint32_t, int> k{b.meshIndex, b.clip};
+        const auto it = std::find(keys.begin(), keys.end(), k);   // a handful per frame
+        b.paletteKey = static_cast<int>(it - keys.begin());
+        if (it == keys.end()) keys.push_back(k);
+    }
+    return keys;
+}
+
+void InstancedBatch::set_palettes(const std::vector<uint32_t>& base, const std::vector<uint32_t>& count) {
+    for (Bucket& b : buckets_) {
+        const size_t k = static_cast<size_t>(b.paletteKey);
+        if (b.paletteKey < 0 || k >= base.size() || k >= count.size()) continue;
+        b.paletteBase = base[k];
+        b.boneCount = count[k];
+    }
 }
 
 bool InstancedBatch::upload(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
@@ -183,13 +224,22 @@ bool InstancedBatch::upload(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
     return true;
 }
 
-void InstancedBatch::bind_streams(ID3D11DeviceContext* ctx, size_t b) const {
+void InstancedBatch::bind_streams(ID3D11DeviceContext* ctx, size_t b, ID3D11Buffer* cbSkin) const {
     const Bucket& bk = buckets_[b];
-    ID3D11Buffer* vbs[] = {bk.mesh->vb.Get(), instVB_.Get()};
-    const UINT strides[] = {bk.mesh->stride, sizeof(InstGPU)};
-    const UINT offsets[] = {0, first_[b] * static_cast<UINT>(sizeof(InstGPU))};
-    ctx->IASetVertexBuffers(0, 2, vbs, strides, offsets);
+    const bool skin = cbSkin && bk.clip >= 0 && bk.mesh->vbSkin;
+    ID3D11Buffer* vbs[] = {bk.mesh->vb.Get(), instVB_.Get(), skin ? bk.mesh->vbSkin.Get() : nullptr};
+    const UINT strides[] = {bk.mesh->stride, sizeof(InstGPU), sizeof(SkinVtx)};
+    const UINT offsets[] = {0, first_[b] * static_cast<UINT>(sizeof(InstGPU)), 0};
+    ctx->IASetVertexBuffers(0, skin ? 3 : 2, vbs, strides, offsets);
     ctx->IASetIndexBuffer(bk.mesh->ib.Get(), DXGI_FORMAT_R32_UINT, 0);
+    if (!skin) return;
+    const SkinCB c{bk.paletteBase, bk.boneCount, {0, 0}};
+    D3D11_MAPPED_SUBRESOURCE ms;
+    if (SUCCEEDED(ctx->Map(cbSkin, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) {
+        std::memcpy(ms.pData, &c, sizeof c);
+        ctx->Unmap(cbSkin, 0);
+    }
+    ctx->VSSetConstantBuffers(2, 1, &cbSkin);
 }
 
 int InstancedBatch::draw(ID3D11Device* dev, ID3D11DeviceContext* ctx, const InstPipeline& pl, size_t& tris) {
@@ -293,7 +343,7 @@ int InstancedBatch::draw_materials(ID3D11DeviceContext* ctx, const PropMatPipeli
             bool bound = false;
             if (!subs || subs->empty()) {   // no per-submesh ranges: the whole LOD
                 const auto range = bk.mesh->lodRanges[static_cast<size_t>(bk.lod)];
-                bind_streams(ctx, b);
+                bind_streams(ctx, b, pl.cbSkin);
                 issue(bk, range.first, range.second);
                 ++untextured;
                 continue;
@@ -301,7 +351,7 @@ int InstancedBatch::draw_materials(ID3D11DeviceContext* ctx, const PropMatPipeli
             for (const SubRange& r : *subs) {
                 WorldAlpha a = WorldAlpha::Opaque;
                 if (r.count == 0 || resolve(*bk.mesh, r, a)) continue;
-                if (!bound) { bind_streams(ctx, b); bound = true; }
+                if (!bound) { bind_streams(ctx, b, pl.cbSkin); bound = true; }
                 issue(bk, r.first, r.count);
                 ++untextured;
             }
@@ -317,7 +367,7 @@ int InstancedBatch::draw_materials(ID3D11DeviceContext* ctx, const PropMatPipeli
                 ID3D11ShaderResourceView* srv = resolve(*bk.mesh, r, a);
                 if (!srv || (a != WorldAlpha::Opaque && a != WorldAlpha::Clip)) continue;
                 use_mat();
-                if (!bound) { bind_streams(ctx, b); bound = true; }
+                if (!bound) { bind_streams(ctx, b, pl.cbSkin); bound = true; }
                 draw_textured(bk, r, srv, a);
             }
         }
@@ -345,7 +395,7 @@ int InstancedBatch::draw_materials(ID3D11DeviceContext* ctx, const PropMatPipeli
             for (size_t k : blend_back_to_front(dist)) {
                 const size_t b = which[k];
                 const Bucket& bk = buckets_[b];
-                bind_streams(ctx, b);
+                bind_streams(ctx, b, pl.cbSkin);
                 for (const SubRange& r : *subs_of(bk)) {
                     WorldAlpha a = WorldAlpha::Opaque;
                     ID3D11ShaderResourceView* srv = resolve(*bk.mesh, r, a);

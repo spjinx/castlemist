@@ -10,6 +10,7 @@
 
 #include "castlemist/extract/map_types.h"
 #include "castlemist/extract/model_types.h"
+#include "castlemist/world/anim.h"
 #include "castlemist/world/terrain_mesh.h"
 
 #include "detail/light_calib.h"
@@ -159,6 +160,14 @@ struct WorldView::Impl {
     /// Pass 2's blend state per WorldAlpha (null for Opaque, Clip, Unmapped);
     /// [Blend] is bsAlpha.
     ComPtr<ID3D11BlendState> bsProp[static_cast<int>(WorldAlpha::Count)];
+    // Skinned props (kPropSkinned): PSMain textured, PSAo the AO look.
+    ComPtr<ID3D11VertexShader> vsSkin;
+    ComPtr<ID3D11PixelShader> psSkin, psSkinAo;
+    ComPtr<ID3D11InputLayout> ilSkin;
+    ComPtr<ID3D11Buffer> cbSkin;                  ///< SkinCB (world_draw.cpp), per skinned bucket
+    ComPtr<ID3D11Buffer> palette;                 ///< StructuredBuffer<float4x4>, every pose of the frame
+    ComPtr<ID3D11ShaderResourceView> paletteSrv;
+    UINT paletteCap = 0;                          ///< bones
     int w = 1, h = 1;
 
     std::vector<ChunkGPU> chunks;
@@ -181,7 +190,12 @@ struct WorldView::Impl {
     std::vector<InstCPU> waterInst;
 
     InstancedBatch batch;       ///< this frame's instanced draw (props too under Geometry)
-    InstancedBatch propBatch;   ///< props under Materials: the material pass
+    InstancedBatch propBatch;   ///< props under Materials: the material pass (static ones)
+    InstancedBatch skinBatch;   ///< props under Materials that play a clip: (model, clip, LOD) buckets
+    /// Per model, per clip index: the pose source of each clip an instance
+    /// plays (add_models); bones borrow `previews[model]`.
+    std::vector<std::vector<PoseRig>> rigs;
+    int clipMisses = 0, skinMisses = 0;   ///< unresolvedClips split: no such clip / no skin stream
 
     TextureCache textures;  ///< fileId -> texture, filled by add_textures
     WorldShading shading = WorldShading::Materials;
@@ -256,6 +270,86 @@ struct WorldView::Impl {
                SUCCEEDED(dev->CreateInputLayout(el, nel, vsb->GetBufferPointer(), vsb->GetBufferSize(), &layout));
     }
 
+    /// Compiles @p src's pixel shader @p entry.
+    bool compile_ps(const char* src, const char* name, const char* entry, ComPtr<ID3D11PixelShader>& p) {
+        ComPtr<ID3DBlob> psb, err;
+        if (FAILED(D3DCompile(src, std::strlen(src), name, nullptr, nullptr, entry, "ps_5_0", 0, 0, &psb, &err))) {
+            if (err) OutputDebugStringA(static_cast<const char*>(err->GetBufferPointer()));
+            return false;
+        }
+        return SUCCEEDED(dev->CreatePixelShader(psb->GetBufferPointer(), psb->GetBufferSize(), nullptr, &p));
+    }
+
+    /// Writes @p pal (16 floats per bone) into the palette buffer, growing it
+    /// when needed. False with nothing to write or on failure.
+    bool upload_palette(const std::vector<float>& pal) {
+        const UINT bones = static_cast<UINT>(pal.size() / 16);
+        if (bones == 0) return false;
+        if (!palette || paletteCap < bones) {
+            const UINT cap = std::max<UINT>(bones + bones / 2, 1024);
+            D3D11_BUFFER_DESC bd{};
+            bd.Usage = D3D11_USAGE_DYNAMIC;
+            bd.ByteWidth = cap * 64;
+            bd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            bd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+            bd.StructureByteStride = 64;
+            ComPtr<ID3D11Buffer> nb;
+            ComPtr<ID3D11ShaderResourceView> nv;
+            D3D11_SHADER_RESOURCE_VIEW_DESC vd{};
+            vd.Format = DXGI_FORMAT_UNKNOWN;
+            vd.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+            vd.Buffer.FirstElement = 0;
+            vd.Buffer.NumElements = cap;
+            if (FAILED(dev->CreateBuffer(&bd, nullptr, &nb)) ||
+                FAILED(dev->CreateShaderResourceView(nb.Get(), &vd, &nv)))
+                return false;
+            palette = nb;
+            paletteSrv = nv;
+            paletteCap = cap;
+        }
+        D3D11_MAPPED_SUBRESOURCE ms;
+        if (FAILED(ctx->Map(palette.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return false;
+        std::memcpy(ms.pData, pal.data(), pal.size() * sizeof(float));
+        ctx->Unmap(palette.Get(), 0);
+        return true;
+    }
+
+    /// One pose per (model, clip) with a visible skinned bucket, at @p t
+    /// (time()), packed into the palette buffer (spec SkinnedPropPass). Every
+    /// instance starts at t = 0 and loops, so instances of a (model, clip)
+    /// share it.
+    bool pose_skinned(double t) {
+        const std::vector<std::pair<uint32_t, int>> keys = skinBatch.palette_keys();
+        if (keys.empty()) return false;
+        std::vector<float> all, one;
+        std::vector<uint32_t> base(keys.size(), 0), count(keys.size(), 0);
+        for (size_t k = 0; k < keys.size(); ++k) {
+            const auto [m, c] = keys[k];
+            if (m >= rigs.size() || c < 0 || static_cast<size_t>(c) >= rigs[m].size()) continue;
+            pose_palette(rigs[m][static_cast<size_t>(c)], t, one);
+            base[k] = static_cast<uint32_t>(all.size() / 16);
+            count[k] = static_cast<uint32_t>(one.size() / 16);
+            all.insert(all.end(), one.begin(), one.end());
+        }
+        skinBatch.set_palettes(base, count);
+        return upload_palette(all);
+    }
+
+    /// The ready playing instance (clip >= 0) whose world centre is nearest
+    /// @p pos, or null.
+    const InstCPU* nearest_animated(const float pos[3]) const {
+        const InstCPU* best = nullptr;
+        float bestD2 = 0;
+        for (const InstCPU& in : props) {
+            if (!in.ready || in.clip < 0) continue;
+            const float dx = in.centerW[0] - pos[0], dy = in.centerW[1] - pos[1], dz = in.centerW[2] - pos[2];
+            const float d2 = dx * dx + dy * dy + dz * dz;
+            if (!best || d2 < bestD2) { best = &in; bestD2 = d2; }
+        }
+        return best;
+    }
+
     bool create_pipeline() {
         const D3D11_INPUT_ELEMENT_DESC el[] = {
             {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
@@ -290,6 +384,16 @@ struct WorldView::Impl {
             {"TEXCOORD", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D11_INPUT_PER_INSTANCE_DATA, 1},
         };
         if (!compile(world_shaders::kPropMat, "world_prop_mat", elp, 8, vsProp, psProp, ilProp)) return false;
+        // kPropSkinned: kPropMat's layout plus SkinVtx in slot 2.
+        const D3D11_INPUT_ELEMENT_DESC els[] = {
+            elp[0], elp[1], elp[2], elp[3], elp[4], elp[5], elp[6], elp[7],
+            {"BLENDINDICES", 0, DXGI_FORMAT_R8G8B8A8_UINT, 2, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
+            {"BLENDWEIGHT", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 2, 4, D3D11_INPUT_PER_VERTEX_DATA, 0},
+        };
+        const std::string skinSrc = world_shaders::prop_skinned_source();
+        if (!compile(skinSrc.c_str(), "world_prop_skinned", els, 10, vsSkin, psSkin, ilSkin) ||
+            !compile_ps(skinSrc.c_str(), "world_prop_skinned", "PSAo", psSkinAo))
+            return false;
 
         D3D11_BUFFER_DESC bd{};
         bd.Usage = D3D11_USAGE_DYNAMIC;
@@ -301,6 +405,8 @@ struct WorldView::Impl {
         if (FAILED(dev->CreateBuffer(&bd, nullptr, &cbChunk))) return false;
         bd.ByteWidth = kMatCBBytes;
         if (FAILED(dev->CreateBuffer(&bd, nullptr, &cbMat))) return false;
+        bd.ByteWidth = kSkinCBBytes;
+        if (FAILED(dev->CreateBuffer(&bd, nullptr, &cbSkin))) return false;
 
         // Trilinear; pages clamp, ground wraps.
         D3D11_SAMPLER_DESC sm{};
@@ -669,11 +775,20 @@ struct WorldView::Impl {
         // Materials the props take the material pass instead: pass 1
         // (opaque, clip, the AO look) before collision and water, pass 2
         // (blend, additive; no depth writes) after them.
+        // Under Materials the props that play a clip take the skinned pass
+        // (the same two passes, with kPropSkinned); Geometry draws them all static.
         batch.clear();
         propBatch.clear();
+        skinBatch.clear();
         const bool matProps = shading == WorldShading::Materials;
-        if (layers[static_cast<int>(WorldLayer::Props)])
-            visible += (matProps ? propBatch : batch).cull_into(props, models, kPropTint, 1.0f, cam, farD, planes);
+        if (layers[static_cast<int>(WorldLayer::Props)]) {
+            if (matProps) {
+                visible += propBatch.cull_into(props, models, kPropTint, 1.0f, cam, farD, planes, CullSkin::Static);
+                visible += skinBatch.cull_into(props, models, kPropTint, 1.0f, cam, farD, planes, CullSkin::Skinned);
+            } else {
+                visible += batch.cull_into(props, models, kPropTint, 1.0f, cam, farD, planes);
+            }
+        }
         if (layers[static_cast<int>(WorldLayer::Collision)])
             visible += batch.cull_into(colInsts, colMeshes, kCollisionTint, 1.0f, cam, farD, planes);
         if (layers[static_cast<int>(WorldLayer::Water)])
@@ -684,11 +799,31 @@ struct WorldView::Impl {
         const PropMatPipeline pm{pl,      ilProp.Get(), vsProp.Get(), psProp.Get(), cbMat.Get(), sWrap.Get(),
                                  blendOf, &textures,    mat.srgbColourTextures,
                                  motion ? clock : 0.0, mat.uvScrollUnitSeconds};
+        // The skinned pass: kPropSkinned's PSAo for the AO look, PSMain textured.
+        PropMatPipeline sk = pm;
+        sk.ao = InstPipeline{ilSkin.Get(), vsSkin.Get(), psSkinAo.Get(), bsAlpha.Get(), dssNoWrite.Get(), dss.Get()};
+        sk.il = ilSkin.Get();
+        sk.vs = vsSkin.Get();
+        sk.ps = psSkin.Get();
+        sk.cbSkin = cbSkin.Get();
         int matUntextured = 0;
         const bool propsUp = matProps && propBatch.upload(dev.Get(), ctx.Get());
+        const bool skinUp = matProps && pose_skinned(pm.time) && skinBatch.upload(dev.Get(), ctx.Get());
+        if (skinUp) ctx->VSSetShaderResources(1, 1, paletteSrv.GetAddressOf());
         if (propsUp) draws += propBatch.draw_materials(ctx.Get(), pm, 1, tris, matUntextured);
+        if (skinUp) draws += skinBatch.draw_materials(ctx.Get(), sk, 1, tris, matUntextured);
         draws += batch.draw(dev.Get(), ctx.Get(), pl, tris);
+        // Pass 2 per batch: the blended static buckets, then the blended
+        // skinned ones (each sorted back to front within its own batch only).
         if (propsUp) draws += propBatch.draw_materials(ctx.Get(), pm, 2, tris, matUntextured);
+        if (skinUp) {
+            draws += skinBatch.draw_materials(ctx.Get(), sk, 2, tris, matUntextured);
+            ID3D11ShaderResourceView* none = nullptr;
+            ctx->VSSetShaderResources(1, 1, &none);
+            ID3D11Buffer* noVb = nullptr;
+            const UINT zero = 0;
+            ctx->IASetVertexBuffers(2, 1, &noVb, &zero, &zero);
+        }
 
         st.visible = visible;
         st.draws = draws;
@@ -757,6 +892,8 @@ void WorldView::set_world(const castlemist::world::WorldScene& s) {
     d->models.assign(s.models.size(), MeshGPU{});
     d->modelTried.assign(s.models.size(), 0);
     d->previews.assign(s.models.size(), nullptr);
+    d->rigs.assign(s.models.size(), {});
+    d->clipMisses = d->skinMisses = 0;
     d->instOf.assign(s.models.size(), {});
     d->props.clear();
     d->colSrc = castlemist::world::Collision{};
@@ -802,6 +939,7 @@ void WorldView::set_world(const castlemist::world::WorldScene& s) {
         in.source = static_cast<uint32_t>(pi);
         in.world = colmajor_to_rowvec(p.world);
         in.scale = max_column_length(p.world);
+        in.animSequence = p.animSequence;
         d->instOf[p.model].push_back(static_cast<uint32_t>(d->props.size()));
         d->props.push_back(in);
         const float* t = p.world + 12;   // column 3 = translation
@@ -853,7 +991,42 @@ void WorldView::add_models(const std::vector<WorldModelLoad>& batch) {
         }
         ++d->st.modelsLoaded;
         d->previews[m] = l.preview;
-        for (uint32_t pi : d->instOf[m]) place(d->props[pi], d->models[m]);
+        // Clips (spec SkinnedPropPass, note §5): an instance plays the clip
+        // its animSequence names when the model has a skin stream; otherwise
+        // it stays in bind pose and is counted. No fallback rule (UNPROVEN).
+        const ModelPreview& pv = *l.preview;
+        const bool skinnable = d->models[m].vbSkin && !pv.joints.empty();
+        for (uint32_t pi : d->instOf[m]) {
+            InstCPU& in = d->props[pi];
+            place(in, d->models[m]);
+            in.clip = -1;
+            if (!in.ready || in.animSequence == 0) continue;
+            const int c = castlemist::world::resolve_prop_clip(pv.animClipTokens, in.animSequence);
+            if (c < 0 || static_cast<size_t>(c) >= pv.animClips.size()) {
+                ++d->st.unresolvedClips;
+                ++d->clipMisses;
+                continue;
+            }
+            if (!skinnable) {
+                ++d->st.unresolvedClips;
+                ++d->skinMisses;
+                continue;
+            }
+            in.clip = c;
+            ++d->st.animated;
+            std::vector<PoseRig>& rs = d->rigs[m];
+            if (rs.size() < pv.animClips.size()) rs.resize(pv.animClips.size());
+            PoseRig& rig = rs[static_cast<size_t>(c)];
+            if (!rig.clip) {   // as skeleton.cpp's pose_bones
+                rig.bones.resize(pv.joints.size());
+                for (size_t j = 0; j < pv.joints.size(); ++j) {
+                    const ModelJoint& b = pv.joints[j];
+                    rig.bones[j] = {b.name.c_str(), b.parent, b.localPos, b.localQuat, b.localScale, b.invWorld};
+                }
+                rig.clip = &pv.animClips[static_cast<size_t>(c)];
+                rig.trackByName = castlemist::granny::trackIndexByName(*rig.clip);
+            }
+        }
     }
 }
 
@@ -1019,12 +1192,65 @@ bool WorldView::motion() const { return d->motion; }
 void WorldView::set_time(double seconds) { d->clock = seconds; }
 double WorldView::time() const { return d->motion ? d->clock : 0.0; }
 bool WorldView::animating() const {
-    // No instance plays a clip yet (sub-project 3 draws the bind pose).
-    return d->shading == WorldShading::Materials && d->motion && (d->scrollingMaterials > 0 || d->hasWater);
+    return d->shading == WorldShading::Materials && d->motion &&
+           (d->scrollingMaterials > 0 || d->hasWater || d->st.animated > 0);
+}
+
+bool WorldView::focus_animated(WorldCamera& cam) const {
+    const InstCPU* in = d->nearest_animated(cam.pos);
+    if (!in) return false;
+    Vec3 f{cam.fwd[0], cam.fwd[1], cam.fwd[2]};
+    if (!(dot(f, f) > 1e-12f)) f = Vec3{1, 0, 0};
+    f = norm(f);
+    const float back = 4.0f * in->radiusW;
+    cam.pos[0] = in->centerW[0] - f.x * back;
+    cam.pos[1] = in->centerW[1] - f.y * back;
+    cam.pos[2] = in->centerW[2] - f.z * back;
+    return true;
+}
+
+bool WorldView::animated_screen_rect(const WorldCamera& cam, int rect[4]) const {
+    const InstCPU* in = d->nearest_animated(cam.pos);
+    if (!in || d->w <= 0 || d->h <= 0) return false;
+    const Mat4 VP = world_camera_viewproj(cam, static_cast<float>(d->w) / static_cast<float>(std::max(1, d->h)));
+    // The 8 corners of the sphere's box (row vectors: clip = p VP). A corner
+    // behind the camera makes the rect the whole surface (conservative); all
+    // eight behind: none.
+    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+    int behind = 0;
+    const float r = in->radiusW;
+    for (int k = 0; k < 8; ++k) {
+        const float p[3] = {in->centerW[0] + ((k & 1) ? r : -r), in->centerW[1] + ((k & 2) ? r : -r),
+                            in->centerW[2] + ((k & 4) ? r : -r)};
+        float c[4];
+        for (int j = 0; j < 4; ++j) c[j] = p[0] * VP.m[j] + p[1] * VP.m[4 + j] + p[2] * VP.m[8 + j] + VP.m[12 + j];
+        if (!(c[3] > 1e-4f)) { ++behind; continue; }
+        const float sx = (c[0] / c[3] * 0.5f + 0.5f) * static_cast<float>(d->w);
+        const float sy = (0.5f - c[1] / c[3] * 0.5f) * static_cast<float>(d->h);
+        x0 = std::min(x0, sx); x1 = std::max(x1, sx);
+        y0 = std::min(y0, sy); y1 = std::max(y1, sy);
+    }
+    if (behind == 8) return false;
+    if (behind > 0) { x0 = 0; y0 = 0; x1 = static_cast<float>(d->w); y1 = static_cast<float>(d->h); }
+    const int L = std::clamp(static_cast<int>(std::floor(x0)), 0, d->w);
+    const int T = std::clamp(static_cast<int>(std::floor(y0)), 0, d->h);
+    const int R = std::clamp(static_cast<int>(std::ceil(x1)), 0, d->w);
+    const int B = std::clamp(static_cast<int>(std::ceil(y1)), 0, d->h);
+    if (R <= L || B <= T) return false;
+    rect[0] = L; rect[1] = T; rect[2] = R; rect[3] = B;
+    return true;
 }
 
 std::vector<std::string> WorldView::warnings() const {
     std::vector<std::string> w = material_setting_warnings(d->mat);
+    if (d->clipMisses > 0)
+        w.push_back(std::to_string(d->clipMisses) +
+                    " animated placements name no clip of their model; drawn in bind pose (fallback rule UNPROVEN, "
+                    "note \xc2\xa7" "5)");
+    if (d->skinMisses > 0)
+        w.push_back(std::to_string(d->skinMisses) +
+                    " animated placements name a clip of a model without a skin stream (more than 256 joints, or "
+                    "prepared without skin); drawn in bind pose");
     if (d->stillTransforms > 0)
         w.push_back(std::to_string(d->stillTransforms) +
                     " texTransforms entries are not scroll-only (flipbook, scale or rotate); drawn still (note \xc2\xa7" "4)");
