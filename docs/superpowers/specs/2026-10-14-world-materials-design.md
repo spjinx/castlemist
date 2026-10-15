@@ -451,3 +451,17 @@ build.
   Queensdale and 10 on Spirit Vale. Not investigated. The Lion's Arch shot also
   shows pale faceted blended cards near the lighthouse (mist or cloud
   geometry), a v1 approximation.
+  After the whole-branch review (P14), the count is split: a placement whose
+  `animSequence` is in the model's `animationTokens` (every clip token) but
+  not `animClipTokens` (the decoded ones) is now `clipsFailedDecode`, with its
+  own warning, apart from "names no clip". Re-run on Lion's Arch (map 191000):
+  `unresolvedClips=134` splits into `clipsFailedDecode=1` and 133 that name no
+  clip of their model or sit on a model without a skin stream (the headless
+  line does not separate those two; the warnings() lines do). So the large
+  count is not a decode problem; the 133 remain the UNPROVEN fallback-rule
+  question of note section 5.
+- **P14 fixes.** Motion off now freezes the clock where it was (the view
+  draws with its clock unconditionally; `motion` only gates `animating()`),
+  rather than snapping to t = 0; turning Motion back on resumes from there.
+  Skinned instances cull and pick LOD with their bind-pose sphere padded
+  x1.5 (castlemist's choice).
