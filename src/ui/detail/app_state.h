@@ -324,6 +324,8 @@ constexpr UINT_PTR ID_MW_WARNINGS = 2217;
 constexpr int ID_MW_SURFACE = 2218;
 constexpr int ID_MW_STATUS = 2219;
 constexpr int ID_MW_WARN_EDIT = 2220;
+constexpr UINT_PTR ID_MW_MATERIALS = 2221;
+constexpr UINT_PTR ID_MW_MOTION = 2222;
 /// Map window timers (on the map window, not the main one): the 16 ms frame
 /// pump and the ~4 Hz status line.
 constexpr UINT_PTR TIMER_MW_FRAME = 6;

@@ -17,6 +17,8 @@
 #include <cstdint>
 #include <string>
 
+#include "castlemist/render/world_view.h"
+
 namespace castlemist::ui {
 
 /// @brief Index of each movement key in the `keys[8]` arrays below
@@ -64,7 +66,17 @@ struct MapWinHeadless {
     std::string shotPath;
     std::string statsPath;
     HWND quitWindow = nullptr;
+    bool geometry = false;        ///< GW2_MAPWIN_SHADING=geometry
+    bool fixedTime = false;       ///< GW2_MAPWIN_TIME set: the clock stays at `time`
+    double time = 0;
+    bool focusAnimated = false;   ///< GW2_MAPWIN_FOCUS=animated: frame the nearest playing placement
 };
+
+/// @brief "geometry" (any case) -> true; anything else -> false (materials).
+bool mapwin_shading_is_geometry(const std::string& text);
+
+/// @brief Status-line text: L"tex %d (%.1f MB)  anim %d/%d" (animated / unresolvedClips).
+std::wstring mapwin_material_status(const castlemist::render::WorldViewStats& st);
 
 /// @brief Opens the Map window on @p mapFileId (closing one already open).
 ///        The window is top-level and unowned; @p owner only parents message boxes.

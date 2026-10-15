@@ -793,6 +793,13 @@ int run(HINSTANCE hInstance, int cmd_show) {
         h.shotPath = shot && *shot ? shot : dump_path("shot_mapwin.bmp");
         h.statsPath = dump_path("mapwin.txt");
         h.quitWindow = hwnd;
+        h.geometry = castlemist::ui::mapwin_shading_is_geometry(castlemist::core::env::text("GW2_MAPWIN_SHADING"));
+        // Minimum below 0 so that GW2_MAPWIN_TIME=0 is honoured (real() ignores values <= minimum).
+        if (castlemist::core::env::is_set("GW2_MAPWIN_TIME")) {
+            h.fixedTime = true;
+            h.time = std::max(0.0f, castlemist::core::env::real("GW2_MAPWIN_TIME", 0.0f, -1e9f));
+        }
+        h.focusAnimated = castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "animated";
         try {
             if (!g_app->dat_loaded) {
                 const char* dat_env = std::getenv("GW2_DAT");

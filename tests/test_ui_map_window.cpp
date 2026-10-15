@@ -192,3 +192,20 @@ CM_TEST(map_window, texture_claims_once) {
     CHECK_FALSE(c.claim(0));   // no texture
     CHECK(c.claim(6));
 }
+
+CM_TEST(map_window, shading_text) {
+    CHECK(mapwin_shading_is_geometry("geometry"));
+    CHECK(mapwin_shading_is_geometry("GEOMETRY"));
+    CHECK(!mapwin_shading_is_geometry("materials"));
+    CHECK(!mapwin_shading_is_geometry(""));
+    CHECK(!mapwin_shading_is_geometry("foo"));
+}
+
+CM_TEST(map_window, material_status_text) {
+    castlemist::render::WorldViewStats st;
+    st.textures = 12;
+    st.textureMB = 3.44f;
+    st.animated = 5;
+    st.unresolvedClips = 1;
+    CHECK(mapwin_material_status(st) == L"tex 12 (3.4 MB)  anim 5/1");
+}

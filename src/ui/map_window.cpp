@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cctype>
 #include <cstdio>
 #include <cwchar>
 #include <fstream>
@@ -24,6 +25,7 @@
 
 #include <windowsx.h>
 
+#include "castlemist/core/env.h"
 #include "castlemist/extract/model_types.h"
 #include "castlemist/render/world_view.h"
 #include "castlemist/world/stream.h"
@@ -196,7 +198,7 @@ const wchar_t* kSurfaceClass = L"Gw2MapWindowSurface";
 
 struct MapWin {
     HWND wnd = nullptr, surface = nullptr, status = nullptr, warnEdit = nullptr;
-    HWND bWalk = nullptr, bFly = nullptr, bTerrain = nullptr, bProps = nullptr, bColl = nullptr, bWater = nullptr,
+    HWND bWalk = nullptr, bFly = nullptr, bTerrain = nullptr, bProps = nullptr, bColl = nullptr, bWater = nullptr, bMaterials = nullptr, bMotion = nullptr,
          bReset = nullptr, bWarn = nullptr;
     uint64_t gen = 0;
     uint32_t mapFileId = 0;
@@ -228,6 +230,8 @@ struct MapWin {
     float walkSpeed = kWalkSpeed;
     bool keys[8] = {};
     bool dirty = true;
+    double clock = 0;           /// the material clock (seconds); accumulates only while Motion is on
+    bool warningsFinal = false; /// the warnings panel was refreshed after the last model
 
     bool rdrag = false, lpress = false;
     POINT last{}, ldown{};
@@ -346,6 +350,26 @@ void apply_layer_buttons(MapWin& m) {
     m.dirty = true;
 }
 
+/// The scene warnings, then the view's own (UNPROVEN settings, missing water preset).
+void refresh_warnings(MapWin& m) {
+    if (!m.scene) return;
+    std::wstring warn;
+    for (const std::string& w : m.scene->warnings) warn += widen(w) + L"\r\n";
+    if (m.viewOk)
+        for (const std::string& w : m.view.warnings()) warn += widen(w) + L"\r\n";
+    if (warn.empty()) warn = L"(no warnings)";
+    SetWindowTextW(m.warnEdit, warn.c_str());
+}
+
+void apply_shading_buttons(MapWin& m) {
+    auto on = [](HWND b) { return SendMessageW(b, BM_GETCHECK, 0, 0) == BST_CHECKED; };
+    m.view.set_shading(on(m.bMaterials) ? castlemist::render::WorldShading::Materials
+                                        : castlemist::render::WorldShading::Geometry);
+    m.view.set_motion(on(m.bMotion));
+    refresh_warnings(m);
+    m.dirty = true;
+}
+
 void headless_capture(MapWin& m);
 
 /// No device: as a first-time creation failure, a message (none when
@@ -378,6 +402,8 @@ void recover_device(MapWin& m) {
         if (!m.models.empty()) m.view.add_models(m.models);
     }
     apply_layer_buttons(m);
+    apply_shading_buttons(m);
+    if (m.headless && m.headless->fixedTime) m.view.set_time(m.headless->time);
     // create() dropped the texture cache with the old device; the decoded
     // textures were not kept, so they stay gone (the models draw untextured).
     flash(m, L"The graphics device was reset; the map was reloaded onto a new one. "
@@ -404,8 +430,7 @@ void update_status(MapWin& m) {
             swprintf(buf, 512, L" (%d failed)", st.modelsFailed);
             s += buf;
         }
-        swprintf(buf, 512, L"  |  tex %d (%.0f MB)", st.textures, st.textureMB);
-        s += buf;
+        s += L"  |  " + mapwin_material_status(st);
         swprintf(buf, 512, L"  |  vis %d  draws %d  %d ktri  %.1f ms", st.visible, st.draws, st.ktris, st.ms);
         s += buf;
     }
@@ -423,29 +448,44 @@ void headless_capture(MapWin& m) {
     m.captured = true;
     const double elapsed = std::chrono::duration<double>(Clock::now() - m.opened).count();
     bool shot = false;
+    int animRect[4] = {-1, -1, -1, -1};
     if (m.viewOk && m.scene) {
         MoveWindow(m.surface, 0, kToolbarH, kSurfaceW, kSurfaceH, FALSE);
         m.view.resize(kSurfaceW, kSurfaceH);
+        // The capture camera: the whole map, or (GW2_MAPWIN_FOCUS=animated)
+        // framed on the nearest playing animated placement.
+        float hint = 0;
+        castlemist::render::WorldCamera cam = m.view.frame_all(&hint);
+        if (m.headless->focusAnimated) m.view.focus_animated(cam);
+        set_camera(m, cam);
+        if (m.headless->fixedTime) m.view.set_time(m.headless->time);
         render_now(m);
         shot = m.view.save_screenshot(m.headless->shotPath.c_str());
+        int r[4];
+        if (m.view.animated_screen_rect(camera(m), r))
+            for (int k = 0; k < 4; ++k) animRect[k] = r[k];
     }
     const auto st = m.view.stats();
     std::vector<float> add = m.addMs;
     std::sort(add.begin(), add.end());
     const float addMax = add.empty() ? 0.0f : add.back();
     const float addMedian = add.empty() ? 0.0f : add[add.size() / 2];
-    char line[1200];
+    char line[2048];
     std::snprintf(line, sizeof line,
                   "map=%u ok=%d models=%zu loaded=%d failed=%d props=%zu visible=%d draws=%d ktris=%d ms=%.2f "
                   "chunks=%d collisionTris=%zu warnings=%zu world_s=%.2f collision_s=%.2f models_s=%.2f total_s=%.2f "
                   "add_batches=%zu add_ms_median=%.2f add_ms_max=%.2f "
-                  "textures=%d texturesFailed=%d textureMB=%.1f chunksUntextured=%d materialsUntextured=%d "
-                  "animated=%d unresolvedClips=%d waterPreset=%d shot=%d timeout=%d error=\"%s\"\n",
+                  "shading=%s time=%.2f textures=%d textureMB=%.1f texturesFailed=%d animated=%d unresolvedClips=%d "
+                  "chunksUntextured=%d materialsUntextured=%d waterPreset=%d animRect=%d,%d,%d,%d "
+                  "shot=%d timeout=%d error=\"%s\"\n",
                   m.mapFileId, (m.scene && m.viewOk) ? 1 : 0, models_total(m), st.modelsLoaded, st.modelsFailed,
                   m.scene ? m.scene->props.size() : size_t(0), st.visible, st.draws, st.ktris, st.ms, st.chunks,
                   m.coll ? m.coll->triangle_count() : size_t(0), m.scene ? m.scene->warnings.size() : size_t(0),
                   m.worldSeconds, m.collSeconds, m.modelsSeconds, elapsed, add.size(), addMedian, addMax,
-                  st.textures, st.texturesFailed, st.textureMB, st.chunksUntextured, st.materialsUntextured, st.animated, st.unresolvedClips, st.waterPreset ? 1 : 0, shot ? 1 : 0,
+                  m.view.shading() == castlemist::render::WorldShading::Geometry ? "geometry" : "materials",
+                  m.view.time(), st.textures, st.textureMB, st.texturesFailed, st.animated, st.unresolvedClips,
+                  st.chunksUntextured, st.materialsUntextured, st.waterPreset ? 1 : 0, animRect[0], animRect[1],
+                  animRect[2], animRect[3], shot ? 1 : 0,
                   elapsed >= kHeadlessTimeout ? 1 : 0, m.error.c_str());
     if (std::ofstream f(m.headless->statsPath, std::ios::binary); f) f << line;
     if (m.headless->quitWindow) PostMessageW(m.headless->quitWindow, WM_CLOSE, 0, 0);
@@ -477,10 +517,7 @@ void on_world(MapWin& m, std::unique_ptr<MapWinWorldMsg> r) {
         apply_layer_buttons(m);
         frame_map(m);
     }
-    std::wstring warn;
-    for (const std::string& w : m.scene->warnings) warn += widen(w) + L"\r\n";
-    if (warn.empty()) warn = L"(no warnings)";
-    SetWindowTextW(m.warnEdit, warn.c_str());
+    refresh_warnings(m);
     wchar_t buf[256];
     swprintf(buf, 256, L"Map %u: world in %.1f s, %zu models, %zu props, %zu warnings; loading models...", m.mapFileId,
              r->seconds, m.scene->models.size(), m.scene->props.size(), m.scene->warnings.size());
@@ -561,6 +598,10 @@ void on_models(MapWin& m, std::unique_ptr<MapWinModelsMsg> r) {
         swprintf(buf, 256, L"Map %u: %d models loaded, %d failed (models %.1f s after the world)", m.mapFileId,
                  st.modelsLoaded, st.modelsFailed, m.modelsSeconds);
         m.stage = buf;
+        if (!m.warningsFinal) {   // once the last model is in, the view's warnings are settled
+            m.warningsFinal = true;
+            refresh_warnings(m);
+        }
     }
     maybe_capture(m);
 }
@@ -599,6 +640,16 @@ void tick(MapWin& m) {
             }
         }
         m.lastReorder = now;
+    }
+    // The material clock: fixed for a headless run, else it runs while Motion is on.
+    if (m.viewOk) {
+        if (m.headless && m.headless->fixedTime) {
+            m.view.set_time(m.headless->time);
+        } else {
+            if (SendMessageW(m.bMotion, BM_GETCHECK, 0, 0) == BST_CHECKED) m.clock += dt;
+            m.view.set_time(m.clock);
+        }
+        if (m.view.animating()) m.dirty = true;
     }
     if (m.dirty && IsWindowVisible(m.wnd) && !IsIconic(m.wnd)) render_now(m);
 }
@@ -774,6 +825,8 @@ LRESULT CALLBACK MapWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         case ID_MW_PROPS:
         case ID_MW_COLLISION:
         case ID_MW_WATER: apply_layer_buttons(*m); break;
+        case ID_MW_MATERIALS:
+        case ID_MW_MOTION: apply_shading_buttons(*m); break;
         case ID_MW_RESET: frame_map(*m); break;
         case ID_MW_WARNINGS: layout(*m); break;   // the panel never keeps focus
         default: return DefWindowProcW(hwnd, msg, wparam, lparam);
@@ -813,6 +866,20 @@ void register_classes() {
 }
 
 } // namespace
+
+bool mapwin_shading_is_geometry(const std::string& text) {
+    if (text.size() != 8) return false;
+    static const char kWord[] = "geometry";
+    for (size_t i = 0; i < 8; ++i)
+        if (std::tolower(static_cast<unsigned char>(text[i])) != kWord[i]) return false;
+    return true;
+}
+
+std::wstring mapwin_material_status(const castlemist::render::WorldViewStats& st) {
+    wchar_t buf[96];
+    swprintf(buf, 96, L"tex %d (%.1f MB)  anim %d/%d", st.textures, st.textureMB, st.animated, st.unresolvedClips);
+    return buf;
+}
 
 void close_map_window() {
     if (g_mw) DestroyWindow(g_mw->wnd);
@@ -868,8 +935,10 @@ void open_map_window(HWND owner, uint32_t mapFileId, const MapWinHeadless* headl
     m->bProps = mk(L"BUTTON", L"Props", BS_AUTOCHECKBOX, next(60), y, 60, h, ID_MW_PROPS);
     m->bColl = mk(L"BUTTON", L"Collision", BS_AUTOCHECKBOX, next(75), y, 75, h, ID_MW_COLLISION);
     m->bWater = mk(L"BUTTON", L"Water", BS_AUTOCHECKBOX, next(60), y, 60, h, ID_MW_WATER);
+    m->bMaterials = mk(L"BUTTON", L"Materials", BS_AUTOCHECKBOX | BS_PUSHLIKE, next(75), y, 75, h, ID_MW_MATERIALS);
+    m->bMotion = mk(L"BUTTON", L"Motion", BS_AUTOCHECKBOX | BS_PUSHLIKE, next(65), y, 65, h, ID_MW_MOTION);
     x += 12;
-    m->bReset = mk(L"BUTTON", L"Reset", BS_PUSHBUTTON, next(70), y, 70, h, ID_MW_RESET);
+    m->bReset =mk(L"BUTTON", L"Reset", BS_PUSHBUTTON, next(70), y, 70, h, ID_MW_RESET);
     m->bWarn = mk(L"BUTTON", L"Warnings", BS_AUTOCHECKBOX | BS_PUSHLIKE, next(80), y, 80, h, ID_MW_WARNINGS);
     x += 12;
     mk(L"STATIC",
@@ -878,7 +947,9 @@ void open_map_window(HWND owner, uint32_t mapFileId, const MapWinHeadless* headl
        SS_LEFT | SS_ENDELLIPSIS, x, y + 5, 2000, 16, 0);
     EnableWindow(m->bWalk, FALSE);   // until the collision index arrives
     SendMessageW(m->bFly, BM_SETCHECK, BST_CHECKED, 0);
-    for (HWND b : {m->bTerrain, m->bProps, m->bWater}) SendMessageW(b, BM_SETCHECK, BST_CHECKED, 0);
+    for (HWND b : {m->bTerrain, m->bProps, m->bWater, m->bMaterials, m->bMotion})
+        SendMessageW(b, BM_SETCHECK, BST_CHECKED, 0);
+    if (m->headless && m->headless->geometry) SendMessageW(m->bMaterials, BM_SETCHECK, BST_UNCHECKED, 0);
 
     m->surface = CreateWindowExW(0, kSurfaceClass, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, kToolbarH, kSurfaceW,
                                  kSurfaceH, m->wnd, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_MW_SURFACE)),
@@ -905,6 +976,8 @@ void open_map_window(HWND owner, uint32_t mapFileId, const MapWinHeadless* headl
     GetClientRect(m->surface, &rc);
     m->view.resize(rc.right, rc.bottom);
     apply_layer_buttons(*m);
+    apply_shading_buttons(*m);
+    if (m->headless && m->headless->fixedTime) m->view.set_time(m->headless->time);
 
     ShowWindow(m->wnd, SW_SHOW);
     SetFocus(m->surface);

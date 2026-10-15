@@ -139,6 +139,8 @@ const Id kIds[] = {
     {"ID_MW_SURFACE", ID_MW_SURFACE},
     {"ID_MW_STATUS", ID_MW_STATUS},
     {"ID_MW_WARN_EDIT", ID_MW_WARN_EDIT},
+    {"ID_MW_MATERIALS", ID_MW_MATERIALS},
+    {"ID_MW_MOTION", ID_MW_MOTION},
 };
 
 } // namespace
