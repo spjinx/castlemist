@@ -174,6 +174,11 @@ bool write_model_textures(GltfWriter& w, const std::vector<ModelTextureCPU>& tex
 ///        `std::filesystem::path` (save_texture_png takes a narrow path).
 std::vector<uint8_t> encode_png(const ModelTextureCPU& tex);
 
+/// @brief PNG bytes of @p pixels (width x height, @p channels 1..4 bytes per
+///        texel, row 0 first); empty when the size is wrong or encoding fails.
+///        The world export writes its RGB terrain albedo with it.
+std::vector<uint8_t> encode_png_pixels(int width, int height, int channels, const std::vector<uint8_t>& pixels);
+
 /// @brief Bakes and embeds an emissive texture for an "effect" (additive/glow)
 ///        material: the diffuse texture's own bright regions (luminance-
 ///        thresholded, matching castlemist's reconstruction shader's glow

@@ -90,8 +90,8 @@ castlemist_add_test(extract
 # End-to-end extraction against a real Gw2.dat. Skips itself when the archive is
 # absent, so it is safe to leave enabled; GW2_TEST_DAT overrides the location.
 castlemist_add_test(dat
-    SOURCES test_extract_dat.cpp
-    DEPS    castlemist::extract castlemist::exportgltf)
+    SOURCES test_extract_dat.cpp test_exportgltf_world_dat.cpp
+    DEPS    castlemist::extract castlemist::exportgltf castlemist::world ext::json)
 set_tests_properties(dat PROPERTIES TIMEOUT 600)
 
 castlemist_add_test(world
@@ -119,8 +119,8 @@ castlemist_add_test(exportgltf
 target_compile_definitions(cm_test_exportgltf PRIVATE CM_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 
 # The world export's test fixture writer (sub-project 4): cm_world_export_fixture
-# <dir> [--probe-only] writes probe.glb (and, from later tasks, a whole fixture
-# export) into <dir> for the Blender ctests below.
+# <dir> [--probe-only] writes probe.glb only, or (default) the whole synthetic
+# export (tests/world_export_synthetic.h) into <dir> for the Blender ctests below.
 add_executable(cm_world_export_fixture tools/world_export_fixture.cpp)
 target_link_libraries(cm_world_export_fixture PRIVATE castlemist::exportgltf)
 castlemist_link_runtime(cm_world_export_fixture)

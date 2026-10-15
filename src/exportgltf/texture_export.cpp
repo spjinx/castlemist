@@ -88,6 +88,16 @@ std::vector<uint8_t> encode_png(const ModelTextureCPU& tex) {
     return png;
 }
 
+std::vector<uint8_t> encode_png_pixels(int width, int height, int channels, const std::vector<uint8_t>& pixels) {
+    std::vector<uint8_t> png;
+    if (width <= 0 || height <= 0 || channels < 1 || channels > 4 ||
+        pixels.size() < static_cast<size_t>(width) * height * channels)
+        return png;
+    if (!stbi_write_png_to_func(append_to_vector, &png, width, height, channels, pixels.data(), width * channels))
+        png.clear();
+    return png;
+}
+
 TextureSaveResult save_texture_png(const ModelTextureCPU& tex, const std::string& pngPath) {
     TextureSaveResult r;
     if (tex.width <= 0 || tex.height <= 0 ||

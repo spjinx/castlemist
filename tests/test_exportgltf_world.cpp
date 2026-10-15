@@ -10,6 +10,8 @@
 #include "castlemist/exportgltf/world_export.h"
 #include "castlemist/exportgltf/world_manifest.h"
 #include "castlemist/exportgltf/world_probe.h"
+#include "castlemist/exportgltf/world_folder.h"
+#include "world_export_synthetic.h"
 #include "castlemist/world/frame.h"
 #include "castlemist/world/props.h"
 #include "castlemist/world/surface_rules.h"
@@ -22,6 +24,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -1252,4 +1255,158 @@ CM_TEST(world_manifest, non_finite_never_written) {
     CHECK(has_warning(man, "props: 1 placements in dropped cells skipped"));
     const std::string text = man.dump();
     CHECK(text.find("NaN") == std::string::npos);
+}
+
+// ------------------------------------------------------------ world folder
+// Task 8: export_world_folder, the orchestrator (spec "Order of work").
+
+namespace {
+
+namespace tw = castlemist::test_world;
+
+json read_json(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    if (!in) return json();
+    try { return json::parse(in); } catch (...) { return json(); }
+}
+
+WorldFolderOptions synthetic_opts(int threads = 2) {
+    WorldFolderOptions o;
+    o.threads = threads;
+    o.texelsPerChunk = 16;   // small images keep the test fast
+    return o;
+}
+
+const json* instance_of_prop(const json& man, uint32_t prop) {
+    for (const json& c : man["cells"])
+        for (const json& i : c["instances"])
+            if (i["prop"].get<uint32_t>() == prop) return &i;
+    return nullptr;
+}
+
+} // namespace
+
+CM_TEST(world_folder, synthetic_export_complete) {
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource src;
+    const fs::path dir = fresh_dir("folder_complete");
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts());
+    CHECK(r.ok);
+    if (!r.ok) std::printf("    error: %s\n", r.error.c_str());
+    for (const char* f : {"manifest.json", "probe.glb", "cells/c0_0_2x2.glb", "cells/c0_0_2x2_albedo.png",
+                          "cells/c0_0_2x2_water.png", "models/101/101.glb", "models/101/materials.json",
+                          "models/102/102.glb"})
+        if (!fs::exists(dir / f)) ::castlemist::test::fail(__FILE__, __LINE__, std::string("missing ") + f);
+    CHECK_FALSE(fs::exists(dir / "manifest.json.tmp"));
+    const json man = read_json(dir / "manifest.json");
+    check_valid(man, "synthetic export");
+    CHECK_EQ(man["counts"]["props"].get<int>(), 4);
+    CHECK_EQ(man["counts"]["propsWritten"].get<int>(), 4);
+    CHECK_EQ(man["counts"]["models"].get<int>(), 2);
+    CHECK_EQ(man["counts"]["cells"].get<int>(), 1);
+    CHECK_EQ(man["counts"]["animated"].get<int>(), 1);
+    CHECK_EQ(man["counts"]["animatedResolved"].get<int>(), 1);
+    const json* anim = instance_of_prop(man, 3);
+    CHECK(anim != nullptr);
+    if (anim) CHECK((*anim)["clip"] == json("TestClip"));
+    const json* still = instance_of_prop(man, 0);
+    CHECK(still != nullptr);
+    if (still) CHECK((*still)["clip"].is_null());
+    CHECK_EQ(man["cells"][0]["colliderParts"].get<int>(), 1);
+    CHECK(man["water"]["plane"] == json(true));
+    // The model stage's measurements.
+    CHECK_EQ(man["models"][0]["fileId"].get<int>(), 101);
+    CHECK_EQ(man["models"][0]["triangles"].get<int>(), 12);
+    CHECK(man["models"][0]["status"] == json("ok"));
+    CHECK(man["models"][1]["clips"] == json({"TestClip"}));
+    CHECK(man["models"][0]["glb"] == json("models/101/101.glb"));
+    CHECK(man["cells"][0]["albedo"] == json("cells/c0_0_2x2_albedo.png"));
+    CHECK(man["cells"][0]["albedoSize"] == json({32, 32}));
+    CHECK(man["cells"][0]["water"]["texture"] == json("cells/c0_0_2x2_water.png"));
+    // Images by URI under the model folder, named by fileId.
+    CHECK(fs::exists(dir / "models" / "101" / "Images" / "42.png"));
+    const json g = glb_json(dir / "models" / "101" / "101.glb");
+    CHECK(scene_root(g).value("name", std::string()) == "GW2_MapToGltf");
+    // The report agrees with the manifest.
+    CHECK_EQ(r.cells, size_t(1));
+    CHECK_EQ(r.modelsWritten, size_t(2));
+    CHECK_EQ(r.propsWritten, size_t(4));
+    CHECK_EQ(r.chunksUnbaked, size_t(4));   // the synthetic chunks have no resolved material
+    CHECK(r.bytes.count("geometry") && r.bytes.at("geometry") > 0);
+    CHECK(r.seconds.count("models") && r.seconds.count("manifest"));
+    CHECK(report_json(r)["ok"] == json(true));
+}
+
+CM_TEST(world_folder, failed_model_counted_and_skipped) {
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource src;
+    src.failIndex = 0;
+    const fs::path dir = fresh_dir("folder_failed_model");
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts());
+    CHECK(r.ok);
+    const json man = read_json(dir / "manifest.json");
+    check_valid(man, "failed model");
+    CHECK(man["models"][0]["status"] == json("failed"));
+    CHECK(man["models"][0].contains("error"));
+    CHECK_EQ(man["counts"]["propsSkipped"].get<int>(), 3);
+    CHECK_EQ(man["counts"]["modelsFailed"].get<int>(), 1);
+    CHECK_EQ(r.modelsFailed, size_t(1));
+    CHECK_EQ(r.propsSkipped, size_t(3));
+    CHECK_FALSE(fs::exists(dir / "models" / "101" / "101.glb"));
+    CHECK(fs::exists(dir / "models" / "102" / "102.glb"));
+}
+
+CM_TEST(world_folder, manifest_written_last) {
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource src;
+    src.throwDatIo = true;
+    const fs::path dir = fresh_dir("folder_dat_io");
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts());
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("cannot read") != std::string::npos);
+    CHECK_FALSE(fs::exists(dir / "manifest.json"));
+}
+
+CM_TEST(world_folder, refuses_nonempty_dir) {
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource src;
+    const fs::path dir = fresh_dir("folder_nonempty");
+    { std::ofstream(dir / "stray.txt") << "x"; }
+    WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts());
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("not empty") != std::string::npos);
+    CHECK(fs::exists(dir / "stray.txt"));
+    CHECK_EQ(src.loads.load(), 0);
+    // A previous export (manifest.json present) is replaced only with overwrite.
+    fs::remove(dir / "stray.txt");
+    { std::ofstream(dir / "manifest.json") << "{}"; }
+    { std::ofstream(dir / "old.txt") << "x"; }
+    r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts());
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("not empty") != std::string::npos);
+    WorldFolderOptions o = synthetic_opts();
+    o.overwrite = true;
+    r = export_world_folder(s, src, nullptr, dir.string(), o);
+    CHECK(r.ok);
+    CHECK_FALSE(fs::exists(dir / "old.txt"));
+    CHECK(read_json(dir / "manifest.json")["format"] == json("castlemist-world"));
+}
+
+CM_TEST(world_folder, parallel_matches_serial) {
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource a, b;
+    const fs::path d1 = fresh_dir("folder_serial"), d4 = fresh_dir("folder_parallel");
+    const WorldFolderReport r1 = export_world_folder(s, a, nullptr, d1.string(), synthetic_opts(1));
+    const WorldFolderReport r4 = export_world_folder(s, b, nullptr, d4.string(), synthetic_opts(4));
+    CHECK(r1.ok);
+    CHECK(r4.ok);
+    json m1 = read_json(d1 / "manifest.json"), m4 = read_json(d4 / "manifest.json");
+    CHECK(m1.is_object());
+    m1.erase("castlemist");
+    m4.erase("castlemist");
+    CHECK(m1 == m4);
+    json j1 = report_json(r1), j4 = report_json(r4);
+    for (const char* k : {"seconds", "dir", "manifest"}) { j1.erase(k); j4.erase(k); }
+    CHECK(j1 == j4);
+    CHECK(file_bytes(d1 / "cells" / "c0_0_2x2.glb") == file_bytes(d4 / "cells" / "c0_0_2x2.glb"));
 }
