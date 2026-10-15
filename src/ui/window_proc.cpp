@@ -48,6 +48,7 @@ HMENU build_menu() {
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DECODE_LINK, L"&Decode Chat Link... ([&...])");
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_CHARACTER, L"&Character Ripper... (GW2 API)");
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DOWNLOAD_NAMES, L"Download all game &names (GW2 API)");
+    AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_NPC_CATALOGUE, L"&NPC catalogue...");
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DECODE_TOKEN,
                 L"Decode &Token / Filename Bytes...");
     AppendMenuW(tools_menu, MF_SEPARATOR, 0, nullptr);
@@ -1252,6 +1253,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             return 0;
         case ID_TOOLS_DOWNLOAD_NAMES:
             download_all_names(hwnd, false);
+            return 0;
+        case ID_TOOLS_NPC_CATALOGUE:
+            open_npc_catalogue(hwnd);
             return 0;
         case ID_TOOLS_DECODE_TOKEN:
             open_token_decoder(hwnd);
