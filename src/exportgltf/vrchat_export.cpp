@@ -143,6 +143,12 @@ std::string safe_file_name(const std::string& s) {
 
 VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::string& folderUtf8,
                                        const std::string& name, uint32_t modelFileId) {
+    return write_vrchat_folder(model, folderUtf8, name, modelFileId, VrchatFolderOptions{});
+}
+
+VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::string& folderUtf8,
+                                       const std::string& name, uint32_t modelFileId,
+                                       const VrchatFolderOptions& opts) {
     VrchatFolderResult r;
     if (model.meshes.empty()) {
         r.error = "This model has no drawable meshes to export.";
@@ -299,7 +305,7 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
     }
 
     const fs::path glb = folder / u8path(modelName + ".glb");
-    const GltfExportResult g = export_model_gltf(model, utf8(glb));
+    const GltfExportResult g = export_model_gltf(model, utf8(glb), opts.gltf);
     if (!g.ok) {
         r.error = g.error;
         return r;

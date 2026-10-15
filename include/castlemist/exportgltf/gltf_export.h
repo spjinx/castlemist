@@ -5,6 +5,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -56,6 +57,23 @@ struct GltfExportOptions {
     /// @brief Uniform scale on the scene root; 1 writes no scale at all.
     ///        0.0254 turns GW2's inch units into glTF metres.
     double rootScale = 1.0;
+
+    /// @brief When set, the scene root is named `GW2_MapToGltf` and carries
+    ///        this glTF (column-major) `matrix`; @ref rootRotation and
+    ///        @ref rootScale are then ignored. The world export passes
+    ///        `map_to_gltf_root(1)` (world_export.h), a reflection, which no
+    ///        quaternion can express.
+    std::optional<std::array<float, 16>> rootMatrix;
+
+    /// @brief Non-empty: every image is written as a PNG file in this folder
+    ///        (UTF-8; created if missing) and referenced by `uri` instead of
+    ///        being embedded in the .glb. A dat texture's file is
+    ///        `<fileId>.png`; a generated one (baked emissive, metal-rough,
+    ///        atlas) is named by its image name. Empty (the default) embeds.
+    std::string imageDirUtf8;
+    /// @brief Prepended to the file name to form the image `uri`, e.g.
+    ///        "Images/" for a folder beside the .glb. Only read with @ref imageDirUtf8.
+    std::string imageUriPrefix;
 };
 
 /// @brief Result of one export call.

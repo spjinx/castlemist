@@ -11,6 +11,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -104,7 +105,25 @@ public:
     ///        material's textureInfo references). `name` becomes the image's
     ///        glTF name -- what Blender calls the image, and the file name
     ///        "Unpack Resources" writes it out as.
+    ///
+    ///        After ::set_image_output the PNG is written to that folder
+    ///        instead and referenced by URI (see ::add_texture_uri); a failed
+    ///        write returns -1 and records ::image_error.
     int add_or_reuse_texture(uint32_t fileId, const std::vector<uint8_t>& pngBytes, const std::string& name = {});
+
+    /// @brief Adds an image referenced by `uri` (no bufferView) + texture,
+    ///        deduped by fileId exactly as ::add_or_reuse_texture (fileId 0 is
+    ///        never shared). Returns the texture index.
+    int add_texture_uri(uint32_t fileId, const std::string& uri, const std::string& name = {});
+
+    /// @brief From now on, ::add_or_reuse_texture writes `<dir>/<stem>.png`
+    ///        (UTF-8 `dirUtf8`, created on first use) and references it as
+    ///        `<uriPrefix><stem>.png`. `stem` is the image name made a legal,
+    ///        unique (case-insensitive) file name, else the fileId.
+    ///        An empty `dirUtf8` switches back to embedding.
+    void set_image_output(const std::string& dirUtf8, const std::string& uriPrefix);
+    /// @brief The first image file write failure since construction; empty when none.
+    const std::string& image_error() const { return imageError_; }
 
     int add_node(nlohmann::json node);           ///< Pushes to `nodes`, returns its index.
     /// @brief Appends `childIndex` to an already-added node's `children` list
@@ -129,6 +148,9 @@ private:
     nlohmann::json doc_;
     std::vector<uint8_t> bin_;
     std::map<uint32_t, int> textureByFileId_; // fileId -> texture index, for dedup
+    std::string imageDir_, imageUriPrefix_;   // set_image_output; empty = embed
+    std::set<std::string> imageStems_;        // lower-case file stems written, for unique names
+    std::string imageError_;
 };
 
 // ==================================================================== textures ==
@@ -138,8 +160,14 @@ private:
 ///        twice.
 /// @param texIndices Parallel to `textures`: the resulting glTF *texture*
 ///        index for each one (-1 if it had no decoded pixels to encode).
+///
+/// @param imageDirUtf8 Non-empty: switches `w` to ::GltfWriter::set_image_output
+///        (`imageDirUtf8`, `uriPrefix`) first, so these and every later image
+///        are written as files and referenced by URI. Empty leaves `w` as it is.
+/// @return False when an image file could not be written (::GltfWriter::image_error).
 bool write_model_textures(GltfWriter& w, const std::vector<ModelTextureCPU>& textures,
-                          std::vector<int>& texIndices);
+                          std::vector<int>& texIndices, const std::string& imageDirUtf8 = {},
+                          const std::string& uriPrefix = {});
 
 /// @brief PNG bytes for an already-decoded texture; empty when it has no
 ///        pixels or encoding fails. Lets callers write files through a UTF-8

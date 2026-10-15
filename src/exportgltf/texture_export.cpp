@@ -1,7 +1,9 @@
 /// @file
 /// @brief Decoded RGBA8888 textures -> PNG bytes in memory, embedded straight
 ///        into the .glb (no sibling texture folder -- a glTF binary container
-///        is meant to be one self-contained file).
+///        is meant to be one self-contained file), unless the writer was
+///        given an image folder (GltfExportOptions::imageDirUtf8, used by the
+///        world export's model files): then they are PNG files beside it.
 
 #include "internal.h"
 
@@ -102,8 +104,10 @@ TextureSaveResult save_texture_png(const ModelTextureCPU& tex, const std::string
 }
 
 bool write_model_textures(GltfWriter& w, const std::vector<ModelTextureCPU>& textures,
-                          std::vector<int>& texIndices) {
+                          std::vector<int>& texIndices, const std::string& imageDirUtf8,
+                          const std::string& uriPrefix) {
     texIndices.assign(textures.size(), -1);
+    if (!imageDirUtf8.empty()) w.set_image_output(imageDirUtf8, uriPrefix);
 
     for (size_t i = 0; i < textures.size(); ++i) {
         const ModelTextureCPU& tex = textures[i];
@@ -119,7 +123,7 @@ bool write_model_textures(GltfWriter& w, const std::vector<ModelTextureCPU>& tex
 
         texIndices[i] = w.add_or_reuse_texture(tex.fileId, png, texture_name(tex, i));
     }
-    return true;
+    return w.image_error().empty();
 }
 
 } // namespace castlemist::exportgltf

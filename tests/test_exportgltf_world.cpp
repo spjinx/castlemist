@@ -5,9 +5,12 @@
 
 #include "test_framework.h"
 
+#include "castlemist/exportgltf/vrchat_export.h"
 #include "castlemist/exportgltf/world_export.h"
 #include "castlemist/exportgltf/world_probe.h"
 #include "castlemist/world/frame.h"
+#include "castlemist/extract/model_types.h"
+#include "castlemist/native/granny_anim.hpp"
 
 #include <array>
 #include <cstdint>
@@ -107,4 +110,150 @@ CM_TEST(world_probe, expect_matches_frame) {
         }
     }
     CHECK(e["lengths"] == json::array({3, 2, 1}));
+}
+
+// ------------------------------------------------------- world model files --
+// Task 5: GltfExportOptions::rootMatrix / imageDirUtf8 and VrchatFolderOptions.
+
+namespace {
+
+std::vector<uint8_t> file_bytes(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+GVertex wvtx(float x, float y, float u, float v) {
+    GVertex g{};
+    g.px = x; g.py = y; g.pz = 0;
+    g.nz = 1; g.tx = 1; g.by = 1;
+    g.u = u; g.v = v;
+    return g;
+}
+
+ModelTextureCPU wtex(int w, int h, const std::vector<std::array<uint8_t, 4>>& texels, uint32_t fileId) {
+    ModelTextureCPU t;
+    t.fileId = fileId;
+    t.width = w;
+    t.height = h;
+    for (const auto& p : texels) t.rgba.insert(t.rgba.end(), p.begin(), p.end());
+    return t;
+}
+
+int wadd_tex(ModelPreview& m, ModelTextureCPU t) {
+    m.textures.push_back(std::move(t));
+    return static_cast<int>(m.textures.size()) - 1;
+}
+
+/// glow_quad() of test_exportgltf_vrchat.cpp: one weapon-glow material with a
+/// banded diffuse, a normal and a glow layer, plus one clip.
+ModelPreview glow_quad() {
+    ModelPreview model;
+    ModelMeshCPU m;
+    m.vertices = {wvtx(0, 0, 0, 0), wvtx(1, 0, 1, 0), wvtx(1, 1, 1, 1), wvtx(0, 1, 0, 1)};
+    m.indices = {0, 1, 2, 0, 2, 3};
+    m.vertexCount = 4;
+    m.hasTangents = true;
+    m.materialIndex = 0;
+    model.meshes.push_back(m);
+    ModelMaterialCPU mat;
+    mat.materialFile = 561567;
+    mat.materialName = "Blade";
+    mat.hasRenderState = true;
+    mat.renderState = 0;
+    mat.diffuseTex = wadd_tex(model, wtex(2, 2,
+                                          {{100, 100, 100, 30}, {100, 100, 100, 90}, {100, 100, 100, 128},
+                                           {100, 100, 100, 255}},
+                                          1000));
+    mat.normalTex = wadd_tex(model, wtex(2, 2, std::vector<std::array<uint8_t, 4>>(4, {128, 128, 255, 255}), 3000));
+    ModelMaterialCPU::ExtraTexture x;
+    x.texIndex = wadd_tex(model, wtex(2, 2, std::vector<std::array<uint8_t, 4>>(4, {255, 64, 0, 255}), 2001));
+    x.uvIndex = 0;
+    x.fileId = 2001;
+    x.role = "glow";
+    mat.extraTextures.push_back(x);
+    mat.namedConstants = {{"specstr", 0.5f}, {"glofade", 0.7f}, {"gloptrb", 0.4f}};
+    model.materials.push_back(mat);
+    castlemist::granny::Anim clip;
+    clip.name = "StowedA";
+    model.animClips.push_back(clip);
+    return model;
+}
+
+const json& scene_root(const json& g) { return g["nodes"][g["scenes"][0]["nodes"][0].get<size_t>()]; }
+
+} // namespace
+
+CM_TEST(world_gltf, default_vrchat_folder_unchanged) {
+    const ModelPreview model = glow_quad();
+    const fs::path a = fresh_dir("default_4arg");
+    const fs::path b = fresh_dir("default_5arg");
+    const VrchatFolderResult ra = write_vrchat_folder(model, a.string(), "Dagger", 1766522);
+    const VrchatFolderResult rb = write_vrchat_folder(model, b.string(), "Dagger", 1766522, VrchatFolderOptions{});
+    CHECK(ra.ok);
+    CHECK(rb.ok);
+    const std::vector<uint8_t> glbA = file_bytes(a / "Dagger.glb");
+    CHECK(!glbA.empty());
+    CHECK(glbA == file_bytes(b / "Dagger.glb"));
+    CHECK(file_bytes(a / "materials.json") == file_bytes(b / "materials.json"));
+    CHECK_FALSE(fs::exists(b / "Images"));
+
+    const json g = glb_json(a / "Dagger.glb");
+    const json& root = scene_root(g);
+    CHECK(root["name"] == "GW2_ZupToYup");
+    CHECK(root.contains("rotation"));
+    CHECK_FALSE(root.contains("matrix"));
+    for (const json& im : g["images"]) {
+        CHECK(im.contains("bufferView"));
+        CHECK_FALSE(im.contains("uri"));
+    }
+}
+
+CM_TEST(world_gltf, root_matrix_replaces_rotation) {
+    const ModelPreview model = glow_quad();
+    const fs::path dir = fresh_dir("root_matrix");
+    VrchatFolderOptions opts;
+    opts.gltf.rootMatrix = map_to_gltf_root(1.0);
+    const VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Dagger", 1766522, opts);
+    CHECK(r.ok);
+    const json g = glb_json(dir / "Dagger.glb");
+    const json& root = scene_root(g);
+    CHECK(root["name"] == "GW2_MapToGltf");
+    CHECK_FALSE(root.contains("rotation"));
+    CHECK_FALSE(root.contains("scale"));
+    const std::array<float, 16> want = map_to_gltf_root(1.0);
+    CHECK_EQ(root["matrix"].size(), size_t(16));
+    for (size_t i = 0; i < 16; ++i) CHECK_EQ(root["matrix"][i].get<float>(), want[i]);
+    CHECK(!root["children"].empty());
+}
+
+CM_TEST(world_gltf, images_by_uri) {
+    const ModelPreview model = glow_quad();
+    const fs::path dir = fresh_dir("images_uri");
+    VrchatFolderOptions opts;
+    opts.gltf.rootMatrix = map_to_gltf_root(1.0);
+    opts.gltf.imageDirUtf8 = (dir / "Images").string();
+    opts.gltf.imageUriPrefix = "Images/";
+    const VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Dagger", 1766522, opts);
+    CHECK(r.ok);
+    const json g = glb_json(dir / "Dagger.glb");
+    CHECK(g["images"].size() >= size_t(3));
+    for (const json& im : g["images"]) {
+        CHECK_FALSE(im.contains("bufferView"));
+        CHECK(im.contains("uri"));
+        const std::string uri = im.value("uri", std::string());
+        CHECK(uri.rfind("Images/", 0) == 0);
+        CHECK(uri.size() > 4 && uri.substr(uri.size() - 4) == ".png");
+        CHECK(fs::exists(dir / fs::path(uri)));
+    }
+    // The dat textures are named by their fileId.
+    for (const char* id : {"1000", "3000", "2001"}) {
+        bool found = false;
+        for (const json& im : g["images"])
+            if (im.value("uri", std::string()) == std::string("Images/") + id + ".png") found = true;
+        CHECK(found);
+        CHECK(fs::exists(dir / "Images" / (std::string(id) + ".png")));
+    }
+    // The Poiyomi maps are still written beside them.
+    CHECK(fs::exists(dir / "Textures" / "Blade - BaseColor.png"));
+    CHECK(fs::exists(dir / "materials.json"));
 }

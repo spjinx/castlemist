@@ -30,7 +30,7 @@ GltfExportResult export_model_gltf(const ModelPreview& model, const std::string&
     GltfWriter w;
 
     std::vector<int> texIndices;
-    write_model_textures(w, model.textures, texIndices);
+    write_model_textures(w, model.textures, texIndices, opts.imageDirUtf8, opts.imageUriPrefix);
     std::vector<int> materialIndices = write_materials(w, model, texIndices);
     std::vector<MeshExportInfo> meshes = write_meshes(w, model, materialIndices);
     result.particlesJsonPath = write_particle_sidecar(model, materialIndices, glbPath);
@@ -65,14 +65,30 @@ GltfExportResult export_model_gltf(const ModelPreview& model, const std::string&
     // The scene root absorbs GW2's Z-up -> glTF's Y-up conversion (a fixed
     // -90-degrees-about-X rotation) so every mesh vertex and joint transform
     // below it stays in GW2's own native numbers -- see internal.h's design note.
-    json root{
-        {"name", "GW2_ZupToYup"},
-        {"rotation", {opts.rootRotation[0], opts.rootRotation[1], opts.rootRotation[2], opts.rootRotation[3]}},
-        {"children", rootChildren},
-    };
-    if (opts.rootScale != 1.0) root["scale"] = {opts.rootScale, opts.rootScale, opts.rootScale};
+    // A world model file takes map_to_gltf_root instead (a reflection, so a
+    // matrix rather than a quaternion): its data is then in map space.
+    json root;
+    if (opts.rootMatrix) {
+        root = json{
+            {"name", "GW2_MapToGltf"},
+            {"matrix", std::vector<float>(opts.rootMatrix->begin(), opts.rootMatrix->end())},
+            {"children", rootChildren},
+        };
+    } else {
+        root = json{
+            {"name", "GW2_ZupToYup"},
+            {"rotation", {opts.rootRotation[0], opts.rootRotation[1], opts.rootRotation[2], opts.rootRotation[3]}},
+            {"children", rootChildren},
+        };
+        if (opts.rootScale != 1.0) root["scale"] = {opts.rootScale, opts.rootScale, opts.rootScale};
+    }
     int rootIndex = w.add_node(std::move(root));
     w.add_scene_root(rootIndex);
+
+    if (!w.image_error().empty()) {
+        result.error = w.image_error();
+        return result;
+    }
 
     std::vector<uint8_t> glb = w.finish();
     std::ofstream out(outPath, std::ios::binary);

@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "castlemist/exportgltf/gltf_export.h"
 #include "castlemist/extract/model_types.h"
 
 #include <cstddef>
@@ -27,12 +28,25 @@ struct VrchatFolderResult {
     std::vector<std::string> warnings;  ///< every material's warnings, prefixed "<Mat>: "
 };
 
+/// Options for write_vrchat_folder. Default-constructed, the folder is exactly
+/// the VRChat model export's.
+struct VrchatFolderOptions {
+    /// Passed to export_model_gltf for the .glb (the world export sets
+    /// rootMatrix and the image folder; see world-export spec D2).
+    GltfExportOptions gltf;
+};
+
 /// Write `<folder>/<name>.glb`, `<folder>/materials.json` and
 /// `<folder>/Textures/<Mat> - <Map>.png` for `model`. `modelFileId` is
 /// recorded in materials.json. A model with no meshes is refused before
 /// anything is written.
 VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::string& folderUtf8,
                                        const std::string& name, uint32_t modelFileId);
+
+/// As above, with options; the 4-argument form passes `VrchatFolderOptions{}`.
+VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::string& folderUtf8,
+                                       const std::string& name, uint32_t modelFileId,
+                                       const VrchatFolderOptions& opts);
 
 /// A legal Windows file name from `s`: control characters and
 /// `/ \ : * ? " < > |` become '_', leading/trailing spaces and dots are

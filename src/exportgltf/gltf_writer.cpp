@@ -12,7 +12,12 @@
 
 #include "internal.h"
 
+#include <cctype>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+
+#include "castlemist/exportgltf/vrchat_export.h"  // safe_file_name
 
 namespace castlemist::exportgltf {
 
@@ -77,6 +82,34 @@ int GltfWriter::add_or_reuse_texture(uint32_t fileId, const std::vector<uint8_t>
     auto found = fileId ? textureByFileId_.find(fileId) : textureByFileId_.end();
     if (found != textureByFileId_.end()) return found->second;
 
+    if (!imageDir_.empty()) {
+        namespace fs = std::filesystem;
+        // The image name (a dat texture's is its fileId) as a legal file name,
+        // unique ignoring case: Windows file names are case-insensitive.
+        const std::string base = safe_file_name(!name.empty() ? name
+                                                : fileId     ? std::to_string(fileId)
+                                                             : std::string("image"));
+        auto lower = [](std::string s) {
+            for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            return s;
+        };
+        std::string stem = base;
+        for (int n = 2; imageStems_.count(lower(stem)); ++n) stem = base + "_" + std::to_string(n);
+        imageStems_.insert(lower(stem));
+
+        const std::string leaf = stem + ".png";
+        const fs::path dir = fs::path(std::u8string(imageDir_.begin(), imageDir_.end()));
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        std::ofstream out(dir / fs::path(std::u8string(leaf.begin(), leaf.end())), std::ios::binary);
+        if (out) out.write(reinterpret_cast<const char*>(pngBytes.data()), static_cast<std::streamsize>(pngBytes.size()));
+        if (!out) {
+            if (imageError_.empty()) imageError_ = "Could not write image '" + imageDir_ + "/" + leaf + "'.";
+            return -1;
+        }
+        return add_texture_uri(fileId, imageUriPrefix_ + leaf, name);
+    }
+
     int bvIndex = add_buffer_view(pngBytes.data(), pngBytes.size(), 0);
     json image{{"bufferView", bvIndex}, {"mimeType", "image/png"}};
     if (!name.empty()) image["name"] = name;
@@ -89,6 +122,27 @@ int GltfWriter::add_or_reuse_texture(uint32_t fileId, const std::vector<uint8_t>
 
     if (fileId) textureByFileId_[fileId] = textureIndex;
     return textureIndex;
+}
+
+int GltfWriter::add_texture_uri(uint32_t fileId, const std::string& uri, const std::string& name) {
+    auto found = fileId ? textureByFileId_.find(fileId) : textureByFileId_.end();
+    if (found != textureByFileId_.end()) return found->second;
+
+    json image{{"uri", uri}, {"mimeType", "image/png"}};
+    if (!name.empty()) image["name"] = name;
+    doc_["images"].push_back(std::move(image));
+    int imageIndex = static_cast<int>(doc_["images"].size()) - 1;
+
+    doc_["textures"].push_back(json{{"source", imageIndex}});
+    int textureIndex = static_cast<int>(doc_["textures"].size()) - 1;
+
+    if (fileId) textureByFileId_[fileId] = textureIndex;
+    return textureIndex;
+}
+
+void GltfWriter::set_image_output(const std::string& dirUtf8, const std::string& uriPrefix) {
+    imageDir_ = dirUtf8;
+    imageUriPrefix_ = uriPrefix;
 }
 
 int GltfWriter::add_node(json node) {
