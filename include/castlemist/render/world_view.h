@@ -78,6 +78,11 @@ struct WorldViewStats {
     /// section 5), or the model has no skin stream (more than 256 joints, or
     /// prepared without skin).
     int unresolvedClips = 0;
+    /// The water plane has an env preset (spec WaterPass):
+    /// `environment.water[light.presetIndex]` exists. Materials shading then
+    /// draws it from the preset; Geometry, or no preset, the flat sub-project
+    /// 2 water (no preset also adds a warnings() line, note section 6).
+    bool waterPreset = false;
 };
 
 /// @brief Draws one WorldScene into one window.

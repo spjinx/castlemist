@@ -969,3 +969,113 @@ CM_TEST(world_materials, skinned_prop_follows_its_clip) {
     CHECK(st.save_screenshot(ps.c_str()));
     CHECK(read_file(ps) == bind);
 }
+
+// ---------------------------------------------------------------------------
+// Task 13: water from the env preset (spec WaterPass, note §6)
+// ---------------------------------------------------------------------------
+
+CM_TEST(world_materials, water_colour_stored_order) {
+    const uint8_t stored[4] = {0xA5, 0xDF, 0x5C, 0};
+    float rgb[3];
+    water_colour(stored, rgb);
+    CHECK(std::fabs(rgb[0] - 165.0f / 255.0f) < 1e-6f);
+    CHECK(std::fabs(rgb[1] - 223.0f / 255.0f) < 1e-6f);
+    CHECK(std::fabs(rgb[2] - 92.0f / 255.0f) < 1e-6f);
+}
+
+CM_TEST(world_materials, water_bump_uv_units) {
+    float uv[2];
+    water_bump_uv(1000, 0, 1, 0, 0, 0, 1000, uv);
+    CHECK(std::fabs(uv[0] - 1) < 1e-5f && std::fabs(uv[1]) < 1e-5f);
+    water_bump_uv(1000, 0, 1, 0, 3.14159265f, 0, 1000, uv);
+    CHECK(std::fabs(uv[0] + 1) < 1e-5f && std::fabs(uv[1]) < 1e-5f);
+    water_bump_uv(1000, 0, 1, 0, 3.14159265f / 2, 0, 1000, uv);
+    CHECK(std::fabs(uv[0]) < 1e-5f && std::fabs(uv[1] - 1) < 1e-5f);
+    water_bump_uv(1000, 0, 1, 0.5f, 0, 2, 1000, uv);
+    CHECK(std::fabs(uv[0] - 2) < 1e-5f && std::fabs(uv[1]) < 1e-5f);
+}
+
+CM_TEST(world_materials, water_depth_mix) {
+    CHECK(std::fabs(water_depth_mix(15.66f, 0, 15.66f) - 1) < 1e-6f);
+    CHECK_EQ(water_depth_mix(-5, 0, 15), 0.0f);   // terrain above the plane (up is -Z)
+    CHECK(std::fabs(water_depth_mix(7.5f, 0, 15) - 0.5f) < 1e-6f);
+    CHECK_EQ(water_depth_mix(30, 0, 15), 1.0f);
+    CHECK_EQ(water_depth_mix(10, 0, 0), 0.0f);
+    CHECK_EQ(water_depth_mix(10, 0, -1), 0.0f);
+}
+
+CM_TEST(world_view, water_preset_used_when_in_range) {
+    HWND wnd = hidden_window(96, 72);
+    struct Closer { HWND h; ~Closer() { if (h) DestroyWindow(h); } } closer{wnd};
+    if (!wnd) SKIP("no window");
+    WorldView v;
+    if (!v.create(wnd)) SKIP("no D3D11 device (hardware or WARP)");
+    castlemist::world::WorldScene s = material_scene();
+    for (float& z : s.terrain.chunks[0].heights) z = 10;   // 10 below the plane at 0
+    s.water.hasPlane = true;
+    s.water.planeZ = 0;
+    s.environment.water.resize(2);
+    for (auto& w : s.environment.water) {
+        const uint8_t sh[4] = {0xA5, 0xDF, 0x5C, 0}, dp[4] = {0x36, 0x4F, 0x21, 0};
+        std::copy(sh, sh + 4, w.surfaceShallowColor);
+        std::copy(dp, dp + 4, w.surfaceDeepColor);
+        w.depthAttenuation = 15.66f;
+        w.surfaceFresnel = 3.89f;
+        w.bumpTile[0] = 5.01f; w.bumpTile[1] = 13.66f;
+        w.bumpSpeed[0] = 1.31f; w.bumpSpeed[1] = 0.64f;
+        w.textureFileIds = {0, 186359};
+    }
+    WorldCamera cam;
+    cam.pos[0] = 800; cam.pos[1] = 800; cam.pos[2] = -900;
+    cam.fwd[0] = 0; cam.fwd[1] = 0.2f; cam.fwd[2] = 1;
+    cam.up[0] = 0; cam.up[1] = -1; cam.up[2] = 0;
+    cam.farDist = 5000;
+    auto no_preset_warning = [&] {
+        for (const std::string& l : v.warnings())
+            if (l.find("water: no preset for lighting preset") != std::string::npos &&
+                l.find("note \xc2\xa7" "6") != std::string::npos)
+                return true;
+        return false;
+    };
+
+    s.environment.light.presetIndex = 1;
+    v.set_world(s);
+    v.set_time(1.5);
+    v.render(cam);
+    CHECK(v.stats().waterPreset);
+    CHECK(!no_preset_warning());
+    CHECK(v.animating());
+    const std::string pp = temp_path("cm_wm_water_preset.bmp");
+    CHECK(v.save_screenshot(pp.c_str()));
+
+    s.environment.light.presetIndex = 5;
+    v.set_world(s);
+    v.render(cam);
+    CHECK(!v.stats().waterPreset);
+    CHECK(no_preset_warning());
+    const std::string pf = temp_path("cm_wm_water_flat.bmp");
+    CHECK(v.save_screenshot(pf.c_str()));
+    const std::vector<uint8_t> ip = read_file(pp), ifl = read_file(pf);
+    CHECK(!ip.empty() && ip.size() == ifl.size());
+    CHECK(ip != ifl);
+
+    // Geometry keeps the flat sub-project 2 water even with a preset.
+    s.environment.light.presetIndex = 1;
+    v.set_world(s);
+    v.set_shading(WorldShading::Geometry);
+    v.render(cam);
+    const std::string pg = temp_path("cm_wm_water_geometry.bmp");
+    CHECK(v.save_screenshot(pg.c_str()));
+    WorldView f;
+    HWND wf = hidden_window(96, 72);
+    struct Closer2 { HWND h; ~Closer2() { if (h) DestroyWindow(h); } } cf{wf};
+    if (!wf || !f.create(wf)) return;
+    castlemist::world::WorldScene flat = s;
+    flat.environment.water.clear();
+    f.set_world(flat);
+    f.set_shading(WorldShading::Geometry);
+    f.render(cam);
+    const std::string pg2 = temp_path("cm_wm_water_geometry_ref.bmp");
+    CHECK(f.save_screenshot(pg2.c_str()));
+    CHECK(read_file(pg) == read_file(pg2));
+}

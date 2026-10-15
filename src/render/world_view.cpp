@@ -87,6 +87,69 @@ struct ChunkCB {
 };
 static_assert(sizeof(ChunkCB) % 16 == 0, "constant buffers are 16-byte multiples");
 
+/// Constant buffer for world_shaders::kWater's WaterCB (register b1).
+struct WaterCB {
+    float heightOrigin[2]; float heightStep[2];
+    float heightSize[2];   float planeZ; float depthAtt;
+    float shallow[4];      ///< rgb, w = srgb decode
+    float deep[4];         ///< rgb, w = surfaceFresnel
+    float bumpM0[4], bumpM1[4];
+    float bumpOff[4];
+    float bumpAmount; float specPower; float hasBump; float hasHeight;
+};
+static_assert(sizeof(WaterCB) % 16 == 0, "constant buffers are 16-byte multiples");
+
+/// The map-wide terrain height grid kWater samples (spec WaterPass): R32F
+/// over the terrain sample grid, (chunksX (S-1) + 1) x (chunksY (S-1) + 1)
+/// with S the first chunk's samples, every k-th sample so neither side passes
+/// 4096. Texel (0, 0) is the grid's west/north corner; a texel no chunk
+/// writes (a missing chunk, another sample count, a non-finite height) is
+/// @p planeZ. False when the terrain has no usable chunk.
+struct HeightGrid {
+    std::vector<float> z;
+    int w = 0, h = 0;
+    float origin[2] = {0, 0};   ///< map x of column 0, map y of row 0 (the north edge)
+    float step[2] = {0, 0};     ///< map units per texel: x east, y south
+};
+bool build_height_grid(const castlemist::world::Terrain& t, float planeZ, HeightGrid& g) {
+    constexpr int kMaxSide = 4096;
+    if (!t.present || t.chunksX <= 0 || t.chunksY <= 0) return false;
+    const castlemist::world::TerrainChunk* ref = nullptr;
+    for (const auto& c : t.chunks)
+        if (c.samples >= 2 && c.heights.size() == static_cast<size_t>(c.samples) * c.samples &&
+            c.rect[2] > c.rect[0] && c.rect[3] > c.rect[1]) { ref = &c; break; }
+    if (!ref) return false;
+    const int S = ref->samples;
+    const long long W = static_cast<long long>(t.chunksX) * (S - 1) + 1;
+    const long long H = static_cast<long long>(t.chunksY) * (S - 1) + 1;
+    // k = ceil((side - 1) / (kMaxSide - 1)), so (side - 1) / k + 1 <= kMaxSide.
+    const long long k = std::max<long long>(
+        {1, (W - 1 + kMaxSide - 2) / (kMaxSide - 1), (H - 1 + kMaxSide - 2) / (kMaxSide - 1)});
+    g.w = static_cast<int>((W - 1) / k + 1);
+    g.h = static_cast<int>((H - 1) / k + 1);
+    const float cw = ref->rect[2] - ref->rect[0], ch = ref->rect[3] - ref->rect[1];
+    g.origin[0] = ref->rect[0] - static_cast<float>(ref->cx) * cw;
+    g.origin[1] = ref->rect[3] + static_cast<float>(ref->cy) * ch;
+    g.step[0] = cw / static_cast<float>(S - 1) * static_cast<float>(k);
+    g.step[1] = ch / static_cast<float>(S - 1) * static_cast<float>(k);
+    g.z.assign(static_cast<size_t>(g.w) * g.h, planeZ);
+    for (const auto& c : t.chunks) {
+        if (c.samples != S || c.heights.size() != static_cast<size_t>(S) * S) continue;
+        if (c.cx < 0 || c.cy < 0 || c.cx >= t.chunksX || c.cy >= t.chunksY) continue;
+        for (int j = 0; j < S; ++j) {
+            const long long gy = static_cast<long long>(c.cy) * (S - 1) + j;
+            if (gy % k) continue;
+            for (int i = 0; i < S; ++i) {
+                const long long gx = static_cast<long long>(c.cx) * (S - 1) + i;
+                if (gx % k) continue;
+                const float z = c.heights[static_cast<size_t>(j) * S + i];
+                if (std::isfinite(z)) g.z[static_cast<size_t>(gy / k) * g.w + static_cast<size_t>(gx / k)] = z;
+            }
+        }
+    }
+    return true;
+}
+
 /// One uploaded terrain chunk.
 struct ChunkGPU {
     ComPtr<ID3D11Buffer> vb;
@@ -152,6 +215,11 @@ struct WorldView::Impl {
     ComPtr<ID3D11InputLayout> ilInst;
     ComPtr<ID3D11BlendState> bsAlpha;
     ComPtr<ID3D11DepthStencilState> dssNoWrite;   ///< water: depth-tested, not written
+    // Water from its env preset (kWater).
+    ComPtr<ID3D11VertexShader> vsWater;
+    ComPtr<ID3D11PixelShader> psWater;
+    ComPtr<ID3D11InputLayout> ilWater;
+    ComPtr<ID3D11Buffer> cbWater;
     // Prop material pass (kPropMat).
     ComPtr<ID3D11VertexShader> vsProp;
     ComPtr<ID3D11PixelShader> psProp;
@@ -188,6 +256,16 @@ struct WorldView::Impl {
     // Water: zero or one quad, one identity instance.
     std::vector<MeshGPU> waterMesh;
     std::vector<InstCPU> waterInst;
+    /// The plane's env preset (spec WaterPass): set_world copies
+    /// environment.water[light.presetIndex] when the plane exists and the
+    /// index is in range. waterNoPreset: a plane without one (warnings()).
+    bool waterHasPreset = false;
+    castlemist::model::Extractor::MapEnvWater waterPreset;
+    float waterPlaneZ = 0;
+    bool waterNoPreset = false;
+    int waterPresetIndex = -1;
+    ComPtr<ID3D11ShaderResourceView> heightSrv;   ///< build_height_grid's R32F; null without terrain
+    HeightGrid heightGrid;                          ///< its placement (z released after upload)
 
     InstancedBatch batch;       ///< this frame's instanced draw (props too under Geometry)
     InstancedBatch propBatch;   ///< props under Materials: the material pass (static ones)
@@ -372,6 +450,8 @@ struct WorldView::Impl {
             {"TEXCOORD", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D11_INPUT_PER_INSTANCE_DATA, 1},
         };
         if (!compile(world_shaders::kInstanced, "world_instanced", eli, 6, vsInst, psInst, ilInst)) return false;
+        // kWater: the water quad's MapVtx (stride 16), positions only.
+        if (!compile(world_shaders::kWater, "world_water", el, 1, vsWater, psWater, ilWater)) return false;
         // kPropMat: MatVtx (stride 32: kInstanced's 16 bytes, then uv0, uv1) + the instance stream.
         const D3D11_INPUT_ELEMENT_DESC elp[] = {
             {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
@@ -407,6 +487,8 @@ struct WorldView::Impl {
         if (FAILED(dev->CreateBuffer(&bd, nullptr, &cbMat))) return false;
         bd.ByteWidth = kSkinCBBytes;
         if (FAILED(dev->CreateBuffer(&bd, nullptr, &cbSkin))) return false;
+        bd.ByteWidth = sizeof(WaterCB);
+        if (FAILED(dev->CreateBuffer(&bd, nullptr, &cbWater))) return false;
 
         // Trilinear; pages clamp, ground wraps.
         D3D11_SAMPLER_DESC sm{};
@@ -614,6 +696,118 @@ struct WorldView::Impl {
         waterInst.push_back(in);
     }
 
+    /// Uploads @p g as heightSrv (R32_FLOAT, one mip) and keeps its placement.
+    void upload_height_grid(HeightGrid& g) {
+        heightSrv.Reset();
+        D3D11_TEXTURE2D_DESC td{};
+        td.Width = static_cast<UINT>(g.w);
+        td.Height = static_cast<UINT>(g.h);
+        td.MipLevels = td.ArraySize = 1;
+        td.Format = DXGI_FORMAT_R32_FLOAT;
+        td.SampleDesc.Count = 1;
+        td.Usage = D3D11_USAGE_IMMUTABLE;
+        td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SUBRESOURCE_DATA sd{g.z.data(), static_cast<UINT>(g.w) * 4, 0};
+        ComPtr<ID3D11Texture2D> t;
+        if (SUCCEEDED(dev->CreateTexture2D(&td, &sd, &t))) dev->CreateShaderResourceView(t.Get(), nullptr, &heightSrv);
+        g.z.clear();
+        g.z.shrink_to_fit();
+        heightGrid = std::move(g);
+    }
+
+    /// Whether the water plane draws from its preset this frame (Materials
+    /// shading, a preset, the quad uploaded); otherwise the flat sub-project 2 water.
+    bool water_from_preset() const {
+        return shading == WorldShading::Materials && waterHasPreset && !waterMesh.empty() && !waterInst.empty() &&
+               waterInst[0].ready;
+    }
+
+    /// Draws the water quad with kWater (call only when water_from_preset()):
+    /// alpha-blended, depth-tested, no depth writes. Returns 1 when drawn
+    /// (inside the far distance and the frustum), else 0.
+    int draw_water(const float planes[6][4], const WorldCamera& cam, float farD, size_t& tris) {
+        const InstCPU& in = waterInst[0];
+        const MeshGPU& m = waterMesh[0];
+        const float dx = in.centerW[0] - cam.pos[0], dy = in.centerW[1] - cam.pos[1], dz = in.centerW[2] - cam.pos[2];
+        const float reach = farD + in.radiusW;
+        if (dx * dx + dy * dy + dz * dz > reach * reach) return 0;
+        for (int p = 0; p < 6; ++p)
+            if (planes[p][0] * in.centerW[0] + planes[p][1] * in.centerW[1] + planes[p][2] * in.centerW[2] +
+                    planes[p][3] < -in.radiusW)
+                return 0;
+
+        const castlemist::model::Extractor::MapEnvWater& w = waterPreset;
+        WaterCB c{};
+        const bool hasHeight = heightSrv && heightGrid.w > 0 && heightGrid.h > 0;
+        c.heightOrigin[0] = heightGrid.origin[0];
+        c.heightOrigin[1] = heightGrid.origin[1];
+        c.heightStep[0] = hasHeight ? heightGrid.step[0] : 1.0f;
+        c.heightStep[1] = hasHeight ? heightGrid.step[1] : 1.0f;
+        c.heightSize[0] = static_cast<float>(std::max(1, heightGrid.w));
+        c.heightSize[1] = static_cast<float>(std::max(1, heightGrid.h));
+        c.planeZ = waterPlaneZ;
+        c.depthAtt = w.depthAttenuation;
+        water_colour(w.surfaceShallowColor, c.shallow);
+        water_colour(w.surfaceDeepColor, c.deep);
+        c.shallow[3] = mat.srgbColourTextures ? 1.0f : 0.0f;
+        c.deep[3] = w.surfaceFresnel;
+        // Each bump's affine map from water_bump_uv (the one place its
+        // UNPROVEN units live, note §6): offset at (0, 0), then the x and y
+        // axes. The offset is frac'd here (the bump wraps), so float UVs stay
+        // precise however long the clock runs.
+        const double t = motion ? clock : 0.0;
+        const float unit = mat.waterTileUnit;
+        float* M[2] = {c.bumpM0, c.bumpM1};
+        for (int k = 0; k < 2; ++k) {
+            float o[2], ex[2], ey[2];
+            water_bump_uv(0, 0, w.bumpTile[k], w.bumpSpeed[k], w.bumpAngle[k], t, unit, o);
+            water_bump_uv(1, 0, w.bumpTile[k], 0, w.bumpAngle[k], 0, unit, ex);
+            water_bump_uv(0, 1, w.bumpTile[k], 0, w.bumpAngle[k], 0, unit, ey);
+            M[k][0] = ex[0]; M[k][1] = ey[0];   // u = dot(M.xy, xy)
+            M[k][2] = ex[1]; M[k][3] = ey[1];   // v = dot(M.zw, xy)
+            c.bumpOff[2 * k + 0] = o[0] - std::floor(o[0]);
+            c.bumpOff[2 * k + 1] = o[1] - std::floor(o[1]);
+        }
+        const int bi = mat.waterBumpTextureIndex;
+        const uint32_t bumpId = (bi >= 0 && static_cast<size_t>(bi) < w.textureFileIds.size())
+                                    ? w.textureFileIds[static_cast<size_t>(bi)] : 0;
+        ID3D11ShaderResourceView* bump = bumpId ? textures.srv(bumpId, false) : nullptr;
+        c.bumpAmount = w.bumpAmount;
+        c.specPower = mat.waterSpecPower;
+        c.hasBump = bump ? 1.0f : 0.0f;   // missing texture: flat N
+        c.hasHeight = hasHeight ? 1.0f : 0.0f;
+        D3D11_MAPPED_SUBRESOURCE ms;
+        if (FAILED(ctx->Map(cbWater.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return 0;
+        std::memcpy(ms.pData, &c, sizeof c);
+        ctx->Unmap(cbWater.Get(), 0);
+
+        ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx->IASetInputLayout(ilWater.Get());
+        ctx->VSSetShader(vsWater.Get(), nullptr, 0);
+        ctx->PSSetShader(psWater.Get(), nullptr, 0);
+        ID3D11Buffer* cbs[2] = {cb.Get(), cbWater.Get()};
+        ctx->VSSetConstantBuffers(0, 1, cbs);
+        ctx->PSSetConstantBuffers(0, 2, cbs);
+        ID3D11SamplerState* ss[2] = {sWrap.Get(), sClamp.Get()};
+        ctx->PSSetSamplers(0, 2, ss);
+        ID3D11ShaderResourceView* srv[2] = {bump, hasHeight ? heightSrv.Get() : nullptr};
+        ctx->PSSetShaderResources(0, 2, srv);
+        ctx->OMSetBlendState(bsAlpha.Get(), nullptr, 0xffffffff);
+        ctx->OMSetDepthStencilState(dssNoWrite.Get(), 0);
+        ctx->RSSetState(rs.Get());
+        const UINT stride = m.stride, offset = 0;
+        ctx->IASetVertexBuffers(0, 1, m.vb.GetAddressOf(), &stride, &offset);
+        ctx->IASetIndexBuffer(m.ib.Get(), DXGI_FORMAT_R32_UINT, 0);
+        const auto [first, count] = m.lodRanges[0];
+        ctx->DrawIndexed(count, first, 0);
+        tris += count / 3;
+        ID3D11ShaderResourceView* none[2] = {};
+        ctx->PSSetShaderResources(0, 2, none);
+        ctx->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+        ctx->OMSetDepthStencilState(dss.Get(), 0);
+        return 1;
+    }
+
     const GridIB* grid_ib(int n) {
         auto it = ibs.find(n);
         if (it != ibs.end()) return it->second.ib ? &it->second : nullptr;
@@ -791,7 +985,11 @@ struct WorldView::Impl {
         }
         if (layers[static_cast<int>(WorldLayer::Collision)])
             visible += batch.cull_into(colInsts, colMeshes, kCollisionTint, 1.0f, cam, farD, planes);
-        if (layers[static_cast<int>(WorldLayer::Water)])
+        // Water: the flat sub-project 2 plane in the instanced batch, unless
+        // it draws from its env preset (kWater, right after the batch: still
+        // after pass 1 and collision, before pass 2).
+        const bool presetWater = layers[static_cast<int>(WorldLayer::Water)] && water_from_preset();
+        if (layers[static_cast<int>(WorldLayer::Water)] && !presetWater)
             visible += batch.cull_into(waterInst, waterMesh, kWaterTint, kWaterAlpha, cam, farD, planes);
         const InstPipeline pl{ilInst.Get(), vsInst.Get(), psInst.Get(), bsAlpha.Get(), dssNoWrite.Get(), dss.Get()};
         ID3D11BlendState* blendOf[static_cast<int>(WorldAlpha::Count)];
@@ -813,6 +1011,11 @@ struct WorldView::Impl {
         if (propsUp) draws += propBatch.draw_materials(ctx.Get(), pm, 1, tris, matUntextured);
         if (skinUp) draws += skinBatch.draw_materials(ctx.Get(), sk, 1, tris, matUntextured);
         draws += batch.draw(dev.Get(), ctx.Get(), pl, tris);
+        if (presetWater) {
+            const int n = draw_water(planes, cam, farD, tris);
+            visible += n;
+            draws += n;
+        }
         // Pass 2 per batch: the blended static buckets, then the blended
         // skinned ones (each sorted back to front within its own batch only).
         if (propsUp) draws += propBatch.draw_materials(ctx.Get(), pm, 2, tris, matUntextured);
@@ -903,7 +1106,12 @@ void WorldView::set_world(const castlemist::world::WorldScene& s) {
     d->waterMesh.clear();
     d->waterInst.clear();
     d->scrollingMaterials = d->stillTransforms = 0;
-    d->hasWater = !s.environment.water.empty();
+    d->hasWater = false;
+    d->waterHasPreset = d->waterNoPreset = false;
+    d->waterPreset = castlemist::model::Extractor::MapEnvWater{};
+    d->waterPresetIndex = s.environment.light.presetIndex;
+    d->heightSrv.Reset();
+    d->heightGrid = HeightGrid{};
     d->hasExtent = false;
     d->hasFrame = false;
     d->st = WorldViewStats{};
@@ -965,6 +1173,22 @@ void WorldView::set_world(const castlemist::world::WorldScene& s) {
                            std::max(s.bounds[0], s.bounds[2]), std::max(s.bounds[1], s.bounds[3]), s.water.planeZ);
         else if (d->hasExtent && d->hi[0] > d->lo[0] && d->hi[1] > d->lo[1])
             d->build_water(d->lo[0], d->lo[1], d->hi[0], d->hi[1], s.water.planeZ);
+    }
+    // The plane's env preset (spec WaterPass): water preset k with lighting
+    // preset k (pairing UNPROVEN, note §6). No preset: the flat water, warned.
+    if (!d->waterMesh.empty()) {
+        const int pi = s.environment.light.presetIndex;
+        if (pi >= 0 && static_cast<size_t>(pi) < s.environment.water.size()) {
+            d->waterHasPreset = true;
+            d->waterPreset = s.environment.water[static_cast<size_t>(pi)];
+            d->waterPlaneZ = s.water.planeZ;
+            d->hasWater = true;
+            d->st.waterPreset = true;
+            HeightGrid g;
+            if (build_height_grid(s.terrain, s.water.planeZ, g)) d->upload_height_grid(g);
+        } else {
+            d->waterNoPreset = true;
+        }
     }
 }
 
@@ -1243,6 +1467,9 @@ bool WorldView::animated_screen_rect(const WorldCamera& cam, int rect[4]) const 
 
 std::vector<std::string> WorldView::warnings() const {
     std::vector<std::string> w = material_setting_warnings(d->mat);
+    if (d->waterNoPreset)
+        w.push_back("water: no preset for lighting preset " + std::to_string(d->waterPresetIndex) +
+                    "; flat water (note \xc2\xa7" "6)");
     if (d->clipMisses > 0)
         w.push_back(std::to_string(d->clipMisses) +
                     " animated placements name no clip of their model; drawn in bind pose (fallback rule UNPROVEN, "

@@ -434,6 +434,107 @@ VSOut VSMain(VSIn i) {
 }
 )";
 
+/// @brief The water plane from its env preset (spec WaterPass, note §6): a
+///        reconstruction from the stored fields, not the game's shader (which
+///        needs scene depth, a scene-colour copy and a reflection target).
+///
+/// VS: the water quad's MapVtx positions are map space already (one identity
+/// instance), so only POSITION is read. PS:
+///  - depth: tHeight (t1, R32F map-wide terrain z, clamp sampler s1) at the
+///    pixel's xy; outside the grid the terrain is the plane (depth 0).
+///    mixD = saturate((terrainZ - planeZ) / depthAttenuation) (water_depth_mix).
+///  - base = lerp(shallow, deep, mixD); the colours are water_colour()'s bytes
+///    / 255, decoded sRGB -> linear when uSrgb (srgbColourTextures, as the
+///    colour textures).
+///  - bump: two samples of tBump (t0, UNORM, wrap s0) at uv_k = M_k xy + off_k,
+///    M_k and off_k from water_bump_uv on the CPU (off_k frac'd), xy*2-1;
+///    N = normalize(float3((n0.xy + n1.xy) * bumpAmount, -1)) (up is -Z); no
+///    bump texture: N = (0, 0, -1).
+///  - fresnel = pow(1 - saturate(N.V), surfaceFresnel).
+///  - rgb = base (hemi + sun) + sunCol pow(saturate(N.H), waterSpecPower), with
+///    the calibrated light uMatSunCol / uMatSkyCol of the other textured passes
+///    (ruling P6, detail/light_calib.h); hemi and the ground term as kPropMat.
+///    Then fog and gamma as every pass; alpha = lerp(0.45, 1, fresnel).
+inline constexpr const char* kWater = R"(
+cbuffer WorldCB : register(b0) {
+    row_major float4x4 uViewProj;
+    float3 uSunDir;     float uExposure;
+    float3 uSunCol;     float uAoStrength;
+    float3 uSkyCol;     float uFogStart;
+    float3 uGroundCol;  float uFogEnd;
+    float3 uFogCol;     float _pad0;
+    float3 uCamPos;     float _pad1;
+    float3 uAlbedo;     float _pad2;
+    float3 uMatSunCol;  float _pad3;   // calibrated light (detail/light_calib.h)
+    float3 uMatSkyCol;  float _pad4;
+};
+cbuffer WaterCB : register(b1) {
+    float2 uHeightOrigin; float2 uHeightStep;   // map xy of texel (0,0) (west, north); map units per texel (x, -y)
+    float2 uHeightSize;   float uPlaneZ; float uDepthAtt;
+    float4 uShallow;      // rgb, w = uSrgb
+    float4 uDeep;         // rgb, w = surfaceFresnel
+    float4 uBumpM0;       // uv0 = (dot(m.xy, xy), dot(m.zw, xy)) + off.xy
+    float4 uBumpM1;
+    float4 uBumpOff;      // off0.xy, off1.xy
+    float uBumpAmount; float uSpecPower; float uHasBump; float uHasHeight;
+};
+
+Texture2D tBump   : register(t0);
+Texture2D tHeight : register(t1);
+SamplerState sWrap  : register(s0);
+SamplerState sClamp : register(s1);
+
+struct VSIn { float3 pos : POSITION; };
+struct VSOut {
+    float4 pos : SV_POSITION;
+    float3 wp  : TEXCOORD0;
+};
+
+VSOut VSMain(VSIn i) {
+    VSOut o;
+    o.pos = mul(float4(i.pos, 1.0), uViewProj);
+    o.wp  = i.pos;
+    return o;
+}
+
+float3 srgb_to_linear(float3 c) {
+    return (c <= 0.04045) ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+}
+
+float4 PSMain(VSOut i) : SV_Target {
+    float2 xy = i.wp.xy;
+    float terrainZ = uPlaneZ;
+    if (uHasHeight != 0) {
+        float2 g = float2(xy.x - uHeightOrigin.x, uHeightOrigin.y - xy.y) / uHeightStep;
+        if (all(g >= 0) && all(g <= uHeightSize - 1))
+            terrainZ = tHeight.SampleLevel(sClamp, (g + 0.5) / uHeightSize, 0).r;
+    }
+    float mixD = uDepthAtt > 0 ? saturate((terrainZ - uPlaneZ) / uDepthAtt) : 0;
+    float3 sh = uShallow.rgb, dp = uDeep.rgb;
+    if (uShallow.w != 0) { sh = srgb_to_linear(sh); dp = srgb_to_linear(dp); }
+    float3 base = lerp(sh, dp, mixD);
+
+    float3 N = float3(0, 0, -1);
+    if (uHasBump != 0) {
+        float2 uv0 = float2(dot(uBumpM0.xy, xy), dot(uBumpM0.zw, xy)) + uBumpOff.xy;
+        float2 uv1 = float2(dot(uBumpM1.xy, xy), dot(uBumpM1.zw, xy)) + uBumpOff.zw;
+        float2 n0 = tBump.Sample(sWrap, uv0).xy * 2.0 - 1.0;
+        float2 n1 = tBump.Sample(sWrap, uv1).xy * 2.0 - 1.0;
+        N = normalize(float3((n0 + n1) * uBumpAmount, -1.0));
+    }
+    float3 V = normalize(uCamPos - i.wp);
+    float3 L = normalize(uSunDir);
+    float3 H = normalize(L + V);
+    float fresnel = pow(max(1.0 - saturate(dot(N, V)), 1e-6), max(uDeep.w, 0.0));   // max: no pow(0, 0) NaN
+    float3 hemi = lerp(uGroundCol, uMatSkyCol, saturate(-N.z * 0.5 + 0.5));   // up is -Z
+    float3 sun  = uMatSunCol * saturate(dot(N, L));
+    float3 col  = base * (hemi + sun) * uExposure + uMatSunCol * pow(saturate(dot(N, H)), uSpecPower);
+    float f = saturate((distance(i.wp, uCamPos) - uFogStart) / max(1.0, uFogEnd - uFogStart));
+    col = lerp(col, uFogCol, f);
+    return float4(pow(saturate(col), 1.0 / 2.2), lerp(0.45, 1.0, fresnel));
+}
+)";
+
 /// @brief kPropSkinned's whole source: its VS, then kPropMat's PSMain
 ///        (textured) and kInstanced's PSMain as PSAo (the AO look), each
 ///        copied from its own shader so the two cannot drift apart.

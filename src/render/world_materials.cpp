@@ -133,8 +133,14 @@ std::vector<std::string> material_setting_warnings(const WorldMaterialSettings& 
     out.emplace_back("terrain shSunColor.w = 1: UNPROVEN, the rim term's sun weight (note \xc2\xa7" "1.2)");
     line("maxTextureSize = %d: castlemist's choice, a memory bound (spec, not in the note)", s.maxTextureSize);
     line("waterBumpTextureIndex = %d: UNPROVEN beyond AMAT 187551 (note \xc2\xa7" "6)", s.waterBumpTextureIndex);
-    line("waterTileUnit = %g: UNPROVEN, units of bumpTile/bumpSpeed/bumpAngle (note \xc2\xa7" "6)",
+    line("waterTileUnit = %g: UNPROVEN, units of bumpTile/bumpSpeed/bumpAngle: uv = R(bumpAngle, radians) "
+         "* xy * bumpTile / waterTileUnit + (bumpSpeed * t, 0) (note \xc2\xa7" "6)",
          static_cast<double>(s.waterTileUnit));
+    out.emplace_back("water colours: UNPROVEN byte order, surfaceShallowColor/surfaceDeepColor bytes 0,1,2 read as "
+                     "R,G,B / 255, as parseMapEnv reads env colours (note \xc2\xa7" "6)");
+    out.emplace_back("water bump: castlemist's choice, textureFileIds[waterBumpTextureIndex] read as UNORM xy*2-1, "
+                     "N = normalize((n0.xy + n1.xy) * bumpAmount, -1); no scene depth, colour copy or reflection "
+                     "(note \xc2\xa7" "6)");
     line("waterSpecPower = %g: castlemist's choice (note \xc2\xa7" "6)", static_cast<double>(s.waterSpecPower));
     line("srgbColourTextures = %s: castlemist's choice, colour textures decode sRGB to linear before the "
          "blend (spec, not in the note)",
@@ -238,6 +244,31 @@ std::vector<size_t> blend_back_to_front(const std::vector<float>& nearestDistanc
     std::stable_sort(order.begin(), order.end(),
                      [&](size_t a, size_t b) { return nearestDistance[a] > nearestDistance[b]; });
     return order;
+}
+
+void water_colour(const uint8_t stored[4], float rgb[3]) {
+    // UNPROVEN (note §6): bytes 0, 1, 2 as R, G, B -- the order parseMapEnv
+    // reads every other env colour (gw2model.hpp:1300).
+    for (int k = 0; k < 3; ++k) rgb[k] = static_cast<float>(stored[k]) / 255.0f;
+}
+
+void water_bump_uv(float x, float y, float tile, float speed, float angle, double seconds, float tileUnit,
+                   float uv[2]) {
+    // UNPROVEN units (note §6): tile repeats per tileUnit map units, speed in
+    // UV per second along the rotated u axis, angle in radians. The game's
+    // wtrprmv/d/e are client-filled; this is castlemist's reading of the
+    // preset's bumpTile / bumpSpeed / bumpAngle.
+    const double c = std::cos(static_cast<double>(angle)), s = std::sin(static_cast<double>(angle));
+    const double k = tileUnit > 0 ? static_cast<double>(tile) / static_cast<double>(tileUnit) : 0.0;
+    uv[0] = static_cast<float>((c * x - s * y) * k + static_cast<double>(speed) * seconds);
+    uv[1] = static_cast<float>((s * x + c * y) * k);
+}
+
+float water_depth_mix(float terrainZ, float planeZ, float depthAttenuation) {
+    if (!(depthAttenuation > 0) || !std::isfinite(depthAttenuation)) return 0.0f;
+    const float t = (terrainZ - planeZ) / depthAttenuation;
+    if (!(t > 0)) return 0.0f;   // also NaN
+    return t < 1 ? t : 1.0f;
 }
 
 double clip_time(double seconds, float duration) {

@@ -120,6 +120,29 @@ double clip_time(double seconds, float duration);
 ///        not finite gets identity, so the palette is always finite.
 void pose_palette(const PoseRig& rig, double seconds, std::vector<float>& palette);
 
+/// @brief A water preset's stored colour (surfaceShallowColor,
+///        surfaceDeepColor) as linear-unscaled 0..1: bytes 0, 1, 2 as R, G, B
+///        divided by 255, the order parseMapEnv reads env colours
+///        (gw2model.hpp:1300). Byte 3 is ignored. The order is UNPROVEN for
+///        water (docs/research/gw2-world-materials.md §6: the game shader's
+///        wtrclrs/wtrclrd are filled by the client, not stored).
+void water_colour(const uint8_t stored[4], float rgb[3]);
+
+/// @brief One bump sample's UV at map position (@p x, @p y):
+///        uv = R(@p angle) (x, y) @p tile / @p tileUnit + (@p speed @p seconds, 0),
+///        R the counter-clockwise rotation, @p angle in radians. The units of
+///        bumpTile / bumpSpeed / bumpAngle are UNPROVEN (note §6: AMAT 187551's
+///        VS reads wtrprmv/wtrprmd/wtrprme, which the preset stores as zero and
+///        the client fills per frame from fields we cannot see). A tileUnit
+///        <= 0 gives (speed seconds, 0).
+void water_bump_uv(float x, float y, float tile, float speed, float angle, double seconds, float tileUnit,
+                   float uv[2]);
+
+/// @brief How deep the water is, 0 shallow .. 1 deep: saturate((terrainZ -
+///        planeZ) / depthAttenuation) (up is -Z, so terrain below the plane
+///        has the larger z); 0 when depthAttenuation <= 0 or not finite.
+float water_depth_mix(float terrainZ, float planeZ, float depthAttenuation);
+
 /// @brief One line per setting of @p s: its name and value, "UNPROVEN" or
 ///        "castlemist's choice", and the note section
 ///        (docs/research/gw2-world-materials.md); then fixed lines for the
