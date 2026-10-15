@@ -87,11 +87,13 @@ class Keywords(unittest.TestCase):
 
 @unittest.skipUnless(EXPORT, "needs an export dir")
 class Export(unittest.TestCase):
-    def run_copy(self, edit=None, remove=None, plan=False):
+    def run_copy(self, edit=None, remove=None, plan=False, prep=None):
         d = tempfile.mkdtemp(prefix="cm_vm_")
         try:
             dst = os.path.join(d, "x")
             shutil.copytree(EXPORT, dst)
+            if prep:
+                prep(dst)
             if remove:
                 os.remove(os.path.join(dst, remove))
             if edit:
@@ -126,6 +128,32 @@ class Export(unittest.TestCase):
             j["textures"]["dir"] = "nope"
         lines, ok = self.run_copy(edit=rm)
         self.assertTrue(any("textures.dir: missing file" in l for l in lines), lines)
+
+    @staticmethod
+    def sky_folder(dst):
+        # What write_skybox leaves: sky/sky.json and a folder per mode beside it.
+        os.makedirs(os.path.join(dst, "sky", "day", "baked"))
+        with open(os.path.join(dst, "sky", "sky.json"), "w") as f:
+            json.dump({"modes": [{"name": "day", "aliasOf": None, "baked": True}]}, f)
+        with open(os.path.join(dst, "sky", "day", "baked", "equirect.png"), "wb") as f:
+            f.write(b"PNG")
+
+    def test_sky_default_is_a_mode_folder(self):
+        # sky.default names a mode (a folder beside sky.json), not a root-relative path.
+        sky = {"json": "sky/sky.json", "default": "day", "equirect": "sky/day/baked/equirect.png"}
+        lines, ok = self.run_copy(edit=lambda j: j.__setitem__("sky", dict(sky)), prep=self.sky_folder, plan=True)
+        self.assertTrue(ok, lines)
+        self.assertTrue(any(l.startswith("PLAN ") and l.endswith("skybox=1") for l in lines), lines)
+        lines, ok = self.run_copy(edit=lambda j: j.__setitem__("sky", dict(sky, default="dusk")), prep=self.sky_folder)
+        self.assertFalse(ok)
+        self.assertTrue(any("sky.default: missing file: sky/dusk" in l for l in lines), lines)
+
+    def test_export_log_tolerated(self):
+        def log(dst):
+            with open(os.path.join(dst, "export.log"), "w") as f:
+                f.write("{}\n")
+        lines, ok = self.run_copy(prep=log)
+        self.assertTrue(ok, lines)
 
     def test_unity_mismatch(self):
         lines, ok = self.run_copy(edit=lambda j: j["cells"][0]["instances"][0]["unity"]["t"].__setitem__(0, 5.0))

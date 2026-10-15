@@ -13,6 +13,7 @@ keyword <k>". If jsonschema happens to be importable it is run as a cross-check.
 import json
 import math
 import os
+import posixpath
 import shutil
 import sys
 import tempfile
@@ -211,9 +212,14 @@ def semantic(m, root):
                 errors.append("ERROR textures.count: %d declared, %d files in %s" % (tex["count"], n, tex["dir"]))
     sky = m.get("sky")
     if isinstance(sky, dict):
-        for k in ("json", "default", "equirect"):
+        for k in ("json", "equirect"):
             if sky.get(k) is not None:
                 need(sky[k], "sky." + k)
+        # default names a mode: write_skybox's folder of that name beside sky.json.
+        if isinstance(sky.get("default"), str) and isinstance(sky.get("json"), str):
+            mode = posixpath.join(posixpath.dirname(sky["json"]), sky["default"])
+            if not os.path.isdir(os.path.join(root, mode)):
+                errors.append("ERROR sky.default: missing file: %s" % mode)
     fp = m.get("frameProbe")
     if isinstance(fp, dict):
         for k in ("glb", "fbx"):
