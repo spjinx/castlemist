@@ -99,7 +99,7 @@ void build_water(const WaterSources& in, WorldScene& out) {
     // env (§6.5).
     if (in.envWaterPresets)
         warn.push_back("env: " + std::to_string(in.envWaterPresets) +
-                       " water presets (material, colours, waves per env zone) not read");
+                       " water presets in all env blocks; the dataGlobal ones are in environment.water, the per-zone ones are not read");
 
     out.water = std::move(w);
 }
@@ -127,8 +127,16 @@ void build_environment(const EnvSources& in, WorldScene& out) {
     Environment env;
     env.sky = in.sky;
     env.light = in.light;
+    env.water = in.water;
     if (!env.sky.present) out.warnings.push_back("environment: no sky (no env chunk or no dataGlobal)");
     if (!env.light.present) out.warnings.push_back("environment: no light rig (no readable lighting preset)");
+    if (env.water.empty())
+        out.warnings.push_back("environment: no dataGlobal water presets; the view draws flat water");
+    else
+        out.warnings.push_back("environment: " + std::to_string(env.water.size()) +
+                               " dataGlobal water presets kept as stored; the view pairs water preset k with the "
+                               "chosen lighting preset k (presetIndex " + std::to_string(env.light.presetIndex) +
+                               "), UNPROVEN (note §6)");
     const uint32_t otherPresets = in.counts.lightingPresets > 1 ? in.counts.lightingPresets - 1 : 0;
     const uint32_t zones = in.counts.localBlocks + in.counts.overrideBlocks;
     if (otherPresets || zones)
@@ -157,6 +165,11 @@ void attach_environment(castlemist::model::Extractor& ex, WorldScene& out) {
         in.counts = ex.countEnv();
     } catch (const std::exception& e) {
         out.warnings.push_back(std::string("environment: preset and zone counts not read: ") + e.what());
+    }
+    try {
+        in.water = ex.parseMapEnvWater();
+    } catch (const std::exception& e) {
+        out.warnings.push_back(std::string("environment: water presets not read: ") + e.what());
     }
     build_environment(in, out);
 }

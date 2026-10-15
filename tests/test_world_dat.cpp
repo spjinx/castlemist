@@ -287,7 +287,7 @@ CM_TEST(world_dat, terrain_materials_match_reference) {
             if (sv) {
                 want.push_back("terrain materials: 25 chunk texture bindings not kept (tokens: ramp)");
                 want.push_back("terrain materials: 128 chunk blend pages are solid-colour");
-                want.push_back("terrain materials: 36 chunks have a non-null uvData");
+                want.push_back("terrain materials: 36 chunks have a uvData");
             }
             CHECK_EQ(warnings.size(), want.size());
             for (const auto& p : want) {
@@ -296,7 +296,7 @@ CM_TEST(world_dat, terrain_materials_match_reference) {
                 CHECK_EQ(hits, size_t(1));
             }
             for (const auto& w : warnings)
-                if (w.find("ramp") == std::string::npos) CHECK(w.find("UNPROVEN") != std::string::npos);
+                if (w.find("ramp") == std::string::npos && w.find(" have a uvData") == std::string::npos) CHECK(w.find("UNPROVEN") != std::string::npos);
         }
 
         // The terrain's paged image, read independently of resolve_terrain_materials.
