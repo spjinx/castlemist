@@ -74,6 +74,8 @@ cbuffer WorldCB : register(b0) {
     float3 uFogCol;     float _pad0;
     float3 uCamPos;     float _pad1;
     float3 uAlbedo;     float _pad2;
+    float3 uMatSunCol;  float _pad3;   // calibrated light (detail/light_calib.h)
+    float3 uMatSkyCol;  float _pad4;
 };
 cbuffer ChunkCB : register(b1) {
     float2 uPickerOffset; float uPickerScale; float uGroundRepeats;
@@ -175,13 +177,13 @@ float4 PSMain(VSOut i) : SV_Target {
     float3 V = normalize(uCamPos - i.wp);
     float3 H = normalize(uSunDir + V);
     float ao = lerp(1.0, i.ao, uAoStrength);
-    // L.rgb: the AO pass's hemisphere + sun (up is -Z); L.a: the sun specular.
-    float3 hemi = lerp(uGroundCol, uSkyCol, saturate(-N.z * 0.5 + 0.5));
-    float3 Lrgb = (hemi + uSunCol * saturate(dot(N, uSunDir))) * ao * uExposure;
+    // L.rgb: the calibrated hemisphere + sun (up is -Z; ruling P6); L.a: the sun specular.
+    float3 hemi = lerp(uGroundCol, uMatSkyCol, saturate(-N.z * 0.5 + 0.5));
+    float3 Lrgb = (hemi + uMatSunCol * saturate(dot(N, uSunDir))) * ao * uExposure;
     float  La   = pow(saturate(dot(N, H)), uSpecPower);
     float  fres = pow(1.0 - saturate(dot(N, V)), 8.0);
     // shSunColor.w taken as 1 (UNPROVEN).
-    float3 col = alb * Lrgb + nm.a * 0.854902 * uSunCol * La + saturate(2.0 * mx.b - 1.0) * 0.239216 * uSunCol * fres;
+    float3 col = alb * Lrgb + nm.a * 0.854902 * uMatSunCol * La + saturate(2.0 * mx.b - 1.0) * 0.239216 * uMatSunCol * fres;
     float f = saturate((distance(i.wp, uCamPos) - uFogStart) / max(1.0, uFogEnd - uFogStart));
     col = lerp(col, uFogCol, f);
     return float4(pow(saturate(col), 1.0 / 2.2), 1.0);
@@ -250,15 +252,18 @@ float4 PSMain(VSOut i) : SV_Target {
 /// @brief Props, textured (spec PropMaterialPass): kInstanced's streams with
 ///        MatVtx's two UV sets, one diffuse per draw.
 ///
-/// Shading is kInstanced's budget with the diffuse rgb as the albedo
-/// (sRGB view when srgbColourTextures): albedo x AO x (hemi + sun), then fog.
-/// ModelMaterialCPU::tint is not applied (model_preview's guess). Slot t0 is
-/// the diffuse, s0 wraps. MatCB (b1) per draw: uUvSet picks uv0 or uv1,
-/// uUvOffset is added to it (Task 11 scroll), uAlphaMode 0 opaque, 1 clip
-/// (discard below alpha 0.25), 2 blend (out alpha = diffuse alpha), 3
-/// additive (rgb pre-faded by fog toward black, out alpha = diffuse alpha).
-/// uTextured 0 falls back to the instance tint (WorldView draws untextured
-/// sub-ranges with kInstanced instead, so the AO look stays byte-identical).
+/// Shading: the diffuse rgb (sRGB view when srgbColourTextures) x AO x
+/// (hemi + sun) with the calibrated light uMatSunCol / uMatSkyCol (ruling P6,
+/// detail/light_calib.h; the ground term and exposure as kInstanced), then
+/// fog. ModelMaterialCPU::tint is not applied (model_preview's guess). Slot t0
+/// is the diffuse, s0 wraps. MatCB (b1) per draw: uUvSet picks uv0 or uv1,
+/// uUvOffset is added to it (Task 11 scroll), uAlphaMode is the WorldAlpha:
+///  0 opaque; 1 clip (discard below alpha 0.25); 2 blend (out alpha = diffuse
+///  alpha); 3, 4 additive (rgb faded by fog toward black); 5 premultiplied
+///  (fog toward fogCol x alpha); 6, 7 multiply / 2x (castlemist's choice: the
+///  layer's own colour, unlit, gamma-encoded like the target, fogged toward the
+///  neutral 1 or 0.5). uTextured is always 1: untextured sub-ranges draw with
+///  kInstanced, so the AO look stays byte-identical to Geometry.
 inline constexpr const char* kPropMat = R"(
 cbuffer WorldCB : register(b0) {
     row_major float4x4 uViewProj;
@@ -269,10 +274,12 @@ cbuffer WorldCB : register(b0) {
     float3 uFogCol;     float _pad0;
     float3 uCamPos;     float _pad1;
     float3 uAlbedo;     float _pad2;
+    float3 uMatSunCol;  float _pad3;   // calibrated light (detail/light_calib.h)
+    float3 uMatSkyCol;  float _pad4;
 };
 cbuffer MatCB : register(b1) {
     float2 uUvOffset; float uUvSet; float uAlphaMode;
-    float uTextured;  float3 _mpad;
+    float uTextured;  float3 _mpad;   // uTextured: always 1, see above
 };
 
 Texture2D tDiffuse : register(t0);
@@ -312,15 +319,20 @@ VSOut VSMain(VSIn i) {
 
 float4 PSMain(VSOut i) : SV_Target {
     float4 d = tDiffuse.Sample(sWrap, i.uv);
-    if (uTextured == 0) d = float4(i.tint.rgb, 1.0);
     if (uAlphaMode == 1 && d.a < 0.25) discard;
+    float f = saturate((i.aod.y - uFogStart) / max(1.0, uFogEnd - uFogStart));
+    if (uAlphaMode >= 6) {   // multiply (DstColor / Zero) or 2x (DstColor / SrcColor)
+        float n = (uAlphaMode == 7) ? 0.5 : 1.0;
+        return float4(lerp(pow(saturate(d.rgb), 1.0 / 2.2), n.xxx, f), 1.0);
+    }
     float3 N = normalize(i.nrm);
     float ao = lerp(1.0, i.aod.x, uAoStrength);
-    float3 hemi = lerp(uGroundCol, uSkyCol, saturate(-N.z * 0.5 + 0.5));   // up is -Z
+    float3 hemi = lerp(uGroundCol, uMatSkyCol, saturate(-N.z * 0.5 + 0.5));   // up is -Z
     float  ndl  = saturate(dot(N, uSunDir));
-    float3 col  = d.rgb * (hemi + uSunCol * ndl) * ao * uExposure;
-    float f = saturate((i.aod.y - uFogStart) / max(1.0, uFogEnd - uFogStart));
-    col = (uAlphaMode == 3) ? col * (1.0 - f) : lerp(col, uFogCol, f);
+    float3 col  = d.rgb * (hemi + uMatSunCol * ndl) * ao * uExposure;
+    if (uAlphaMode == 3 || uAlphaMode == 4) col *= 1.0 - f;
+    else if (uAlphaMode == 5) col = lerp(col, uFogCol * d.a, f);
+    else col = lerp(col, uFogCol, f);
     float a = (uAlphaMode >= 2) ? d.a : 1.0;
     return float4(pow(saturate(col), 1.0 / 2.2), a);
 }

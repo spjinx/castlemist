@@ -23,6 +23,11 @@ struct InstGPU {
 };
 static_assert(sizeof(InstGPU) == 64, "the instance input layout hardcodes a 64-byte stride");
 
+/// Drawn in pass 2 (blended, depth writes off).
+bool is_pass2(WorldAlpha a) {
+    return a != WorldAlpha::Opaque && a != WorldAlpha::Clip && a != WorldAlpha::Unmapped;
+}
+
 /// world_shaders::kPropMat's MatCB (register b1).
 struct MatCB {
     float uvOffset[2]; float uvSet; float alphaMode;
@@ -220,16 +225,15 @@ int InstancedBatch::draw_materials(ID3D11DeviceContext* ctx, const PropMatPipeli
                                    int& untextured) {
     if (buckets_.empty() || first_.size() != buckets_.size()) return 0;   // upload() failed or did not run
     // Sub-range @p r's diffuse view and alpha mode; null when it draws in the
-    // AO look (no diffuse, UV2+, texture pending or failed).
+    // AO look (no diffuse, UV2+, texture pending or failed, Unmapped blend).
     auto resolve = [&](const MeshGPU& m, const SubRange& r, WorldAlpha& a) -> ID3D11ShaderResourceView* {
         if (r.count == 0 || r.material >= m.materials.size()) return nullptr;
         const PropMatGPU& pm = m.materials[r.material];
         if (!pm.m.textured) return nullptr;
         ID3D11ShaderResourceView* srv = pl.textures->srv(pm.m.diffuseFileId, pl.srgb);
         if (!srv) return nullptr;
-        const TextureCache::Info inf = pl.textures->info(pm.m.diffuseFileId);
-        a = pm.alphaBy[(inf.hasCutout ? 1 : 0) | (inf.looksLikeEffect ? 2 : 0)];
-        return srv;
+        a = pm.alphaBy[prop_alpha_index(pl.textures->info(pm.m.diffuseFileId))];
+        return a == WorldAlpha::Unmapped ? nullptr : srv;
     };
     auto lod_ok = [](const Bucket& bk) {
         return bk.lod >= 0 && bk.lod < static_cast<int>(bk.mesh->lodRanges.size()) &&
@@ -317,7 +321,7 @@ int InstancedBatch::draw_materials(ID3D11DeviceContext* ctx, const PropMatPipeli
             if (!lod_ok(bk) || !subs) return false;
             for (const SubRange& r : *subs) {
                 WorldAlpha a = WorldAlpha::Opaque;
-                if (resolve(*bk.mesh, r, a) && (a == WorldAlpha::Blend || a == WorldAlpha::Additive)) return true;
+                if (resolve(*bk.mesh, r, a) && is_pass2(a)) return true;
             }
             return false;
         };
@@ -331,7 +335,7 @@ int InstancedBatch::draw_materials(ID3D11DeviceContext* ctx, const PropMatPipeli
         if (!which.empty()) {
             use_mat();
             ctx->OMSetDepthStencilState(pl.ao.dssNoWrite, 0);
-            int curBlend = -1;   // 0 SrcAlpha / InvSrcAlpha, 1 SrcAlpha / One
+            int curBlend = -1;   // the WorldAlpha whose blend state is bound
             for (size_t k : blend_back_to_front(dist)) {
                 const size_t b = which[k];
                 const Bucket& bk = buckets_[b];
@@ -339,10 +343,10 @@ int InstancedBatch::draw_materials(ID3D11DeviceContext* ctx, const PropMatPipeli
                 for (const SubRange& r : *subs_of(bk)) {
                     WorldAlpha a = WorldAlpha::Opaque;
                     ID3D11ShaderResourceView* srv = resolve(*bk.mesh, r, a);
-                    if (!srv || (a != WorldAlpha::Blend && a != WorldAlpha::Additive)) continue;
-                    const int want = a == WorldAlpha::Additive ? 1 : 0;
+                    if (!srv || !is_pass2(a)) continue;
+                    const int want = static_cast<int>(a);
                     if (want != curBlend) {
-                        ctx->OMSetBlendState(want ? pl.bsAdditive : pl.ao.bsAlpha, nullptr, 0xffffffff);
+                        ctx->OMSetBlendState(pl.blendOf[want], nullptr, 0xffffffff);
                         curBlend = want;
                     }
                     draw_textured(bk, r, srv, a);

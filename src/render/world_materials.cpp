@@ -58,6 +58,7 @@ void TextureCache::add(ID3D11Device* dev, const CappedTexture& t) {
     e.state = State::Ready;
     e.info.hasCutout = t.hasCutout;
     e.info.looksLikeEffect = t.looksLikeEffect;
+    e.info.darkCoverage = dark_coverage(t.mips[0]);
     ++ready_;
     bytes_ += bytes;
 }
@@ -108,10 +109,6 @@ std::vector<uint32_t> world_texture_ids(const castlemist::world::WorldScene& s, 
     return out;
 }
 
-} // namespace castlemist::render
-
-namespace castlemist::render {
-
 std::vector<std::string> material_setting_warnings(const WorldMaterialSettings& s) {
     std::vector<std::string> out;
     char b[320];
@@ -148,26 +145,47 @@ std::vector<std::string> material_setting_warnings(const WorldMaterialSettings& 
     return out;
 }
 
-} // namespace castlemist::render
-
-namespace castlemist::render {
-
 namespace eg = castlemist::exportgltf;
 
-WorldAlpha world_alpha_mode(const ModelMaterialCPU& mat, bool diffuseHasCutout, bool diffuseLooksLikeEffect) {
+bool dark_coverage(const std::vector<uint8_t>& rgba) {
+    const size_t n = rgba.size() / 4;
+    const size_t step = n > 65536 ? n / 65536 : 1;   // as compute_alpha_cutout: ~64k samples
+    size_t passing = 0;
+    for (size_t p = 0; p < n; p += step) {
+        const uint8_t* t = &rgba[p * 4];
+        if (t[3] < 64) continue;   // discarded by the clip (alpha < 0.25)
+        if (t[0] > 16 || t[1] > 16 || t[2] > 16) return false;
+        ++passing;
+    }
+    return passing > 0;
+}
+
+WorldAlpha world_alpha_mode(const ModelMaterialCPU& mat, bool diffuseHasCutout, bool diffuseLooksLikeEffect,
+                            bool diffuseDarkCoverage) {
     const bool isEffect = mat.isEffect || (!mat.hasRenderState && diffuseLooksLikeEffect);
     const eg::BlendInfo b = eg::decode_blend(mat.renderState, mat.hasRenderState, isEffect,
                                              eg::alpha_tested(eg::profile_for(mat, mat.renderState)));
-    if (!mat.hasRenderState)   // material_export.cpp: cutout first, then effect
-        return diffuseHasCutout ? WorldAlpha::Clip
-               : b.preset == eg::BlendPreset::Additive ? WorldAlpha::Additive
-                                                       : WorldAlpha::Opaque;
-    switch (b.preset == eg::BlendPreset::Custom ? b.nearest : b.preset) {
+    if (!mat.hasRenderState) {   // material_export.cpp: cutout first, then effect
+        // A clip that keeps only black texels can only be a darkening decal
+        // (ruling P7: Queensdale's AMAT 58246 decals, rgb 0 under soft alpha,
+        // drew as solid black splats): blend it on its alpha instead.
+        if (diffuseHasCutout) return diffuseDarkCoverage ? WorldAlpha::Blend : WorldAlpha::Clip;
+        return b.preset == eg::BlendPreset::Additive ? WorldAlpha::Additive : WorldAlpha::Opaque;
+    }
+    // Each mode below is the preset's exact bgfx factors (decode_blend's
+    // table); a blend with no preset (Custom) or one whose factors vary
+    // (SoftAdditive: One/InvSrcColor or InvDstColor/One) is not guessed.
+    switch (b.preset) {
     case eg::BlendPreset::Opaque: return WorldAlpha::Opaque;
     case eg::BlendPreset::Cutout: return WorldAlpha::Clip;
-    case eg::BlendPreset::Additive:
-    case eg::BlendPreset::SoftAdditive: return WorldAlpha::Additive;
-    default: return WorldAlpha::Blend;
+    case eg::BlendPreset::Fade:
+    case eg::BlendPreset::TransClipping: return WorldAlpha::Blend;          // SrcAlpha / InvSrcAlpha
+    case eg::BlendPreset::Additive:                                         // SrcAlpha or One / One
+        return b.srcRgb == 2 ? WorldAlpha::AdditiveOne : WorldAlpha::Additive;
+    case eg::BlendPreset::Transparent: return WorldAlpha::Premultiplied;    // One / InvSrcAlpha
+    case eg::BlendPreset::Multiplicative: return WorldAlpha::Multiply;      // DstColor / Zero
+    case eg::BlendPreset::Multiplicative2x: return WorldAlpha::Multiply2x;  // DstColor / SrcColor
+    default: return WorldAlpha::Unmapped;
     }
 }
 

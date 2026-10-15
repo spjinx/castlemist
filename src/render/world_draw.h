@@ -27,13 +27,19 @@
 namespace castlemist::render {
 
 /// One prop material as the material pass draws it: prop_materials()'s
-/// diffuse plus its alpha mode for each of the four (hasCutout,
-/// looksLikeEffect) texture flags, so the draw resolves the mode from the
-/// texture once it is Ready without calling the export's rules per frame.
+/// diffuse plus its alpha mode for each combination of the texture's
+/// (hasCutout, looksLikeEffect, darkCoverage) flags, so the draw resolves the
+/// mode from the texture once it is Ready without calling the export's rules
+/// per frame.
 struct PropMatGPU {
     PropMaterial m;
-    WorldAlpha alphaBy[4] = {};   ///< [hasCutout | looksLikeEffect << 1]
+    WorldAlpha alphaBy[8] = {};   ///< [hasCutout | looksLikeEffect << 1 | darkCoverage << 2]
 };
+
+/// alphaBy's index for a texture's flags.
+inline int prop_alpha_index(const TextureCache::Info& i) {
+    return (i.hasCutout ? 1 : 0) | (i.looksLikeEffect ? 2 : 0) | (i.darkCoverage ? 4 : 0);
+}
 
 /// One uploaded instanced mesh (a prop model, a collision mesh or the water quad).
 struct MeshGPU {
@@ -99,7 +105,8 @@ struct PropMatPipeline {
     ID3D11PixelShader* ps;
     ID3D11Buffer* cbMat;              ///< MatCB, b1, written once per textured sub-range
     ID3D11SamplerState* sampler;      ///< s0, wraps
-    ID3D11BlendState* bsAdditive;     ///< SrcAlpha / One (Blend uses ao.bsAlpha)
+    /// Pass 2's blend state per WorldAlpha (null for Opaque, Clip, Unmapped).
+    ID3D11BlendState* const* blendOf;
     const TextureCache* textures;
     bool srgb;                        ///< WorldMaterialSettings::srgbColourTextures
 };
@@ -130,8 +137,9 @@ public:
     /// The props' material pass over the uploaded buckets (spec
     /// PropMaterialPass): one DrawIndexedInstanced per SubRange of the
     /// bucket's LOD. @p pass 1 draws the Opaque and Clip sub-ranges and those
-    /// in the AO look (no diffuse, UV2+, texture pending or failed; counted in
-    /// @p untextured), AO ones first; @p pass 2 the Blend and Additive ones,
+    /// in the AO look (no diffuse, UV2+, texture pending or failed, or an
+    /// Unmapped blend; counted in @p untextured), AO ones first; @p pass 2 the
+    /// blended ones (each with its WorldAlpha's blend state),
     /// depth writes off, buckets ordered by blend_back_to_front on their
     /// nearest instance (no per-instance sort: an approximation). A LOD with
     /// no sub-ranges draws its whole range in the AO look. Leaves the blend

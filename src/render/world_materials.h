@@ -23,9 +23,26 @@ namespace castlemist::render {
 struct WorldMaterialSettings;   // castlemist/render/world_prep.h
 
 /// @brief How a prop material draws in the material pass (spec PropMaterialPass).
-///        Opaque and Clip in pass 1; Blend (SrcAlpha / InvSrcAlpha) and
-///        Additive (SrcAlpha / One) in pass 2, depth writes off.
-enum class WorldAlpha : uint8_t { Opaque, Clip, Blend, Additive };
+///        Opaque and Clip in pass 1; the blended modes in pass 2, depth writes
+///        off, each with its preset's exact factors (ruling P7). Unmapped (a
+///        blend no mode reproduces exactly) draws in the AO look and is counted.
+enum class WorldAlpha : uint8_t {
+    Opaque,          ///< no blend
+    Clip,            ///< discard below diffuse alpha 0.25
+    Blend,           ///< SrcAlpha / InvSrcAlpha (Fade, TransClipping)
+    Additive,        ///< SrcAlpha / One
+    AdditiveOne,     ///< One / One
+    Premultiplied,   ///< One / InvSrcAlpha (Transparent)
+    Multiply,        ///< DstColor / Zero (Multiplicative)
+    Multiply2x,      ///< DstColor / SrcColor (Multiplicative2x)
+    Unmapped,        ///< Custom or SoftAdditive: no exact factors, drawn in the AO look
+    Count
+};
+
+/// @brief True when every texel of @p rgba (RGBA8) that survives the clip
+///        (alpha >= 64) is black (each channel <= 16), and at least one
+///        survives: a darkening decal's coverage mask, not a colour.
+bool dark_coverage(const std::vector<uint8_t>& rgba);
 
 /// @brief The alpha mode of @p mat whose diffuse texture has
 ///        CappedTexture::hasCutout = @p diffuseHasCutout and
@@ -36,9 +53,15 @@ enum class WorldAlpha : uint8_t { Opaque, Clip, Blend, Additive };
 /// looksLikeEffect (model_preview.cpp's rule for decoded textures, which a
 /// header-only load cannot apply). Without a render state: cutout -> Clip,
 /// else effect -> Additive, else Opaque (material_export.cpp's order). With
-/// one, decode_blend's preset (Custom -> nearest): Opaque -> Opaque, Cutout
-/// -> Clip, Additive / SoftAdditive -> Additive, the rest -> Blend.
-WorldAlpha world_alpha_mode(const ModelMaterialCPU& mat, bool diffuseHasCutout, bool diffuseLooksLikeEffect);
+/// one, decode_blend's preset: Opaque -> Opaque, Cutout
+/// -> Clip, Fade / TransClipping -> Blend, Additive -> Additive (SrcAlpha / One)
+/// or AdditiveOne (One / One), Transparent -> Premultiplied, Multiplicative ->
+/// Multiply, Multiplicative2x -> Multiply2x, Custom and SoftAdditive ->
+/// Unmapped (ruling P7: no guessed factors). Without a render state, a cutout
+/// whose diffuse is @p diffuseDarkCoverage (dark_coverage) blends instead of
+/// clipping: clipped, a black decal is a solid black splat (ruling P7).
+WorldAlpha world_alpha_mode(const ModelMaterialCPU& mat, bool diffuseHasCutout, bool diffuseLooksLikeEffect,
+                            bool diffuseDarkCoverage = false);
 
 /// @brief One prop material's diffuse, as the material pass samples it.
 struct PropMaterial {
@@ -85,6 +108,7 @@ public:
     ///        prop pass resolves its alpha mode from them); all false unless Ready.
     struct Info {
         bool hasCutout = false, looksLikeEffect = false;
+        bool darkCoverage = false;   ///< dark_coverage(mip 0), measured on upload
     };
     Info info(uint32_t fileId) const;
     int ready() const { return ready_; }

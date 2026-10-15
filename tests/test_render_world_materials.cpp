@@ -385,6 +385,41 @@ CM_TEST(world_materials, alpha_mode_rules) {
     add.hasRenderState = true;
     add.renderState = (5ull << 12) | (2ull << 16);   // SrcAlpha / One
     CHECK(world_alpha_mode(add, false, false) == WorldAlpha::Additive);
+
+    // Ruling P7: each preset's exact factors (bgfx ids: 1 Zero, 2 One,
+    // 3 SrcColor, 4 InvSrcColor, 5 SrcAlpha, 6 InvSrcAlpha, 9 DstColor).
+    auto with_rs = [](uint64_t src, uint64_t dst) {
+        ModelMaterialCPU m;
+        m.hasRenderState = true;
+        m.renderState = (src << 12) | (dst << 16);
+        return m;
+    };
+    CHECK(world_alpha_mode(with_rs(2, 2), false, false) == WorldAlpha::AdditiveOne);     // One / One
+    CHECK(world_alpha_mode(with_rs(2, 6), false, false) == WorldAlpha::Premultiplied);   // Transparent
+    CHECK(world_alpha_mode(with_rs(9, 1), false, false) == WorldAlpha::Multiply);        // Multiplicative
+    CHECK(world_alpha_mode(with_rs(9, 3), false, false) == WorldAlpha::Multiply2x);      // Multiplicative2x
+    CHECK(world_alpha_mode(with_rs(2, 4), false, false) == WorldAlpha::Unmapped);        // SoftAdditive
+    CHECK(world_alpha_mode(with_rs(5, 4), false, false) == WorldAlpha::Unmapped);        // Custom
+    ModelMaterialCPU transClip = with_rs(5, 6);
+    transClip.materialFile = 512093;   // clips: TransClipping
+    CHECK(world_alpha_mode(transClip, false, false) == WorldAlpha::Blend);
+    // With a render state the texture's flags do not change the blend word's mode.
+    CHECK(world_alpha_mode(with_rs(9, 1), true, true, true) == WorldAlpha::Multiply);
+
+    // No render state: a cutout whose surviving texels are all black blends.
+    CHECK(world_alpha_mode(plain, true, true, true) == WorldAlpha::Blend);
+    CHECK(world_alpha_mode(plain, true, false, true) == WorldAlpha::Blend);
+    CHECK(world_alpha_mode(plain, false, false, true) == WorldAlpha::Opaque);   // no cutout: unchanged
+    CHECK(world_alpha_mode(plain, false, true, true) == WorldAlpha::Additive);
+}
+
+CM_TEST(world_materials, dark_coverage_is_black_where_alpha_passes) {
+    auto px = [](std::initializer_list<uint8_t> v) { return std::vector<uint8_t>(v); };
+    // Black under alpha 200, anything under alpha < 64 (clipped away).
+    CHECK(dark_coverage(px({0, 0, 0, 200, 250, 30, 30, 10, 12, 16, 3, 64})));
+    CHECK_FALSE(dark_coverage(px({0, 0, 0, 200, 40, 0, 0, 64})));   // a coloured texel survives
+    CHECK_FALSE(dark_coverage(px({0, 0, 0, 10, 0, 0, 0, 63})));      // nothing survives
+    CHECK_FALSE(dark_coverage(px({})));
 }
 
 CM_TEST(world_materials, prop_materials_pick_uv_and_fileid) {
@@ -549,6 +584,46 @@ CM_TEST(world_materials, textured_props_draw_per_submesh) {
     v2.render(cam);
     CHECK_EQ(v2.stats().draws, 2);
     CHECK_EQ(v2.stats().materialsUntextured, 1);
+}
+
+CM_TEST(world_materials, dark_decal_blends_not_black) {
+    // Ruling P7: Queensdale's AMAT 58246 decals (rgb 0 under a soft alpha,
+    // hasCutout) drew as solid black splats when clipped.
+    HWND wnd = hidden_window(160, 120);
+    if (!wnd) SKIP("no window");
+    struct Closer { HWND h; ~Closer() { if (h) DestroyWindow(h); } } closer{wnd};
+    WorldView v;
+    if (!v.create(wnd)) SKIP("no D3D11 device (hardware or WARP)");
+    v.set_world(cube_scene());
+    v.add_models({{0u, split_cube()}});
+    std::vector<std::shared_ptr<const CappedTexture>> tex = cube_textures();
+    // 502 (the faces the camera sees): black, alpha 96 on the left half, 0 on the right.
+    auto decal = std::make_shared<CappedTexture>(*image(502, 4, 4, [](int x, int, uint8_t* o) {
+        o[0] = o[1] = o[2] = 0;
+        o[3] = x < 2 ? 96 : 0;
+    }));
+    decal->hasCutout = true;
+    tex[1] = decal;
+    v.add_textures(tex);
+    const WorldCamera cam = cube_camera();
+    v.render(cam);
+    CHECK_EQ(v.stats().draws, 2);
+    CHECK_EQ(v.stats().materialsUntextured, 0);
+    const std::string path = temp_path("cm_wm_dark_decal.bmp");
+    CHECK(v.save_screenshot(path.c_str()));
+    const std::vector<uint8_t> bmp = read_file(path);
+    CHECK(bmp.size() > 54);
+    // Clipped, the decal's texels are rgb 0 at full coverage: pure black.
+    // Blended, it darkens the cube's far (orange) faces behind it.
+    long black = 0, cube = 0;
+    for (size_t i = 54; i + 2 < bmp.size(); i += 3) {
+        const int b = bmp[i], g = bmp[i + 1], r = bmp[i + 2];
+        if (r + g + b < 6) ++black;
+        if (std::abs(r - 26) + std::abs(g - 28) + std::abs(b - 33) > 6) ++cube;   // not the clear colour
+    }
+    std::printf("    dark_decal_blends_not_black: %ld black px, %ld cube px\n", black, cube);
+    CHECK_EQ(black, 0L);
+    CHECK(cube > 100);
 }
 
 CM_TEST(world_materials, geometry_shading_is_subproject2_look) {

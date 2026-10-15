@@ -12,6 +12,7 @@
 #include "castlemist/extract/model_types.h"
 #include "castlemist/world/terrain_mesh.h"
 
+#include "detail/light_calib.h"
 #include "detail/mesh_bake.h"
 #include "world_camera.h"
 #include "world_draw.h"
@@ -48,7 +49,9 @@ constexpr float kWaterAlpha = 0.45f;
 /// Clear colour == fog colour (the fly view's).
 constexpr float kClear[4] = {0.10f, 0.11f, 0.13f, 1.0f};
 
-/// Constant buffer for world_shaders::kTerrain (register b0).
+/// Constant buffer for world_shaders::kTerrain (register b0). The AO-look
+/// shaders (kTerrain, kInstanced) declare it up to `albedo`; the textured ones
+/// (kTerrainMat, kPropMat) also read the calibrated light (ruling P6).
 struct WorldCB {
     Mat4 viewProj;
     float sunDir[3];    float exposure;
@@ -58,6 +61,10 @@ struct WorldCB {
     float fogCol[3];    float _pad0;
     float camPos[3];    float _pad1;
     float albedo[3];    float _pad2;
+    /// Textured shaders only: detail/light_calib.h's sun and ambient DC (the
+    /// game_material.cpp calibration). The AO look keeps sunCol / skyCol.
+    float matSunCol[3]; float _pad3;
+    float matSkyCol[3]; float _pad4;
 };
 static_assert(sizeof(WorldCB) % 16 == 0, "constant buffers are 16-byte multiples");
 
@@ -149,7 +156,9 @@ struct WorldView::Impl {
     ComPtr<ID3D11PixelShader> psProp;
     ComPtr<ID3D11InputLayout> ilProp;
     ComPtr<ID3D11Buffer> cbMat;                   ///< MatCB (world_draw.cpp)
-    ComPtr<ID3D11BlendState> bsAdditive;          ///< SrcAlpha / One
+    /// Pass 2's blend state per WorldAlpha (null for Opaque, Clip, Unmapped);
+    /// [Blend] is bsAlpha.
+    ComPtr<ID3D11BlendState> bsProp[static_cast<int>(WorldAlpha::Count)];
     int w = 1, h = 1;
 
     std::vector<ChunkGPU> chunks;
@@ -180,6 +189,7 @@ struct WorldView::Impl {
 
     // Lighting (MapEnvRig layout; defaults are the fly view's).
     float sunDir[3], sunColor[3], fillColor[3];
+    float sunIntensity = 1, fillIntensity = 0.3f;   ///< the env rig's; the textured shaders' calibration reads them
 
     // Map extent for frame_all (map space; lo.z is the highest point, up = -Z).
     bool hasExtent = false;
@@ -204,6 +214,8 @@ struct WorldView::Impl {
         std::memcpy(sunDir, def.sunDir, sizeof sunDir);
         std::memcpy(sunColor, def.sunColor, sizeof sunColor);
         std::memcpy(fillColor, def.fillColor, sizeof fillColor);
+        sunIntensity = def.sunIntensity;
+        fillIntensity = def.fillIntensity;
     }
 
     bool create_targets() {
@@ -323,10 +335,24 @@ struct WorldView::Impl {
         t.BlendOpAlpha = D3D11_BLEND_OP_ADD;
         t.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
         if (FAILED(dev->CreateBlendState(&bl, &bsAlpha))) return false;
-        t.DestBlend = D3D11_BLEND_ONE;   // additive props: SrcAlpha / One
+        bsProp[static_cast<int>(WorldAlpha::Blend)] = bsAlpha;
+        // The prop pass's other modes: each preset's colour factors exactly
+        // (decode_blend's table); the target's alpha is kept.
         t.SrcBlendAlpha = D3D11_BLEND_ZERO;
         t.DestBlendAlpha = D3D11_BLEND_ONE;
-        return SUCCEEDED(dev->CreateBlendState(&bl, &bsAdditive));
+        const struct { WorldAlpha a; D3D11_BLEND src, dst; } modes[] = {
+            {WorldAlpha::Additive, D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_ONE},
+            {WorldAlpha::AdditiveOne, D3D11_BLEND_ONE, D3D11_BLEND_ONE},
+            {WorldAlpha::Premultiplied, D3D11_BLEND_ONE, D3D11_BLEND_INV_SRC_ALPHA},
+            {WorldAlpha::Multiply, D3D11_BLEND_DEST_COLOR, D3D11_BLEND_ZERO},
+            {WorldAlpha::Multiply2x, D3D11_BLEND_DEST_COLOR, D3D11_BLEND_SRC_COLOR},
+        };
+        for (const auto& m : modes) {
+            t.SrcBlend = m.src;
+            t.DestBlend = m.dst;
+            if (FAILED(dev->CreateBlendState(&bl, &bsProp[static_cast<int>(m.a)]))) return false;
+        }
+        return true;
     }
 
     /// A 1x1 R8G8B8A8_UNORM texture holding @p rgba; null on failure.
@@ -595,6 +621,11 @@ struct WorldView::Impl {
         c.fogEnd = farD;
         for (int k = 0; k < 3; ++k) c.camPos[k] = cam.pos[k];
         for (int k = 0; k < 3; ++k) c.albedo[k] = kTerrainTint[k];
+        // The textured shaders' light: the measured calibration for textured
+        // game materials (game_material.cpp's rig, via detail/light_calib.h).
+        // The AO look's budget above is tuned for a constant 0.78 albedo and
+        // left real textures about 2x too dark (ruling P6).
+        calibrated_light(sunColor, sunIntensity, fillColor, fillIntensity, 1.0f, c.matSunCol, c.matSkyCol);
         upload_world_cb(c);
         bind_terrain_state();
 
@@ -644,8 +675,10 @@ struct WorldView::Impl {
         if (layers[static_cast<int>(WorldLayer::Water)])
             visible += batch.cull_into(waterInst, waterMesh, kWaterTint, kWaterAlpha, cam, farD, planes);
         const InstPipeline pl{ilInst.Get(), vsInst.Get(), psInst.Get(), bsAlpha.Get(), dssNoWrite.Get(), dss.Get()};
-        const PropMatPipeline pm{pl,          ilProp.Get(), vsProp.Get(), psProp.Get(), cbMat.Get(), sWrap.Get(),
-                                 bsAdditive.Get(), &textures,  mat.srgbColourTextures};
+        ID3D11BlendState* blendOf[static_cast<int>(WorldAlpha::Count)];
+        for (int k = 0; k < static_cast<int>(WorldAlpha::Count); ++k) blendOf[k] = bsProp[k].Get();
+        const PropMatPipeline pm{pl,      ilProp.Get(), vsProp.Get(), psProp.Get(), cbMat.Get(), sWrap.Get(),
+                                 blendOf, &textures,    mat.srgbColourTextures};
         int matUntextured = 0;
         const bool propsUp = matProps && propBatch.upload(dev.Get(), ctx.Get());
         if (propsUp) draws += propBatch.draw_materials(ctx.Get(), pm, 1, tris, matUntextured);
@@ -736,6 +769,8 @@ void WorldView::set_world(const castlemist::world::WorldScene& s) {
         std::memcpy(d->sunDir, L.sunDir, sizeof d->sunDir);
         std::memcpy(d->sunColor, L.sunColor, sizeof d->sunColor);
         std::memcpy(d->fillColor, L.fillColor, sizeof d->fillColor);
+        d->sunIntensity = L.sunIntensity;
+        d->fillIntensity = L.fillIntensity;
     } else {
         d->reset_light();
     }
@@ -798,14 +833,15 @@ void WorldView::add_models(const std::vector<WorldModelLoad>& batch) {
         if (!l.prep || !upload_mesh(d->dev.Get(), *l.prep, d->models[m])) { ++d->st.modelsFailed; continue; }
         // The material pass's state: each material's diffuse, and its alpha
         // mode for every combination of the texture's flags (read when the
-        // texture is Ready, at draw time).
+        // texture is Ready, at draw time; prop_alpha_index).
         const std::vector<PropMaterial> pms = prop_materials(*l.preview);
         std::vector<PropMatGPU>& mats = d->models[m].materials;
         mats.resize(pms.size());
         for (size_t k = 0; k < pms.size(); ++k) {
             mats[k].m = pms[k];
-            for (int f = 0; f < 4; ++f)
-                mats[k].alphaBy[f] = world_alpha_mode(l.preview->materials[k], (f & 1) != 0, (f & 2) != 0);
+            for (int f = 0; f < 8; ++f)
+                mats[k].alphaBy[f] =
+                    world_alpha_mode(l.preview->materials[k], (f & 1) != 0, (f & 2) != 0, (f & 4) != 0);
         }
         ++d->st.modelsLoaded;
         d->previews[m] = l.preview;

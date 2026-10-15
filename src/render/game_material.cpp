@@ -3,6 +3,7 @@
 
 #include "detail/state.h"
 
+#include "detail/light_calib.h"
 #include "detail/preview_rig.h"
 
 #include <algorithm>
@@ -269,16 +270,15 @@ void apply_env_uniforms() {
     // 4x too dark in shadow. That was survivable only because a 1.9x post exposure
     // and 1.18 gamma sat on top of it; both are gone now (they were compensating for
     // the unlit normal-prepass shader being drawn), so the rig has to be right here.
-    const float kSunLum = 0.919f;   // luminance of the default warm sun colour
-    const float kFillLum = 0.656f;  // luminance of the default cool fill colour
-    float si = std::clamp(r.sunIntensity, 0.0f, 3.0f);
-    float sMag = (0.75f / kSunLum) * si * lit;
-    put("shSunColor", {r.sunColor[0]*sMag, r.sunColor[1]*sMag, r.sunColor[2]*sMag, 1});
+    // (kCalibSunLum = 0.919, kCalibFillLum = 0.656: the default sun / fill
+    // luminances; detail/light_calib.h, shared with WorldView's textured shaders.)
+    float sunC[3], amb[3];
+    calibrated_light(r.sunColor, r.sunIntensity, r.fillColor, r.fillIntensity, lit, sunC, amb);
+    put("shSunColor", {sunC[0], sunC[1], sunC[2], 1});
     // SH-ambient DC from the intensity-weighted fill/sky colour, plus a modest
     // up-facing sky gradient (.y). The floor is the measured p1 (~0.32 luminance),
     // so shadow sides keep material detail exactly as the game's buffer does.
-    float fi = std::clamp(r.fillIntensity * (0.32f / kFillLum) / 0.3f, 0.30f, 0.90f) * lit;
-    float aR = r.fillColor[0]*fi, aG = r.fillColor[1]*fi, aB = r.fillColor[2]*fi;
+    float aR = amb[0], aG = amb[1], aB = amb[2];
     const float gy = 0.30f;                              // share of ambient added to the .y (sky) term
     put("shRed",   {0, aR*gy, 0, aR});
     put("shGreen", {0, aG*gy, 0, aG});
