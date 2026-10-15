@@ -30,7 +30,8 @@ enum class WorldLayer { Terrain = 0, Props, Collision, Water, Count };
 
 /// @brief How the view shades. Geometry is sub-project 2's look (flat tint,
 ///        hemisphere + sun, baked AO); Materials paints what has its textures
-///        (terrain: note §1.2) and falls back to Geometry for the rest.
+///        (terrain: note §1.2; props: their diffuse per submesh, alpha as the
+///        glTF export decides it) and falls back to Geometry for the rest.
 ///        Materials after create().
 enum class WorldShading { Geometry, Materials };
 
@@ -63,6 +64,10 @@ struct WorldViewStats {
     /// Terrain chunks drawn last frame in the AO look (unresolved material,
     /// no pages, a colour texture or page pending or failed, or Geometry shading).
     int chunksUntextured = 0;
+    /// Prop sub-range draws last frame in the AO look under Materials shading:
+    /// no diffuse, a diffuse on UV2+, or its texture pending or failed. 0
+    /// under Geometry, which draws one range per (model, LOD) bucket.
+    int materialsUntextured = 0;
 };
 
 /// @brief Draws one WorldScene into one window.

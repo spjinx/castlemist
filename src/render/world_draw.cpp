@@ -23,6 +23,13 @@ struct InstGPU {
 };
 static_assert(sizeof(InstGPU) == 64, "the instance input layout hardcodes a 64-byte stride");
 
+/// world_shaders::kPropMat's MatCB (register b1).
+struct MatCB {
+    float uvOffset[2]; float uvSet; float alphaMode;
+    float textured;    float _pad[3];
+};
+static_assert(sizeof(MatCB) == kMatCBBytes, "the owner creates MatCB's buffer with kMatCBBytes");
+
 } // namespace
 
 void place(InstCPU& in, const MeshGPU& m) {
@@ -133,25 +140,28 @@ int InstancedBatch::cull_into(const std::vector<InstCPU>& insts, const std::vect
         const size_t key = static_cast<size_t>(in.mesh) * 4 + static_cast<size_t>(lod);
         if (bucketOf_[key] < 0) {
             bucketOf_[key] = static_cast<int>(buckets_.size());
-            buckets_.push_back({&m, lod, tint, alpha, {}});
+            buckets_.push_back({&m, lod, tint, alpha, {}, d2});
         }
-        buckets_[static_cast<size_t>(bucketOf_[key])].insts.push_back(&in);
+        Bucket& bk = buckets_[static_cast<size_t>(bucketOf_[key])];
+        bk.insts.push_back(&in);
+        bk.nearD2 = std::min(bk.nearD2, d2);
         ++visible;
     }
     return visible;
 }
 
-int InstancedBatch::draw(ID3D11Device* dev, ID3D11DeviceContext* ctx, const InstPipeline& pl, size_t& tris) {
+bool InstancedBatch::upload(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
+    first_.clear();
     uint32_t total = 0;
     for (const Bucket& b : buckets_) total += static_cast<uint32_t>(b.insts.size());
-    if (total == 0 || !ensure_capacity(dev, total)) return 0;
+    if (total == 0 || !ensure_capacity(dev, total)) return false;
     D3D11_MAPPED_SUBRESOURCE ms;
-    if (FAILED(ctx->Map(instVB_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return 0;
+    if (FAILED(ctx->Map(instVB_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return false;
     auto* dst = static_cast<InstGPU*>(ms.pData);
-    std::vector<uint32_t> first(buckets_.size());
+    first_.assign(buckets_.size(), 0);
     uint32_t off = 0;
     for (size_t b = 0; b < buckets_.size(); ++b) {
-        first[b] = off;
+        first_[b] = off;
         for (const InstCPU* in : buckets_[b].insts) {
             // Column c of the row-vector W (W[r][c] = m[r*4+c]), so that
             // world_c = dot((p,1), column c) -- the fly view's pack_inst.
@@ -165,7 +175,20 @@ int InstancedBatch::draw(ID3D11Device* dev, ID3D11DeviceContext* ctx, const Inst
         }
     }
     ctx->Unmap(instVB_.Get(), 0);
+    return true;
+}
 
+void InstancedBatch::bind_streams(ID3D11DeviceContext* ctx, size_t b) const {
+    const Bucket& bk = buckets_[b];
+    ID3D11Buffer* vbs[] = {bk.mesh->vb.Get(), instVB_.Get()};
+    const UINT strides[] = {bk.mesh->stride, sizeof(InstGPU)};
+    const UINT offsets[] = {0, first_[b] * static_cast<UINT>(sizeof(InstGPU))};
+    ctx->IASetVertexBuffers(0, 2, vbs, strides, offsets);
+    ctx->IASetIndexBuffer(bk.mesh->ib.Get(), DXGI_FORMAT_R32_UINT, 0);
+}
+
+int InstancedBatch::draw(ID3D11Device* dev, ID3D11DeviceContext* ctx, const InstPipeline& pl, size_t& tris) {
+    if (!upload(dev, ctx)) return 0;
     ctx->IASetInputLayout(pl.il);
     ctx->VSSetShader(pl.vs, nullptr, 0);
     ctx->PSSetShader(pl.ps, nullptr, 0);
@@ -181,11 +204,7 @@ int InstancedBatch::draw(ID3D11Device* dev, ID3D11DeviceContext* ctx, const Inst
             ctx->OMSetDepthStencilState(pl.dssNoWrite, 0);
             blending = true;
         }
-        ID3D11Buffer* vbs[] = {bk.mesh->vb.Get(), instVB_.Get()};
-        const UINT strides[] = {bk.mesh->stride, sizeof(InstGPU)};
-        const UINT offsets[] = {0, first[b] * static_cast<UINT>(sizeof(InstGPU))};
-        ctx->IASetVertexBuffers(0, 2, vbs, strides, offsets);
-        ctx->IASetIndexBuffer(bk.mesh->ib.Get(), DXGI_FORMAT_R32_UINT, 0);
+        bind_streams(ctx, b);
         ctx->DrawIndexedInstanced(range.second, static_cast<UINT>(bk.insts.size()), range.first, 0, 0);
         ++draws;
         tris += static_cast<size_t>(range.second / 3) * bk.insts.size();
@@ -193,6 +212,149 @@ int InstancedBatch::draw(ID3D11Device* dev, ID3D11DeviceContext* ctx, const Inst
     if (blending) {
         ctx->OMSetBlendState(nullptr, nullptr, 0xffffffff);
         ctx->OMSetDepthStencilState(pl.dss, 0);
+    }
+    return draws;
+}
+
+int InstancedBatch::draw_materials(ID3D11DeviceContext* ctx, const PropMatPipeline& pl, int pass, size_t& tris,
+                                   int& untextured) {
+    if (buckets_.empty() || first_.size() != buckets_.size()) return 0;   // upload() failed or did not run
+    // Sub-range @p r's diffuse view and alpha mode; null when it draws in the
+    // AO look (no diffuse, UV2+, texture pending or failed).
+    auto resolve = [&](const MeshGPU& m, const SubRange& r, WorldAlpha& a) -> ID3D11ShaderResourceView* {
+        if (r.count == 0 || r.material >= m.materials.size()) return nullptr;
+        const PropMatGPU& pm = m.materials[r.material];
+        if (!pm.m.textured) return nullptr;
+        ID3D11ShaderResourceView* srv = pl.textures->srv(pm.m.diffuseFileId, pl.srgb);
+        if (!srv) return nullptr;
+        const TextureCache::Info inf = pl.textures->info(pm.m.diffuseFileId);
+        a = pm.alphaBy[(inf.hasCutout ? 1 : 0) | (inf.looksLikeEffect ? 2 : 0)];
+        return srv;
+    };
+    auto lod_ok = [](const Bucket& bk) {
+        return bk.lod >= 0 && bk.lod < static_cast<int>(bk.mesh->lodRanges.size()) &&
+               bk.mesh->lodRanges[static_cast<size_t>(bk.lod)].second > 0;
+    };
+    auto subs_of = [](const Bucket& bk) -> const std::vector<SubRange>* {
+        const auto lod = static_cast<size_t>(bk.lod);
+        return lod < bk.mesh->subRanges.size() ? &bk.mesh->subRanges[lod] : nullptr;
+    };
+    int draws = 0;
+    auto issue = [&](const Bucket& bk, uint32_t first, uint32_t count) {
+        ctx->DrawIndexedInstanced(count, static_cast<UINT>(bk.insts.size()), first, 0, 0);
+        ++draws;
+        tris += static_cast<size_t>(count / 3) * bk.insts.size();
+    };
+    bool boundMat = false;
+    auto use_mat = [&] {
+        if (boundMat) return;
+        ctx->IASetInputLayout(pl.il);
+        ctx->VSSetShader(pl.vs, nullptr, 0);
+        ctx->PSSetShader(pl.ps, nullptr, 0);
+        ctx->VSSetConstantBuffers(1, 1, &pl.cbMat);
+        ctx->PSSetConstantBuffers(1, 1, &pl.cbMat);
+        ctx->PSSetSamplers(0, 1, &pl.sampler);
+        boundMat = true;
+    };
+    // One MatCB write, one SRV bind and one draw per textured sub-range.
+    auto draw_textured = [&](const Bucket& bk, const SubRange& r, ID3D11ShaderResourceView* srv, WorldAlpha a) {
+        const PropMatGPU& pm = bk.mesh->materials[r.material];
+        MatCB c{};
+        c.uvSet = static_cast<float>(pm.m.uvSet);
+        c.alphaMode = static_cast<float>(static_cast<int>(a));
+        c.textured = 1.0f;
+        D3D11_MAPPED_SUBRESOURCE ms;
+        if (FAILED(ctx->Map(pl.cbMat, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return;
+        std::memcpy(ms.pData, &c, sizeof c);
+        ctx->Unmap(pl.cbMat, 0);
+        ctx->PSSetShaderResources(0, 1, &srv);
+        issue(bk, r.first, r.count);
+    };
+
+    if (pass == 1) {
+        // The AO look first, with kInstanced exactly as Geometry draws it.
+        ctx->IASetInputLayout(pl.ao.il);
+        ctx->VSSetShader(pl.ao.vs, nullptr, 0);
+        ctx->PSSetShader(pl.ao.ps, nullptr, 0);
+        for (size_t b = 0; b < buckets_.size(); ++b) {
+            const Bucket& bk = buckets_[b];
+            if (!lod_ok(bk)) continue;
+            const std::vector<SubRange>* subs = subs_of(bk);
+            bool bound = false;
+            if (!subs || subs->empty()) {   // no per-submesh ranges: the whole LOD
+                const auto range = bk.mesh->lodRanges[static_cast<size_t>(bk.lod)];
+                bind_streams(ctx, b);
+                issue(bk, range.first, range.second);
+                ++untextured;
+                continue;
+            }
+            for (const SubRange& r : *subs) {
+                WorldAlpha a = WorldAlpha::Opaque;
+                if (r.count == 0 || resolve(*bk.mesh, r, a)) continue;
+                if (!bound) { bind_streams(ctx, b); bound = true; }
+                issue(bk, r.first, r.count);
+                ++untextured;
+            }
+        }
+        // Then the textured opaque and clip sub-ranges.
+        for (size_t b = 0; b < buckets_.size(); ++b) {
+            const Bucket& bk = buckets_[b];
+            const std::vector<SubRange>* subs = subs_of(bk);
+            if (!lod_ok(bk) || !subs) continue;
+            bool bound = false;
+            for (const SubRange& r : *subs) {
+                WorldAlpha a = WorldAlpha::Opaque;
+                ID3D11ShaderResourceView* srv = resolve(*bk.mesh, r, a);
+                if (!srv || (a != WorldAlpha::Opaque && a != WorldAlpha::Clip)) continue;
+                use_mat();
+                if (!bound) { bind_streams(ctx, b); bound = true; }
+                draw_textured(bk, r, srv, a);
+            }
+        }
+    } else if (pass == 2) {
+        auto blended = [&](const Bucket& bk) {
+            const std::vector<SubRange>* subs = subs_of(bk);
+            if (!lod_ok(bk) || !subs) return false;
+            for (const SubRange& r : *subs) {
+                WorldAlpha a = WorldAlpha::Opaque;
+                if (resolve(*bk.mesh, r, a) && (a == WorldAlpha::Blend || a == WorldAlpha::Additive)) return true;
+            }
+            return false;
+        };
+        std::vector<size_t> which;
+        std::vector<float> dist;
+        for (size_t b = 0; b < buckets_.size(); ++b)
+            if (blended(buckets_[b])) {
+                which.push_back(b);
+                dist.push_back(std::sqrt(buckets_[b].nearD2));
+            }
+        if (!which.empty()) {
+            use_mat();
+            ctx->OMSetDepthStencilState(pl.ao.dssNoWrite, 0);
+            int curBlend = -1;   // 0 SrcAlpha / InvSrcAlpha, 1 SrcAlpha / One
+            for (size_t k : blend_back_to_front(dist)) {
+                const size_t b = which[k];
+                const Bucket& bk = buckets_[b];
+                bind_streams(ctx, b);
+                for (const SubRange& r : *subs_of(bk)) {
+                    WorldAlpha a = WorldAlpha::Opaque;
+                    ID3D11ShaderResourceView* srv = resolve(*bk.mesh, r, a);
+                    if (!srv || (a != WorldAlpha::Blend && a != WorldAlpha::Additive)) continue;
+                    const int want = a == WorldAlpha::Additive ? 1 : 0;
+                    if (want != curBlend) {
+                        ctx->OMSetBlendState(want ? pl.bsAdditive : pl.ao.bsAlpha, nullptr, 0xffffffff);
+                        curBlend = want;
+                    }
+                    draw_textured(bk, r, srv, a);
+                }
+            }
+            ctx->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+            ctx->OMSetDepthStencilState(pl.ao.dss, 0);
+        }
+    }
+    if (boundMat) {
+        ID3D11ShaderResourceView* none = nullptr;
+        ctx->PSSetShaderResources(0, 1, &none);
     }
     return draws;
 }

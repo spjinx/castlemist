@@ -4,6 +4,8 @@
 
 #include "world_materials.h"
 
+#include "castlemist/exportgltf/blend_mode.h"
+#include "castlemist/exportgltf/shader_profiles.h"
 #include "castlemist/extract/model_types.h"
 #include "castlemist/render/world_prep.h"
 
@@ -54,6 +56,8 @@ void TextureCache::add(ID3D11Device* dev, const CappedTexture& t) {
     sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
     if (FAILED(dev->CreateShaderResourceView(e.tex.Get(), &sd, &e.srgb))) return fail();
     e.state = State::Ready;
+    e.info.hasCutout = t.hasCutout;
+    e.info.looksLikeEffect = t.looksLikeEffect;
     ++ready_;
     bytes_ += bytes;
 }
@@ -62,6 +66,11 @@ ID3D11ShaderResourceView* TextureCache::srv(uint32_t fileId, bool srgb) const {
     const auto it = map_.find(fileId);
     if (it == map_.end() || it->second.state != State::Ready) return nullptr;
     return srgb ? it->second.srgb.Get() : it->second.unorm.Get();
+}
+
+TextureCache::Info TextureCache::info(uint32_t fileId) const {
+    const auto it = map_.find(fileId);
+    return (it == map_.end() || it->second.state != State::Ready) ? Info{} : it->second.info;
 }
 
 TextureCache::State TextureCache::state(uint32_t fileId) const {
@@ -137,6 +146,50 @@ std::vector<std::string> material_setting_warnings(const WorldMaterialSettings& 
     out.emplace_back("water preset k pairs with lighting preset k: UNPROVEN (note \xc2\xa7" "6)");
     out.emplace_back("terrain uvData recorded, not animated: UNPROVEN target and units (note \xc2\xa7" "1.5)");
     return out;
+}
+
+} // namespace castlemist::render
+
+namespace castlemist::render {
+
+namespace eg = castlemist::exportgltf;
+
+WorldAlpha world_alpha_mode(const ModelMaterialCPU& mat, bool diffuseHasCutout, bool diffuseLooksLikeEffect) {
+    const bool isEffect = mat.isEffect || (!mat.hasRenderState && diffuseLooksLikeEffect);
+    const eg::BlendInfo b = eg::decode_blend(mat.renderState, mat.hasRenderState, isEffect,
+                                             eg::alpha_tested(eg::profile_for(mat, mat.renderState)));
+    if (!mat.hasRenderState)   // material_export.cpp: cutout first, then effect
+        return diffuseHasCutout ? WorldAlpha::Clip
+               : b.preset == eg::BlendPreset::Additive ? WorldAlpha::Additive
+                                                       : WorldAlpha::Opaque;
+    switch (b.preset == eg::BlendPreset::Custom ? b.nearest : b.preset) {
+    case eg::BlendPreset::Opaque: return WorldAlpha::Opaque;
+    case eg::BlendPreset::Cutout: return WorldAlpha::Clip;
+    case eg::BlendPreset::Additive:
+    case eg::BlendPreset::SoftAdditive: return WorldAlpha::Additive;
+    default: return WorldAlpha::Blend;
+    }
+}
+
+std::vector<PropMaterial> prop_materials(const ModelPreview& m) {
+    std::vector<PropMaterial> out(m.materials.size());
+    for (size_t i = 0; i < m.materials.size(); ++i) {
+        const ModelMaterialCPU& mat = m.materials[i];
+        if (mat.diffuseTex < 0 || static_cast<size_t>(mat.diffuseTex) >= m.textures.size() || mat.diffuseUv > 1)
+            continue;
+        out[i].diffuseFileId = m.textures[static_cast<size_t>(mat.diffuseTex)].fileId;
+        out[i].uvSet = mat.diffuseUv;
+        out[i].textured = true;
+    }
+    return out;
+}
+
+std::vector<size_t> blend_back_to_front(const std::vector<float>& nearestDistance) {
+    std::vector<size_t> order(nearestDistance.size());
+    for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(),
+                     [&](size_t a, size_t b) { return nearestDistance[a] > nearestDistance[b]; });
+    return order;
 }
 
 } // namespace castlemist::render

@@ -330,3 +330,260 @@ CM_TEST(world_materials, setting_warnings_name_note_sections) {
     for (const std::string& l : v.warnings()) found = found || l.find("groundRepeatsPerChunk = 4") != std::string::npos;
     CHECK(found);
 }
+
+CM_TEST(world_materials, chunk_without_colour_textures_draws_ao_look) {
+    // Controller ruling P5: resolved, pages present, but all four colour
+    // fileIds 0 -- drawing textured would sample null SRVs (black).
+    HWND wnd = hidden_window(64, 64);
+    if (!wnd) SKIP("no window");
+    struct Closer { HWND h; ~Closer() { DestroyWindow(h); } } closer{wnd};
+    WorldView v;
+    if (!v.create(wnd)) SKIP("no D3D11 device (hardware or WARP)");
+    castlemist::world::WorldScene s = material_scene();
+    s.terrain.chunks[0].material.textureFileIds = {0, 0, 0, 0};
+    v.set_world(s);
+    std::vector<std::shared_ptr<const CappedTexture>> tex;
+    tex.push_back(image(201, 4, 4, [](int, int, uint8_t* o) { o[0] = o[1] = o[2] = o[3] = 128; }));
+    tex.push_back(image(202, 4, 4, [](int, int, uint8_t* o) { o[0] = o[1] = o[2] = o[3] = 128; }));
+    v.add_textures(tex);
+    v.render(v.frame_all(nullptr));
+    CHECK_FALSE(v.device_lost());
+    CHECK_EQ(v.stats().visible, 1);
+    CHECK_EQ(v.stats().chunksUntextured, 1);
+    std::vector<uint8_t> out;
+    CHECK_FALSE(v.capture_chunk_albedo(0, 16, out));
+}
+
+// ---- Task 10: prop material pass ----
+
+CM_TEST(world_materials, alpha_mode_rules) {
+    ModelMaterialCPU plain;
+    CHECK(world_alpha_mode(plain, false, false) == WorldAlpha::Opaque);
+    CHECK(world_alpha_mode(plain, true, false) == WorldAlpha::Clip);          // cutout
+    CHECK(world_alpha_mode(plain, false, true) == WorldAlpha::Additive);      // looksLikeEffect
+    CHECK(world_alpha_mode(plain, true, true) == WorldAlpha::Clip);           // cutout first (export order)
+    ModelMaterialCPU fx;
+    fx.isEffect = true;
+    CHECK(world_alpha_mode(fx, false, false) == WorldAlpha::Additive);
+
+    ModelMaterialCPU blend;
+    blend.hasRenderState = true;
+    blend.renderState = (5ull << 12) | (6ull << 16);   // SrcAlpha / InvSrcAlpha
+    CHECK(world_alpha_mode(blend, false, false) == WorldAlpha::Blend);
+    // With a render state, looksLikeEffect does not make it an effect.
+    CHECK(world_alpha_mode(blend, false, true) == WorldAlpha::Blend);
+
+    ModelMaterialCPU clip;
+    clip.hasRenderState = true;
+    clip.renderState = 0;
+    clip.materialFile = 512093;   // prop-projector, clips (shader_profiles.cpp)
+    CHECK(world_alpha_mode(clip, false, false) == WorldAlpha::Clip);
+    ModelMaterialCPU opaque = clip;
+    opaque.materialFile = 0;
+    CHECK(world_alpha_mode(opaque, false, false) == WorldAlpha::Opaque);
+    ModelMaterialCPU add;
+    add.hasRenderState = true;
+    add.renderState = (5ull << 12) | (2ull << 16);   // SrcAlpha / One
+    CHECK(world_alpha_mode(add, false, false) == WorldAlpha::Additive);
+}
+
+CM_TEST(world_materials, prop_materials_pick_uv_and_fileid) {
+    ModelPreview m;
+    m.textures.resize(1);
+    m.textures[0].fileId = 77;
+    m.materials.resize(4);
+    m.materials[0].diffuseTex = 0;
+    m.materials[0].diffuseUv = 0;
+    m.materials[1].diffuseTex = 0;
+    m.materials[1].diffuseUv = 1;
+    m.materials[2].diffuseTex = 0;
+    m.materials[2].diffuseUv = 2;
+    m.materials[3].diffuseTex = -1;
+    const std::vector<PropMaterial> p = prop_materials(m);
+    CHECK_EQ(p.size(), size_t(4));
+    if (p.size() != 4) return;
+    CHECK(p[0].textured);
+    CHECK_EQ(p[0].diffuseFileId, 77u);
+    CHECK_EQ(int(p[0].uvSet), 0);
+    CHECK(p[1].textured);
+    CHECK_EQ(p[1].diffuseFileId, 77u);
+    CHECK_EQ(int(p[1].uvSet), 1);
+    CHECK_FALSE(p[2].textured);
+    CHECK_FALSE(p[3].textured);
+    CHECK_EQ(p[0].scroll, -1);
+}
+
+CM_TEST(world_materials, blend_back_to_front) {
+    CHECK(blend_back_to_front({10, 30, 20}) == (std::vector<size_t>{1, 2, 0}));
+    CHECK(blend_back_to_front({5, 5}) == (std::vector<size_t>{0, 1}));
+    CHECK(blend_back_to_front({}).empty());
+}
+
+namespace {
+
+/// A cube (half-size 50) split into two meshes of three faces each: mesh 0
+/// uses material 0 (diffuse 501), mesh 1 material 1 (diffuse 502), both UV0.
+std::shared_ptr<const ModelPreview> split_cube() {
+    auto mp = std::make_shared<ModelPreview>();
+    const float h = 50;
+    const float n[6][3] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+    mp->meshes.resize(2);
+    for (int f = 0; f < 6; ++f) {
+        ModelMeshCPU& m = mp->meshes[static_cast<size_t>(f % 2)];
+        const int a = (f / 2 + 1) % 3, b = (f / 2 + 2) % 3;
+        const uint32_t base = static_cast<uint32_t>(m.vertices.size());
+        for (int c = 0; c < 4; ++c) {
+            GVertex v{};
+            float p[3] = {n[f][0] * h, n[f][1] * h, n[f][2] * h};
+            p[a] = (c & 1) ? h : -h;
+            p[b] = (c & 2) ? h : -h;
+            v.px = p[0]; v.py = p[1]; v.pz = p[2];
+            v.nx = n[f][0]; v.ny = n[f][1]; v.nz = n[f][2];
+            v.u = (c & 1) ? 1.0f : 0.0f;
+            v.v = (c & 2) ? 1.0f : 0.0f;
+            m.vertices.push_back(v);
+        }
+        m.indices.insert(m.indices.end(), {base, base + 1, base + 2, base + 1, base + 3, base + 2});
+    }
+    for (size_t k = 0; k < 2; ++k) {
+        mp->meshes[k].materialIndex = static_cast<uint32_t>(k);
+        mp->meshes[k].vertexCount = static_cast<uint32_t>(mp->meshes[k].vertices.size());
+    }
+    mp->textures.resize(2);
+    mp->textures[0].fileId = 501;
+    mp->textures[1].fileId = 502;
+    mp->materials.resize(2);
+    for (size_t k = 0; k < 2; ++k) {
+        mp->materials[k].index = static_cast<uint32_t>(k);
+        mp->materials[k].diffuseTex = static_cast<int>(k);
+    }
+    mp->radius = h * std::sqrt(3.0f);
+    return mp;
+}
+
+/// One split_cube at (0, 0, -500) (up = -Z), no terrain.
+castlemist::world::WorldScene cube_scene() {
+    castlemist::world::WorldScene s;
+    s.models.push_back({4321});
+    castlemist::world::PropInstance p;
+    p.model = 0;
+    p.world[0] = p.world[5] = p.world[10] = p.world[15] = 1;
+    p.world[14] = -500;
+    s.props.push_back(p);
+    return s;
+}
+
+/// From the west, south and a little above, looking at the cube.
+WorldCamera cube_camera() {
+    WorldCamera c;
+    c.pos[0] = -300; c.pos[1] = -120; c.pos[2] = -620;
+    c.fwd[0] = 300; c.fwd[1] = 120; c.fwd[2] = 120;
+    c.farDist = 5000;
+    return c;
+}
+
+/// Opaque 4x4 diffuse textures 501 (orange) and 502 (blue).
+std::vector<std::shared_ptr<const CappedTexture>> cube_textures() {
+    std::vector<std::shared_ptr<const CappedTexture>> v;
+    v.push_back(image(501, 4, 4, [](int, int, uint8_t* o) { o[0] = 230; o[1] = 120; o[2] = 20; o[3] = 255; }));
+    v.push_back(image(502, 4, 4, [](int, int, uint8_t* o) { o[0] = 20; o[1] = 60; o[2] = 220; o[3] = 255; }));
+    return v;
+}
+
+std::vector<uint8_t> read_file(const std::string& path) {
+    std::vector<uint8_t> b;
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return b;
+    uint8_t buf[65536];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) b.insert(b.end(), buf, buf + n);
+    std::fclose(f);
+    return b;
+}
+
+std::string temp_path(const char* name) {
+    char tmp[MAX_PATH] = {};
+    GetTempPathA(MAX_PATH, tmp);
+    return std::string(tmp) + name;
+}
+
+} // namespace
+
+CM_TEST(world_materials, textured_props_draw_per_submesh) {
+    HWND wnd = hidden_window(160, 120);
+    if (!wnd) SKIP("no window");
+    struct Closer { HWND h; ~Closer() { if (h) DestroyWindow(h); } } closer{wnd};
+    WorldView v;
+    if (!v.create(wnd)) SKIP("no D3D11 device (hardware or WARP)");
+    v.set_world(cube_scene());
+    v.add_models({{0u, split_cube()}});
+    CHECK_EQ(v.stats().modelsLoaded, 1);
+    const WorldCamera cam = cube_camera();
+    v.render(cam);
+    CHECK_FALSE(v.device_lost());
+    CHECK_EQ(v.stats().visible, 1);
+    CHECK_EQ(v.stats().draws, 2);   // one bucket, two sub-ranges
+    CHECK_EQ(v.stats().materialsUntextured, 2);
+
+    v.add_textures(cube_textures());
+    CHECK_EQ(v.stats().textures, 2);
+    v.render(cam);
+    CHECK_EQ(v.stats().visible, 1);
+    CHECK_EQ(v.stats().draws, 2);
+    CHECK_EQ(v.stats().materialsUntextured, 0);
+
+    // A failed texture draws its sub-range in the AO look.
+    HWND wnd2 = hidden_window(160, 120);
+    if (!wnd2) return;
+    Closer closer2{wnd2};
+    WorldView v2;
+    if (!v2.create(wnd2)) return;
+    v2.set_world(cube_scene());
+    v2.add_models({{0u, split_cube()}});
+    std::vector<std::shared_ptr<const CappedTexture>> tex = cube_textures();
+    auto bad = std::make_shared<CappedTexture>();
+    bad->fileId = 502;   // empty mips: the decode failed
+    tex[1] = bad;
+    v2.add_textures(tex);
+    CHECK_EQ(v2.stats().texturesFailed, 1);
+    v2.render(cam);
+    CHECK_EQ(v2.stats().draws, 2);
+    CHECK_EQ(v2.stats().materialsUntextured, 1);
+}
+
+CM_TEST(world_materials, geometry_shading_is_subproject2_look) {
+    HWND wa = hidden_window(160, 120);
+    HWND wb = hidden_window(160, 120);
+    struct Closer { HWND h; ~Closer() { if (h) DestroyWindow(h); } } ca{wa}, cb{wb};
+    if (!wa || !wb) SKIP("no window");
+    WorldView a, b;
+    if (!a.create(wa) || !b.create(wb)) SKIP("no D3D11 device (hardware or WARP)");
+    const WorldCamera cam = cube_camera();
+
+    a.set_world(cube_scene());
+    a.add_models({{0u, split_cube()}});
+    a.add_textures(cube_textures());
+    a.set_shading(WorldShading::Geometry);
+    a.render(cam);
+    const std::string pa = temp_path("cm_wm_geometry_a.bmp");
+    CHECK(a.save_screenshot(pa.c_str()));
+
+    b.set_world(cube_scene());   // Materials, but no textures: every sub-range in the AO look
+    b.add_models({{0u, split_cube()}});
+    b.render(cam);
+    CHECK_EQ(b.stats().materialsUntextured, 2);
+    const std::string pb = temp_path("cm_wm_geometry_b.bmp");
+    CHECK(b.save_screenshot(pb.c_str()));
+
+    a.set_shading(WorldShading::Materials);
+    a.render(cam);
+    CHECK_EQ(a.stats().materialsUntextured, 0);
+    const std::string pm = temp_path("cm_wm_materials_a.bmp");
+    CHECK(a.save_screenshot(pm.c_str()));
+
+    const std::vector<uint8_t> ia = read_file(pa), ib = read_file(pb), im = read_file(pm);
+    CHECK(!ia.empty());
+    CHECK(ia == ib);
+    CHECK(ia.size() == im.size());
+    CHECK(ia != im);
+}

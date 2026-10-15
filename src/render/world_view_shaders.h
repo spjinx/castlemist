@@ -247,4 +247,83 @@ float4 PSMain(VSOut i) : SV_Target {
 }
 )";
 
+/// @brief Props, textured (spec PropMaterialPass): kInstanced's streams with
+///        MatVtx's two UV sets, one diffuse per draw.
+///
+/// Shading is kInstanced's budget with the diffuse rgb as the albedo
+/// (sRGB view when srgbColourTextures): albedo x AO x (hemi + sun), then fog.
+/// ModelMaterialCPU::tint is not applied (model_preview's guess). Slot t0 is
+/// the diffuse, s0 wraps. MatCB (b1) per draw: uUvSet picks uv0 or uv1,
+/// uUvOffset is added to it (Task 11 scroll), uAlphaMode 0 opaque, 1 clip
+/// (discard below alpha 0.25), 2 blend (out alpha = diffuse alpha), 3
+/// additive (rgb pre-faded by fog toward black, out alpha = diffuse alpha).
+/// uTextured 0 falls back to the instance tint (WorldView draws untextured
+/// sub-ranges with kInstanced instead, so the AO look stays byte-identical).
+inline constexpr const char* kPropMat = R"(
+cbuffer WorldCB : register(b0) {
+    row_major float4x4 uViewProj;
+    float3 uSunDir;     float uExposure;
+    float3 uSunCol;     float uAoStrength;
+    float3 uSkyCol;     float uFogStart;
+    float3 uGroundCol;  float uFogEnd;
+    float3 uFogCol;     float _pad0;
+    float3 uCamPos;     float _pad1;
+    float3 uAlbedo;     float _pad2;
+};
+cbuffer MatCB : register(b1) {
+    float2 uUvOffset; float uUvSet; float uAlphaMode;
+    float uTextured;  float3 _mpad;
+};
+
+Texture2D tDiffuse : register(t0);
+SamplerState sWrap : register(s0);
+
+struct VSIn {
+    float3 pos : POSITION;   // model space
+    float4 nao : NORMAL;     // xyz = normal*0.5+0.5, w = baked AO
+    float2 uv0 : TEXCOORD4;
+    float2 uv1 : TEXCOORD5;
+    float4 r0  : TEXCOORD0;  // world columns
+    float4 r1  : TEXCOORD1;
+    float4 r2  : TEXCOORD2;
+    float4 tint: TEXCOORD3;
+};
+struct VSOut {
+    float4 pos : SV_POSITION;
+    float3 nrm : NORMAL;
+    float2 aod : TEXCOORD0;  // x = AO, y = distance to camera
+    float4 tint: TEXCOORD1;
+    float2 uv  : TEXCOORD2;
+};
+
+VSOut VSMain(VSIn i) {
+    float4 p = float4(i.pos, 1.0);
+    float3 wp = float3(dot(p, i.r0), dot(p, i.r1), dot(p, i.r2));
+    float3 n  = i.nao.xyz * 2.0 - 1.0;
+    float3 wn = float3(dot(n, i.r0.xyz), dot(n, i.r1.xyz), dot(n, i.r2.xyz));
+    VSOut o;
+    o.pos  = mul(float4(wp, 1.0), uViewProj);
+    o.nrm  = wn;
+    o.aod  = float2(i.nao.w, distance(wp, uCamPos));
+    o.tint = i.tint;
+    o.uv   = (uUvSet != 0 ? i.uv1 : i.uv0) + uUvOffset;
+    return o;
+}
+
+float4 PSMain(VSOut i) : SV_Target {
+    float4 d = tDiffuse.Sample(sWrap, i.uv);
+    if (uTextured == 0) d = float4(i.tint.rgb, 1.0);
+    if (uAlphaMode == 1 && d.a < 0.25) discard;
+    float3 N = normalize(i.nrm);
+    float ao = lerp(1.0, i.aod.x, uAoStrength);
+    float3 hemi = lerp(uGroundCol, uSkyCol, saturate(-N.z * 0.5 + 0.5));   // up is -Z
+    float  ndl  = saturate(dot(N, uSunDir));
+    float3 col  = d.rgb * (hemi + uSunCol * ndl) * ao * uExposure;
+    float f = saturate((i.aod.y - uFogStart) / max(1.0, uFogEnd - uFogStart));
+    col = (uAlphaMode == 3) ? col * (1.0 - f) : lerp(col, uFogCol, f);
+    float a = (uAlphaMode >= 2) ? d.a : 1.0;
+    return float4(pow(saturate(col), 1.0 / 2.2), a);
+}
+)";
+
 } // namespace castlemist::render::world_shaders

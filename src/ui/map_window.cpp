@@ -439,13 +439,13 @@ void headless_capture(MapWin& m) {
                   "map=%u ok=%d models=%zu loaded=%d failed=%d props=%zu visible=%d draws=%d ktris=%d ms=%.2f "
                   "chunks=%d collisionTris=%zu warnings=%zu world_s=%.2f collision_s=%.2f models_s=%.2f total_s=%.2f "
                   "add_batches=%zu add_ms_median=%.2f add_ms_max=%.2f "
-                  "textures=%d texturesFailed=%d textureMB=%.1f chunksUntextured=%d "
+                  "textures=%d texturesFailed=%d textureMB=%.1f chunksUntextured=%d materialsUntextured=%d "
                   "shot=%d timeout=%d error=\"%s\"\n",
                   m.mapFileId, (m.scene && m.viewOk) ? 1 : 0, models_total(m), st.modelsLoaded, st.modelsFailed,
                   m.scene ? m.scene->props.size() : size_t(0), st.visible, st.draws, st.ktris, st.ms, st.chunks,
                   m.coll ? m.coll->triangle_count() : size_t(0), m.scene ? m.scene->warnings.size() : size_t(0),
                   m.worldSeconds, m.collSeconds, m.modelsSeconds, elapsed, add.size(), addMedian, addMax,
-                  st.textures, st.texturesFailed, st.textureMB, st.chunksUntextured, shot ? 1 : 0,
+                  st.textures, st.texturesFailed, st.textureMB, st.chunksUntextured, st.materialsUntextured, shot ? 1 : 0,
                   elapsed >= kHeadlessTimeout ? 1 : 0, m.error.c_str());
     if (std::ofstream f(m.headless->statsPath, std::ios::binary); f) f << line;
     if (m.headless->quitWindow) PostMessageW(m.headless->quitWindow, WM_CLOSE, 0, 0);

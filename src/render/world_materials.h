@@ -14,11 +14,48 @@
 #include <unordered_map>
 #include <vector>
 
-struct CappedTexture;   // castlemist/extract/model_types.h
+struct CappedTexture;      // castlemist/extract/model_types.h
+struct ModelMaterialCPU;   // castlemist/extract/model_types.h
+struct ModelPreview;       // castlemist/extract/model_types.h
 
 namespace castlemist::render {
 
 struct WorldMaterialSettings;   // castlemist/render/world_prep.h
+
+/// @brief How a prop material draws in the material pass (spec PropMaterialPass).
+///        Opaque and Clip in pass 1; Blend (SrcAlpha / InvSrcAlpha) and
+///        Additive (SrcAlpha / One) in pass 2, depth writes off.
+enum class WorldAlpha : uint8_t { Opaque, Clip, Blend, Additive };
+
+/// @brief The alpha mode of @p mat whose diffuse texture has
+///        CappedTexture::hasCutout = @p diffuseHasCutout and
+///        looksLikeEffect = @p diffuseLooksLikeEffect, decided as the glTF
+///        export does (exportgltf: profile_for, alpha_tested, decode_blend).
+///
+/// isEffect = mat.isEffect, or with no render state the texture's
+/// looksLikeEffect (model_preview.cpp's rule for decoded textures, which a
+/// header-only load cannot apply). Without a render state: cutout -> Clip,
+/// else effect -> Additive, else Opaque (material_export.cpp's order). With
+/// one, decode_blend's preset (Custom -> nearest): Opaque -> Opaque, Cutout
+/// -> Clip, Additive / SoftAdditive -> Additive, the rest -> Blend.
+WorldAlpha world_alpha_mode(const ModelMaterialCPU& mat, bool diffuseHasCutout, bool diffuseLooksLikeEffect);
+
+/// @brief One prop material's diffuse, as the material pass samples it.
+struct PropMaterial {
+    uint32_t diffuseFileId = 0;   ///< ModelPreview::textures[diffuseTex].fileId
+    uint8_t uvSet = 0;            ///< 0 = MatVtx uv0, 1 = uv1
+    bool textured = false;        ///< has a diffuse on UV0 or UV1
+    int scroll = -1;              ///< Task 11: the texTransforms entry that scrolls it
+};
+
+/// @brief One PropMaterial per ModelPreview::materials entry (same index):
+///        textured when diffuseTex names a texture of @p m and diffuseUv <= 1
+///        (MatVtx carries two UV sets; a UV2+ diffuse draws untextured).
+std::vector<PropMaterial> prop_materials(const ModelPreview& m);
+
+/// @brief Draw order for pass 2: indices of @p nearestDistance, farthest
+///        first; equal distances keep index order.
+std::vector<size_t> blend_back_to_front(const std::vector<float>& nearestDistance);
 
 /// @brief One line per setting of @p s: its name and value, "UNPROVEN" or
 ///        "castlemist's choice", and the note section
@@ -44,6 +81,12 @@ public:
     /// @brief The view of @p fileId (UNORM_SRGB when @p srgb), or null unless Ready.
     ID3D11ShaderResourceView* srv(uint32_t fileId, bool srgb) const;
     State state(uint32_t fileId) const;
+    /// @brief The CappedTexture's coverage flags, kept with the texture (the
+    ///        prop pass resolves its alpha mode from them); all false unless Ready.
+    struct Info {
+        bool hasCutout = false, looksLikeEffect = false;
+    };
+    Info info(uint32_t fileId) const;
     int ready() const { return ready_; }
     int failed() const { return failed_; }
     /// @brief GPU bytes of the Ready textures: the sum over their mips of w*h*4.
@@ -56,6 +99,7 @@ private:
         State state = State::Unknown;
         Microsoft::WRL::ComPtr<ID3D11Texture2D> tex;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> unorm, srgb;
+        Info info;
     };
     std::unordered_map<uint32_t, Entry> map_;
     int ready_ = 0, failed_ = 0;

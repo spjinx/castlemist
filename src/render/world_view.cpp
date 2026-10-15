@@ -9,6 +9,7 @@
 #include "castlemist/render/world_view.h"
 
 #include "castlemist/extract/map_types.h"
+#include "castlemist/extract/model_types.h"
 #include "castlemist/world/terrain_mesh.h"
 
 #include "detail/mesh_bake.h"
@@ -143,6 +144,12 @@ struct WorldView::Impl {
     ComPtr<ID3D11InputLayout> ilInst;
     ComPtr<ID3D11BlendState> bsAlpha;
     ComPtr<ID3D11DepthStencilState> dssNoWrite;   ///< water: depth-tested, not written
+    // Prop material pass (kPropMat).
+    ComPtr<ID3D11VertexShader> vsProp;
+    ComPtr<ID3D11PixelShader> psProp;
+    ComPtr<ID3D11InputLayout> ilProp;
+    ComPtr<ID3D11Buffer> cbMat;                   ///< MatCB (world_draw.cpp)
+    ComPtr<ID3D11BlendState> bsAdditive;          ///< SrcAlpha / One
     int w = 1, h = 1;
 
     std::vector<ChunkGPU> chunks;
@@ -164,7 +171,8 @@ struct WorldView::Impl {
     std::vector<MeshGPU> waterMesh;
     std::vector<InstCPU> waterInst;
 
-    InstancedBatch batch;   ///< this frame's instanced draw
+    InstancedBatch batch;       ///< this frame's instanced draw (props too under Geometry)
+    InstancedBatch propBatch;   ///< props under Materials: the material pass
 
     TextureCache textures;  ///< fileId -> texture, filled by add_textures
     WorldShading shading = WorldShading::Materials;
@@ -254,6 +262,18 @@ struct WorldView::Impl {
             {"TEXCOORD", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D11_INPUT_PER_INSTANCE_DATA, 1},
         };
         if (!compile(world_shaders::kInstanced, "world_instanced", eli, 6, vsInst, psInst, ilInst)) return false;
+        // kPropMat: MatVtx (stride 32: kInstanced's 16 bytes, then uv0, uv1) + the instance stream.
+        const D3D11_INPUT_ELEMENT_DESC elp[] = {
+            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
+            {"NORMAL", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
+            {"TEXCOORD", 4, DXGI_FORMAT_R32G32_FLOAT, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0},
+            {"TEXCOORD", 5, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0},
+            {"TEXCOORD", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+            {"TEXCOORD", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+            {"TEXCOORD", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+            {"TEXCOORD", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+        };
+        if (!compile(world_shaders::kPropMat, "world_prop_mat", elp, 8, vsProp, psProp, ilProp)) return false;
 
         D3D11_BUFFER_DESC bd{};
         bd.Usage = D3D11_USAGE_DYNAMIC;
@@ -263,6 +283,8 @@ struct WorldView::Impl {
         if (FAILED(dev->CreateBuffer(&bd, nullptr, &cb))) return false;
         bd.ByteWidth = sizeof(ChunkCB);
         if (FAILED(dev->CreateBuffer(&bd, nullptr, &cbChunk))) return false;
+        bd.ByteWidth = kMatCBBytes;
+        if (FAILED(dev->CreateBuffer(&bd, nullptr, &cbMat))) return false;
 
         // Trilinear; pages clamp, ground wraps.
         D3D11_SAMPLER_DESC sm{};
@@ -300,7 +322,11 @@ struct WorldView::Impl {
         t.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
         t.BlendOpAlpha = D3D11_BLEND_OP_ADD;
         t.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-        return SUCCEEDED(dev->CreateBlendState(&bl, &bsAlpha));
+        if (FAILED(dev->CreateBlendState(&bl, &bsAlpha))) return false;
+        t.DestBlend = D3D11_BLEND_ONE;   // additive props: SrcAlpha / One
+        t.SrcBlendAlpha = D3D11_BLEND_ZERO;
+        t.DestBlendAlpha = D3D11_BLEND_ONE;
+        return SUCCEEDED(dev->CreateBlendState(&bl, &bsAdditive));
     }
 
     /// A 1x1 R8G8B8A8_UNORM texture holding @p rgba; null on failure.
@@ -327,13 +353,18 @@ struct WorldView::Impl {
     }
 
     /// Whether chunk @p g draws textured: Materials, resolved, a page rect,
-    /// both pages available (Ready or solid), every non-zero colour slot Ready.
+    /// both pages available (Ready or solid), at least one colour slot, and
+    /// every non-zero colour slot Ready. With no colour slot at all every
+    /// ground SRV would be null (black), so it takes the AO look (ruling P5).
     bool chunk_textured(const ChunkGPU& g) const {
         if (shading != WorldShading::Materials || !g.resolved || !(g.pickerScale > 0)) return false;
         if (!page_srv(g.picker, g.solid) || !page_srv(g.picker2, g.solid2)) return false;
-        for (uint32_t id : g.color)
+        bool any = false;
+        for (uint32_t id : g.color) {
             if (id && textures.state(id) != TextureCache::State::Ready) return false;
-        return true;
+            any = any || id != 0;
+        }
+        return any;
     }
 
     /// Binds chunk @p g's textures and ChunkCB for kTerrainMat (call only
@@ -599,20 +630,32 @@ struct WorldView::Impl {
         if (cur == 1) unbind_terrain_textures();
 
         // Props, then collision, then water: the translucent plane goes last
-        // so everything under it is already in the depth buffer.
+        // so everything under it is already in the depth buffer. Under
+        // Materials the props take the material pass instead: pass 1
+        // (opaque, clip, the AO look) before collision and water, pass 2
+        // (blend, additive; no depth writes) after them.
         batch.clear();
+        propBatch.clear();
+        const bool matProps = shading == WorldShading::Materials;
         if (layers[static_cast<int>(WorldLayer::Props)])
-            visible += batch.cull_into(props, models, kPropTint, 1.0f, cam, farD, planes);
+            visible += (matProps ? propBatch : batch).cull_into(props, models, kPropTint, 1.0f, cam, farD, planes);
         if (layers[static_cast<int>(WorldLayer::Collision)])
             visible += batch.cull_into(colInsts, colMeshes, kCollisionTint, 1.0f, cam, farD, planes);
         if (layers[static_cast<int>(WorldLayer::Water)])
             visible += batch.cull_into(waterInst, waterMesh, kWaterTint, kWaterAlpha, cam, farD, planes);
         const InstPipeline pl{ilInst.Get(), vsInst.Get(), psInst.Get(), bsAlpha.Get(), dssNoWrite.Get(), dss.Get()};
+        const PropMatPipeline pm{pl,          ilProp.Get(), vsProp.Get(), psProp.Get(), cbMat.Get(), sWrap.Get(),
+                                 bsAdditive.Get(), &textures,  mat.srgbColourTextures};
+        int matUntextured = 0;
+        const bool propsUp = matProps && propBatch.upload(dev.Get(), ctx.Get());
+        if (propsUp) draws += propBatch.draw_materials(ctx.Get(), pm, 1, tris, matUntextured);
         draws += batch.draw(dev.Get(), ctx.Get(), pl, tris);
+        if (propsUp) draws += propBatch.draw_materials(ctx.Get(), pm, 2, tris, matUntextured);
 
         st.visible = visible;
         st.draws = draws;
         st.chunksUntextured = untextured;
+        st.materialsUntextured = matUntextured;
         st.ktris = static_cast<int>(tris / 1000);
         QueryPerformanceCounter(&t1);
         if (freq.QuadPart)
@@ -753,6 +796,17 @@ void WorldView::add_models(const std::vector<WorldModelLoad>& batch) {
         if (d->modelTried[m]) continue;   // loaded, failed, or earlier in this batch
         d->modelTried[m] = 1;
         if (!l.prep || !upload_mesh(d->dev.Get(), *l.prep, d->models[m])) { ++d->st.modelsFailed; continue; }
+        // The material pass's state: each material's diffuse, and its alpha
+        // mode for every combination of the texture's flags (read when the
+        // texture is Ready, at draw time).
+        const std::vector<PropMaterial> pms = prop_materials(*l.preview);
+        std::vector<PropMatGPU>& mats = d->models[m].materials;
+        mats.resize(pms.size());
+        for (size_t k = 0; k < pms.size(); ++k) {
+            mats[k].m = pms[k];
+            for (int f = 0; f < 4; ++f)
+                mats[k].alphaBy[f] = world_alpha_mode(l.preview->materials[k], (f & 1) != 0, (f & 2) != 0);
+        }
         ++d->st.modelsLoaded;
         d->previews[m] = l.preview;
         for (uint32_t pi : d->instOf[m]) place(d->props[pi], d->models[m]);
