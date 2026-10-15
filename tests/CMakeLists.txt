@@ -155,6 +155,33 @@ if (CASTLEMIST_BLENDER)
         RESOURCE_LOCK world_fixture)
 endif()
 
+# Dependency-free manifest validator and Unity dry run (tools/world/validate_manifest.py)
+# on the full synthetic export. The setup test rewrites <build>/world_fixture, so it
+# shares the world_fixture lock with the Blender checks above.
+find_program(CASTLEMIST_PYTHON NAMES python python3)
+if (CASTLEMIST_PYTHON)
+    set(_cm_vm "${PROJECT_SOURCE_DIR}/tools/world/validate_manifest.py")
+    add_test(NAME world_fixture_export
+             COMMAND cm_world_export_fixture "${CMAKE_BINARY_DIR}/world_fixture")
+    set_tests_properties(world_fixture_export PROPERTIES
+        FIXTURES_SETUP world_fixture RESOURCE_LOCK world_fixture)
+    add_test(NAME world_manifest_validate
+             COMMAND "${CASTLEMIST_PYTHON}" -I "${_cm_vm}" "${CMAKE_BINARY_DIR}/world_fixture")
+    add_test(NAME world_manifest_plan
+             COMMAND "${CASTLEMIST_PYTHON}" -I "${_cm_vm}" "${CMAKE_BINARY_DIR}/world_fixture" --plan)
+    add_test(NAME world_manifest_selftest
+             COMMAND "${CASTLEMIST_PYTHON}" -I "${_cm_vm}" "${CMAKE_BINARY_DIR}/world_fixture" --self-test)
+    add_test(NAME world_manifest_unit
+             COMMAND "${CASTLEMIST_PYTHON}" -I "${PROJECT_SOURCE_DIR}/tools/world/test_validate_manifest.py"
+                     "${CMAKE_BINARY_DIR}/world_fixture")
+    set_tests_properties(world_manifest_validate world_manifest_plan world_manifest_selftest world_manifest_unit
+        PROPERTIES FIXTURES_REQUIRED world_fixture RESOURCE_LOCK world_fixture TIMEOUT 120)
+    set_tests_properties(world_manifest_validate PROPERTIES PASS_REGULAR_EXPRESSION "^OK")
+    set_tests_properties(world_manifest_plan PROPERTIES PASS_REGULAR_EXPRESSION
+        "PLAN materials=4 prefabs=2 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0")
+    set_tests_properties(world_manifest_selftest PROPERTIES PASS_REGULAR_EXPRESSION "SELFTEST OK")
+endif()
+
 castlemist_add_test(ripper
     SOURCES test_ripper_dye.cpp test_ripper_shader_dye.cpp test_ripper_atlas.cpp test_ripper_export.cpp test_ripper_skeleton.cpp test_ripper_assemble.cpp test_ripper_look.cpp
     DEPS    castlemist::ripper ext::json ext::stb)
