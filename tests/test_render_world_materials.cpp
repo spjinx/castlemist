@@ -719,6 +719,15 @@ CM_TEST(world_materials, setting_warnings_name_dark_decal_rule) {
     bool found = false;
     for (const std::string& l : material_setting_warnings(WorldMaterialSettings{}))
         found = found || (l.find("dark decals") != std::string::npos && l.find("58246") != std::string::npos &&
+                          l.find("castlemist's choice") != std::string::npos &&
+                          l.find("research note") != std::string::npos && l.find("\xc2\xa7" "3") == std::string::npos);
+    CHECK(found);
+}
+
+CM_TEST(world_materials, setting_warnings_name_water_alpha) {
+    bool found = false;
+    for (const std::string& l : material_setting_warnings(WorldMaterialSettings{}))
+        found = found || (l.find("water alpha") != std::string::npos && l.find("0.45") != std::string::npos &&
                           l.find("castlemist's choice") != std::string::npos);
     CHECK(found);
 }

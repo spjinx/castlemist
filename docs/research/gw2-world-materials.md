@@ -427,6 +427,22 @@ and the coverage UNPROVEN. New here is the **material**:
 - Which preset applies where: one per lighting preset (three per block,
   `gw2-world-frame.md` §6.1) and per zone block; the pairing is UNPROVEN.
 
+> **Correction (2026-10-15, sub-project 3).** The first-preset values quoted
+> above (`surfaceShallowColor A5 DF 5C`, `surfaceDeepColor 36 4F 21`,
+> `surfaceFresnel 3.89`, `depthAttenuation 15.66`, `patternTile 4.58`) are **not
+> in Queensdale's `dataGlobal` block**. `dataGlobal` has 3 water presets there,
+> and preset 0, the one the Map window draws (it pairs with lighting preset 0),
+> measures: `bumpTile 5.013 / 13.661`, `bumpSpeed 1.31 / 0.643`, `patternTile
+> 14.283`, `surfaceShallowColor BD CF 5F`, `surfaceDeepColor 3B 64 85`,
+> `surfaceFresnel 3.325`, `depthAttenuation 28.47`, `distortAmount 0.01`.
+> Presets 0 and 1 share `bumpTile`, `bumpSpeed` and `distortAmount` with the
+> values above; their colours, fresnel, depth attenuation and pattern differ.
+> Every one of the three names AMAT 187551 or 188555 (preset 2 names 188555).
+> The earlier values are probably from a per-zone environment block that
+> `load_world` does not read; that is a guess, not a finding, and the 39
+> presets and 26/13 split above were not re-counted. A test pins the measured
+> `dataGlobal` values (`materials_queensdale_water_presets`).
+
 So the dat describes **a plane height, a per-zone surface material (colours,
 bump tiling and speed, fresnel, depth attenuation, foam) and its textures, and
 nothing about the outline**. The game's water shader needs scene depth, a scene

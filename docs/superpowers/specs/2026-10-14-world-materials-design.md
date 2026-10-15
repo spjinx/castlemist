@@ -314,3 +314,140 @@ disagrees with the text above.
 - **The headless stats line gains** `textures`, `textureMB`, `animated`,
   `unresolvedClips`, and the per-batch `add_models` max/median it already
   measures.
+
+## Amendments (2026-10-15, after implementation)
+
+What shipped differs from the text above, and from the pre-planning
+amendments, in these points. The text above is left as written; this list wins
+where they disagree. "P1" and so on are the controller's rulings during the
+build.
+
+**Structure**
+
+- **fileId lookup is a binary search, not a hash index (P1).** `fileId` and
+  `baseId` lookups binary-search the MFT lists `load_dat_file` already sorts.
+  Same speed class, nothing to build or keep in sync, and read-only, so the
+  shared-dat rule (sub-project 2, R13) holds. The precondition is that the
+  lists stay sorted; a path that left them unsorted would make lookups miss.
+- **render now depends on exportgltf.** The prop material pass takes its alpha
+  mode from the glTF export's rules (`profile_for`, `alpha_tested`,
+  `decode_blend`). `exportgltf` depends on `extract` and `world` only, so there
+  is no cycle.
+- **`WorldMaterialSettings` lives in `include/castlemist/render/world_prep.h`**,
+  not in `world_materials.h`, because the load workers need `maxTextureSize`
+  and `world_texture_ids` and `world_prep.h` stays free of Direct3D.
+- **`TerrainBlendInput::present[4]` and the absent-slot rule.** A ground slot
+  whose fileId is 0 binds no texture and gets weight 0 (castlemist's rule, not
+  the note's). If every weight is then 0, the note's 1/255 goes to `color`, or
+  to the first present slot. A resolved chunk with no colour texture at all
+  takes the AO look and counts in `chunksUntextured` (P5), instead of sampling
+  a null view as black.
+
+**Settings the spec did not list**
+
+- `srgbColourTextures` (castlemist's choice: colour textures decode sRGB to
+  linear before the blend), `terrainSpecPower` (castlemist's choice, a forward
+  stand-in for the light buffer's L.a), `waterBumpTextureIndex` (UNPROVEN beyond
+  AMAT 187551), `waterTileUnit` (UNPROVEN units), `waterSpecPower` (castlemist's
+  choice).
+- **P10:** `waterBumpAngleDegrees` (on; UNPROVEN: the stored 143.3 / 61.7 on
+  Queensdale read as degrees, nothing settles the unit) and
+  `waterBumpStrengthScale = 0.02` (castlemist's choice; the stored `bumpAmount`
+  23.7 is far too strong as a normal gain). The `uvData` warning also says
+  UNPROVEN (P4), which keeps sub-project 1's rule that every UNPROVEN line says
+  so.
+- **The water alpha `lerp(0.45, 1, fresnel)` is castlemist's choice**, and is
+  now a line in the Map window's warnings (the flat water uses 0.45).
+
+**Textures**
+
+- **Header-only textures; the pixel-effect guess moved to the view.** A
+  header-only model load cannot apply `looksLikeEffect`, so `WorldView` applies
+  the rule to the decoded texture. The header peek (P3) reads a 64 KB prefix of
+  the entry and inflates only the header, about 37x faster than the full read
+  on a 300 KB synthetic. `mipCount` from a prefix is an estimate; the map path
+  builds its own mips, so nothing reads it.
+- **P9: a plain uncompressed 32-bit DDS fallback in `decode_texture_capped`.**
+  Some entries (the water bump 186359 among them) are raw DDS, not ATEX. On
+  Queensdale this took `texturesFailed` from 31 to 0.
+- **Textures are not restored after a device reset.** `create()` drops the
+  cache with the old device, and the decoded textures were not kept, so props
+  draw untextured until the window is reopened. The status line says so.
+- **The 16 MB batch cap and the terrain texture thread.** A model batch posts
+  to the UI thread at 16 MB of decoded texture (`kMapWinBatchTextureBytes`) as
+  well as by count, and the terrain's textures are decoded on a thread of
+  their own and posted in batches. Each texture fileId is claimed by exactly one
+  thread, so the terrain thread and the model workers never decode it twice.
+- **GPU texture memory is 620 to 760 MB at the 512 px cap** on Queensdale and
+  Lion's Arch (361 MB on Spirit Vale).
+
+**Light and blending**
+
+- **P6: the textured passes use the measured light calibration.** `kPropMat`
+  and `kTerrainMat` use `detail/light_calib.h`, the same rig as the main
+  window's Shader mode (sun 0.75 over the default sun luminance, ambient from
+  the fill), not the AO look's budget, which was tuned for an albedo of 0.78
+  and made textured props about 2x too dark. The map's sun and fill
+  intensities are kept.
+- **P7 and P8: exact blend factors per preset.** Fade and TransClipping blend
+  on SrcAlpha / InvSrcAlpha; Additive is SrcAlpha / One and AdditiveOne is
+  One / One; Transparent is premultiplied (One / InvSrcAlpha); Multiplicative
+  is DstColor / Zero and Multiplicative2x is DstColor / SrcColor. **Custom and
+  SoftAdditive are left unmapped** and drawn in the AO look, counted in
+  `materialsUntextured`; no factors are guessed.
+- **The dark-decal rule is castlemist's own.** Measured on AMAT 58246's
+  decals: they are all-black diffuse under a soft alpha, and clipped they drew
+  as solid black splats. A Clip material with no render state, whose texels
+  with alpha >= 64 are all black (<= 16), blends on its alpha instead. It is not
+  in the research note, and the warnings line says so. Known risk: it can
+  misfire on black cutout props (fences, grates), and the glTF export still
+  clips them.
+
+**Water presets (P12)**
+
+- Queensdale's `dataGlobal` water presets were measured and pinned by a test
+  (`materials_queensdale_water_presets`): 3 presets, preset 0 drawn (it pairs
+  with lighting preset 0; the pairing is UNPROVEN). The values quoted in note
+  section 6 (shallow A5DF5C, deep 364F21, fresnel 3.89, depth 15.66, pattern
+  4.58) are in none of them, probably because they belong to a per-zone block
+  `load_world` does not read. The note carries a dated correction.
+
+**Headless and UI**
+
+- `GW2_MAPWIN_SHADING`, `GW2_MAPWIN_TIME` and `GW2_MAPWIN_FOCUS` are in
+  `core/env.h`. `GW2_MAPWIN_FOCUS=animated` frames the nearest playing animated
+  placement and reports its screen rectangle as `animRect`.
+- The stats line gained `shading`, `time`, `textures`, `textureMB`,
+  `texturesFailed`, `animated`, `unresolvedClips`, `chunksUntextured`,
+  `materialsUntextured`, `waterPreset` and `animRect`, besides the
+  `add_models` figures the pre-planning list names.
+- The Map window has **Materials** and **Motion** toggles and a
+  `tex N (X MB)  anim A/U` status field. The material clock step is clamped to
+  0.1 s so a stall does not jump the animation (a fix in Task 14; P11: it had
+  no separate re-review, the final branch review covers it).
+
+**Measured**
+
+- **Spirit Vale's placement count was measured in Task 15:** 41 (model,
+  clip name) pairs tested, 37 resolve, and 106 of 116 animated placements resolve
+  (`kSpiritValeResolvedPlacements = 106`, 2026-10-15), which matches the note's
+  `propAnimArray` count of 116 as 106 animated plus 10 unresolved. The four
+  misses are the clip names `on`, `zeropose`, `noarch` and `zeropose`.
+- **Task 16, against the targets** (debug build, Materials shading): Queensdale
+  models 8.08 s (sub-project 2: 155.7 s; target well under), total 28.05 s
+  (162.6 s), largest `add_models` batch 13.08 ms (target under 50 ms),
+  1124 textures, 624 MB, `texturesFailed` 0, `chunksUntextured` 0, 267
+  animated, 2 unresolved. Lion's Arch: models 8.03 s, total 21.37 s, largest
+  batch 48.30 ms (just under; batch time is noisy), 1301 textures, 761 MB.
+  Spirit Vale: models 3.65 s, total 16.92 s, largest batch 9.68 ms, 547
+  textures, 361 MB, 106 animated and 10 unresolved. Spirit Vale's animated
+  rectangle differs in 10,431 pixels between time 0 and 2.5.
+- **P13: the luma-variance check failed as a metric.** Queensdale Materials
+  against Geometry gave a ratio of 0.296 against the plan's 1.5 (the Geometry
+  look's white props on pink terrain have high variance). Textured rendering
+  is shown by `chunksUntextured=0`, the texture counts, `materialsUntextured`
+  and the viewed screenshots, not by that number.
+- **Open finding: Lion's Arch has `unresolvedClips=134`**, against 2 on
+  Queensdale and 10 on Spirit Vale. Not investigated. The Lion's Arch shot also
+  shows pale faceted blended cards near the lighthouse (mist or cloud
+  geometry), a v1 approximation.

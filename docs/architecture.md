@@ -28,6 +28,12 @@ because symbols are exported wholesale rather than annotated.
 (it loads maps through the same packfile readers). Like `sim`, it is a
 sideways edge that the picture shows as a branch of `render`.
 
+`render` -> `exportgltf` is the materials edge: the Map window's prop material
+pass picks each material's alpha mode with the glTF export's own rules
+(`profile_for`, `alpha_tested`, `decode_blend`) instead of keeping a second
+copy. `exportgltf` is CPU-only and depends on `extract` and `world`, never on
+`render`, so there is no cycle.
+
 `sim` is the other edge that does not read like the picture: it sits beside
 `render` but depends on `extract`, because the solver is fed a `ModelMeshCPU`
 straight out of model extraction. `exportgltf` sits beside it for the same
@@ -131,13 +137,22 @@ the layer, declared next to the comments that explain it.
 | `model_renderer.cpp` | the single-model entry point and the orbit camera |
 | `world_view.cpp` | `WorldView`: the map window's own device, swap chain, terrain chunks, water, layers, picking |
 | `world_draw.cpp/.h` | `WorldView`'s instanced draw: per-instance culling, LOD and draw batches |
-| `world_props.cpp/.h` | streamed prop models: upload, per-model AO, instance lists, pick triangles |
+| `world_props.cpp/.h` | streamed prop models: CPU prep (`prepare_world_model`, run on the load workers), upload, per-model AO, per-submesh ranges, instance lists, pick triangles |
+| `world_materials.cpp/.h` | the material pass: `TextureCache` (one GPU texture per fileId), prop alpha modes and exact blend factors, UV scroll, the material clock, animated-prop poses, water maths, and `material_setting_warnings` |
+| `world_view_shaders.h` | the textured HLSL: terrain blend (`kTerrainMat`), props (`kPropMat`, skinned and static), water |
 | `world_camera.cpp/.h` | `WorldCamera` -> view/projection matrices and the pixel-to-ray maths |
 | `detail/mesh_bake.h` | the AO baker, vertex flattener and frustum planes, shared by the fly view and `WorldView` |
+| `detail/light_calib.h` | the measured light calibration (sun colour and ambient DC), shared by the Shader-mode material rig in `game_material.cpp` and `WorldView`'s textured shaders |
 
 `detail/math.h` is row-major with a **row-vector** convention (`v * M`), matching
 `tools/viewer/gw2viewer.cpp` exactly so that castlemist's own shaders and the game's DXBC
 shaders see byte-identical matrices. Translation lives in the matrix's last row.
+
+The map window's textured passes are configured by `WorldMaterialSettings`
+(`include/castlemist/render/world_prep.h`, public because the load workers
+need `maxTextureSize` and `world_texture_ids` without Direct3D). Every field
+that is a guess or castlemist's own choice shows up in `WorldView::warnings()`
+(`material_setting_warnings`) and so in the Map window's Warnings panel.
 
 `detail/shaders.h` holds every HLSL source string, so a shader can be found and
 diffed without reading pipeline code.
@@ -150,6 +165,13 @@ diffed without reading pipeline code.
 - `walk.h` -- `CollisionIndex` (collision and terrain triangles in map space,
   bucketed into an XY grid, with `raycast`) and `Walker`, the first-person
   controller (gravity, jump, slide, step-up, fall safety). Pure: no GPU, no dat.
+- `terrain_blend.h` -- `terrain_blend`, the lo-res terrain blend of the game's
+  pixel shader (research note 1.2) on the CPU, with the page and ground UV
+  rules. `TerrainBlendInput::present[4]` marks a slot that binds no texture
+  (fileId 0): it gets weight 0, castlemist's rule. The terrain HLSL repeats
+  the same arithmetic and a test holds the two to 1/255.
+- `anim.h` -- `resolve_prop_clip`, the exact match of a placement's
+  `animSequence` token to a clip of its model (no fallback).
 - `stream.h` -- `model_load_order`, the nearest-instance-first order in which
   the map window loads prop models; `rank_models`, the same rule over a subset;
   and `ModelQueue`, the thread-safe remainder that the map window re-sorts

@@ -193,7 +193,9 @@ effects, Udon.
 3. **World materials and motion** — terrain blend material (game shader and a
    reconstruction), props through the existing game-shader/profile work,
    water, UV scroll, animated props played; placed effects once the effects
-   viewer exists.
+   viewer exists. (spec: 2026-10-14-world-materials-design.md; built as
+   reconstructions of the terrain blend, prop materials and water, not the
+   game's own DXBC; placed effects remain for the effects viewer)
 4. **Export** — Unity/VRChat first, Blender as a reader for renders and
    animation. A JSON manifest (with a schema) as the contract plus glTF per
    segment; terrain cut on chunk boundaries into cells sized for VRChat,

@@ -98,10 +98,29 @@ the Map window on that map, waits until every model is loaded or has failed and
 the collision index is built (at most 600 s), renders one 1280x720 frame, writes
 one stats line to `mapwin.txt` in the dump directory, and quits. The line includes
 the UI-thread time of each `add_models` batch (`add_batches`, `add_ms_median`,
-`add_ms_max`). If the window is closed before the capture, the line says so
-with `ok=0`. The window is a normal desktop window: input given to it during the
+`add_ms_max`), and the material fields: `shading` (`materials` or `geometry`),
+`time` (the material clock, seconds), `textures`, `textureMB` (GPU size, all
+mips), `texturesFailed`, `animated` (placements playing a clip),
+`unresolvedClips` (placements with an `animSequence` that names no clip of
+their model, or whose model has no skin), `chunksUntextured` and
+`materialsUntextured` (draws that fell back to the plain look), `waterPreset`
+(1 when the water is drawn from an env preset) and `animRect` (see
+`GW2_MAPWIN_FOCUS`; `-1,-1,-1,-1` when none). If the window is closed before the
+capture, the line says so with `ok=0`. The window is a normal desktop window: input given to it during the
 run (a key press, a drag) moves the camera that the capture uses. `GW2_MAPWIN_SHOT=<bmp>` picks where the frame
 goes (default `shot_mapwin.bmp` in the dump directory).
+
+Three more hooks steer the capture:
+
+- `GW2_MAPWIN_SHADING=geometry` draws in the plain look (sub-project 2's). The
+  default is `materials`.
+- `GW2_MAPWIN_TIME=<seconds>` freezes the material clock at that time (0 is
+  honoured). Without it the clock runs and the capture is not repeatable.
+- `GW2_MAPWIN_FOCUS=animated` frames the nearest playing animated placement
+  instead of the whole map, and `animRect` is that placement's screen rectangle
+  `x0,y0,x1,y1` (conservative when a corner is behind the camera). Two runs
+  with different `GW2_MAPWIN_TIME` and the same focus can be compared inside
+  that rectangle to prove that something moved.
 
 The dump directory is not created for you; `dumps/mapwin` must already exist.
 
@@ -126,11 +145,42 @@ collision + all models):
 | Spirit Vale | 1151420 | 380/12 | 60.0 | 65.0 | 2,529,506 |
 
 Lion's Arch was measured before the loader shared one dat (R13); the other two
-rows were measured after. Each prop's dat lookup is a linear MFT scan and its
-textures are decoded and then discarded, so props stream in slowly; sub-project
-3's texture cache is the natural fix. Interactive input (fly, walk, pick, the
-layer toggles, the prompt) has only been exercised by this capture and the unit
-tests, not driven by hand.
+rows were measured after. Each prop's dat lookup was a linear MFT scan and its
+textures were decoded and then discarded, which is why props streamed in slowly.
+
+Sub-project 3 fixed both (fileId lookup is a binary search over the sorted MFT
+lists; models are prepared on the workers and textures decoded once, capped at
+512 px). Measured 2026-10-15 at the end of sub-project 3, debug build,
+Materials shading, one map at a time (Task 16):
+
+| map | fileId | models s | total s | add_models ms median / max | textures | texture MB | chunksUntextured | animated | unresolvedClips |
+| --- | ------ | -------- | ------- | -------------------------- | -------- | ---------- | ---------------- | -------- | --------------- |
+| Queensdale | 192711 | 8.08 | 28.05 | 0.74 / 13.08 | 1124 | 624 | 0 | 267 | 2 |
+| Queensdale, `GW2_MAPWIN_SHADING=geometry` | 192711 | 9.64 | 27.13 | 0.81 / 14.86 | 1124 | 624 | 423 | 267 | 2 |
+| Lion's Arch | 191000 | 8.03 | 21.37 | 0.81 / 48.30 | 1301 | 761 | 0 | 294 | 134 |
+| Spirit Vale | 1151420 | 3.65 | 16.92 | 0.81 / 9.68 | 547 | 361 | 0 | 106 | 10 |
+| Spirit Vale, `GW2_MAPWIN_TIME=2.5` | 1151420 | 4.29 | 17.57 | 0.83 / 33.12 | 547 | 361 | 0 | 106 | 10 |
+
+`texturesFailed` is 0 on every run. Against the targets: Queensdale models in
+8.08 s against the sub-project 2 figure of 155.7 s (target: well under), and
+its largest `add_models` batch 13.08 ms against 50 ms (pass; Lion's Arch's
+48.30 ms and Spirit Vale's 33.12 spike show batch time is noisy, and nothing
+was changed to chase it). Spirit Vale's `animRect` differs between time 0 and
+time 2.5 in 10,431 pixels (by more than 8/255), so the props really move.
+
+Two results to read with care. The plan's luma-variance check (Materials
+against Geometry on Queensdale, ratio above 1.5) **failed as a metric**: the
+ratio was 0.296 (272.5 against 920.4), because the Geometry look's bright white
+props on pink-grey terrain against a dark sky have more luma variance than dark
+textured terrain. It says nothing about texturing. "Textured" is shown by
+`chunksUntextured=0`, the texture counts and the viewed screenshots. And
+Lion's Arch has `unresolvedClips=134`, against 2 and 10 on the other maps; the
+cause is not found (an open finding).
+
+GPU texture memory is 620 to 760 MB at the 512 px cap on the two big maps
+(361 MB on Spirit Vale). Interactive input (fly, walk, pick, the layer
+toggles, the Materials and Motion toggles, the prompt) has only been exercised
+by this capture and the unit tests, not driven by hand.
 
 Lighting and tone-mapping knobs (`GW2_LIGHT`, `GW2_POSTEXP`, `GW2_POSTGAMMA`,
 `GW2_AUTOEXP`, ...) are for eyeballing a change, not for assertions.

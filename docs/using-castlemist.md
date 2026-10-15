@@ -154,8 +154,11 @@ prop brings its preview up in the main window in front of it.
 
 **Loading.** The terrain appears first. Props then stream in nearest-first from
 wherever the camera is (the queue re-sorts as you move), on a pool of worker threads, so the view fills in
-around you. A full map takes about 1 to 3 minutes (measured totals are in
-[testing](testing.md#the-map-window)); you can fly or walk the whole time.
+around you. A full map takes about 15 to 30 seconds in the debug build (measured
+totals are in [testing](testing.md#the-map-window)); you can fly or walk the
+whole time. Textures are decoded once on the worker threads, capped at 512 px,
+and uploaded with each batch of models; the terrain's textures arrive on their
+own thread and the terrain is drawn untextured until they land.
 
 **Controls**
 
@@ -180,9 +183,37 @@ status line if it is not, or if there is no ground under the camera (fly over
 the map first). A fall that goes too far returns you to the last safe ground.
 
 **Layers.** The **Terrain**, **Props**, **Collision** and **Water** check boxes
-show or hide each layer. Collision is off by default: it is the map's physics
+show or hide each layer (the **Materials** and **Motion** toggles are described
+below). Collision is off by default: it is the map's physics
 mesh, 988,986 triangles on Queensdale (world_dat test output; 2,078,522 with the terrain), and uploads to the GPU only the first
 time you turn it on. The water is a single plane at the stored height.
+
+**Materials and Motion.** Two push-style toggles, both on by default.
+
+- **Materials** draws the terrain with the map's own ground textures blended by
+  its picker pages, and props with their diffuse textures, cut-out and blend
+  modes, under the game-calibrated light. The water is drawn from the map's
+  water preset (depth tint, scrolling bump normals, fresnel, a sun glint), not
+  as a flat plane. Off, the window draws the plain shaded look it had before
+  textures (the "Geometry" look). Anything that cannot be textured (a chunk
+  with no colour texture, a prop with no usable diffuse, a blend mode with no
+  exact equivalent) falls back to that plain look, and the counts are in the
+  headless stats line (`chunksUntextured`, `materialsUntextured`).
+- **Motion** plays the scene's time: animated props play their named clip
+  (looping from t = 0), and prop materials whose UVs scroll scroll. Off, the
+  clock stops and everything holds its pose. A long stall does not make the
+  motion jump: the clock moves at most 0.1 s per step.
+
+Terrain `uvData` (the Spirit Vale soul rivers) is read but not animated. Not
+drawn in this version: shadows, normal, specular and glow maps on props,
+reflections, flipbooks, placed effects and particles. A prop whose animation
+names no clip of its model stays in its bind pose; the `anim` figure in the
+status line counts them (Lion's Arch has 134 against 2 on Queensdale and 10 on
+Spirit Vale, a finding not yet explained).
+
+Textures are not restored after a graphics device reset: the window reloads
+the map onto a new device and tells you so, and the props draw untextured
+until you reopen the window.
 
 **Picking.** Left-click (without dragging) a prop to open its model in the main
 window's preview, with the usual Full / Shader / Game 1:1 views, dyes and
@@ -190,15 +221,26 @@ exports. The status line says which prop and model fileId. Props that have not
 loaded yet, and hidden layers, cannot be picked.
 
 **Status line and warnings.** The bottom line shows the load stage, models
-loaded of total (and any that failed), then visible items, draw calls,
+loaded of total (and any that failed), then `tex N (X MB)  anim A/U` (GPU
+textures and their size; props playing a clip, and props whose clip could not
+be resolved), then visible items, draw calls,
 kilotriangles, frame time in ms, position, mode and speed. The **Warnings**
 button toggles a panel listing everything `load_world` could not read (the
-same list `gw2dat_cli world` puts in its summary). A map that fails to load
+same list `gw2dat_cli world` puts in its summary), followed by one line for
+each material setting that is a guess or castlemist's own choice. A line that
+says **UNPROVEN** is a value the dat or the research note does not settle (for
+example the water bump units, the terrain `uvData` target, the order of the
+terrain solid-colour bytes); a line that says **castlemist's choice** is a
+number castlemist picked (for example the 512 px texture cap, the water
+specular power, the water bump strength scale, the water alpha, and the dark
+decal rule). Change either kind and the picture changes, so they are listed. A map that fails to load
 shows its error in the status line and leaves the window open.
 
-Props are drawn with simple shading (a hemisphere and sun light from the map's
-own lighting, ambient occlusion baked per model), not textures or the game's
-materials; terrain and water are likewise untextured.
+Without Materials, props are drawn with simple shading (a hemisphere and sun
+light from the map's own lighting, ambient occlusion baked per model). With
+it, the textured passes use the same measured light calibration as the main
+window's Shader mode, with the map's own sun and fill intensities, not the
+game's deferred lighting or shadows.
 
 ### View
 

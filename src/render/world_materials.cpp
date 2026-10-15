@@ -155,8 +155,10 @@ std::vector<std::string> material_setting_warnings(const WorldMaterialSettings& 
     out.emplace_back("pickerSolid byte order: UNPROVEN, solid pages use the stored bytes as RGBA (note \xc2\xa7" "1.6)");
     out.emplace_back("water preset k pairs with lighting preset k: UNPROVEN (note \xc2\xa7" "6)");
     out.emplace_back("dark decals: castlemist's choice, a Clip texture whose visible texels (alpha >= 64) are all black "
-                     "(<= 16) blends on its alpha instead; derived from AMAT 58246's decals, not the game's shader "
-                     "(note \xc2\xa7" "3)");
+                     "(<= 16) blends on its alpha instead; castlemist's own rule, measured on AMAT 58246's decals in "
+                     "sub-project 3, not from the research note or the game's shader");
+    out.emplace_back("water alpha: castlemist's choice, alpha = lerp(0.45, 1, fresnel) on the preset-driven water "
+                     "(flat water uses 0.45); not in the dat (note \xc2\xa7" "6)");
     out.emplace_back("terrain uvData recorded, not animated: UNPROVEN target and units (note \xc2\xa7" "1.5)");
     return out;
 }
