@@ -138,6 +138,16 @@ void water_colour(const uint8_t stored[4], float rgb[3]);
 void water_bump_uv(float x, float y, float tile, float speed, float angle, double seconds, float tileUnit,
                    float uv[2]);
 
+/// @brief A stored bumpAngle0/1 in radians: degrees * pi / 180 when
+///        @p degrees (WorldMaterialSettings::waterBumpAngleDegrees), else as
+///        stored. UNPROVEN unit (note §6, ruling P10).
+float water_bump_angle(float stored, bool degrees);
+
+/// @brief The bump normal's xy gain: @p bumpAmount * @p scale
+///        (WorldMaterialSettings::waterBumpStrengthScale, castlemist's
+///        choice, note §6). Negative or non-finite gives 0.
+float water_bump_strength(float bumpAmount, float scale);
+
 /// @brief How deep the water is, 0 shallow .. 1 deep: saturate((terrainZ -
 ///        planeZ) / depthAttenuation) (up is -Z, so terrain below the plane
 ///        has the larger z); 0 when depthAttenuation <= 0 or not finite.

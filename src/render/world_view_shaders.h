@@ -448,7 +448,8 @@ VSOut VSMain(VSIn i) {
 ///    colour textures).
 ///  - bump: two samples of tBump (t0, UNORM, wrap s0) at uv_k = M_k xy + off_k,
 ///    M_k and off_k from water_bump_uv on the CPU (off_k frac'd), xy*2-1;
-///    N = normalize(float3((n0.xy + n1.xy) * bumpAmount, -1)) (up is -Z); no
+///    N = normalize(float3((n0.xy + n1.xy) * uBumpAmount, -1)) (up is -Z), uBumpAmount =
+///    water_bump_strength(bumpAmount, waterBumpStrengthScale) (ruling P10); no
 ///    bump texture: N = (0, 0, -1).
 ///  - fresnel = pow(1 - saturate(N.V), surfaceFresnel).
 ///  - rgb = base (hemi + sun) + sunCol pow(saturate(N.H), waterSpecPower), with

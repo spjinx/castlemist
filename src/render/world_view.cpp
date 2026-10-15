@@ -760,9 +760,10 @@ struct WorldView::Impl {
         float* M[2] = {c.bumpM0, c.bumpM1};
         for (int k = 0; k < 2; ++k) {
             float o[2], ex[2], ey[2];
-            water_bump_uv(0, 0, w.bumpTile[k], w.bumpSpeed[k], w.bumpAngle[k], t, unit, o);
-            water_bump_uv(1, 0, w.bumpTile[k], 0, w.bumpAngle[k], 0, unit, ex);
-            water_bump_uv(0, 1, w.bumpTile[k], 0, w.bumpAngle[k], 0, unit, ey);
+            const float ang = water_bump_angle(w.bumpAngle[k], mat.waterBumpAngleDegrees);   // ruling P10
+            water_bump_uv(0, 0, w.bumpTile[k], w.bumpSpeed[k], ang, t, unit, o);
+            water_bump_uv(1, 0, w.bumpTile[k], 0, ang, 0, unit, ex);
+            water_bump_uv(0, 1, w.bumpTile[k], 0, ang, 0, unit, ey);
             M[k][0] = ex[0]; M[k][1] = ey[0];   // u = dot(M.xy, xy)
             M[k][2] = ex[1]; M[k][3] = ey[1];   // v = dot(M.zw, xy)
             c.bumpOff[2 * k + 0] = o[0] - std::floor(o[0]);
@@ -772,7 +773,7 @@ struct WorldView::Impl {
         const uint32_t bumpId = (bi >= 0 && static_cast<size_t>(bi) < w.textureFileIds.size())
                                     ? w.textureFileIds[static_cast<size_t>(bi)] : 0;
         ID3D11ShaderResourceView* bump = bumpId ? textures.srv(bumpId, false) : nullptr;
-        c.bumpAmount = w.bumpAmount;
+        c.bumpAmount = water_bump_strength(w.bumpAmount, mat.waterBumpStrengthScale);   // ruling P10
         c.specPower = mat.waterSpecPower;
         c.hasBump = bump ? 1.0f : 0.0f;   // missing texture: flat N
         c.hasHeight = hasHeight ? 1.0f : 0.0f;

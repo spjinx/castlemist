@@ -197,6 +197,13 @@ void halve_rgba(const std::vector<uint8_t>& in, int w, int h, std::vector<uint8_
 /// @brief Mip chain from `level0` (RGBA8), halving until both sides are <= 4. Level 0 is first.
 std::vector<std::vector<uint8_t>> build_mips(std::vector<uint8_t> level0, int w, int h);
 
+/// @brief decode_texture_capped's fallback for an entry that is a plain "DDS "
+///        file, not ATEX (ruling P9; e.g. the water bump 186359): the top mip
+///        through dds::decode_rgba8 (uncompressed 32-bit only), `baseId` =
+///        @p i0 + 1, `fmt` "DDS", not a normal map. False (never throws) for
+///        any other magic, a block-compressed or other format, or short pixels.
+bool decode_dds_bytes(const std::vector<uint8_t>& bytes, size_t i0, ModelTextureCPU& out);
+
 /// @brief Header-only texture: fileId, baseId, size, fmt, mipCount, isNormal; `rgba` left empty.
 bool peek_texture_by_fileid(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out);
 

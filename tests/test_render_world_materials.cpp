@@ -995,6 +995,28 @@ CM_TEST(world_materials, water_bump_uv_units) {
     CHECK(std::fabs(uv[0] - 2) < 1e-5f && std::fabs(uv[1]) < 1e-5f);
 }
 
+CM_TEST(world_materials, water_bump_angle_and_strength_settings) {
+    WorldMaterialSettings cfg;
+    CHECK(cfg.waterBumpAngleDegrees);
+    CHECK_EQ(cfg.waterBumpStrengthScale, 0.02f);
+    CHECK(std::fabs(water_bump_angle(180.0f, true) - 3.14159265f) < 1e-5f);
+    CHECK(std::fabs(water_bump_angle(143.324f, true) - 2.50148f) < 1e-4f);
+    CHECK_EQ(water_bump_angle(1.5f, false), 1.5f);
+    CHECK(std::fabs(water_bump_strength(23.7268f, 0.02f) - 0.474536f) < 1e-5f);
+    CHECK_EQ(water_bump_strength(23.7268f, 0.0f), 0.0f);
+    CHECK_EQ(water_bump_strength(-1.0f, 0.02f), 0.0f);   // a negative amount flips no normals
+    bool angle = false, scale = false;
+    for (const std::string& l : material_setting_warnings(cfg)) {
+        angle = angle || (l.find("waterBumpAngleDegrees = on") != std::string::npos &&
+                          l.find("UNPROVEN") != std::string::npos && l.find("\xc2\xa7" "6") != std::string::npos);
+        scale = scale || (l.find("waterBumpStrengthScale = 0.02") != std::string::npos &&
+                          l.find("castlemist's choice") != std::string::npos &&
+                          l.find("\xc2\xa7" "6") != std::string::npos);
+    }
+    CHECK(angle);
+    CHECK(scale);
+}
+
 CM_TEST(world_materials, water_depth_mix) {
     CHECK(std::fabs(water_depth_mix(15.66f, 0, 15.66f) - 1) < 1e-6f);
     CHECK_EQ(water_depth_mix(-5, 0, 15), 0.0f);   // terrain above the plane (up is -Z)

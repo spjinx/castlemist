@@ -139,9 +139,15 @@ std::vector<std::string> material_setting_warnings(const WorldMaterialSettings& 
     out.emplace_back("water colours: UNPROVEN byte order, surfaceShallowColor/surfaceDeepColor bytes 0,1,2 read as "
                      "R,G,B / 255, as parseMapEnv reads env colours (note \xc2\xa7" "6)");
     out.emplace_back("water bump: castlemist's choice, textureFileIds[waterBumpTextureIndex] read as UNORM xy*2-1, "
-                     "N = normalize((n0.xy + n1.xy) * bumpAmount, -1); no scene depth, colour copy or reflection "
-                     "(note \xc2\xa7" "6)");
+                     "N = normalize((n0.xy + n1.xy) * bumpAmount * waterBumpStrengthScale, -1); no scene depth, "
+                     "colour copy or reflection (note \xc2\xa7" "6)");
     line("waterSpecPower = %g: castlemist's choice (note \xc2\xa7" "6)", static_cast<double>(s.waterSpecPower));
+    line("waterBumpAngleDegrees = %s: UNPROVEN, bumpAngle0/1 read as degrees (stored 143.3 / 61.7 on Queensdale); "
+         "no shader transcription settles the unit (note \xc2\xa7" "6)",
+         s.waterBumpAngleDegrees ? on : off);
+    line("waterBumpStrengthScale = %g: castlemist's choice, bump normal xy gain = bumpAmount * scale (stored "
+         "bumpAmount 23.7 -> ~18 degree rms tilt); bumpAmount's unit UNPROVEN (note \xc2\xa7" "6)",
+         static_cast<double>(s.waterBumpStrengthScale));
     line("srgbColourTextures = %s: castlemist's choice, colour textures decode sRGB to linear before the "
          "blend (spec, not in the note)",
          s.srgbColourTextures ? on : off);
@@ -262,6 +268,16 @@ void water_bump_uv(float x, float y, float tile, float speed, float angle, doubl
     const double k = tileUnit > 0 ? static_cast<double>(tile) / static_cast<double>(tileUnit) : 0.0;
     uv[0] = static_cast<float>((c * x - s * y) * k + static_cast<double>(speed) * seconds);
     uv[1] = static_cast<float>((s * x + c * y) * k);
+}
+
+float water_bump_angle(float stored, bool degrees) {
+    // UNPROVEN (note §6, ruling P10): Queensdale's 143.3 / 61.7 read as degrees.
+    return degrees ? static_cast<float>(static_cast<double>(stored) * 3.14159265358979323846 / 180.0) : stored;
+}
+
+float water_bump_strength(float bumpAmount, float scale) {
+    const float g = bumpAmount * scale;
+    return (std::isfinite(g) && g > 0) ? g : 0.0f;
 }
 
 float water_depth_mix(float terrainZ, float planeZ, float depthAttenuation) {

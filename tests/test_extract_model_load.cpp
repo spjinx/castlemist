@@ -155,3 +155,69 @@ CM_TEST(capped, halve_short_input_is_safe) {
     CHECK_EQ(oh, 1);
     CHECK(out == std::vector<uint8_t>(4, 0));
 }
+
+// ---- decode_texture_capped: plain-DDS fallback (ruling P9) ----
+
+namespace {
+
+void put_u32(std::vector<uint8_t>& f, uint32_t v) {
+    for (int i = 0; i < 4; ++i) f.push_back(static_cast<uint8_t>(v >> (8 * i)));
+}
+
+/// A legacy uncompressed A8R8G8B8 DDS (GW2's plain-DDS water bump 186359 is
+/// 256x256 32-bit with mips) holding @p bgra (B, G, R, A per texel).
+std::vector<uint8_t> argb32_dds(uint32_t w, uint32_t h, const std::vector<uint8_t>& bgra) {
+    std::vector<uint8_t> f = {'D', 'D', 'S', ' '};
+    put_u32(f, 124);
+    put_u32(f, 0x0000100F);
+    put_u32(f, h);
+    put_u32(f, w);
+    put_u32(f, w * 4);
+    put_u32(f, 0);
+    put_u32(f, 1);
+    for (int i = 0; i < 11; ++i) put_u32(f, 0);
+    put_u32(f, 32);
+    put_u32(f, 0x41);   // DDPF_RGB | DDPF_ALPHAPIXELS
+    put_u32(f, 0);
+    put_u32(f, 32);
+    put_u32(f, 0x00FF0000u);
+    put_u32(f, 0x0000FF00u);
+    put_u32(f, 0x000000FFu);
+    put_u32(f, 0xFF000000u);
+    put_u32(f, 0x1000);
+    for (int i = 0; i < 4; ++i) put_u32(f, 0);
+    f.insert(f.end(), bgra.begin(), bgra.end());
+    return f;
+}
+
+} // namespace
+
+CM_TEST(capped, plain_dds_decodes_to_rgba) {
+    std::vector<uint8_t> bgra;
+    for (int p = 0; p < 8 * 4; ++p) bgra.insert(bgra.end(), {10, 20, 30, 40});
+    ModelTextureCPU t;
+    CHECK(castlemist::extract::decode_dds_bytes(argb32_dds(8, 4, bgra), 41, t));
+    CHECK_EQ(t.width, 8);
+    CHECK_EQ(t.height, 4);
+    CHECK_EQ(t.baseId, (uint32_t)42);   // MFT index -> baseId, as decode_mft_atex
+    CHECK_EQ(t.fmt, std::string("DDS"));
+    CHECK_EQ(t.rgba.size(), (size_t)(8 * 4 * 4));
+    CHECK_EQ((int)t.rgba[0], 30);
+    CHECK_EQ((int)t.rgba[1], 20);
+    CHECK_EQ((int)t.rgba[2], 10);
+    CHECK_EQ((int)t.rgba[3], 40);
+    CHECK(!t.isNormal);
+}
+
+CM_TEST(capped, plain_dds_rejects_bcn_and_non_dds) {
+    ModelTextureCPU t;
+    std::vector<uint8_t> atex = {'A', 'T', 'E', 'X', 'D', 'X', 'T', '1', 4, 0, 4, 0, 0, 0, 0, 0};
+    CHECK(!castlemist::extract::decode_dds_bytes(atex, 0, t));
+    std::vector<uint8_t> f = argb32_dds(4, 4, std::vector<uint8_t>(4 * 4 * 4, 1));
+    f[80] = 4;                                   // ddpf flags: DDPF_FOURCC
+    f[84] = 'D'; f[85] = 'X'; f[86] = 'T'; f[87] = '1';
+    CHECK(!castlemist::extract::decode_dds_bytes(f, 0, t));
+    std::vector<uint8_t> shortF = argb32_dds(4, 4, std::vector<uint8_t>(10, 1));
+    CHECK(!castlemist::extract::decode_dds_bytes(shortF, 0, t));
+    CHECK(!castlemist::extract::decode_dds_bytes({}, 0, t));
+}

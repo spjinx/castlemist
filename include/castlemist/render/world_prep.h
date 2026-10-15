@@ -37,6 +37,14 @@ struct WorldMaterialSettings {
     int waterBumpTextureIndex = 1;    ///< UNPROVEN beyond AMAT 187551 (ssBump0 = textureIndex 1), note §6
     float waterTileUnit = 1000;       ///< UNPROVEN: units of bumpTile/bumpSpeed/bumpAngle, note §6
     float waterSpecPower = 64;        ///< castlemist's choice
+    /// UNPROVEN (note §6, ruling P10): bumpAngle0/1 read as degrees. Queensdale's
+    /// stored 143.3 / 61.7 read as degrees; no shader transcription settles it.
+    bool waterBumpAngleDegrees = true;
+    /// castlemist's choice (note §6, ruling P10): the normal's xy gain is
+    /// bumpAmount * this. Queensdale's bumpAmount 23.73 and its bump 186359
+    /// (rms |xy| 0.495 per sample, ~0.70 for the two-sample sum) then give an
+    /// rms slope of 0.70 * 0.475 = 0.33, an ~18 degree tilt.
+    float waterBumpStrengthScale = 0.02f;
     /// castlemist's choice: colour textures decode sRGB to linear; the shaders
     /// gamma-encode (world_view_shaders.h:53).
     bool srgbColourTextures = true;

@@ -14,6 +14,7 @@
 #include "castlemist/native/gw2_atex.hpp"
 
 #include "castlemist/core/packfile.h"
+#include "castlemist/format/dds.h"
 
 namespace castlemist::extract {
 
@@ -349,6 +350,28 @@ size_t texture_entry(Gw2Dat& dat, uint32_t file_id, bool full) {
     return resolve_res_index(dat, base - 1, full);
 }
 
+bool castlemist::extract::decode_dds_bytes(const std::vector<uint8_t>& bytes, size_t i0, ModelTextureCPU& out) {
+    if (bytes.size() < 4 || std::memcmp(bytes.data(), "DDS ", 4) != 0) return false;
+    try {
+        uint32_t w = 0, h = 0;
+        std::vector<uint8_t> rgba;
+        if (!castlemist::dds::decode_rgba8(bytes.data(), bytes.size(), w, h, rgba)) return false;
+        if (w == 0 || h == 0 || rgba.size() < static_cast<size_t>(w) * h * 4) return false;
+        out.width = static_cast<int>(w);
+        out.height = static_cast<int>(h);
+        out.fmt = "DDS";
+        out.mipCount = 1;
+        out.baseId = static_cast<uint32_t>(i0 + 1);   // MFT array index -> baseId
+        out.rgba = std::move(rgba);
+        out.isNormal = false;
+        out.channels = compute_channels(out.rgba, false);
+        out.hasCutout = compute_alpha_cutout(out.rgba);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 bool decode_texture_capped(Gw2Dat& dat, uint32_t fileId, int maxSize, CappedTexture& out) {
     out = CappedTexture{};
     out.fileId = fileId;
@@ -357,7 +380,11 @@ bool decode_texture_capped(Gw2Dat& dat, uint32_t fileId, int maxSize, CappedText
         const size_t i0 = texture_entry(dat, fileId, /*full=*/false);
         if (i0 == SIZE_MAX) return false;
         ModelTextureCPU tex;
-        if (!decode_mft_atex(dat, i0, tex)) return false;   // sets tex.baseId = i0 + 1
+        if (!decode_mft_atex(dat, i0, tex)) {   // sets tex.baseId = i0 + 1
+            // Ruling P9: a plain "DDS " entry (e.g. the water bump 186359).
+            std::vector<uint8_t> bytes;
+            if (!read_mft_atex_bytes(dat, i0, bytes) || !decode_dds_bytes(bytes, i0, tex)) return false;
+        }
         int w = tex.width, h = tex.height;
         std::vector<uint8_t> px = std::move(tex.rgba);
         if (w <= 0 || h <= 0 || px.size() < static_cast<size_t>(w) * h * 4) return false;
