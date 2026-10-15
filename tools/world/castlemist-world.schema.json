@@ -43,7 +43,7 @@
             "status": { "$ref": "#/$defs/status" },
             "source": { "type": "string" },
             "unityScale": {
-              "description": "Scale the Unity importer puts on the map's root GameObject.",
+              "description": "Uniform scale the Unity importer applies on the map root GameObject (GW2_<fileId>) and nowhere else. Every position in this manifest, cells' origins and instances' unity.t included, stays in map units.",
               "type": "object",
               "additionalProperties": false,
               "required": ["value", "status", "source"],
@@ -106,8 +106,8 @@
     "models": { "type": "array", "items": { "$ref": "#/$defs/model" } },
     "cells": { "type": "array", "items": { "$ref": "#/$defs/cell" } },
     "water": {
-      "description": "{plane: false}, or the plane with its env preset, or (no preset) the flat colour and its note.",
-      "type": "object",
+      "description": "{plane: false}, or the plane with its env preset, or (no preset) the flat colour and its note; null when a stored value is not finite (warned).",
+      "type": ["object", "null"],
       "additionalProperties": false,
       "required": ["plane"],
       "properties": {
@@ -132,7 +132,8 @@
       }
     },
     "light": {
-      "type": "object",
+      "description": "Null when a stored value is not finite (warned).",
+      "type": ["object", "null"],
       "additionalProperties": false,
       "required": ["presetIndex", "sun", "fill", "ambient"],
       "properties": {
@@ -168,11 +169,12 @@
       "required": ["map", "unity"],
       "properties": {
         "map": { "$ref": "#/$defs/vec3" },
-        "unity": { "description": "map_to_unity(map), before unityScale.", "$ref": "#/$defs/vec3" }
+        "unity": { "description": "map_to_unity(map): map units, Unity axes; the importer applies unityScale on the map root.", "$ref": "#/$defs/vec3" }
       }
     },
     "frameProbe": {
-      "type": "object",
+      "description": "Null when its position is not finite (warned).",
+      "type": ["object", "null"],
       "additionalProperties": false,
       "required": ["glb", "fbx", "map", "expect"],
       "properties": {
@@ -327,12 +329,12 @@
         "group": { "type": "string" },
         "m": { "description": "PropInstance::world: column-major, map space, absolute.", "$ref": "#/$defs/mat4" },
         "unity": {
-          "description": "Local to the Cell node, before unityScale: map_matrix_to_unity(m - origin) as t, r (xyzw, w >= 0), s.",
+          "description": "The instance's local transform under its Cell node: map_matrix_to_unity(m with the cell origin subtracted from its translation) as t, r (xyzw, w >= 0) and s. t is in map units relative to the cell origin, in Unity axes; unityScale is not applied here (the importer applies it on the map root).",
           "type": "object",
           "additionalProperties": false,
           "required": ["t", "r", "s"],
           "properties": {
-            "t": { "$ref": "#/$defs/vec3" },
+            "t": { "description": "Map units, relative to the cell origin, Unity axes (x, -z, y).", "$ref": "#/$defs/vec3" },
             "r": { "$ref": "#/$defs/vec4" },
             "s": { "type": "number", "minimum": 0 }
           }

@@ -32,9 +32,10 @@ namespace castlemist::exportgltf {
 ///        field keeps it; renaming, removing or changing a meaning bumps it.
 inline constexpr int kWorldManifestVersion = 1;
 
-/// @brief A placement as a Unity local transform (relative to its Cell node,
-///        before unityScale): position, rotation quaternion (x, y, z, w; w >= 0)
-///        and one uniform scale.
+/// @brief A placement as a Unity local transform under its Cell node: position
+///        t in map units relative to the cell origin (Unity axes; unityScale is
+///        not applied here, the importer applies it on the map root, ruling W7),
+///        rotation quaternion r (x, y, z, w; w >= 0) and one uniform scale s.
 struct UnityTrs { float t[3]; float r[4]; float s; };
 
 /// @brief U = world::map_matrix_to_unity(M with its translation minus @p cellOrigin);
@@ -65,7 +66,8 @@ struct ManifestSetting { std::string name; nlohmann::json value; std::string sta
 
 /// @brief The spec D3 table, plus texelsPerChunk, waterTexelsPerChunk,
 ///        maxTextureSize, the three cell budgets, unityScale, ambient and the
-///        measured Unity axis setting, in a fixed order.
+///        measured Unity axis setting. The vector has a fixed order; the
+///        manifest's `settings` object is keyed by name, so its JSON is key-sorted.
 std::vector<ManifestSetting> world_export_settings(const WorldFolderOptions& o);
 
 /// @brief One model folder as the model stage wrote it. `index` is the
@@ -79,7 +81,9 @@ struct ManifestCell { const castlemist::world::Cell* cell = nullptr; std::string
                       size_t colliderParts = 0, colliderTriangles = 0; };
 
 /// @brief Everything world_manifest_json needs. `sky` and `spawn` are null or
-///        their spec objects (a spawn with only "map" gets "unity" filled in);
+///        their spec objects; only the schema's keys are copied (sky: json,
+///        default, equirect; spawn: map, with unity always recomputed as
+///        map_to_unity(map)), and one missing its required keys is written as null;
 ///        `light` null is built from scene->environment.light (world_light_json);
 ///        `counts` supplies chunksUnbaked, animated, animatedResolved and
 ///        clipsFailedDecode (missing ones are 0; the rest are computed).
@@ -111,9 +115,16 @@ nlohmann::json world_light_json(const castlemist::model::Extractor::MapEnvLight&
 ///   UNPROVEN setting ("settings: <name> ... UNPROVEN ..."), the flat-water note
 ///   (world_cell.h kFlatWaterNote) when the map has a plane but no preset, and
 ///   the skip lines above.
-/// - Any non-finite number left anywhere (light, water, cell rects, input
-///   objects) is written as null with a warning naming its JSON path, so the
-///   result always dumps as valid JSON.
+/// - Non-finite numbers (ruling W6) are never written, and never as null where
+///   the schema wants a number. Each case gets a warning naming the field:
+///   a non-finite value in an optional block (light, sky, spawn, water,
+///   frameProbe) makes that block null; one in a cell's rect, origin or
+///   budget.textureMB drops the cell (its placements count as skipped:
+///   "props: <n> placements in dropped cells skipped"); non-finite map bounds
+///   make `bounds` null; a non-finite option (unityScale, groundRepeats,
+///   budget.maxTextureMB) is replaced by its default; a non-finite water plane z
+///   makes the cells' water null; a non-finite chunk size leaves terrain.chunkSize
+///   out. The result always validates against the schema.
 nlohmann::json world_manifest_json(const WorldManifestInput& in);
 
 } // namespace castlemist::exportgltf

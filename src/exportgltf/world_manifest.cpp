@@ -13,6 +13,7 @@
 #include "castlemist/world/terrain_bake.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <string>
@@ -56,28 +57,66 @@ json conversion_rows(void (*conv)(const float*, float*)) {
     return rows;
 }
 
-/// Replaces every non-finite number under @p v with null, one warning per path.
-void scrub_non_finite(json& v, const std::string& path, std::vector<std::string>& warnings) {
-    if (v.is_number_float()) {
-        if (!std::isfinite(v.get<double>())) {
-            v = nullptr;
-            warnings.push_back("manifest: non-finite number at " + path + " written as null");
+/// The JSON path of the first non-finite number under @p v, or "" when every number is finite.
+std::string first_non_finite(const json& v, const std::string& path) {
+    if (v.is_number_float()) return std::isfinite(v.get<double>()) ? std::string() : (path.empty() ? "<root>" : path);
+    if (v.is_object()) {
+        for (auto it = v.begin(); it != v.end(); ++it) {
+            std::string p = first_non_finite(it.value(), path.empty() ? it.key() : path + "." + it.key());
+            if (!p.empty()) return p;
         }
-    } else if (v.is_object()) {
-        for (auto it = v.begin(); it != v.end(); ++it)
-            scrub_non_finite(it.value(), path.empty() ? it.key() : path + "." + it.key(), warnings);
     } else if (v.is_array()) {
-        for (size_t k = 0; k < v.size(); ++k) scrub_non_finite(v[k], path + "[" + std::to_string(k) + "]", warnings);
+        for (size_t k = 0; k < v.size(); ++k) {
+            std::string p = first_non_finite(v[k], path + "[" + std::to_string(k) + "]");
+            if (!p.empty()) return p;
+        }
     }
+    return {};
 }
 
-json model_json(const ManifestModel& m) {
+/// Spec W6: an optional block holding a non-finite number is written as null,
+/// with a warning naming the field. Returns the block (or null).
+json finite_or_null(json block, const std::string& name, std::vector<std::string>& warnings) {
+    const std::string bad = first_non_finite(block, name);
+    if (bad.empty()) return block;
+    warnings.push_back("manifest: non-finite number at " + bad + "; " + name + " written as null");
+    return nullptr;
+}
+
+/// Three finite numbers from a JSON array, or false.
+bool finite_vec3(const json& a, float out[3]) {
+    if (!a.is_array() || a.size() != 3) return false;
+    for (size_t k = 0; k < 3; ++k) {
+        if (!a[k].is_number()) return false;
+        out[k] = a[k].get<float>();
+        if (!std::isfinite(out[k])) return false;
+    }
+    return true;
+}
+
+/// uvScroll entries with only the schema's keys; `unit` is always the const.
+/// An entry without a string material, a non-negative integer uvIndex and two
+/// finite scroll numbers is dropped with a warning.
+json uv_scroll_json(const ManifestModel& m, std::vector<std::string>& warnings) {
     json uv = json::array();
-    if (m.uvScroll.is_array())
-        for (json e : m.uvScroll) {
-            if (e.is_object() && !e.contains("unit")) e["unit"] = "per second, UNPROVEN";
-            uv.push_back(std::move(e));
+    if (!m.uvScroll.is_array()) return uv;
+    for (const json& e : m.uvScroll) {
+        const bool ok = e.is_object() && e.contains("material") && e["material"].is_string() && e.contains("uvIndex") &&
+                        e["uvIndex"].is_number_integer() && e["uvIndex"].get<int64_t>() >= 0 && e.contains("scroll") &&
+                        e["scroll"].is_array() && e["scroll"].size() == 2 && e["scroll"][0].is_number() &&
+                        e["scroll"][1].is_number() && std::isfinite(e["scroll"][0].get<double>()) &&
+                        std::isfinite(e["scroll"][1].get<double>());
+        if (!ok) {
+            warnings.push_back("models: fileId " + std::to_string(m.fileId) + ": a malformed uvScroll entry dropped");
+            continue;
         }
+        uv.push_back({{"material", e["material"]}, {"uvIndex", e["uvIndex"]}, {"scroll", e["scroll"]},
+                      {"unit", "per second, UNPROVEN"}});
+    }
+    return uv;
+}
+
+json model_json(const ManifestModel& m, std::vector<std::string>& warnings) {
     json j = {{"index", m.index},
               {"fileId", m.fileId},
               {"folder", str_or_null(m.folder)},
@@ -88,22 +127,27 @@ json model_json(const ManifestModel& m) {
               {"textureBytes", m.textureBytes},
               {"clips", m.clips},
               {"darkDecalMaterials", m.darkDecalMaterials},
-              {"uvScroll", uv},
+              {"uvScroll", uv_scroll_json(m, warnings)},
               {"status", m.ok ? "ok" : "failed"}};
     if (!m.ok || !m.error.empty()) j["error"] = m.error;
     return j;
 }
 
-json terrain_json(const cw::Terrain& t, const cw::ChunkRegion& r) {
+json terrain_json(const cw::Terrain& t, const cw::ChunkRegion& r, std::vector<std::string>& warnings) {
     if (!t.present || t.chunks.empty()) return {{"present", false}};
     const cw::TerrainChunk& k = t.chunks.front();
     json region = r.whole() ? json{0, 0, t.chunksX - 1, t.chunksY - 1} : json{r.cx0, r.cy0, r.cx1, r.cy1};
-    return {{"present", true},
-            {"chunksX", t.chunksX},
-            {"chunksY", t.chunksY},
-            {"chunkSize", {k.rect[2] - k.rect[0], k.rect[3] - k.rect[1]}},
-            {"segments", std::max(0, k.samples - 1)},
-            {"region", region}};
+    json j = {{"present", true},
+              {"chunksX", t.chunksX},
+              {"chunksY", t.chunksY},
+              {"segments", std::max(0, k.samples - 1)},
+              {"region", region}};
+    const float size[2] = {k.rect[2] - k.rect[0], k.rect[3] - k.rect[1]};
+    if (finite_all(size, 2))
+        j["chunkSize"] = vec(size, 2);
+    else
+        warnings.push_back("manifest: non-finite number at terrain.chunkSize; chunkSize left out");
+    return j;
 }
 
 json water_json(const cw::WorldScene& s) {
@@ -135,7 +179,7 @@ bool unity_trs(const float mapWorld[16], const float cellOrigin[3], UnityTrs& ou
     if (!finite_all(mapWorld, 16) || !finite_all(cellOrigin, 3)) return false;
     float local[16], U[16];
     std::copy(mapWorld, mapWorld + 16, local);
-    for (int k = 0; k < 3; ++k) local[12 + k] -= cellOrigin[k];
+    for (int k = 0; k < 3; ++k) local[12 + k] = float(double(mapWorld[12 + k]) - double(cellOrigin[k]));
     cw::map_matrix_to_unity(local, U);
     if (!finite_all(U, 16)) return false;
     // An affine matrix: bottom row (0, 0, 0, 1).
@@ -251,13 +295,30 @@ json world_manifest_json(const WorldManifestInput& in) {
     static const cw::WorldScene kNoScene;
     static const WorldFolderOptions kDefaults;
     const cw::WorldScene& s = in.scene ? *in.scene : kNoScene;
-    const WorldFolderOptions& o = in.opts ? *in.opts : kDefaults;
+    std::vector<std::string> notes;   // the writer's own warnings, after the input's
+
+    // Options are numbers the user can set; a non-finite one falls back to its
+    // default so every settings value stays finite (ruling W6).
+    WorldFolderOptions o = in.opts ? *in.opts : kDefaults;
+    auto finite_option = [&](float& v, float def, const char* name) {
+        if (std::isfinite(v)) return;
+        notes.push_back(std::string("manifest: option ") + name + " is not finite; the default is written");
+        v = def;
+    };
+    finite_option(o.unityScale, kDefaults.unityScale, "unityScale");
+    finite_option(o.groundRepeats, kDefaults.groundRepeats, "groundRepeats");
+    if (!std::isfinite(o.budget.maxTextureMB)) {
+        notes.push_back("manifest: option budget.maxTextureMB is not finite; the default is written");
+        o.budget.maxTextureMB = kDefaults.budget.maxTextureMB;
+    }
 
     json man;
     man["format"] = "castlemist-world";
     man["version"] = kWorldManifestVersion;
     man["castlemist"] = CASTLEMIST_VERSION_STRING;
-    man["map"] = {{"fileId", s.mapFileId}, {"bounds", s.hasBounds ? vec(s.bounds, 4) : json(nullptr)}};
+    const bool boundsOk = s.hasBounds && finite_all(s.bounds, 4);
+    if (s.hasBounds && !boundsOk) notes.push_back("manifest: non-finite number at map.bounds; bounds written as null");
+    man["map"] = {{"fileId", s.mapFileId}, {"bounds", boundsOk ? vec(s.bounds, 4) : json(nullptr)}};
 
     const auto root = map_to_gltf_root(1);
     man["frame"] = {
@@ -275,13 +336,14 @@ json world_manifest_json(const WorldManifestInput& in) {
     std::vector<std::string> settingWarnings;
     json settings = json::object();
     for (const ManifestSetting& st : world_export_settings(o)) {
+        assert(first_non_finite(st.value, st.name).empty());   // code constants and the finite options above
         settings[st.name] = {{"value", st.value}, {"status", st.status}, {"source", st.source}};
         if (st.status == "UNPROVEN")
             settingWarnings.push_back("settings: " + st.name + " = " + st.value.dump() + " is UNPROVEN (" +
                                       st.source + ")");
     }
     man["settings"] = settings;
-    man["terrain"] = terrain_json(s.terrain, o.region);
+    man["terrain"] = terrain_json(s.terrain, o.region, notes);
 
     std::unordered_map<uint32_t, size_t> modelPos;   // scene index -> position in models[]
     json models = json::array();
@@ -290,23 +352,47 @@ json world_manifest_json(const WorldManifestInput& in) {
         const ManifestModel& m = in.models[k];
         modelPos.emplace(m.index, k);
         if (!m.ok) ++modelsFailed;
-        models.push_back(model_json(m));
+        models.push_back(model_json(m, notes));
     }
     man["models"] = models;
 
-    size_t props = 0, written = 0, skippedTrs = 0, skippedModel = 0, chunks = 0, collisionInstances = 0;
-    bool flatWater = false;
+    size_t props = 0, written = 0, skippedTrs = 0, skippedModel = 0, skippedCell = 0, chunks = 0,
+           collisionInstances = 0;
+    bool flatWater = false, waterZWarned = false;
     const bool hasPreset = cw::water_has_preset(s);
+    const bool planeZOk = std::isfinite(s.water.planeZ);
+    float lo[2] = {0, 0}, hi[2] = {0, 0};   // the kept cells' extent, for the probe
+    bool anyRect = false;
     json cells = json::array();
     for (const ManifestCell& mc : in.cells) {
         if (!mc.cell) continue;
         const cw::Cell& c = *mc.cell;
-        if (!c.all) chunks += size_t(std::max(0, c.w)) * size_t(std::max(0, c.h));
+        // Ruling W6: a cell whose rect, origin or budget is not finite is dropped.
+        const char* bad = !finite_all(c.rect, 4)        ? "rect"
+                          : !finite_all(c.origin, 3)    ? "origin"
+                          : !std::isfinite(c.textureMB) ? "budget.textureMB"
+                                                        : nullptr;
+        if (bad) {
+            props += c.props.size();
+            skippedCell += c.props.size();
+            notes.push_back("cells: " + c.id + " dropped: non-finite number in " + bad);
+            continue;
+        }
+        if (!c.all) {
+            chunks += size_t(std::max(0, c.w)) * size_t(std::max(0, c.h));
+            if (!anyRect) { lo[0] = c.rect[0]; lo[1] = c.rect[1]; hi[0] = c.rect[2]; hi[1] = c.rect[3]; anyRect = true; }
+            lo[0] = std::min(lo[0], c.rect[0]); lo[1] = std::min(lo[1], c.rect[1]);
+            hi[0] = std::max(hi[0], c.rect[2]); hi[1] = std::max(hi[1], c.rect[3]);
+        }
         if (o.collision) collisionInstances += c.collision.size();
         json water = nullptr;
-        if (!mc.water.empty()) {
+        const bool flat = mc.water.empty() && s.water.hasPlane && !hasPreset && build_cell_water(s, c).vertices() > 0;
+        if ((!mc.water.empty() || flat) && !planeZOk) {
+            if (!waterZWarned) notes.push_back("manifest: non-finite number at water.z; cell water written as null");
+            waterZWarned = true;
+        } else if (!mc.water.empty()) {
             water = {{"texture", mc.water}, {"z", s.water.planeZ}};
-        } else if (s.water.hasPlane && !hasPreset && build_cell_water(s, c).vertices() > 0) {
+        } else if (flat) {
             water = {{"texture", nullptr}, {"z", s.water.planeZ}, {"note", kFlatWaterNote}};
             flatWater = true;
         }
@@ -317,7 +403,7 @@ json world_manifest_json(const WorldManifestInput& in) {
             if (mp == modelPos.end() || !in.models[mp->second].ok) { ++skippedModel; continue; }
             const cw::PropInstance& p = s.props[pi];
             UnityTrs u{};
-            if (!unity_trs(p.world, c.origin, u)) { ++skippedTrs; continue; }
+            if (!unity_trs(p.world, c.origin, u)) { ++skippedTrs; continue; }   // also every non-finite m
             const std::string clip = in.clipOf ? in.clipOf(pi) : std::string();
             instances.push_back({{"prop", pi},
                                  {"model", mp->second},
@@ -344,45 +430,51 @@ json world_manifest_json(const WorldManifestInput& in) {
              {"instances", instances}});
     }
     man["cells"] = cells;
-    man["water"] = water_json(s);
-    man["sky"] = in.sky.is_object() ? in.sky : json(nullptr);
-    man["light"] = in.light.is_object() ? in.light : world_light_json(s.environment.light);
+    man["water"] = finite_or_null(water_json(s), "water", notes);
 
-    json spawn = nullptr;
-    if (in.spawn.is_object()) {
-        spawn = in.spawn;
-        if (!spawn.contains("unity") && spawn.contains("map") && spawn["map"].is_array() && spawn["map"].size() == 3) {
-            float mp[3], up[3];
-            for (size_t k = 0; k < 3; ++k) mp[k] = spawn["map"][k].is_number() ? spawn["map"][k].get<float>() : NAN;
-            cw::map_to_unity(mp, up);
-            spawn["unity"] = vec(up, 3);
+    // sky: only the schema's keys (json, default: strings; equirect: string or null).
+    json sky = nullptr;
+    if (in.sky.is_object()) {
+        const json& k = in.sky;
+        const bool ok = k.contains("json") && k["json"].is_string() && k.contains("default") && k["default"].is_string() &&
+                        (!k.contains("equirect") || k["equirect"].is_string() || k["equirect"].is_null());
+        if (ok) {
+            sky = {{"json", k["json"]}, {"default", k["default"]}};
+            if (k.contains("equirect")) sky["equirect"] = k["equirect"];
+        } else {
+            notes.push_back("manifest: sky lacks a string json / default; sky written as null");
         }
+    }
+    man["sky"] = sky;
+    man["light"] = finite_or_null(in.light.is_object() ? in.light : world_light_json(s.environment.light), "light", notes);
+
+    // spawn: only map (three finite numbers) and unity = map_to_unity(map), always recomputed.
+    json spawn = nullptr;
+    float spawnMap[3];
+    const bool spawnOk = in.spawn.is_object() && in.spawn.contains("map") && finite_vec3(in.spawn["map"], spawnMap);
+    if (spawnOk) {
+        float up[3];
+        cw::map_to_unity(spawnMap, up);
+        spawn = {{"map", vec(spawnMap, 3)}, {"unity", vec(up, 3)}};
+    } else if (in.spawn.is_object()) {
+        notes.push_back("manifest: spawn.map is not three finite numbers; spawn written as null");
     }
     man["spawn"] = spawn;
 
-    // The probe sits at the spawn, or at the centre of the exported cells with z 0.
-    json probeMap;
-    if (spawn.is_object() && spawn.contains("map")) {
-        probeMap = spawn["map"];
+    // The probe sits at the spawn, or at the centre of the kept cells (else the bounds) with z 0.
+    float pm[3] = {0, 0, 0};
+    if (spawnOk) {
+        std::copy(spawnMap, spawnMap + 3, pm);
     } else {
-        float lo[2] = {0, 0}, hi[2] = {0, 0};
-        bool any = false;
-        for (const ManifestCell& mc : in.cells) {
-            if (!mc.cell || mc.cell->all) continue;
-            const float* r = mc.cell->rect;
-            if (!any) { lo[0] = r[0]; lo[1] = r[1]; hi[0] = r[2]; hi[1] = r[3]; any = true; }
-            lo[0] = std::min(lo[0], r[0]); lo[1] = std::min(lo[1], r[1]);
-            hi[0] = std::max(hi[0], r[2]); hi[1] = std::max(hi[1], r[3]);
-        }
-        if (!any && s.hasBounds) { lo[0] = s.bounds[0]; lo[1] = s.bounds[1]; hi[0] = s.bounds[2]; hi[1] = s.bounds[3]; }
-        probeMap = {0.5f * (lo[0] + hi[0]), 0.5f * (lo[1] + hi[1]), 0.0f};
+        if (!anyRect && boundsOk) { lo[0] = s.bounds[0]; lo[1] = s.bounds[1]; hi[0] = s.bounds[2]; hi[1] = s.bounds[3]; }
+        pm[0] = 0.5f * (lo[0] + hi[0]);
+        pm[1] = 0.5f * (lo[1] + hi[1]);
     }
-    float pm[3] = {NAN, NAN, NAN}, pu[3];
-    if (probeMap.is_array() && probeMap.size() == 3)
-        for (size_t k = 0; k < 3; ++k) pm[k] = probeMap[k].is_number() ? probeMap[k].get<float>() : NAN;
+    float pu[3];
     cw::map_to_unity(pm, pu);
-    man["frameProbe"] = {{"glb", "probe.glb"}, {"fbx", nullptr}, {"map", probeMap}, {"unity", vec(pu, 3)},
-                         {"expect", frame_probe_expect()}};
+    man["frameProbe"] = finite_or_null({{"glb", "probe.glb"}, {"fbx", nullptr}, {"map", vec(pm, 3)}, {"unity", vec(pu, 3)},
+                                        {"expect", frame_probe_expect()}},
+                                       "frameProbe", notes);
 
     auto given = [&](const char* key) -> uint64_t {
         if (in.counts.is_object() && in.counts.contains(key) && in.counts[key].is_number_integer() &&
@@ -406,14 +498,17 @@ json world_manifest_json(const WorldManifestInput& in) {
     std::vector<std::string> warnings = s.warnings;
     warnings.insert(warnings.end(), in.warnings.begin(), in.warnings.end());
     warnings.insert(warnings.end(), settingWarnings.begin(), settingWarnings.end());
+    warnings.insert(warnings.end(), notes.begin(), notes.end());
     if (flatWater) warnings.push_back(kFlatWaterNote);
     if (skippedTrs)
         warnings.push_back("props: " + std::to_string(skippedTrs) +
                            " placements with a non-uniform or degenerate transform skipped");
     if (skippedModel)
         warnings.push_back("props: " + std::to_string(skippedModel) + " placements of failed or missing models skipped");
-    scrub_non_finite(man, "", warnings);
+    if (skippedCell)
+        warnings.push_back("props: " + std::to_string(skippedCell) + " placements in dropped cells skipped");
     man["warnings"] = warnings;
+    assert(first_non_finite(man, "").empty());
     return man;
 }
 

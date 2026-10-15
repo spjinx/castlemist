@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -781,6 +782,93 @@ void make_synthetic(SyntheticManifest& m) {
     m.in.clipOf = [](uint32_t) { return std::string(); };
 }
 
+/// A test-local checker for exactly the schema's keyword subset (Task 9 builds
+/// the real one in Python): $ref (local #/$defs), type (string or union),
+/// properties, required, additionalProperties (false or a schema), items, enum,
+/// const, minimum, maximum, minItems, maxItems; the annotations $schema, $id,
+/// $defs, title and description are ignored. Any other keyword is an error.
+bool schema_type_is(const json& v, const std::string& t) {
+    if (t == "null") return v.is_null();
+    if (t == "boolean") return v.is_boolean();
+    if (t == "object") return v.is_object();
+    if (t == "array") return v.is_array();
+    if (t == "string") return v.is_string();
+    if (t == "number") return v.is_number();
+    if (t == "integer")
+        return v.is_number_integer() || (v.is_number_float() && std::isfinite(v.get<double>()) &&
+                                         v.get<double>() == std::floor(v.get<double>()));
+    return false;
+}
+
+void schema_check(const json& root, const json& s, const json& v, const std::string& path,
+                  std::vector<std::string>& errs) {
+    static const std::vector<std::string> kKnown = {
+        "$schema", "$id", "$defs", "$ref", "title", "description", "type", "properties", "required",
+        "additionalProperties", "items", "enum", "const", "minimum", "maximum", "minItems", "maxItems"};
+    if (!s.is_object()) { errs.push_back(path + ": schema is not an object"); return; }
+    for (auto it = s.begin(); it != s.end(); ++it)
+        if (std::find(kKnown.begin(), kKnown.end(), it.key()) == kKnown.end())
+            errs.push_back("schema: unsupported keyword " + it.key() + " at " + path);
+    if (s.contains("$ref")) {
+        const std::string ref = s["$ref"].get<std::string>(), pre = "#/$defs/";
+        if (ref.rfind(pre, 0) != 0 || !root["$defs"].contains(ref.substr(pre.size())))
+            errs.push_back(path + ": unresolved $ref " + ref);
+        else
+            schema_check(root, root["$defs"][ref.substr(pre.size())], v, path, errs);
+    }
+    if (s.contains("type")) {
+        const json types = s["type"].is_array() ? s["type"] : json::array({s["type"]});
+        bool ok = false;
+        for (const auto& t : types) ok = ok || schema_type_is(v, t.get<std::string>());
+        if (!ok) { errs.push_back(path + ": " + v.dump() + " is not of type " + s["type"].dump()); return; }
+    }
+    if (s.contains("const") && v != s["const"]) errs.push_back(path + ": not the const " + s["const"].dump());
+    if (s.contains("enum") && std::find(s["enum"].begin(), s["enum"].end(), v) == s["enum"].end())
+        errs.push_back(path + ": " + v.dump() + " not in enum");
+    if (v.is_number()) {
+        if (s.contains("minimum") && v.get<double>() < s["minimum"].get<double>()) errs.push_back(path + ": below minimum");
+        if (s.contains("maximum") && v.get<double>() > s["maximum"].get<double>()) errs.push_back(path + ": above maximum");
+    }
+    if (v.is_object()) {
+        for (const auto& r : s.value("required", json::array()))
+            if (!v.contains(r.get<std::string>())) errs.push_back(path + ": missing required " + r.get<std::string>());
+        const json props = s.value("properties", json::object());
+        for (auto it = v.begin(); it != v.end(); ++it) {
+            const std::string p = path + "." + it.key();
+            if (props.contains(it.key())) {
+                schema_check(root, props[it.key()], it.value(), p, errs);
+            } else if (s.contains("additionalProperties")) {
+                const json& ap = s["additionalProperties"];
+                if (ap.is_boolean() && !ap.get<bool>()) errs.push_back(path + ": unexpected property " + it.key());
+                else if (ap.is_object()) schema_check(root, ap, it.value(), p, errs);
+            }
+        }
+    }
+    if (v.is_array()) {
+        if (s.contains("minItems") && v.size() < s["minItems"].get<size_t>()) errs.push_back(path + ": too few items");
+        if (s.contains("maxItems") && v.size() > s["maxItems"].get<size_t>()) errs.push_back(path + ": too many items");
+        if (s.contains("items"))
+            for (size_t k = 0; k < v.size(); ++k)
+                schema_check(root, s["items"], v[k], path + "[" + std::to_string(k) + "]", errs);
+    }
+}
+
+/// Every violation of the committed schema by @p man (empty = valid).
+std::vector<std::string> schema_violations(const json& man) {
+    static const json schema = read_schema();
+    std::vector<std::string> errs;
+    if (!schema.is_object()) return {"schema: not readable"};
+    schema_check(schema, schema, man, "manifest", errs);
+    return errs;
+}
+
+/// Fails the test once per violation, naming @p variant.
+void check_valid(const json& man, const std::string& variant) {
+    for (const auto& e : schema_violations(man))
+        ::castlemist::test::fail(__FILE__, __LINE__, variant + ": " + e);
+    CHECK(json::parse(man.dump()) == man);   // no NaN / inf survives a dump
+}
+
 bool has_warning(const json& man, const std::string& needle) {
     if (!man.contains("warnings")) return false;
     for (const auto& w : man["warnings"]) if (w.get<std::string>().find(needle) != std::string::npos) return true;
@@ -901,6 +989,7 @@ CM_TEST(world_manifest, keys_match_schema) {
                "cells[0].instances[0]");
     check_keys(schema, schema_deref(schema, schema["properties"]["models"])["items"], man["models"][0], "models[0]");
     check_keys_deep(schema, schema, man, "manifest");
+    check_valid(man, "keys_match_schema");
     // The output dumps and parses again (no NaN / inf); kept on disk for inspection.
     CHECK(json::parse(man.dump()) == man);
     std::ofstream(fresh_dir("manifest") / "manifest.json") << man.dump(2);
@@ -1013,38 +1102,154 @@ CM_TEST(world_manifest, settings_labelled) {
     CHECK(saw);
 }
 
-CM_TEST(world_manifest, flat_water_and_non_finite) {
+CM_TEST(world_manifest, validator_sees_mismatches) {
+    // The test-local validator is not vacuous: each kind of drift is caught.
     SyntheticManifest m;
     make_synthetic(m);
-    // A plane but no preset (spec D3 "No preset"): flat water, with Task 6's note.
-    m.scene.environment.water.clear();
-    set_all_heights(m.scene, 5.f);
-    m.in.cells[0].water.clear();
-    // A NaN placement and an inf in the light: skipped / null, never invalid JSON.
-    m.scene.props[0].world[13] = std::numeric_limits<float>::quiet_NaN();
-    m.scene.environment.light.sunIntensity = std::numeric_limits<float>::infinity();
     const json man = world_manifest_json(m.in);
-    const bool shaped = man.contains("cells") && man["cells"].is_array() && !man["cells"].empty();
-    CHECK(shaped);
-    if (!shaped) return;
-    CHECK(has_warning(man, kFlatWaterNote));
-    CHECK(man["water"]["plane"] == true);
-    CHECK(man["water"]["preset"].is_null());
-    CHECK(man["cells"][0]["water"].is_object());
-    CHECK(man["cells"][0]["water"]["texture"].is_null());
-    CHECK(man["cells"][0]["water"]["note"] == std::string(kFlatWaterNote));
-    CHECK(man["cells"][0]["instances"].empty());
-    CHECK_EQ(man["counts"]["propsSkipped"].get<int>(), 3);
-    CHECK(has_warning(man, "props: 2 placements with a non-uniform or degenerate transform skipped"));
-    CHECK(man["light"]["sun"]["intensity"].is_null());
+    CHECK(schema_violations(man).empty());
+    json bad = man;
+    bad["light"]["sun"]["intensity"] = nullptr;   // null where the schema wants a number
+    CHECK(!schema_violations(bad).empty());
+    bad = man;
+    bad["map"]["extra"] = 1;                      // additionalProperties: false
+    CHECK(!schema_violations(bad).empty());
+    bad = man;
+    bad["cells"][0]["instances"][0]["unity"]["r"].push_back(0);   // maxItems
+    CHECK(!schema_violations(bad).empty());
+    bad = man;
+    bad["counts"].erase("props");                 // required
+    CHECK(!schema_violations(bad).empty());
+    bad = man;
+    bad["settings"]["texelsPerChunk"]["status"] = "guess";   // enum via $ref
+    CHECK(!schema_violations(bad).empty());
+    bad = man;
+    bad["version"] = 2;                           // const
+    CHECK(!schema_violations(bad).empty());
+    bad = man;
+    bad["counts"]["props"] = -1;                  // minimum
+    CHECK(!schema_violations(bad).empty());
+    bad = man;
+    bad["cells"][0]["glb"] = nullptr;             // type without null
+    CHECK(!schema_violations(bad).empty());
+}
+
+CM_TEST(world_manifest, variants_validate) {
+    // normal (with caller extras in uvScroll, sky and spawn that must not leak)
+    {
+        SyntheticManifest m;
+        make_synthetic(m);
+        m.in.models[0].uvScroll = json::array(
+            {json{{"material", "Mat_1"}, {"uvIndex", 1}, {"scroll", {0, 0.2}}, {"unit", "per frame"}, {"extra", 1}},
+             json{{"material", 7}}});
+        m.in.sky["mode"] = 3;
+        m.in.spawn["unity"] = {1, 2, 3};
+        m.in.spawn["note"] = "extra";
+        const json man = world_manifest_json(m.in);
+        check_valid(man, "normal");
+        CHECK_EQ(man["models"][0]["uvScroll"].size(), size_t(1));
+        CHECK(man["models"][0]["uvScroll"][0]["unit"] == "per second, UNPROVEN");
+        CHECK_FALSE(man["models"][0]["uvScroll"][0].contains("extra"));
+        CHECK(has_warning(man, "malformed uvScroll"));
+        CHECK_FALSE(man["sky"].contains("mode"));
+        CHECK_FALSE(man["spawn"].contains("note"));
+        CHECK(man["spawn"]["unity"] != json({1, 2, 3}));   // recomputed from map
+    }
+    // flat water: plane, no preset -> water.flatColour + note, cell water texture null + note
+    {
+        SyntheticManifest m;
+        make_synthetic(m);
+        m.scene.environment.water.clear();
+        set_all_heights(m.scene, 5.f);
+        m.in.cells[0].water.clear();
+        const json man = world_manifest_json(m.in);
+        check_valid(man, "flat water");
+        CHECK(man["water"]["preset"].is_null());
+        CHECK_EQ(man["water"]["flatColour"].size(), size_t(4));
+        CHECK(man["water"]["note"] == std::string(kFlatWaterNote));
+        CHECK(man["cells"][0]["water"]["texture"].is_null());
+        CHECK(man["cells"][0]["water"]["note"] == std::string(kFlatWaterNote));
+        CHECK(has_warning(man, kFlatWaterNote));
+    }
+    // no plane
+    {
+        SyntheticManifest m;
+        make_synthetic(m);
+        m.scene.water.hasPlane = false;
+        m.in.cells[0].water.clear();
+        const json man = world_manifest_json(m.in);
+        check_valid(man, "no plane");
+        CHECK(man["water"] == json({{"plane", false}}));
+        CHECK(man["cells"][0]["water"].is_null());
+    }
+    // no terrain (c_all), sky / spawn null, bounds null
+    {
+        SyntheticManifest m;
+        make_synthetic(m);
+        m.scene.terrain = cw::Terrain{};
+        m.scene.hasBounds = false;
+        m.cell = cw::Cell{};
+        m.cell.id = "c_all"; m.cell.all = true;
+        m.cell.props = {0, 1, 2};
+        m.in.cells[0].albedo.clear();
+        m.in.cells[0].water.clear();
+        m.in.sky = nullptr;
+        m.in.spawn = nullptr;
+        const json man = world_manifest_json(m.in);
+        check_valid(man, "no terrain");
+        CHECK(man["terrain"] == json({{"present", false}}));
+        CHECK(man["map"]["bounds"].is_null());
+        CHECK(man["sky"].is_null());
+        CHECK(man["spawn"].is_null());
+        CHECK(man["cells"][0]["chunks"].is_null());
+        CHECK(man["cells"][0]["albedoSize"].is_null());
+        CHECK(man["frameProbe"]["map"] == json({0.0, 0.0, 0.0}));
+        CHECK_EQ(man["counts"]["chunks"].get<int>(), 0);
+    }
+}
+
+CM_TEST(world_manifest, non_finite_never_written) {
+    // Ruling W6: never null for a number; optional blocks go null, bad cells are dropped.
+    SyntheticManifest m;
+    make_synthetic(m);
+    const float nan = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
+    m.scene.props[0].world[13] = nan;                 // placement: skipped
+    m.scene.environment.light.sunIntensity = inf;     // light -> null
+    m.scene.bounds[2] = nan;                          // bounds -> null
+    m.scene.water.planeZ = nan;                       // water -> null, cell water -> null
+    m.in.spawn = json{{"map", {1.0, nan, 2.0}}};      // nlohmann keeps the NaN: spawn -> null
+    m.opts.unityScale = inf;                          // option -> default
+    cw::Cell badCell = m.cell;                        // a second cell with a NaN rect: dropped
+    badCell.id = "c9_9_1x1";
+    badCell.rect[0] = nan;
+    badCell.props = {0};
+    ManifestCell bad = m.in.cells[0];
+    bad.cell = &badCell;
+    m.in.cells.push_back(bad);
+    const json man = world_manifest_json(m.in);
+    check_valid(man, "non-finite");
+    CHECK(man["light"].is_null());
     CHECK(has_warning(man, "light.sun.intensity"));
+    CHECK(man["map"]["bounds"].is_null());
+    CHECK(has_warning(man, "map.bounds"));
+    CHECK(man["water"].is_null());
+    CHECK(has_warning(man, "water.z"));
+    CHECK(man["cells"][0]["water"].is_null());
+    CHECK(man["spawn"].is_null());
+    CHECK(has_warning(man, "spawn.map"));
+    CHECK_NEAR(man["frame"]["units"]["unityScale"]["value"].get<double>(), 0.0254, 1e-7);
+    CHECK_NEAR(man["settings"]["unityScale"]["value"].get<double>(), 0.0254, 1e-7);
+    CHECK(has_warning(man, "option unityScale"));
+    CHECK(man["frameProbe"].is_object());   // placed at the kept cell's centre
+    CHECK_EQ(man["cells"].size(), size_t(1));
+    CHECK(has_warning(man, "cells: c9_9_1x1 dropped: non-finite number in rect"));
+    CHECK(man["cells"][0]["instances"].empty());
+    CHECK_EQ(man["counts"]["props"].get<int>(), 4);
+    CHECK_EQ(man["counts"]["propsWritten"].get<int>(), 0);
+    CHECK_EQ(man["counts"]["propsSkipped"].get<int>(), 4);
+    CHECK_EQ(man["counts"]["cells"].get<int>(), 1);
+    CHECK(has_warning(man, "props: 2 placements with a non-uniform or degenerate transform skipped"));
+    CHECK(has_warning(man, "props: 1 placements in dropped cells skipped"));
     const std::string text = man.dump();
     CHECK(text.find("NaN") == std::string::npos);
-    CHECK(json::parse(text) == man);
-    // Without a plane there is no water at all.
-    m.scene.water.hasPlane = false;
-    const json dry = world_manifest_json(m.in);
-    CHECK(dry["water"] == json({{"plane", false}}));
-    CHECK(dry["cells"][0]["water"].is_null());
-    CHECK_FALSE(has_warning(dry, kFlatWaterNote));
 }
