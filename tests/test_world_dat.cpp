@@ -1137,3 +1137,186 @@ CM_TEST(world_dat, queensdale_walker_lands) {
     CHECK(pos[1] >= w.bounds[1] && pos[1] <= w.bounds[3]);
     CHECK(pos[2] >= lo[2] && pos[2] <= hi[2]);
 }
+
+// ---- world materials and motion (docs/research/gw2-world-materials.md) ----
+
+#include "castlemist/world/anim.h"
+
+#include <algorithm>
+#include <map>
+
+namespace {
+
+/// Placements of Spirit Vale's propAnimArray whose (model, animSequence) names a
+/// clip the model has. Measured 2026-10-15 on client build 1791828055 (PE
+/// timestamp); the map window counted 106 resolved + 10 unresolved = 116.
+constexpr size_t kSpiritValeResolvedPlacements = 106;
+
+} // namespace
+
+// Note §5: Spirit Vale's animated props. 37 of the 41 distinct (model, clip
+// name) pairs resolve exactly; the four that do not are named.
+CM_TEST(world_dat, materials_spirit_vale_clips_resolve) {
+    Gw2Dat& dat = shared_dat();
+    if (!ensure_template()) SKIP("no struct template");
+    castlemist::world::WorldScene w = castlemist::world::load_world(dat, 1151420, *castlemist::tpl::get());
+
+    std::map<uint32_t, std::shared_ptr<ModelPreview>> models;   // by prop model index
+    std::set<std::pair<uint32_t, uint64_t>> pairs, resolvedPairs;   // (model fileId, animSequence)
+    size_t placements = 0, resolvedPlacements = 0;
+    for (const auto& p : w.props) {
+        if (p.group != "propAnimArray") continue;
+        ++placements;
+        const uint32_t fid = w.models.at(p.model).fileId;
+        auto it = models.find(p.model);
+        if (it == models.end())
+            it = models.emplace(p.model, load_model_by_fileid(dat, fid, ModelLoadOptions{false, false})).first;
+        const bool ok = it->second && castlemist::world::resolve_prop_clip(it->second->animClipTokens, p.animSequence) >= 0;
+        pairs.insert({fid, p.animSequence});
+        if (ok) { resolvedPairs.insert({fid, p.animSequence}); ++resolvedPlacements; }
+    }
+    std::set<std::pair<uint32_t, std::string>> misses;
+    for (const auto& pr : pairs)
+        if (!resolvedPairs.count(pr))
+            misses.insert({pr.first, castlemist::model::detokenizeName64(pr.second)});
+    CHECK_EQ(pairs.size(), size_t(41));
+    CHECK_EQ(resolvedPairs.size(), size_t(37));
+    const std::set<std::pair<uint32_t, std::string>> want = {
+        {1127039, "zeropose"}, {1151335, "zeropose"}, {740373, "on"}, {1150399, "noarch"}};
+    CHECK(misses == want);
+    CHECK_EQ(resolvedPlacements, kSpiritValeResolvedPlacements);
+}
+
+// Terrain textures: every colour and normal texture a chunk binds, and every
+// blend page, decodes capped at 512 with a full mip chain down to 4x4.
+CM_TEST(world_dat, materials_terrain_textures_decode) {
+    Gw2Dat& dat = shared_dat();
+    if (!ensure_template()) SKIP("no struct template");
+    for (uint32_t id : kTestMaps) {
+        castlemist::world::WorldScene w = castlemist::world::load_world(dat, id, *castlemist::tpl::get());
+        std::set<uint32_t> ids;
+        size_t solidPages = 0;
+        for (const auto& c : w.terrain.chunks) {
+            const auto& m = c.material;
+            if (!m.resolved) continue;
+            for (uint32_t f : m.textureFileIds) if (f) ids.insert(f);
+            for (uint32_t f : m.normalFileIds) if (f) ids.insert(f);
+            for (uint32_t f : {m.pickerFileId, m.picker2FileId}) {
+                if (f) ids.insert(f);
+                else { ++solidPages; CHECK(m.pickerScale > 0); }
+            }
+        }
+        size_t failures = 0;
+        for (uint32_t f : ids) {
+            CappedTexture t;
+            const bool ok = decode_texture_capped(dat, f, 512, t);
+            bool good = ok && !t.mips.empty() && std::max(t.width, t.height) <= 512;
+            if (good) {
+                // Last mip is at most 4x4: its byte size is w*h*4 for w, h <= 4.
+                good = t.mips.back().size() <= size_t(4 * 4 * 4);
+            }
+            if (!good && failures++ < 5) std::printf("    map %u: texture %u failed to decode\n", id, f);
+        }
+        std::printf("    map %u: %zu distinct terrain textures, %zu solid pages, %zu failures\n", id, ids.size(),
+                    solidPages, failures);
+        CHECK(!ids.empty());
+        CHECK_EQ(failures, size_t(0));
+    }
+}
+
+// Model 1126949 (note §4): material 0 has two texture transforms, scrolling
+// 0.2 in v; header-only loading changes no fileId and decodes no pixels.
+CM_TEST(world_dat, materials_model_1126949_tex_transforms) {
+    Gw2Dat& dat = shared_dat();
+    if (!ensure_template()) SKIP("no struct template");
+    auto a = load_model_by_fileid(dat, 1126949, ModelLoadOptions{false, false});
+    auto b = load_model_by_fileid(dat, 1126949, ModelLoadOptions{false, true});
+    CHECK(a != nullptr);
+    CHECK(b != nullptr);
+    if (!a || !b) return;
+    CHECK(!a->materials.empty());
+    if (a->materials.empty()) return;
+    const auto& tt = a->materials[0].texTransforms;
+    CHECK_EQ(tt.size(), size_t(2));
+    if (tt.size() == 2) {
+        CHECK_EQ((int)tt[0].uvIndex, 1);
+        CHECK_EQ((int)tt[1].uvIndex, 0);
+        for (const auto& t : tt) {
+            CHECK_NEAR(t.scroll[0], 0.0f, 0.01);
+            CHECK_NEAR(t.scroll[1], 0.2f, 0.01);
+            CHECK_EQ((int)t.columns, 1);
+            CHECK_EQ((int)t.rows, 1);
+            CHECK_EQ((int)t.count, 1);
+        }
+    }
+    CHECK_EQ(a->materials.size(), b->materials.size());
+    for (size_t i = 0; i < a->materials.size() && i < b->materials.size(); ++i) {
+        const int da = a->materials[i].diffuseTex, db = b->materials[i].diffuseTex;
+        CHECK_EQ(da >= 0, db >= 0);
+        if (da >= 0 && db >= 0) CHECK_EQ(a->textures.at(da).fileId, b->textures.at(db).fileId);
+    }
+    for (const auto& t : a->textures) CHECK(t.rgba.empty());
+}
+
+// Queensdale's dataGlobal water presets, pinned to what the 2026-10-15 client
+// (PE timestamp 1791828055) holds. Research note section 6 quotes different
+// values (shallow A5DF5C / deep 364F21, fresnel 3.89, depthAttenuation 15.66,
+// patternTile 4.58); none of the three dataGlobal presets holds them, so they
+// are probably from a per-zone block, which is out of scope here (Task 17
+// records it). Colours are in the stored byte order.
+CM_TEST(world_dat, materials_queensdale_water_presets) {
+    Gw2Dat& dat = shared_dat();
+    if (!ensure_template()) SKIP("no struct template");
+    castlemist::world::WorldScene w = castlemist::world::load_world(dat, 192711, *castlemist::tpl::get());
+    const auto& water = w.environment.water;
+    CHECK_EQ(water.size(), size_t(3));
+    for (const auto& p : water) CHECK(p.materialFileId == 187551 || p.materialFileId == 188555);
+    CHECK_EQ(w.environment.light.presetIndex, 0);
+    if (water.size() != 3) return;
+    const auto& p = water[0];
+    CHECK_NEAR(p.bumpTile[0], 5.013, 0.01);
+    CHECK_NEAR(p.bumpTile[1], 13.661, 0.01);
+    CHECK_NEAR(p.bumpSpeed[0], 1.31, 0.01);
+    CHECK_NEAR(p.bumpSpeed[1], 0.643, 0.01);
+    CHECK_NEAR(p.patternTile, 14.283, 0.01);
+    CHECK_EQ((int)p.surfaceShallowColor[0], 0xBD);
+    CHECK_EQ((int)p.surfaceShallowColor[1], 0xCF);
+    CHECK_EQ((int)p.surfaceShallowColor[2], 0x5F);
+    CHECK_EQ((int)p.surfaceDeepColor[0], 0x3B);
+    CHECK_EQ((int)p.surfaceDeepColor[1], 0x64);
+    CHECK_EQ((int)p.surfaceDeepColor[2], 0x85);
+    CHECK_NEAR(p.surfaceFresnel, 3.325, 0.01);
+    CHECK_NEAR(p.depthAttenuation, 28.47, 0.01);
+    CHECK_NEAR(p.distortAmount, 0.01, 0.01);
+    CHECK_EQ(water[2].materialFileId, uint32_t(188555));
+}
+
+// Scene fields read for the terrain shader: uvData, swapDistance, texIndexArray.
+CM_TEST(world_dat, materials_scene_fields) {
+    Gw2Dat& dat = shared_dat();
+    if (!ensure_template()) SKIP("no struct template");
+    castlemist::world::WorldScene sv = castlemist::world::load_world(dat, 1151420, *castlemist::tpl::get());
+    size_t uv = 0, scrolling = 0;
+    for (const auto& c : sv.terrain.chunks)
+        if (c.material.hasUvData) {
+            ++uv;
+            if (std::fabs(c.material.uvData.translation[0]) <= 0.01f &&
+                std::fabs(c.material.uvData.translation[1] - 0.2f) <= 0.01f)
+                ++scrolling;
+        }
+    std::printf("    spirit vale: %zu chunks with uvData, %zu with translation (0, 0.2)\n", uv, scrolling);
+    CHECK_EQ(uv, size_t(36));
+    CHECK(scrolling >= 1);
+    CHECK_EQ(sv.terrain.swapDistance, 24576.0f);
+
+    castlemist::world::WorldScene q = castlemist::world::load_world(dat, 192711, *castlemist::tpl::get());
+    CHECK_EQ(q.terrain.swapDistance, 39936.0f);
+    size_t resolved = 0, bad = 0;
+    for (const auto& c : q.terrain.chunks)
+        if (c.material.resolved) {
+            ++resolved;
+            bad += c.material.texIndexFileIds.size() != 10;
+        }
+    CHECK(resolved > 0);
+    CHECK_EQ(bad, size_t(0));
+}
