@@ -10,11 +10,22 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 struct CappedTexture;   // castlemist/extract/model_types.h
 
 namespace castlemist::render {
+
+struct WorldMaterialSettings;   // castlemist/render/world_prep.h
+
+/// @brief One line per setting of @p s: its name and value, "UNPROVEN" or
+///        "castlemist's choice", and the note section
+///        (docs/research/gw2-world-materials.md); then fixed lines for the
+///        UNPROVEN rules that are not settings (§5 clip start, §1.6
+///        pickerSolid order, §6 water preset pairing, §1.5 uvData).
+std::vector<std::string> material_setting_warnings(const WorldMaterialSettings& s);
 
 /// @brief fileId -> texture (spec "render/world_materials"). Each texture is
 ///        R8G8B8A8_TYPELESS with every mip of the CappedTexture and two views:

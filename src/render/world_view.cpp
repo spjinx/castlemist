@@ -60,12 +60,41 @@ struct WorldCB {
 };
 static_assert(sizeof(WorldCB) % 16 == 0, "constant buffers are 16-byte multiples");
 
+/// One terrain vertex: MapVtx plus the sample's chunk coordinate (s, t) as
+/// UNORM16, s = i/(n-1) from the west, t = j/(n-1) from the north. Both
+/// terrain pipelines read it; kTerrain ignores (s, t).
+struct TerrainVtx {
+    float px, py, pz;
+    uint8_t nx, ny, nz, ao;
+    uint16_t s, t;
+};
+static_assert(sizeof(TerrainVtx) == 20, "TerrainVtx must stay 20 bytes -- the input layouts hardcode the stride");
+
+/// Constant buffer for world_shaders::kTerrainMat's ChunkCB (register b1).
+struct ChunkCB {
+    float pickerOffset[2]; float pickerScale; float groundRepeats;
+    float present[4];
+    float normalMaps; float specPower; float albedoOnly; float _pad;
+};
+static_assert(sizeof(ChunkCB) % 16 == 0, "constant buffers are 16-byte multiples");
+
 /// One uploaded terrain chunk.
 struct ChunkGPU {
     ComPtr<ID3D11Buffer> vb;
     int samples = 0;
     float center[3] = {0, 0, 0};
     float radius = 0;
+    size_t src = 0;                    ///< index into the scene's terrain.chunks
+    float rect[4] = {0, 0, 0, 0};      ///< x0, y0, x1, y1 (capture_chunk_albedo)
+    // Material (note §1.2); see Impl::chunk_textured.
+    bool resolved = false;
+    float pickerOffset[2] = {0, 0};
+    float pickerScale = 0;
+    uint32_t color[4] = {0, 0, 0, 0}, normal[4] = {0, 0, 0, 0};
+    uint32_t picker = 0, picker2 = 0;
+    /// 1x1 UNORM pages from pickerSolid / picker2Solid (stored byte order,
+    /// UNPROVEN, note §1.6), made when that page has no fileId.
+    ComPtr<ID3D11ShaderResourceView> solid, solid2;
 };
 
 /// The shared index buffer for one sample count.
@@ -101,6 +130,13 @@ struct WorldView::Impl {
     ComPtr<ID3D11Buffer> cb;
     ComPtr<ID3D11RasterizerState> rs;
     ComPtr<ID3D11DepthStencilState> dss;
+    // Textured terrain (kTerrainMat).
+    ComPtr<ID3D11VertexShader> vsMat;
+    ComPtr<ID3D11PixelShader> psMat;
+    ComPtr<ID3D11InputLayout> ilMat;
+    ComPtr<ID3D11Buffer> cbChunk;
+    ComPtr<ID3D11SamplerState> sWrap, sClamp;
+    ComPtr<ID3D11ShaderResourceView> flatNormal;   ///< 1x1 (128,128,255,0): a missing normal slot
     // Instanced pipeline (props, collision, water).
     ComPtr<ID3D11VertexShader> vsInst;
     ComPtr<ID3D11PixelShader> psInst;
@@ -131,6 +167,8 @@ struct WorldView::Impl {
     InstancedBatch batch;   ///< this frame's instanced draw
 
     TextureCache textures;  ///< fileId -> texture, filled by add_textures
+    WorldShading shading = WorldShading::Materials;
+    WorldMaterialSettings mat;
 
     // Lighting (MapEnvRig layout; defaults are the fly view's).
     float sunDir[3], sunColor[3], fillColor[3];
@@ -200,6 +238,12 @@ struct WorldView::Impl {
             {"NORMAL", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
         };
         if (!compile(world_shaders::kTerrain, "world_terrain", el, 2, vs, ps, il)) return false;
+        const D3D11_INPUT_ELEMENT_DESC elm[] = {
+            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
+            {"NORMAL", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
+            {"TEXCOORD", 0, DXGI_FORMAT_R16G16_UNORM, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0},
+        };
+        if (!compile(world_shaders::kTerrainMat, "world_terrain_mat", elm, 3, vsMat, psMat, ilMat)) return false;
         // Slot 1 steps once per instance (the fly view's layout, device.cpp).
         const D3D11_INPUT_ELEMENT_DESC eli[] = {
             {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
@@ -217,6 +261,20 @@ struct WorldView::Impl {
         bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         if (FAILED(dev->CreateBuffer(&bd, nullptr, &cb))) return false;
+        bd.ByteWidth = sizeof(ChunkCB);
+        if (FAILED(dev->CreateBuffer(&bd, nullptr, &cbChunk))) return false;
+
+        // Trilinear; pages clamp, ground wraps.
+        D3D11_SAMPLER_DESC sm{};
+        sm.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+        sm.ComparisonFunc = D3D11_COMPARISON_NEVER;
+        sm.MaxLOD = D3D11_FLOAT32_MAX;
+        if (FAILED(dev->CreateSamplerState(&sm, &sWrap))) return false;
+        sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        if (FAILED(dev->CreateSamplerState(&sm, &sClamp))) return false;
+        const uint8_t flat[4] = {128, 128, 255, 0};
+        if (!(flatNormal = texel_srv(flat))) return false;
 
         D3D11_RASTERIZER_DESC rd{};
         rd.FillMode = D3D11_FILL_SOLID;
@@ -243,6 +301,110 @@ struct WorldView::Impl {
         t.BlendOpAlpha = D3D11_BLEND_OP_ADD;
         t.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
         return SUCCEEDED(dev->CreateBlendState(&bl, &bsAlpha));
+    }
+
+    /// A 1x1 R8G8B8A8_UNORM texture holding @p rgba; null on failure.
+    ComPtr<ID3D11ShaderResourceView> texel_srv(const uint8_t rgba[4]) {
+        D3D11_TEXTURE2D_DESC td{};
+        td.Width = td.Height = 1;
+        td.MipLevels = td.ArraySize = 1;
+        td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        td.SampleDesc.Count = 1;
+        td.Usage = D3D11_USAGE_IMMUTABLE;
+        td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SUBRESOURCE_DATA sd{rgba, 4, 0};
+        ComPtr<ID3D11Texture2D> t;
+        ComPtr<ID3D11ShaderResourceView> v;
+        if (FAILED(dev->CreateTexture2D(&td, &sd, &t)) || FAILED(dev->CreateShaderResourceView(t.Get(), nullptr, &v)))
+            return nullptr;
+        return v;
+    }
+
+    /// The UNORM page view of fileId @p id, or @p solid when the page has no
+    /// file; null unless available.
+    ID3D11ShaderResourceView* page_srv(uint32_t id, const ComPtr<ID3D11ShaderResourceView>& solid) const {
+        return id ? textures.srv(id, false) : solid.Get();
+    }
+
+    /// Whether chunk @p g draws textured: Materials, resolved, a page rect,
+    /// both pages available (Ready or solid), every non-zero colour slot Ready.
+    bool chunk_textured(const ChunkGPU& g) const {
+        if (shading != WorldShading::Materials || !g.resolved || !(g.pickerScale > 0)) return false;
+        if (!page_srv(g.picker, g.solid) || !page_srv(g.picker2, g.solid2)) return false;
+        for (uint32_t id : g.color)
+            if (id && textures.state(id) != TextureCache::State::Ready) return false;
+        return true;
+    }
+
+    /// Binds chunk @p g's textures and ChunkCB for kTerrainMat (call only
+    /// when chunk_textured(g)).
+    void bind_chunk_material(const ChunkGPU& g, bool albedoOnly) {
+        ChunkCB c{};
+        c.pickerOffset[0] = g.pickerOffset[0];
+        c.pickerOffset[1] = g.pickerOffset[1];
+        c.pickerScale = g.pickerScale;
+        c.groundRepeats = mat.groundRepeatsPerChunk;
+        for (int k = 0; k < 4; ++k) c.present[k] = g.color[k] ? 1.0f : 0.0f;
+        c.normalMaps = mat.terrainNormalMaps ? 1.0f : 0.0f;
+        c.specPower = mat.terrainSpecPower;
+        c.albedoOnly = albedoOnly ? 1.0f : 0.0f;
+        D3D11_MAPPED_SUBRESOURCE ms;
+        if (SUCCEEDED(ctx->Map(cbChunk.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) {
+            std::memcpy(ms.pData, &c, sizeof c);
+            ctx->Unmap(cbChunk.Get(), 0);
+        }
+        ID3D11ShaderResourceView* srv[10] = {};
+        for (int k = 0; k < 4; ++k) {
+            // An absent colour slot stays null: its weight is 0 (terrain_blend).
+            srv[k] = g.color[k] ? textures.srv(g.color[k], mat.srgbColourTextures) : nullptr;
+            ID3D11ShaderResourceView* n = g.normal[k] ? textures.srv(g.normal[k], false) : nullptr;
+            srv[6 + k] = n ? n : flatNormal.Get();
+        }
+        srv[4] = page_srv(g.picker, g.solid);
+        srv[5] = page_srv(g.picker2, g.solid2);
+        ctx->PSSetShaderResources(0, 10, srv);
+    }
+
+    /// Selects the terrain pipeline: kTerrainMat when @p textured, else kTerrain.
+    void use_terrain_pipeline(bool textured) {
+        ctx->IASetInputLayout(textured ? ilMat.Get() : il.Get());
+        ctx->VSSetShader(textured ? vsMat.Get() : vs.Get(), nullptr, 0);
+        ctx->PSSetShader(textured ? psMat.Get() : ps.Get(), nullptr, 0);
+    }
+
+    void unbind_terrain_textures() {
+        ID3D11ShaderResourceView* none[10] = {};
+        ctx->PSSetShaderResources(0, 10, none);
+    }
+
+    void upload_world_cb(const WorldCB& c) {
+        D3D11_MAPPED_SUBRESOURCE ms;
+        if (SUCCEEDED(ctx->Map(cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) {
+            std::memcpy(ms.pData, &c, sizeof c);
+            ctx->Unmap(cb.Get(), 0);
+        }
+    }
+
+    /// The state both terrain pipelines share: cbuffers, samplers, topology,
+    /// raster, depth, blend.
+    void bind_terrain_state() {
+        ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ID3D11Buffer* cbs[2] = {cb.Get(), cbChunk.Get()};
+        ctx->VSSetConstantBuffers(0, 2, cbs);
+        ctx->PSSetConstantBuffers(0, 2, cbs);
+        ID3D11SamplerState* ss[2] = {sWrap.Get(), sClamp.Get()};
+        ctx->PSSetSamplers(0, 2, ss);
+        ctx->OMSetDepthStencilState(dss.Get(), 0);
+        ctx->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+        ctx->RSSetState(rs.Get());
+    }
+
+    void draw_chunk(const ChunkGPU& g) {
+        const GridIB& ib = ibs[g.samples];
+        const UINT stride = sizeof(TerrainVtx), offset = 0;
+        ctx->IASetVertexBuffers(0, 1, g.vb.GetAddressOf(), &stride, &offset);
+        ctx->IASetIndexBuffer(ib.ib.Get(), DXGI_FORMAT_R32_UINT, 0);
+        ctx->DrawIndexed(ib.count, 0, 0);
     }
 
     /// While lost, nothing touches the device (device_lost() semantics).
@@ -309,12 +471,12 @@ struct WorldView::Impl {
 
         const float x0 = c.rect[0], y0 = c.rect[1], x1 = c.rect[2], y1 = c.rect[3];
         const float sx = (x1 - x0) / static_cast<float>(n - 1), sy = (y1 - y0) / static_cast<float>(n - 1);
-        std::vector<MapVtx> v(c.heights.size());
+        std::vector<TerrainVtx> v(c.heights.size());
         float zlo = 1e30f, zhi = -1e30f;
         for (int j = 0; j < n; ++j)
             for (int i = 0; i < n; ++i) {
                 const size_t k = static_cast<size_t>(j) * n + i;
-                MapVtx& o = v[k];
+                TerrainVtx& o = v[k];
                 o.px = x0 + static_cast<float>(i) * sx;
                 o.py = y1 - static_cast<float>(j) * sy;
                 o.pz = c.heights[k];
@@ -322,6 +484,8 @@ struct WorldView::Impl {
                 o.ny = enc_n(nrm[k * 3 + 1]);
                 o.nz = enc_n(nrm[k * 3 + 2]);
                 o.ao = 255;
+                o.s = static_cast<uint16_t>(std::lround(65535.0 * i / (n - 1)));
+                o.t = static_cast<uint16_t>(std::lround(65535.0 * j / (n - 1)));
                 if (std::isfinite(o.pz)) { zlo = std::min(zlo, o.pz); zhi = std::max(zhi, o.pz); }
             }
         if (zlo > zhi) zlo = zhi = 0;
@@ -330,7 +494,7 @@ struct WorldView::Impl {
         ChunkGPU g;
         D3D11_BUFFER_DESC bd{};
         bd.Usage = D3D11_USAGE_IMMUTABLE;
-        bd.ByteWidth = static_cast<UINT>(v.size() * sizeof(MapVtx));
+        bd.ByteWidth = static_cast<UINT>(v.size() * sizeof(TerrainVtx));
         bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
         D3D11_SUBRESOURCE_DATA sd{v.data(), 0, 0};
         if (FAILED(dev->CreateBuffer(&bd, &sd, &g.vb))) return;
@@ -340,6 +504,21 @@ struct WorldView::Impl {
         g.center[2] = (zlo + zhi) * 0.5f;
         const float ex = (x1 - x0) * 0.5f, ey = (y1 - y0) * 0.5f, ez = (zhi - zlo) * 0.5f;
         g.radius = std::sqrt(ex * ex + ey * ey + ez * ez);
+        g.src = ci;
+        std::memcpy(g.rect, c.rect, sizeof g.rect);
+        const castlemist::world::TerrainMaterial& m = c.material;
+        g.resolved = m.resolved;
+        g.pickerOffset[0] = m.pickerOffset[0];
+        g.pickerOffset[1] = m.pickerOffset[1];
+        g.pickerScale = m.pickerScale;
+        for (size_t k = 0; k < 4; ++k) {
+            g.color[k] = k < m.textureFileIds.size() ? m.textureFileIds[k] : 0;
+            g.normal[k] = k < m.normalFileIds.size() ? m.normalFileIds[k] : 0;
+        }
+        g.picker = m.pickerFileId;
+        g.picker2 = m.picker2FileId;
+        if (m.resolved && !g.picker) g.solid = texel_srv(m.pickerSolid);
+        if (m.resolved && !g.picker2) g.solid2 = texel_srv(m.picker2Solid);
         chunks.push_back(std::move(g));
 
         if (!hasExtent) {
@@ -385,24 +564,12 @@ struct WorldView::Impl {
         c.fogEnd = farD;
         for (int k = 0; k < 3; ++k) c.camPos[k] = cam.pos[k];
         for (int k = 0; k < 3; ++k) c.albedo[k] = kTerrainTint[k];
-        D3D11_MAPPED_SUBRESOURCE ms;
-        if (SUCCEEDED(ctx->Map(cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) {
-            std::memcpy(ms.pData, &c, sizeof c);
-            ctx->Unmap(cb.Get(), 0);
-        }
+        upload_world_cb(c);
+        bind_terrain_state();
 
-        ctx->IASetInputLayout(il.Get());
-        ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        ctx->VSSetShader(vs.Get(), nullptr, 0);
-        ctx->PSSetShader(ps.Get(), nullptr, 0);
-        ctx->VSSetConstantBuffers(0, 1, cb.GetAddressOf());
-        ctx->PSSetConstantBuffers(0, 1, cb.GetAddressOf());
-        ctx->OMSetDepthStencilState(dss.Get(), 0);
-        ctx->OMSetBlendState(nullptr, nullptr, 0xffffffff);
-        ctx->RSSetState(rs.Get());
-
-        int visible = 0, draws = 0;
+        int visible = 0, draws = 0, untextured = 0;
         size_t tris = 0;
+        int cur = -1;   // terrain pipeline bound: -1 none yet, 0 kTerrain, 1 kTerrainMat
         if (layers[static_cast<int>(WorldLayer::Terrain)]) {
             for (const ChunkGPU& g : chunks) {
                 const float dx = g.center[0] - cam.pos[0], dy = g.center[1] - cam.pos[1],
@@ -414,16 +581,22 @@ struct WorldView::Impl {
                     out = planes[p][0] * g.center[0] + planes[p][1] * g.center[1] + planes[p][2] * g.center[2] +
                               planes[p][3] < -g.radius;
                 if (out) continue;
-                const GridIB& ib = ibs[g.samples];
-                const UINT stride = sizeof(MapVtx), offset = 0;
-                ctx->IASetVertexBuffers(0, 1, g.vb.GetAddressOf(), &stride, &offset);
-                ctx->IASetIndexBuffer(ib.ib.Get(), DXGI_FORMAT_R32_UINT, 0);
-                ctx->DrawIndexed(ib.count, 0, 0);
+                const bool tex = chunk_textured(g);
+                if (cur != static_cast<int>(tex)) {
+                    use_terrain_pipeline(tex);
+                    cur = static_cast<int>(tex);
+                }
+                if (tex)
+                    bind_chunk_material(g, false);
+                else
+                    ++untextured;
+                draw_chunk(g);
                 ++visible;
                 ++draws;
-                tris += ib.count / 3;
+                tris += ibs[g.samples].count / 3;
             }
         }
+        if (cur == 1) unbind_terrain_textures();
 
         // Props, then collision, then water: the translucent plane goes last
         // so everything under it is already in the depth buffer.
@@ -439,6 +612,7 @@ struct WorldView::Impl {
 
         st.visible = visible;
         st.draws = draws;
+        st.chunksUntextured = untextured;
         st.ktris = static_cast<int>(tris / 1000);
         QueryPerformanceCounter(&t1);
         if (freq.QuadPart)
@@ -734,6 +908,80 @@ bool WorldView::save_screenshot(const char* bmpPath) {
     if (!f) return false;
     const bool ok = std::fwrite(bmp.data(), 1, bmp.size(), f) == bmp.size();
     return std::fclose(f) == 0 && ok;
+}
+
+void WorldView::set_shading(WorldShading s) { d->shading = s; }
+WorldShading WorldView::shading() const { return d->shading; }
+void WorldView::set_material_settings(const WorldMaterialSettings& s) { d->mat = s; }
+const WorldMaterialSettings& WorldView::material_settings() const { return d->mat; }
+
+std::vector<std::string> WorldView::warnings() const { return material_setting_warnings(d->mat); }
+
+bool WorldView::capture_chunk_albedo(size_t chunk, int size, std::vector<uint8_t>& rgba) {
+    rgba.clear();
+    if (!d->gpu_ok() || size <= 0 || size > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) return false;
+    const ChunkGPU* found = nullptr;
+    for (const ChunkGPU& c : d->chunks)
+        if (c.src == chunk) { found = &c; break; }
+    if (!found || !d->chunk_textured(*found)) return false;
+    const ChunkGPU& g = *found;
+
+    // Its own target and staging copy: the swap chain's targets are not touched.
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = td.Height = static_cast<UINT>(size);
+    td.MipLevels = td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_RENDER_TARGET;
+    ComPtr<ID3D11Texture2D> rt, stg;
+    ComPtr<ID3D11RenderTargetView> rtv;
+    if (FAILED(d->dev->CreateTexture2D(&td, nullptr, &rt)) ||
+        FAILED(d->dev->CreateRenderTargetView(rt.Get(), nullptr, &rtv)))
+        return false;
+    td.Usage = D3D11_USAGE_STAGING;
+    td.BindFlags = 0;
+    td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    if (FAILED(d->dev->CreateTexture2D(&td, nullptr, &stg))) return false;
+
+    // Orthographic, top down over the chunk's rect (row vectors, translation
+    // in the last row): x0 -> NDC -1 (column 0, west), y1 -> NDC +1 (row 0,
+    // north). No depth buffer is bound, so nothing is depth tested.
+    const float x0 = g.rect[0], y0 = g.rect[1], x1 = g.rect[2], y1 = g.rect[3];
+    const float hx = 0.5f * (x1 - x0), hy = 0.5f * (y1 - y0);
+    if (!(std::fabs(hx) > 0) || !(std::fabs(hy) > 0)) return false;
+    WorldCB c{};
+    c.viewProj.m[0] = 1.0f / hx;
+    c.viewProj.m[5] = 1.0f / hy;
+    c.viewProj.m[12] = -(x0 + hx) / hx;
+    c.viewProj.m[13] = -(y0 + hy) / hy;
+    c.viewProj.m[14] = 0.5f;
+    c.viewProj.m[15] = 1.0f;
+    c.exposure = 1.0f;
+    d->upload_world_cb(c);   // draw() writes the whole buffer again each frame
+
+    d->ctx->OMSetRenderTargets(1, rtv.GetAddressOf(), nullptr);
+    const D3D11_VIEWPORT vp{0, 0, static_cast<float>(size), static_cast<float>(size), 0, 1};
+    d->ctx->RSSetViewports(1, &vp);
+    const float clear[4] = {0, 0, 0, 0};
+    d->ctx->ClearRenderTargetView(rtv.Get(), clear);
+    d->bind_terrain_state();
+    d->use_terrain_pipeline(true);
+    d->bind_chunk_material(g, true);
+    d->draw_chunk(g);
+    d->unbind_terrain_textures();
+    d->ctx->OMSetRenderTargets(0, nullptr, nullptr);   // draw() binds the swap chain's targets again
+    d->ctx->CopyResource(stg.Get(), rt.Get());
+
+    D3D11_MAPPED_SUBRESOURCE ms;
+    if (FAILED(d->ctx->Map(stg.Get(), 0, D3D11_MAP_READ, 0, &ms))) return false;
+    rgba.resize(static_cast<size_t>(size) * size * 4);
+    for (int y = 0; y < size; ++y)
+        std::memcpy(rgba.data() + static_cast<size_t>(y) * size * 4,
+                    static_cast<const uint8_t*>(ms.pData) + static_cast<size_t>(y) * ms.RowPitch,
+                    static_cast<size_t>(size) * 4);
+    d->ctx->Unmap(stg.Get(), 0);
+    return true;
 }
 
 WorldCamera WorldView::frame_all(float* speedHint) const {

@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -26,6 +27,12 @@ namespace castlemist::render {
 /// @brief What the view can draw; each can be toggled with WorldView::set_layer.
 ///        Collision is off after create(); the rest are on.
 enum class WorldLayer { Terrain = 0, Props, Collision, Water, Count };
+
+/// @brief How the view shades. Geometry is sub-project 2's look (flat tint,
+///        hemisphere + sun, baked AO); Materials paints what has its textures
+///        (terrain: note §1.2) and falls back to Geometry for the rest.
+///        Materials after create().
+enum class WorldShading { Geometry, Materials };
 
 /// @brief A free camera in map space (up = -Z). `fwd` and `up` need not be
 ///        unit or exactly perpendicular; the view orthonormalizes them.
@@ -53,6 +60,9 @@ struct WorldViewStats {
     /// set_world and create().
     int textures = 0, texturesFailed = 0;
     float textureMB = 0;
+    /// Terrain chunks drawn last frame in the AO look (unresolved material,
+    /// no pages, a colour texture or page pending or failed, or Geometry shading).
+    int chunksUntextured = 0;
 };
 
 /// @brief Draws one WorldScene into one window.
@@ -73,7 +83,9 @@ public:
     ///        water plane and lighting, records every prop instance, and keeps
     ///        a CPU copy of the collision. Replaces anything set before, loaded
     ///        models included. Needs a created view (before create() nothing is
-    ///        uploaded). Clears the texture cache. The collision meshes upload on the first
+    ///        uploaded). Clears the texture cache; a resolved chunk's page with
+    ///        no fileId becomes a 1x1 texture of its stored solid colour (byte
+    ///        order as stored, UNPROVEN, note §1.6). The collision meshes upload on the first
     ///        set_layer(Collision, true) or the first render() with that layer
     ///        on (not while device_lost()); the CPU copy is then released.
     void set_world(const castlemist::world::WorldScene& s);
@@ -124,6 +136,26 @@ public:
     ///        positions) from above, and a fly speed
     ///        hint (map units per second) when @p speedHint is non-null.
     WorldCamera frame_all(float* speedHint) const;
+
+    /// @brief Geometry or Materials (Materials after create()); takes effect next frame.
+    void set_shading(WorldShading s);
+    WorldShading shading() const;
+    /// @brief Replaces the material settings (defaults after create()); takes
+    ///        effect next frame. `maxTextureSize` and `waterBumpTextureIndex`
+    ///        only steer what the owner decodes (world_texture_ids).
+    void set_material_settings(const WorldMaterialSettings& s);
+    const WorldMaterialSettings& material_settings() const;
+    /// @brief Verification hook: chunk @p chunk's (index into the scene's
+    ///        `terrain.chunks`) §1.2 albedo only (no light, fog or gamma),
+    ///        linear, into a @p size x @p size RGBA8 UNORM offscreen target
+    ///        drawn orthographically top down; row 0 = north, column 0 = west.
+    ///        @p rgba gets size*size*4 bytes, rows tightly packed. The swap
+    ///        chain and the next frame are untouched. False when the chunk
+    ///        would not draw textured, @p size <= 0, or the device is lost.
+    bool capture_chunk_albedo(size_t chunk, int size, std::vector<uint8_t>& rgba);
+    /// @brief One line per UNPROVEN setting or castlemist choice in effect
+    ///        (material_setting_warnings), for a log or the status bar.
+    std::vector<std::string> warnings() const;
 
 private:
     struct Impl;

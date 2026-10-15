@@ -8,6 +8,8 @@
 #include "castlemist/render/world_prep.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <string>
 #include <unordered_set>
 #include <vector>
 
@@ -94,6 +96,46 @@ std::vector<uint32_t> world_texture_ids(const castlemist::world::WorldScene& s, 
         const std::vector<uint32_t>& tex = s.environment.water[static_cast<size_t>(pi)].textureFileIds;
         if (static_cast<size_t>(ti) < tex.size()) take(tex[static_cast<size_t>(ti)]);
     }
+    return out;
+}
+
+} // namespace castlemist::render
+
+namespace castlemist::render {
+
+std::vector<std::string> material_setting_warnings(const WorldMaterialSettings& s) {
+    std::vector<std::string> out;
+    char b[320];
+    auto line = [&](const char* fmt, auto... v) {
+        std::snprintf(b, sizeof b, fmt, v...);
+        out.emplace_back(b);
+    };
+    const char* on = "on";
+    const char* off = "off";
+    line("groundRepeatsPerChunk = %g: UNPROVEN, ground repeats per chunk; T3D's guess, not in the shader "
+         "(note \xc2\xa7" "1.6)",
+         static_cast<double>(s.groundRepeatsPerChunk));
+    line("uvScrollUnitSeconds = %g: UNPROVEN, offset = frac(scroll * t / unit) (note \xc2\xa7" "4)",
+         static_cast<double>(s.uvScrollUnitSeconds));
+    line("terrainNormalMaps = %s: UNPROVEN sign, tangent +X east, bitangent -Y (increasing t, south) "
+         "(note \xc2\xa7" "1.2)",
+         s.terrainNormalMaps ? on : off);
+    line("terrainSpecPower = %g: castlemist's choice, forward stand-in for the light buffer's L.a "
+         "(note \xc2\xa7" "1.4)",
+         static_cast<double>(s.terrainSpecPower));
+    out.emplace_back("terrain shSunColor.w = 1: UNPROVEN, the rim term's sun weight (note \xc2\xa7" "1.2)");
+    line("maxTextureSize = %d: castlemist's choice, a memory bound (spec, not in the note)", s.maxTextureSize);
+    line("waterBumpTextureIndex = %d: UNPROVEN beyond AMAT 187551 (note \xc2\xa7" "6)", s.waterBumpTextureIndex);
+    line("waterTileUnit = %g: UNPROVEN, units of bumpTile/bumpSpeed/bumpAngle (note \xc2\xa7" "6)",
+         static_cast<double>(s.waterTileUnit));
+    line("waterSpecPower = %g: castlemist's choice (note \xc2\xa7" "6)", static_cast<double>(s.waterSpecPower));
+    line("srgbColourTextures = %s: castlemist's choice, colour textures decode sRGB to linear before the "
+         "blend (spec, not in the note)",
+         s.srgbColourTextures ? on : off);
+    out.emplace_back("all animated props start at t = 0 and loop: UNPROVEN (note \xc2\xa7" "5)");
+    out.emplace_back("pickerSolid byte order: UNPROVEN, solid pages use the stored bytes as RGBA (note \xc2\xa7" "1.6)");
+    out.emplace_back("water preset k pairs with lighting preset k: UNPROVEN (note \xc2\xa7" "6)");
+    out.emplace_back("terrain uvData recorded, not animated: UNPROVEN target and units (note \xc2\xa7" "1.5)");
     return out;
 }
 
