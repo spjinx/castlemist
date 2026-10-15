@@ -95,7 +95,7 @@ castlemist_add_test(dat
 set_tests_properties(dat PROPERTIES TIMEOUT 600)
 
 castlemist_add_test(world
-    SOURCES test_world.cpp test_world_walk.cpp test_world_stream.cpp test_world_materials.cpp
+    SOURCES test_world.cpp test_world_walk.cpp test_world_stream.cpp test_world_materials.cpp test_world_cells.cpp
     DEPS    castlemist::world)
 
 # World-layer tests against a real Gw2.dat; skip when it is absent.
