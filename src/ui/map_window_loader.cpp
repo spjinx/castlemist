@@ -14,6 +14,7 @@
 #include "castlemist/extract/model_types.h"
 #include "castlemist/format/struct_template.h"
 #include "castlemist/native/gw2dat.h"
+#include "castlemist/world/anim.h"
 #include "castlemist/world/load_world.h"
 
 namespace castlemist::ui {
@@ -158,26 +159,45 @@ int mapwin_start_models(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat, std
                 // pop() takes the model nearest the camera as of the window's
                 // last reorder(): the order follows the camera as it moves.
                 while (!cancelled(gen) && queue->queue.pop(mi)) {
-                    std::shared_ptr<const ModelPreview> out;
+                    castlemist::render::WorldModelLoad out;
+                    out.model = mi;
                     if (mi < scene.models.size()) {
                         try {
-                            std::shared_ptr<ModelPreview> m =
-                                load_model_by_fileid(*dat, scene.models[mi].fileId, /*want_game=*/false);
+                            // Geometry and header-only textures: the texture
+                            // cache decodes each one once, capped, later.
+                            std::shared_ptr<ModelPreview> m = load_model_by_fileid(
+                                *dat, scene.models[mi].fileId,
+                                ModelLoadOptions{/*wantGame=*/false, /*decodeTextures=*/false});
                             if (m) {
-                                // The map view draws geometry only (textures are
-                                // sub-project 3); drop the decoded pixels and clips
-                                // so a big map's previews stay small.
-                                m->textures.clear();
-                                m->textures.shrink_to_fit();
-                                m->animClips.clear();
-                                m->animClips.shrink_to_fit();
-                                out = std::move(m);
+                                // Skinning only for a model some instance animates
+                                // with a clip it really has; the others drop their
+                                // clips so a big map's previews stay small. The
+                                // textures stay: they are headers now, and the
+                                // materials index them.
+                                bool withSkin = false;
+                                if (mi < queue->sequencesOf.size())
+                                    for (uint64_t seq : queue->sequencesOf[mi])
+                                        if (castlemist::world::resolve_prop_clip(m->animClipTokens, seq) >= 0)
+                                            withSkin = true;
+                                if (!withSkin) {
+                                    m->animClips.clear();
+                                    m->animClips.shrink_to_fit();
+                                    m->animClipTokens.clear();
+                                    m->animClipTokens.shrink_to_fit();
+                                }
+                                // The CPU prep (flatten, AO, MatVtx, ranges) runs
+                                // here, so the window's add_models only uploads.
+                                auto prep = castlemist::render::prepare_world_model_shared(*m, withSkin);
+                                out.preview = std::move(m);
+                                out.prep = std::move(prep);
                             }
                         } catch (...) {
-                            // counted as failed (null)
+                            // counted as failed (null preview / prep)
+                            out.preview.reset();
+                            out.prep.reset();
                         }
                     }
-                    batch->batch.emplace_back(mi, std::move(out));
+                    batch->batch.push_back(std::move(out));
                     if (batch->batch.size() >= kBatch || Clock::now() - lastPost >= kInterval) {
                         post(wnd, WM_APP_MAPWIN_MODELS, gen, std::move(batch));
                         batch = std::make_unique<MapWinModelsMsg>();

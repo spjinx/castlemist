@@ -208,7 +208,7 @@ struct MapWin {
     std::shared_ptr<const castlemist::world::CollisionIndex> coll;
     std::unique_ptr<castlemist::world::Walker> walker;
     /// Every model the pool delivered (kept to re-add after a lost device).
-    std::vector<std::pair<uint32_t, std::shared_ptr<const ModelPreview>>> models;
+    std::vector<castlemist::render::WorldModelLoad> models;
     size_t modelsArrived = 0;
     int workers = 0, workersDone = 0;
     /// The models not yet taken by the pool; re-sorted around the camera in tick().

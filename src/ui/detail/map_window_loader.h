@@ -16,6 +16,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -24,6 +25,7 @@
 #include <vector>
 
 #include "castlemist/native/gw2dat.h"
+#include "castlemist/render/world_prep.h"
 #include "castlemist/world/stream.h"
 #include "castlemist/world/walk.h"
 #include "castlemist/world/world_scene.h"
@@ -60,11 +62,21 @@ struct MapWinLiveThread {
 /// @brief The models still to load and the scene they index, shared by the
 ///        window (which reorder()s it as the camera moves) and the pool
 ///        (which pops from the front). The scene outlives the queue.
+///        `sequencesOf` is read-only after the constructor.
 struct MapWinModelQueue {
     MapWinModelQueue(std::shared_ptr<const castlemist::world::WorldScene> s, const float cam[3])
-        : scene(std::move(s)), queue(*scene, cam) {}
+        : scene(std::move(s)), queue(*scene, cam), sequencesOf(scene->models.size()) {
+        for (const castlemist::world::PropInstance& p : scene->props) {
+            if (p.animSequence == 0 || p.model >= sequencesOf.size()) continue;
+            std::vector<uint64_t>& seq = sequencesOf[p.model];
+            if (std::find(seq.begin(), seq.end(), p.animSequence) == seq.end()) seq.push_back(p.animSequence);
+        }
+    }
     std::shared_ptr<const castlemist::world::WorldScene> scene;
     castlemist::world::ModelQueue queue;
+    /// Per model: the distinct non-zero PropInstance::animSequence of its
+    /// instances (whether the worker prepares skinning and keeps the clips).
+    std::vector<std::vector<uint64_t>> sequencesOf;
 };
 
 /// @brief Frees a worker payload by its message (WM_APP_MAPWIN_*); for
@@ -88,12 +100,13 @@ struct MapWinCollisionMsg {
     double seconds = 0;
 };
 
-/// @brief WM_APP_MAPWIN_MODELS: up to 32 models (index into scene.models,
-///        preview or null when it failed). `workerDone` is set on a worker's
-///        last post (possibly with an empty batch).
+/// @brief WM_APP_MAPWIN_MODELS: up to 32 models, each with its preview and
+///        its worker-prepared mesh (null when it failed), so the window only
+///        uploads. `workerDone` is set on a worker's last post (possibly with
+///        an empty batch).
 struct MapWinModelsMsg {
     uint64_t gen = 0;
-    std::vector<std::pair<uint32_t, std::shared_ptr<const ModelPreview>>> batch;
+    std::vector<castlemist::render::WorldModelLoad> batch;
     bool workerDone = false;
 };
 
