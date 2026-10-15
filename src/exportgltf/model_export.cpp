@@ -30,7 +30,8 @@ GltfExportResult export_model_gltf(const ModelPreview& model, const std::string&
     GltfWriter w;
 
     std::vector<int> texIndices;
-    write_model_textures(w, model.textures, texIndices, opts.imageDirUtf8, opts.imageUriPrefix);
+    write_model_textures(w, model.textures, texIndices, opts.imageDirUtf8, opts.imageUriPrefix,
+                         opts.sharedImages.get(), opts.sharedImageUriPrefix);
     std::vector<int> materialIndices = write_materials(w, model, texIndices);
     std::vector<MeshExportInfo> meshes = write_meshes(w, model, materialIndices);
     result.particlesJsonPath = write_particle_sidecar(model, materialIndices, glbPath);

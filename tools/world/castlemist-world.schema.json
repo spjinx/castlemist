@@ -131,6 +131,16 @@
         "equirect": { "type": ["string", "null"] }
       }
     },
+    "textures": {
+      "description": "Optional. The shared texture pool (ruling W8): every dat texture once, as <dir>/<fileId>.png; model glbs reference it by relative URI.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dir", "count"],
+      "properties": {
+        "dir": { "type": "string" },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
     "light": {
       "description": "Null when a stored value is not finite (warned).",
       "type": ["object", "null"],

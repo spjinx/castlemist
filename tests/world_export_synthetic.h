@@ -204,7 +204,7 @@ class SyntheticModelSource : public castlemist::exportgltf::ModelSource {
 public:
     int failIndex = -1;            ///< load() of this index returns null
     bool throwDatIo = false;       ///< texture() throws world::DatIoError
-    std::atomic<int> loads{0};
+    std::atomic<int> loads{0}, releases{0};
 
     std::shared_ptr<ModelPreview> load(uint32_t index, uint32_t fileId) override {
         ++loads;
@@ -223,6 +223,7 @@ public:
         t->mips.push_back(std::vector<uint8_t>(4, 128));
         return t;
     }
+    void release_textures() override { ++releases; }
 };
 
 } // namespace castlemist::test_world

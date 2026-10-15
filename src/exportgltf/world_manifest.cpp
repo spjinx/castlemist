@@ -446,6 +446,15 @@ json world_manifest_json(const WorldManifestInput& in) {
         }
     }
     man["sky"] = sky;
+    // textures (optional, ruling W8): only the schema's keys; a malformed block is left out.
+    if (in.textures.is_object()) {
+        const json& t = in.textures;
+        if (t.contains("dir") && t["dir"].is_string() && t.contains("count") && t["count"].is_number_integer() &&
+            t["count"].get<int64_t>() >= 0)
+            man["textures"] = {{"dir", t["dir"]}, {"count", t["count"]}};
+        else
+            notes.push_back("manifest: textures lacks a string dir / count; textures left out");
+    }
     man["light"] = finite_or_null(in.light.is_object() ? in.light : world_light_json(s.environment.light), "light", notes);
 
     // spawn: only map (three finite numbers) and unity = map_to_unity(map), always recomputed.

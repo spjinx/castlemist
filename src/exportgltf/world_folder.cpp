@@ -109,7 +109,7 @@ struct ModelOut {
 /// models/<fileId>/ and releases it. A null load or a failed write fails the
 /// model only; world::DatIoError reaches the pool (fatal).
 void export_one_model(const cw::WorldScene& scene, uint32_t mi, ModelSource& src, const fs::path& dir,
-                      const WorldFolderOptions& opts, ModelOut& out) {
+                      const WorldFolderOptions& opts, const std::shared_ptr<SharedImagePool>& pool, ModelOut& out) {
     const uint32_t fileId = scene.models[mi].fileId;
     ManifestModel& mm = out.mm;
     mm.index = mi;
@@ -170,8 +170,10 @@ void export_one_model(const cw::WorldScene& scene, uint32_t mi, ModelSource& src
         const fs::path folder = dir / "models" / id;
         VrchatFolderOptions vo;
         vo.gltf.rootMatrix = map_to_gltf_root(1.0);
-        vo.gltf.imageDirUtf8 = utf8(folder / "Images");
+        vo.gltf.imageDirUtf8 = utf8(folder / "Images");   // generated images (bakes) only
         vo.gltf.imageUriPrefix = "Images/";
+        vo.gltf.sharedImages = pool;                      // dat textures: <out>/textures/<fileId>.png (W8)
+        vo.gltf.sharedImageUriPrefix = "../../textures/"; // from models/<fileId>/<fileId>.glb
         const VrchatFolderResult r = write_vrchat_folder(*m, utf8(folder), id, fileId, vo);
         m.reset();   // the preview is released once written
         for (const std::string& w : r.warnings) out.warnings.push_back("models: " + id + ": " + w);
@@ -307,7 +309,7 @@ std::map<std::string, uint64_t> folder_bytes(const fs::path& d) {
         const uint64_t n = it->file_size(ec);
         if (top == "sky") b["sky"] += n;
         else if (ext == ".glb" || ext == ".fbx") b["geometry"] += n;
-        else if (ext == ".png" && top == "models") b["prop-textures"] += n;
+        else if (ext == ".png" && (top == "models" || top == "textures")) b["prop-textures"] += n;
         else if (ext == ".png" && top == "cells") b["terrain"] += n;
     }
     return b;
@@ -369,10 +371,12 @@ WorldFolderReport export_world_folder(const cw::WorldScene& scene, ModelSource& 
     }
     lap("world-cells");
 
-    // 2. The model stage.
+    // 2. The model stage; dat textures go once into the shared pool (W8).
+    const auto pool = std::make_shared<SharedImagePool>(utf8(dir / "textures"));
     std::vector<ModelOut> mouts(needed.size());
     run_pool(needed.size(), threads, fatal,
-             [&](size_t k) { export_one_model(scene, needed[k], src, dir, opts, mouts[k]); });
+             [&](size_t k) { export_one_model(scene, needed[k], src, dir, opts, pool, mouts[k]); });
+    src.release_textures();   // W9: the models are written; their textures are not needed again
     lap("models");
     if (fatal.stop) { rep.error = fatal.error; return rep; }
 
@@ -419,6 +423,7 @@ WorldFolderReport export_world_folder(const cw::WorldScene& scene, ModelSource& 
     std::vector<std::shared_ptr<const CappedTexture>> terrainTex(texIds.size());
     run_pool(texIds.size(), threads, fatal,
              [&](size_t k) { terrainTex[k] = src.texture(texIds[k], opts.maxTextureSize); });
+    src.release_textures();   // W9: terrainTex holds them until the cells are baked
     lap("terrain-textures");
     if (fatal.stop) { rep.error = fatal.error; return rep; }
     std::unordered_map<uint32_t, const CappedTexture*> texById;
@@ -518,6 +523,7 @@ WorldFolderReport export_world_folder(const cw::WorldScene& scene, ModelSource& 
     in.counts = {{"chunksUnbaked", unbaked}, {"animated", animated}, {"animatedResolved", resolved},
                  {"clipsFailedDecode", failedDecode}};
     in.warnings = warnings;
+    in.textures = {{"dir", "textures"}, {"count", pool->written()}};
     in.clipOf = [&clipOf](uint32_t pi) {
         const auto it = clipOf.find(pi);
         return it == clipOf.end() ? std::string() : it->second;

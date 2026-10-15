@@ -18,7 +18,8 @@ namespace castlemist::exportgltf {
 /// Models: load_model_by_fileid(dat, id, ModelLoadOptions{wantGame,
 /// /*decodeTextures=*/false}). Textures: decode_texture_capped, cached by
 /// (fileId, maxSize) under a mutex; each is decoded once, by the first worker
-/// that asks, while the others wait for it. A load that throws is a failed
+/// that asks, while the others wait for it; release_textures() empties the
+/// cache. A load that throws is a failed
 /// model (null), except a world::DatIoError, which is rethrown. @p dat must
 /// outlive the source.
 ///

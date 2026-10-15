@@ -65,6 +65,11 @@ public:
         return slot->tex;
     }
 
+    void release_textures() override {
+        std::lock_guard<std::mutex> lk(mu_);
+        cache_.clear();   // waiters hold their slot's shared_ptr; none run concurrently (world_folder.h)
+    }
+
 private:
     struct Slot { bool ready = false; std::shared_ptr<const CappedTexture> tex; };
     Gw2Dat& dat_;

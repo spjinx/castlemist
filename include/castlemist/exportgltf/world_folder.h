@@ -8,9 +8,12 @@
 ///     needed models are known;
 ///  2. the model stage: each needed model loaded through ModelSource, its
 ///     textures filled from ModelSource::texture at the cap, written as a
-///     VRChat folder models/<fileId>/ (root map_to_gltf_root(1), images under
-///     Images/), measured (triangles, textures, clips, dark decals, uv scroll)
-///     and released -- on a bounded pool;
+///     VRChat folder models/<fileId>/ (root map_to_gltf_root(1)), measured
+///     (triangles, textures, clips, dark decals, uv scroll) and released -- on
+///     a bounded pool. Dat textures go once into the shared pool textures/
+///     (<fileId>.png, referenced as ../../textures/<fileId>.png; ruling W8);
+///     generated images stay in models/<fileId>/Images/. The source's texture
+///     cache is then released (ruling W9);
 ///  3. partition_cells with those measurements;
 ///  4. the kept cells' terrain textures, on the pool;
 ///  5. each cell baked (albedo, water) and written (cells/<id>.glb), on the pool;
@@ -49,6 +52,11 @@ public:
     virtual std::shared_ptr<ModelPreview> load(uint32_t index, uint32_t fileId) = 0;
     /// decode_texture_capped result; null or empty mips = failed. Thread-safe.
     virtual std::shared_ptr<const CappedTexture> texture(uint32_t fileId, int maxSize) = 0;
+    /// Drops every cached texture (ruling W9: called after the model stage and
+    /// after the terrain textures are fetched, so peak memory does not grow
+    /// with the map). Callers keep the shared_ptrs they hold. Not concurrent
+    /// with texture().
+    virtual void release_textures() {}
 };
 
 /// @brief What one export did. `dir` and `manifest` are UTF-8 paths.

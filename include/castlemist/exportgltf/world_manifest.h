@@ -92,6 +92,7 @@ struct WorldManifestInput {
     const castlemist::world::WorldScene* scene = nullptr; const WorldFolderOptions* opts = nullptr;
     std::vector<ManifestModel> models; std::vector<ManifestCell> cells;
     nlohmann::json sky, light, spawn, counts; std::vector<std::string> warnings;
+    nlohmann::json textures;   ///< {dir: string, count: integer >= 0} (ruling W8) or null = left out
     std::function<std::string(uint32_t propIndex)> clipOf;   ///< "" = null
 };
 

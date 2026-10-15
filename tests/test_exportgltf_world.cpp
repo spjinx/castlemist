@@ -1211,6 +1211,24 @@ CM_TEST(world_manifest, variants_validate) {
     }
 }
 
+CM_TEST(world_manifest, textures_pool_optional) {
+    // Ruling W8: `textures` is optional; written with only the schema's keys, left out when malformed.
+    SyntheticManifest m;
+    make_synthetic(m);
+    json man = world_manifest_json(m.in);
+    CHECK_FALSE(man.contains("textures"));
+    check_valid(man, "no textures");
+    m.in.textures = json{{"dir", "textures"}, {"count", 7}, {"extra", 1}};
+    man = world_manifest_json(m.in);
+    CHECK(man["textures"] == json({{"dir", "textures"}, {"count", 7}}));
+    check_valid(man, "textures");
+    m.in.textures = json{{"dir", 3}};
+    man = world_manifest_json(m.in);
+    CHECK_FALSE(man.contains("textures"));
+    CHECK(has_warning(man, "textures lacks"));
+    check_valid(man, "malformed textures");
+}
+
 CM_TEST(world_manifest, non_finite_never_written) {
     // Ruling W6: never null for a number; optional blocks go null, bad cells are dropped.
     SyntheticManifest m;
@@ -1323,10 +1341,26 @@ CM_TEST(world_folder, synthetic_export_complete) {
     CHECK(man["cells"][0]["albedo"] == json("cells/c0_0_2x2_albedo.png"));
     CHECK(man["cells"][0]["albedoSize"] == json({32, 32}));
     CHECK(man["cells"][0]["water"]["texture"] == json("cells/c0_0_2x2_water.png"));
-    // Images by URI under the model folder, named by fileId.
-    CHECK(fs::exists(dir / "models" / "101" / "Images" / "42.png"));
-    const json g = glb_json(dir / "models" / "101" / "101.glb");
-    CHECK(scene_root(g).value("name", std::string()) == "GW2_MapToGltf");
+    // Ruling W8: dat textures once in the shared pool, referenced from each model folder.
+    CHECK(fs::exists(dir / "textures" / "42.png"));
+    CHECK_FALSE(fs::exists(dir / "textures" / "42.png.tmp"));
+    CHECK_FALSE(fs::exists(dir / "models" / "101" / "Images" / "42.png"));
+    CHECK_FALSE(fs::exists(dir / "models" / "102" / "Images" / "42.png"));
+    CHECK(man["textures"] == json({{"dir", "textures"}, {"count", 1}}));
+    for (const char* id : {"101", "102"}) {
+        const fs::path folder = dir / "models" / id;
+        const json g = glb_json(folder / (std::string(id) + ".glb"));
+        CHECK(scene_root(g).value("name", std::string()) == "GW2_MapToGltf");
+        bool pooled = false;
+        for (const json& im : g["images"]) {
+            const std::string uri = im.value("uri", std::string());
+            CHECK_FALSE(uri.empty());
+            if (!uri.empty()) CHECK(fs::exists(folder / fs::path(uri)));   // every URI resolves from the glb
+            if (uri == "../../textures/42.png") pooled = true;
+        }
+        CHECK(pooled);
+    }
+    CHECK(src.releases.load() >= 1);   // ruling W9
     // The report agrees with the manifest.
     CHECK_EQ(r.cells, size_t(1));
     CHECK_EQ(r.modelsWritten, size_t(2));

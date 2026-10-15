@@ -124,6 +124,8 @@ public:
     void set_image_output(const std::string& dirUtf8, const std::string& uriPrefix);
     /// @brief The first image file write failure since construction; empty when none.
     const std::string& image_error() const { return imageError_; }
+    /// @brief Records @p e as ::image_error unless one is already recorded.
+    void set_image_error(const std::string& e) { if (imageError_.empty()) imageError_ = e; }
 
     int add_node(nlohmann::json node);           ///< Pushes to `nodes`, returns its index.
     /// @brief Appends `childIndex` to an already-added node's `children` list
@@ -165,9 +167,13 @@ private:
 ///        (`imageDirUtf8`, `uriPrefix`) first, so these and every later image
 ///        are written as files and referenced by URI. Empty leaves `w` as it is.
 /// @return False when an image file could not be written (::GltfWriter::image_error).
+/// @param shared     Non-null: textures with a fileId go into this pool once and
+///        are referenced as `sharedPrefix + SharedImagePool::file_name(fileId)`
+///        (GltfExportOptions::sharedImages); a failed pool write is an image_error.
 bool write_model_textures(GltfWriter& w, const std::vector<ModelTextureCPU>& textures,
                           std::vector<int>& texIndices, const std::string& imageDirUtf8 = {},
-                          const std::string& uriPrefix = {});
+                          const std::string& uriPrefix = {}, SharedImagePool* shared = nullptr,
+                          const std::string& sharedPrefix = {});
 
 /// @brief PNG bytes for an already-decoded texture; empty when it has no
 ///        pixels or encoding fails. Lets callers write files through a UTF-8

@@ -5,6 +5,10 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -37,6 +41,35 @@
 /// @{
 
 namespace castlemist::exportgltf {
+
+/// @brief A folder of dat textures shared by many exports (the world export's
+///        `textures/`, ruling W8): each fileId is written once, as
+///        `<dir>/<fileId>.png`. Thread-safe: the first caller for a fileId
+///        encodes and writes it (to `<fileId>.png.tmp`, then renamed), and
+///        concurrent callers for the same fileId wait until it is in place, so
+///        nobody references a half-written file.
+class SharedImagePool {
+public:
+    explicit SharedImagePool(std::string dirUtf8);
+    ~SharedImagePool();
+    SharedImagePool(const SharedImagePool&) = delete;
+    SharedImagePool& operator=(const SharedImagePool&) = delete;
+
+    /// @brief `<fileId>.png` exists in the pool after this returns true:
+    ///        written now from @p encodePng (PNG bytes; empty = failure), or
+    ///        earlier. False (with @p error) when encoding or writing failed;
+    ///        a failed fileId stays failed.
+    bool ensure(uint32_t fileId, const std::function<std::vector<uint8_t>()>& encodePng,
+                std::string* error = nullptr);
+    /// @brief The pool's file name of @p fileId: "<fileId>.png".
+    static std::string file_name(uint32_t fileId);
+    const std::string& dir() const;
+    size_t written() const;   ///< fileIds written successfully so far
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 /// @brief Tunables for one export call.
 struct GltfExportOptions {
@@ -74,6 +107,15 @@ struct GltfExportOptions {
     /// @brief Prepended to the file name to form the image `uri`, e.g.
     ///        "Images/" for a folder beside the .glb. Only read with @ref imageDirUtf8.
     std::string imageUriPrefix;
+
+    /// @brief Set (world export only): every dat texture of the model
+    ///        (ModelPreview::textures, fileId != 0) goes into this pool once
+    ///        and is referenced as @ref sharedImageUriPrefix + "<fileId>.png";
+    ///        generated images still follow @ref imageDirUtf8. Null (the
+    ///        default) changes nothing.
+    std::shared_ptr<SharedImagePool> sharedImages;
+    /// @brief The pool folder relative to the .glb, e.g. "../../textures/".
+    std::string sharedImageUriPrefix;
 };
 
 /// @brief Result of one export call.
