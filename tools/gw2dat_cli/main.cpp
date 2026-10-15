@@ -77,6 +77,7 @@
 #include "castlemist/character/manifest_json.h"
 #include "castlemist/db/index_db.h"
 #include "castlemist/npc/catalogue.h"
+#include "castlemist/npc/export.h"
 #include "castlemist/npc/tokens.h"
 #include "castlemist/extract/entry_extractor.h"
 #include "castlemist/exportgltf/gltf_export.h"
@@ -1986,6 +1987,19 @@ void cmd_npc_show(const Args& a) {
     emit(j);
 }
 
+// Export one NPC (--id N) to --out-dir D: body.glb, weapon_<slot>.glb, manifest.json (needs --dat).
+void cmd_npc_export(const Args& a) {
+    castlemist::npc::Catalogue cat = ensure_npc(a);
+    const uint32_t id = static_cast<uint32_t>(to_u64(need(a, "id")));
+    need(a, "out-dir");
+    const castlemist::npc::NpcRecord* n = cat.find(id);
+    if (!n) fail("no npc with id " + std::to_string(id));
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    castlemist::npc::ExportResult r = castlemist::npc::export_npc(dat, *n, std::filesystem::path(utf8_arg("--out-dir")));
+    emit({{"ok", r.ok}, {"folder", r.folder.generic_string()}, {"files", r.files}, {"notes", r.notes}});
+}
+
 // What uses a file: the content objects that list --file-id (or --base-id's
 // fileIds) as an asset, each with its chat link and the items that grant it.
 // --names adds display names from the public GW2 API (goes online, no key).
@@ -2539,6 +2553,7 @@ int main(int argc, char** argv) {
         else if (cmd == "users") cmd_users(a);
         else if (cmd == "npc-list") cmd_npc_list(a);
         else if (cmd == "npc-show") cmd_npc_show(a);
+        else if (cmd == "npc-export") cmd_npc_export(a);
         else if (cmd == "look-options") cmd_look_options(a);
         else if (cmd == "composite-types") cmd_composite_types(a);
         else if (cmd == "look-set") cmd_look_set(a);

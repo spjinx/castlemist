@@ -8,8 +8,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include <filesystem>
 #include <string>
 #include <vector>
+
+struct Gw2Dat;
 
 namespace castlemist::npc {
 
@@ -35,5 +38,16 @@ nlohmann::json export_manifest(const NpcRecord&, const std::vector<ClipInfo>& cl
 
 /// Notes derivable from the record alone: a missing body model, then one per weapon without a skin model.
 std::vector<std::string> base_notes(const NpcRecord&);
+
+/// What export_npc wrote.
+struct ExportResult {
+    bool ok = false;                   ///< True when manifest.json was written.
+    std::filesystem::path folder;      ///< out_dir / export_folder_name(record).
+    std::vector<std::string> files;    ///< File names written, manifest.json last.
+    std::vector<std::string> notes;    ///< base_notes followed by failures in the order they happened.
+};
+
+/// Writes body.glb, weapon_<slot>.glb and manifest.json for one NPC into out_dir/export_folder_name(r). Never throws.
+ExportResult export_npc(Gw2Dat& dat, const NpcRecord&, const std::filesystem::path& out_dir);
 
 }  // namespace castlemist::npc

@@ -2,6 +2,12 @@
 
 #include "castlemist/npc/tokens.h"
 
+#include "castlemist/exportgltf/gltf_export.h"
+#include "castlemist/extract/entry_extractor.h"
+
+#include <exception>
+#include <fstream>
+
 namespace castlemist::npc {
 
 std::string export_folder_name(const NpcRecord& r) {
@@ -55,6 +61,69 @@ std::vector<std::string> base_notes(const NpcRecord& r) {
     for (const Weapon& w : r.weapons)
         if (w.model == 0) notes.push_back("weapon " + std::to_string(w.slot) + ": no skin model");
     return notes;
+}
+
+ExportResult export_npc(Gw2Dat& dat, const NpcRecord& r, const std::filesystem::path& out_dir) {
+    ExportResult res;
+    res.notes = base_notes(r);
+    std::vector<ClipInfo> clips;
+    std::vector<WrittenWeapon> weapons;
+    try {
+        res.folder = out_dir / export_folder_name(r);
+        std::filesystem::create_directories(res.folder);
+    } catch (const std::exception& e) {
+        res.notes.push_back(std::string("folder: ") + e.what());
+        return res;
+    }
+
+    // Loads one model and writes it; returns true when the glb was written. Fills `clips` when asked.
+    auto write_model = [&](uint32_t model, const std::string& file, std::vector<ClipInfo>* out_clips) {
+        try {
+            std::shared_ptr<ModelPreview> m = load_model_by_fileid(dat, model);
+            if (!m) {
+                res.notes.push_back(file + ": model failed to load");
+                return false;
+            }
+            if (out_clips)
+                for (const auto& c : m->animClips) out_clips->push_back({c.name, c.duration});
+            auto er = exportgltf::export_model_gltf(*m, (res.folder / file).string());
+            if (!er.ok) {
+                res.notes.push_back(file + ": " + er.error);
+                return false;
+            }
+            res.files.push_back(file);
+            return true;
+        } catch (const std::exception& e) {
+            res.notes.push_back(file + ": " + e.what());
+            return false;
+        }
+    };
+
+    if (r.model != 0) write_model(r.model, "body.glb", &clips);
+    for (const Weapon& w : r.weapons) {
+        if (w.model == 0) continue;
+        std::string file = "weapon_" + std::to_string(w.slot) + ".glb";
+        bool written = write_model(w.model, file, nullptr);
+        weapons.push_back({w, written ? file : std::string()});
+    }
+
+    try {
+        std::vector<std::string> files = res.files;
+        files.push_back("manifest.json");
+        nlohmann::json j = export_manifest(r, clips, weapons, files, res.notes);
+        std::ofstream out(res.folder / "manifest.json", std::ios::binary);
+        out << j.dump(2) << '\n';
+        out.close();
+        if (out) {
+            res.files = files;
+            res.ok = true;
+        } else {
+            res.notes.push_back("manifest.json: write failed");
+        }
+    } catch (const std::exception& e) {
+        res.notes.push_back(std::string("manifest.json: ") + e.what());
+    }
+    return res;
 }
 
 }  // namespace castlemist::npc
