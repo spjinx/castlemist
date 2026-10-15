@@ -693,6 +693,8 @@ CM_TEST(world_materials, only_scroll_only_entries_animate) {
     CHECK(!tex_transform_animates(a));
     a = t; a.rotate = 0.1f;
     CHECK(!tex_transform_animates(a));
+    a = t; a.scroll[0] = a.scroll[1] = 0;   // nothing scrolls: not an animating entry
+    CHECK(!tex_transform_animates(a));
 }
 
 CM_TEST(world_materials, scroll_entry_matches_diffuse_uv) {
@@ -739,12 +741,14 @@ CM_TEST(world_view, motion_off_freezes_time) {
     WorldView v;
     if (!v.create(wnd)) return;
     CHECK(v.motion());
-    v.set_motion(false);
     v.set_time(2.5);
-    CHECK_EQ(v.time(), 0.0);
-    v.set_motion(true);
-    CHECK_EQ(v.time(), 2.5);
+    v.set_motion(false);
+    CHECK_EQ(v.time(), 2.5);   // frozen where it was, not rewound to 0
     CHECK(!v.animating());
+    v.set_motion(true);
+    CHECK_EQ(v.time(), 2.5);   // resumes from there
+    v.set_time(3.0);
+    CHECK_EQ(v.time(), 3.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -869,6 +873,35 @@ CM_TEST(world_materials, clip_time_wraps) {
     CHECK_EQ(clip_time(std::nan(""), 1.0f), 0.0);
 }
 
+CM_TEST(world_materials, decode_failed_clip_is_not_a_miss) {
+    HWND wnd = hidden_window(160, 120);
+    if (!wnd) SKIP("no window");
+    struct Closer { HWND h; ~Closer() { if (h) DestroyWindow(h); } } closer{wnd};
+    WorldView v;
+    if (!v.create(wnd)) SKIP("no D3D11 device (hardware or WARP)");
+    castlemist::world::WorldScene s = cube_scene();
+    s.props[0].animSequence = 463;   // a clip the model has but that failed to decode
+    s.props.push_back(s.props[0]);
+    s.props[1].animSequence = 6351;  // a clip the model does not have at all
+    s.props[1].world[13] = 300;
+    v.set_world(s);
+    auto mp = std::const_pointer_cast<ModelPreview>(rigged_cube(2));
+    mp->animationTokens = {463};
+    mp->animClips.clear();
+    mp->animClipTokens.clear();
+    v.add_models({skinned_load(mp)});
+    CHECK_EQ(v.stats().animated, 0);
+    CHECK_EQ(v.stats().unresolvedClips, 2);
+    CHECK_EQ(v.stats().clipsFailedDecode, 1);
+    bool failed = false, miss = false;
+    for (const std::string& l : v.warnings()) {
+        failed = failed || (l.find("1 animated placements name a clip that failed to decode") != std::string::npos);
+        miss = miss || (l.find("1 animated placements name no clip") != std::string::npos);
+    }
+    CHECK(failed);
+    CHECK(miss);
+}
+
 CM_TEST(world_materials, animated_instances_counted) {
     for (const size_t joints : {size_t{2}, size_t{300}}) {
         HWND wnd = hidden_window(160, 120);
@@ -901,9 +934,9 @@ CM_TEST(world_materials, animated_instances_counted) {
             CHECK_EQ(v.stats().unresolvedClips, 1);
             CHECK(v.animating());
             CHECK(v.focus_animated(cam));
-            // 4x the radius (50 sqrt 3) back along the view direction from the cube's centre.
+            // 4x the padded radius (1.5 x 50 sqrt 3) back along the view direction from the cube's centre.
             const float dx = cam.pos[0], dy = cam.pos[1], dz = cam.pos[2] + 500;
-            CHECK_NEAR(std::sqrt(dx * dx + dy * dy + dz * dz), 4.0f * 50.0f * std::sqrt(3.0f), 0.5f);
+            CHECK_NEAR(std::sqrt(dx * dx + dy * dy + dz * dz), 4.0f * 1.5f * 50.0f * std::sqrt(3.0f), 0.5f);
             CHECK(v.animated_screen_rect(cam, rect));
             CHECK(rect[2] > rect[0] && rect[3] > rect[1]);
             v.set_motion(false);
@@ -941,7 +974,8 @@ CM_TEST(world_materials, skinned_prop_follows_its_clip) {
     const std::vector<uint8_t> bind = shot("cm_wm_skin_bind.bmp");
     v.set_time(1.7);   // wraps to 0.7: the child has jumped 3000 along +Y, out of view
     const std::vector<uint8_t> moved = shot("cm_wm_skin_moved.bmp");
-    v.set_motion(false);   // time 0: bind pose again
+    v.set_time(0.1);
+    v.set_motion(false);   // frozen at the time it had: bind pose again
     const std::vector<uint8_t> frozen = shot("cm_wm_skin_frozen.bmp");
     v.set_motion(true);
     v.set_shading(WorldShading::Geometry);   // Geometry draws everything static
@@ -1014,16 +1048,19 @@ CM_TEST(world_materials, water_bump_angle_and_strength_settings) {
     CHECK(std::fabs(water_bump_strength(23.7268f, 0.02f) - 0.474536f) < 1e-5f);
     CHECK_EQ(water_bump_strength(23.7268f, 0.0f), 0.0f);
     CHECK_EQ(water_bump_strength(-1.0f, 0.02f), 0.0f);   // a negative amount flips no normals
-    bool angle = false, scale = false;
+    bool angle = false, scale = false, sign = false;
     for (const std::string& l : material_setting_warnings(cfg)) {
         angle = angle || (l.find("waterBumpAngleDegrees = on") != std::string::npos &&
                           l.find("UNPROVEN") != std::string::npos && l.find("\xc2\xa7" "6") != std::string::npos);
+        sign = sign || (l.find("water bump: castlemist's choice") != std::string::npos &&
+                        l.find("sign UNPROVEN") != std::string::npos && l.find("§" "6") != std::string::npos);
         scale = scale || (l.find("waterBumpStrengthScale = 0.02") != std::string::npos &&
                           l.find("castlemist's choice") != std::string::npos &&
                           l.find("\xc2\xa7" "6") != std::string::npos);
     }
     CHECK(angle);
     CHECK(scale);
+    CHECK(sign);
 }
 
 CM_TEST(world_materials, water_depth_mix) {

@@ -78,6 +78,8 @@ struct WorldViewStats {
     /// section 5), or the model has no skin stream (more than 256 joints, or
     /// prepared without skin).
     int unresolvedClips = 0;
+    /// Of unresolvedClips: the placement's clip exists (animationTokens) but failed to decode.
+    int clipsFailedDecode = 0;
     /// The water plane has an env preset (spec WaterPass):
     /// `environment.water[light.presetIndex]` exists. Materials shading then
     /// draws it from the preset; Geometry, or no preset, the flat sub-project
@@ -170,7 +172,7 @@ public:
     bool motion() const;
     /// @brief The material clock, seconds; the window drives it.
     void set_time(double seconds);
-    /// @brief Effective clock: motion ? the set_time value : 0.
+    /// @brief The clock set by set_time; Motion off freezes it (animating() is false), it does not reset it.
     double time() const;
     /// @brief Materials shading && motion && (a scrolling prop material, a
     ///        water preset or a playing animated placement is loaded); the

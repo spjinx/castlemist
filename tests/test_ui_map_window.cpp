@@ -208,6 +208,8 @@ CM_TEST(map_window, material_status_text) {
     st.animated = 5;
     st.unresolvedClips = 1;
     CHECK(mapwin_material_status(st) == L"tex 12 (3.4 MB)  anim 5/1");
+    st.texturesFailed = 3;
+    CHECK(mapwin_material_status(st) == L"tex 12 (3.4 MB)  anim 5/1 (3 failed)");
 }
 
 CM_TEST(map_window, clock_step) {

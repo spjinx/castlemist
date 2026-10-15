@@ -140,7 +140,7 @@ std::vector<std::string> material_setting_warnings(const WorldMaterialSettings& 
                      "R,G,B / 255, as parseMapEnv reads env colours (note \xc2\xa7" "6)");
     out.emplace_back("water bump: castlemist's choice, textureFileIds[waterBumpTextureIndex] read as UNORM xy*2-1, "
                      "N = normalize((n0.xy + n1.xy) * bumpAmount * waterBumpStrengthScale, -1); no scene depth, "
-                     "colour copy or reflection (note \xc2\xa7" "6)");
+                     "colour copy or reflection; normal xy sign and sun-direction convention sign UNPROVEN (note \xc2\xa7" "6)");
     line("waterSpecPower = %g: castlemist's choice (note \xc2\xa7" "6)", static_cast<double>(s.waterSpecPower));
     line("waterBumpAngleDegrees = %s: UNPROVEN, bumpAngle0/1 read as degrees (stored 143.3 / 61.7 on Queensdale); "
          "no shader transcription settles the unit (note \xc2\xa7" "6)",
@@ -209,7 +209,7 @@ WorldAlpha world_alpha_mode(const ModelMaterialCPU& mat, bool diffuseHasCutout, 
 
 bool tex_transform_animates(const ModelTexTransformCPU& t) {
     return t.columns == 1 && t.rows == 1 && t.count == 1 && t.scrollFreq[0] == 0 && t.scrollFreq[1] == 0 &&
-           t.scale[0] == 0 && t.scale[1] == 0 && t.scaleFreq[0] == 0 && t.scaleFreq[1] == 0 && t.rotate == 0 &&
+           (t.scroll[0] != 0 || t.scroll[1] != 0) && t.scale[0] == 0 && t.scale[1] == 0 && t.scaleFreq[0] == 0 && t.scaleFreq[1] == 0 && t.rotate == 0 &&
            t.rotate2 == 0;
 }
 

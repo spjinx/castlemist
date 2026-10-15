@@ -273,7 +273,7 @@ struct WorldView::Impl {
     /// Per model, per clip index: the pose source of each clip an instance
     /// plays (add_models); bones borrow `previews[model]`.
     std::vector<std::vector<PoseRig>> rigs;
-    int clipMisses = 0, skinMisses = 0;   ///< unresolvedClips split: no such clip / no skin stream
+    int clipMisses = 0, skinMisses = 0, clipDecodeFails = 0;   ///< unresolvedClips split: no such clip / no skin stream / clip exists but failed to decode
 
     TextureCache textures;  ///< fileId -> texture, filled by add_textures
     WorldShading shading = WorldShading::Materials;
@@ -499,6 +499,9 @@ struct WorldView::Impl {
         if (FAILED(dev->CreateSamplerState(&sm, &sWrap))) return false;
         sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
         if (FAILED(dev->CreateSamplerState(&sm, &sClamp))) return false;
+        // castlemist's choice: the flat normal bound for a missing terrain
+        // normal slot has alpha 0 (no specular); BC5 normal maps sample
+        // alpha 1, as in the game.
         const uint8_t flat[4] = {128, 128, 255, 0};
         if (!(flatNormal = texel_srv(flat))) return false;
 
@@ -755,7 +758,7 @@ struct WorldView::Impl {
         // UNPROVEN units live, note §6): offset at (0, 0), then the x and y
         // axes. The offset is frac'd here (the bump wraps), so float UVs stay
         // precise however long the clock runs.
-        const double t = motion ? clock : 0.0;
+        const double t = clock;   // Motion off freezes the clock (the window stops advancing it); it does not rewind
         const float unit = mat.waterTileUnit;
         float* M[2] = {c.bumpM0, c.bumpM1};
         for (int k = 0; k < 2; ++k) {
@@ -997,7 +1000,7 @@ struct WorldView::Impl {
         for (int k = 0; k < static_cast<int>(WorldAlpha::Count); ++k) blendOf[k] = bsProp[k].Get();
         const PropMatPipeline pm{pl,      ilProp.Get(), vsProp.Get(), psProp.Get(), cbMat.Get(), sWrap.Get(),
                                  blendOf, &textures,    mat.srgbColourTextures,
-                                 motion ? clock : 0.0, mat.uvScrollUnitSeconds};
+                                 clock, mat.uvScrollUnitSeconds};
         // The skinned pass: kPropSkinned's PSAo for the AO look, PSMain textured.
         PropMatPipeline sk = pm;
         sk.ao = InstPipeline{ilSkin.Get(), vsSkin.Get(), psSkinAo.Get(), bsAlpha.Get(), dssNoWrite.Get(), dss.Get()};
@@ -1097,7 +1100,7 @@ void WorldView::set_world(const castlemist::world::WorldScene& s) {
     d->modelTried.assign(s.models.size(), 0);
     d->previews.assign(s.models.size(), nullptr);
     d->rigs.assign(s.models.size(), {});
-    d->clipMisses = d->skinMisses = 0;
+    d->clipMisses = d->skinMisses = d->clipDecodeFails = 0;
     d->instOf.assign(s.models.size(), {});
     d->props.clear();
     d->colSrc = castlemist::world::Collision{};
@@ -1229,7 +1232,15 @@ void WorldView::add_models(const std::vector<WorldModelLoad>& batch) {
             const int c = castlemist::world::resolve_prop_clip(pv.animClipTokens, in.animSequence);
             if (c < 0 || static_cast<size_t>(c) >= pv.animClips.size()) {
                 ++d->st.unresolvedClips;
-                ++d->clipMisses;
+                // animationTokens holds every clip token, animClipTokens only
+                // the decoded ones: present there, the clip exists but failed.
+                if (std::find(pv.animationTokens.begin(), pv.animationTokens.end(), in.animSequence) !=
+                    pv.animationTokens.end()) {
+                    ++d->clipDecodeFails;
+                    ++d->st.clipsFailedDecode;
+                } else {
+                    ++d->clipMisses;
+                }
                 continue;
             }
             if (!skinnable) {
@@ -1238,6 +1249,9 @@ void WorldView::add_models(const std::vector<WorldModelLoad>& batch) {
                 continue;
             }
             in.clip = c;
+            // castlemist's choice: an animated limb can leave the bind-pose
+            // sphere, so skinned instances cull and pick LOD with it padded x1.5.
+            in.radiusW *= 1.5f;
             ++d->st.animated;
             std::vector<PoseRig>& rs = d->rigs[m];
             if (rs.size() < pv.animClips.size()) rs.resize(pv.animClips.size());
@@ -1415,7 +1429,7 @@ const WorldMaterialSettings& WorldView::material_settings() const { return d->ma
 void WorldView::set_motion(bool on) { d->motion = on; }
 bool WorldView::motion() const { return d->motion; }
 void WorldView::set_time(double seconds) { d->clock = seconds; }
-double WorldView::time() const { return d->motion ? d->clock : 0.0; }
+double WorldView::time() const { return d->clock; }
 bool WorldView::animating() const {
     return d->shading == WorldShading::Materials && d->motion &&
            (d->scrollingMaterials > 0 || d->hasWater || d->st.animated > 0);
@@ -1475,6 +1489,9 @@ std::vector<std::string> WorldView::warnings() const {
         w.push_back(std::to_string(d->clipMisses) +
                     " animated placements name no clip of their model; drawn in bind pose (fallback rule UNPROVEN, "
                     "note \xc2\xa7" "5)");
+    if (d->clipDecodeFails > 0)
+        w.push_back(std::to_string(d->clipDecodeFails) +
+                    " animated placements name a clip that failed to decode; drawn in bind pose");
     if (d->skinMisses > 0)
         w.push_back(std::to_string(d->skinMisses) +
                     " animated placements name a clip of a model without a skin stream (more than 256 joints, or "

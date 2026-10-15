@@ -405,7 +405,7 @@ void recover_device(MapWin& m) {
     apply_shading_buttons(m);
     if (m.headless && m.headless->fixedTime) m.view.set_time(m.headless->time);
     // create() dropped the texture cache with the old device; the decoded
-    // textures were not kept, so they stay gone (the models draw untextured).
+    // textures were not kept, so they stay gone (terrain, props and water fall back).
     flash(m, L"The graphics device was reset; the map was reloaded onto a new one. "
              L"Textures are not restored after a device reset; reopen the window to see them.",
           10);
@@ -475,7 +475,7 @@ void headless_capture(MapWin& m) {
                   "map=%u ok=%d models=%zu loaded=%d failed=%d props=%zu visible=%d draws=%d ktris=%d ms=%.2f "
                   "chunks=%d collisionTris=%zu warnings=%zu world_s=%.2f collision_s=%.2f models_s=%.2f total_s=%.2f "
                   "add_batches=%zu add_ms_median=%.2f add_ms_max=%.2f "
-                  "shading=%s time=%.2f textures=%d textureMB=%.1f texturesFailed=%d animated=%d unresolvedClips=%d "
+                  "shading=%s time=%.2f textures=%d textureMB=%.1f texturesFailed=%d animated=%d unresolvedClips=%d clipsFailedDecode=%d "
                   "chunksUntextured=%d materialsUntextured=%d waterPreset=%d animRect=%d,%d,%d,%d "
                   "shot=%d timeout=%d error=\"%s\"\n",
                   m.mapFileId, (m.scene && m.viewOk) ? 1 : 0, models_total(m), st.modelsLoaded, st.modelsFailed,
@@ -483,7 +483,7 @@ void headless_capture(MapWin& m) {
                   m.coll ? m.coll->triangle_count() : size_t(0), m.scene ? m.scene->warnings.size() : size_t(0),
                   m.worldSeconds, m.collSeconds, m.modelsSeconds, elapsed, add.size(), addMedian, addMax,
                   m.view.shading() == castlemist::render::WorldShading::Geometry ? "geometry" : "materials",
-                  m.view.time(), st.textures, st.textureMB, st.texturesFailed, st.animated, st.unresolvedClips,
+                  m.view.time(), st.textures, st.textureMB, st.texturesFailed, st.animated, st.unresolvedClips, st.clipsFailedDecode,
                   st.chunksUntextured, st.materialsUntextured, st.waterPreset ? 1 : 0, animRect[0], animRect[1],
                   animRect[2], animRect[3], shot ? 1 : 0,
                   elapsed >= kHeadlessTimeout ? 1 : 0, m.error.c_str());
@@ -880,7 +880,9 @@ double mapwin_clock_step(double clock, float dt, bool motionOn) {
 std::wstring mapwin_material_status(const castlemist::render::WorldViewStats& st) {
     wchar_t buf[96];
     swprintf(buf, 96, L"tex %d (%.1f MB)  anim %d/%d", st.textures, st.textureMB, st.animated, st.unresolvedClips);
-    return buf;
+    std::wstring s = buf;
+    if (st.texturesFailed > 0) s += L" (" + std::to_wstring(st.texturesFailed) + L" failed)";
+    return s;
 }
 
 void close_map_window() {

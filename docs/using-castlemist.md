@@ -201,7 +201,7 @@ time you turn it on. The water is a single plane at the stored height.
   headless stats line (`chunksUntextured`, `materialsUntextured`).
 - **Motion** plays the scene's time: animated props play their named clip
   (looping from t = 0), and prop materials whose UVs scroll scroll. Off, the
-  clock stops and everything holds its pose. A long stall does not make the
+  clock stops and everything freezes where it was; on resumes from there. A long stall does not make the
   motion jump: the clock moves at most 0.1 s per step.
 
 Terrain `uvData` (the Spirit Vale soul rivers) is read but not animated. Not
@@ -212,8 +212,8 @@ status line counts them (Lion's Arch has 134 against 2 on Queensdale and 10 on
 Spirit Vale, a finding not yet explained).
 
 Textures are not restored after a graphics device reset: the window reloads
-the map onto a new device and tells you so, and the props draw untextured
-until you reopen the window.
+the map onto a new device and tells you so, and terrain, props and water fall
+back to the plain look until you reopen the window.
 
 **Picking.** Left-click (without dragging) a prop to open its model in the main
 window's preview, with the usual Full / Shader / Game 1:1 views, dyes and
