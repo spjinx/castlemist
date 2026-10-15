@@ -35,8 +35,10 @@ namespace Castlemist
         /// ModelImporter.bakeAxisConversion for every castlemist world .fbx.
         /// Measured with the probe (Task 1, 2026-10-15, Unity 6000.0.42f1,
         /// Blender 4.5 FBX with axis_forward '-Z', axis_up 'Y'): off, east and
-        /// north import as -X and -Z; on, as +X and +Z. Not yet measured on
-        /// Unity 2022.3 (VRChat's version).
+        /// north import as -X and -Z; on, as +X and +Z. The same on Unity
+        /// 2022.3.22f1 (VRChat's version; world export Task 12), where the
+        /// skinned probe also imports un-mirrored with its clip moving the
+        /// right way.
         public const bool BakeAxisConversion = true;
 
         static readonly string[] Axes = { "east", "north", "up" };

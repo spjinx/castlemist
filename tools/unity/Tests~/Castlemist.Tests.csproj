@@ -1,0 +1,21 @@
+<!-- Unity-free tests of the importer's manifest reader (MiniJson, WorldManifest,
+     ImportSummary). Unity ignores folders ending in '~'. Not run by CI:
+       dotnet run with the project and an export dir after the argument separator
+     (for example build/debug/world_fixture). -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Tests.cs" />
+    <Compile Include="../Castlemist/Editor/MiniJson.cs" />
+    <Compile Include="../Castlemist/Editor/WorldManifest.cs" />
+    <Compile Include="../Castlemist/Editor/ImportSummary.cs" />
+  </ItemGroup>
+</Project>
