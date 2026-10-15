@@ -5,6 +5,7 @@
 
 #include "castlemist/format/content_map.h"
 #include "castlemist/npc/catalogue.h"
+#include "castlemist/npc/export.h"
 #include "castlemist/npc/tokens.h"
 #include "character.h"
 #include "decompress.h"
@@ -540,4 +541,40 @@ CM_TEST(npc_character, a_non_weapon_item_is_not_a_weapon) {
     set.finish();
     CharacterFields f = read_character(set, 0, *set.packs[0].object_at(0));
     CHECK(f.weapons.empty());
+}
+
+CM_TEST(npc_export, folder_name_is_filesystem_safe) {
+    NpcRecord r;
+    r.id = 5758;
+    r.codename = "vl8A/.4g+nM";
+    CHECK_EQ(export_folder_name(r), std::string("5758_vl8A_.4g_nM"));
+    r.codename = "";
+    CHECK_EQ(export_folder_name(r), std::string("5758"));
+}
+
+CM_TEST(npc_export, manifest_notes_a_race_body_npc) {
+    NpcRecord r;
+    r.id = 1;
+    r.race = "humanfemale";
+    r.weapons.push_back({200, 76158, 0, 0});
+    std::vector<std::string> want = {"no body model: race-body NPC (humanfemale), outfit data not decoded",
+                                     "weapon 200: no skin model"};
+    CHECK(base_notes(r) == want);
+    r.race = "";
+    CHECK_EQ(base_notes(r)[0], std::string("no body model"));
+}
+
+CM_TEST(npc_export, manifest_lists_clips_weapons_and_files) {
+    NpcRecord r;
+    r.id = 7;
+    r.codename = "x";
+    r.model = 99;
+    Weapon w{200, 1, 2, 3};
+    nlohmann::json j = export_manifest(r, {{"wgalunge08", 1.07}}, {{w, "weapon_200.glb"}}, {"model.glb"}, {"n"});
+    CHECK_EQ(j["version"].get<int>(), 1);
+    CHECK_EQ(j["clips"][0]["group"].get<std::string>(), std::string("lunge"));
+    CHECK_EQ(j["clips"][0]["prefix"].get<std::string>(), std::string("wga"));
+    CHECK_EQ(j["weapons"][0]["file"].get<std::string>(), std::string("weapon_200.glb"));
+    CHECK_EQ(j["files"][0].get<std::string>(), std::string("model.glb"));
+    CHECK_EQ(j["notes"][0].get<std::string>(), std::string("n"));
 }
