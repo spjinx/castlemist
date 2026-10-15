@@ -13,6 +13,7 @@
 #include "castlemist/native/granny_anim.hpp"
 
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -256,4 +257,33 @@ CM_TEST(world_gltf, images_by_uri) {
     // The Poiyomi maps are still written beside them.
     CHECK(fs::exists(dir / "Textures" / "Blade - BaseColor.png"));
     CHECK(fs::exists(dir / "materials.json"));
+}
+
+CM_TEST(world_gltf, image_uris_need_no_escaping) {
+    // Generated images are named after the material: the metal-rough map here
+    // would be "Blade #1 %metal ü_metalRough" without the uri sanitising.
+    ModelPreview model = glow_quad();
+    model.materials[0].materialName = "Blade #1 %metal \xC3\xBC";
+    const fs::path dir = fresh_dir("images_uri_escape");
+    VrchatFolderOptions opts;
+    opts.gltf.rootMatrix = map_to_gltf_root(1.0);
+    opts.gltf.imageDirUtf8 = (dir / "Images").string();
+    opts.gltf.imageUriPrefix = "Images/";
+    const VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Dagger", 1766522, opts);
+    CHECK(r.ok);
+    const json g = glb_json(dir / "Dagger.glb");
+    bool sawGenerated = false;
+    for (const json& im : g["images"]) {
+        const std::string uri = im.value("uri", std::string());
+        CHECK(!uri.empty());
+        bool clean = true;
+        for (char c : uri) {
+            const auto u = static_cast<unsigned char>(c);
+            if (!(u < 0x80 && std::isalnum(u)) && c != '.' && c != '_' && c != '/' && c != '-') clean = false;
+        }
+        CHECK(clean);
+        CHECK(fs::exists(dir / fs::path(uri)));
+        if (uri.find("metalRough") != std::string::npos) sawGenerated = true;
+    }
+    CHECK(sawGenerated);
 }

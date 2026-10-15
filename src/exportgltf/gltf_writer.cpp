@@ -84,11 +84,18 @@ int GltfWriter::add_or_reuse_texture(uint32_t fileId, const std::vector<uint8_t>
 
     if (!imageDir_.empty()) {
         namespace fs = std::filesystem;
-        // The image name (a dat texture's is its fileId) as a legal file name,
-        // unique ignoring case: Windows file names are case-insensitive.
-        const std::string base = safe_file_name(!name.empty() ? name
-                                                : fileId     ? std::to_string(fileId)
-                                                             : std::string("image"));
+        // The image name (a dat texture's is its fileId) as a file name that
+        // is also a valid glTF uri with no escaping: every byte outside
+        // [A-Za-z0-9._-] becomes '_' (spaces, '#', '%' and non-ASCII would
+        // need percent-encoding, which importers unquote inconsistently).
+        // safe_file_name then trims dots and guards device names. Unique
+        // ignoring case: Windows file names are case-insensitive.
+        std::string raw = !name.empty() ? name : fileId ? std::to_string(fileId) : std::string("image");
+        for (char& c : raw) {
+            const auto u = static_cast<unsigned char>(c);
+            if (!(std::isalnum(u) && u < 0x80) && c != '.' && c != '_' && c != '-') c = '_';
+        }
+        const std::string base = safe_file_name(raw);
         auto lower = [](std::string s) {
             for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             return s;
@@ -103,6 +110,7 @@ int GltfWriter::add_or_reuse_texture(uint32_t fileId, const std::vector<uint8_t>
         fs::create_directories(dir, ec);
         std::ofstream out(dir / fs::path(std::u8string(leaf.begin(), leaf.end())), std::ios::binary);
         if (out) out.write(reinterpret_cast<const char*>(pngBytes.data()), static_cast<std::streamsize>(pngBytes.size()));
+        out.close();  // flush now, so a failed write shows in the stream state
         if (!out) {
             if (imageError_.empty()) imageError_ = "Could not write image '" + imageDir_ + "/" + leaf + "'.";
             return -1;
