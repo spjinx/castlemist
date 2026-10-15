@@ -1,6 +1,7 @@
 /// @file
 /// @brief CollisionIndex: XY grid over map-space triangles, DDA ray cast.
 
+#include "castlemist/world/collision.h"
 #include "castlemist/world/walk.h"
 
 #include <algorithm>
@@ -10,12 +11,6 @@
 namespace castlemist::world {
 
 namespace {
-
-void transform_point(const float* m, const float* p, float* out) {
-    out[0] = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12];
-    out[1] = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13];
-    out[2] = m[2] * p[0] + m[6] * p[1] + m[10] * p[2] + m[14];
-}
 
 /// Moller-Trumbore, both faces. Returns t or a negative value on a miss.
 float intersect(const float* o, const float* d, const float* tri) {
@@ -59,19 +54,8 @@ void add_terrain(const WorldScene& scene, std::vector<float>& out) {
 
 CollisionIndex CollisionIndex::build(const WorldScene& scene, bool includeTerrain) {
     CollisionIndex idx;
-    for (const CollisionInstance& inst : scene.collision.instances) {
-        if (inst.mesh >= scene.collision.meshes.size()) continue;
-        const CollisionMesh& m = scene.collision.meshes[inst.mesh];
-        const size_t nv = m.verts.size() / 3;
-        for (size_t k = 0; k + 2 < m.indices.size(); k += 3) {
-            if (m.indices[k] >= nv || m.indices[k + 1] >= nv || m.indices[k + 2] >= nv) continue;
-            for (int c = 0; c < 3; ++c) {
-                float p[3];
-                transform_point(inst.world, &m.verts[(size_t)m.indices[k + c] * 3], p);
-                idx.tris_.insert(idx.tris_.end(), p, p + 3);
-            }
-        }
-    }
+    for (size_t i = 0; i < scene.collision.instances.size(); ++i)
+        collision_instance_triangles(scene, i, idx.tris_);
     idx.collisionCount_ = idx.tris_.size() / 9;
     if (includeTerrain) add_terrain(scene, idx.tris_);
     idx.finish();

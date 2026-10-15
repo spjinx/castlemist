@@ -13,6 +13,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <unordered_set>
 #include <string>
 #include <tuple>
 
@@ -388,6 +389,34 @@ void resolve_terrain_materials(Terrain& t, const castlemist::model::Extractor::M
         warnings.push_back("terrain materials: " + std::to_string(droppedCount) +
                            " chunk texture bindings not kept (tokens: " + names + ")");
     }
+}
+
+} // namespace castlemist::world
+
+namespace castlemist::world {
+
+std::vector<uint32_t> terrain_texture_ids(const Terrain& t, const std::vector<size_t>* chunks) {
+    std::vector<uint32_t> out;
+    std::unordered_set<uint32_t> seen;
+    auto take = [&](uint32_t id) {
+        if (id != 0 && seen.insert(id).second) out.push_back(id);
+    };
+    auto take4 = [&](const std::vector<uint32_t>& v) {
+        for (size_t k = 0; k < 4 && k < v.size(); ++k) take(v[k]);
+    };
+    auto chunk = [&](const TerrainChunk& c) {
+        take4(c.material.textureFileIds);
+        take4(c.material.normalFileIds);
+        take(c.material.pickerFileId);
+        take(c.material.picker2FileId);
+    };
+    if (chunks) {
+        for (size_t i : *chunks)
+            if (i < t.chunks.size()) chunk(t.chunks[i]);
+    } else {
+        for (const TerrainChunk& c : t.chunks) chunk(c);
+    }
+    return out;
 }
 
 } // namespace castlemist::world

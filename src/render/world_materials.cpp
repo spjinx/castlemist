@@ -8,6 +8,8 @@
 #include "castlemist/exportgltf/shader_profiles.h"
 #include "castlemist/extract/model_types.h"
 #include "castlemist/render/world_prep.h"
+#include "castlemist/world/surface_rules.h"
+#include "castlemist/world/terrain.h"
 
 #include <algorithm>
 #include <cmath>
@@ -87,20 +89,11 @@ void TextureCache::clear() {
 }
 
 std::vector<uint32_t> world_texture_ids(const castlemist::world::WorldScene& s, const WorldMaterialSettings& cfg) {
-    std::vector<uint32_t> out;
-    std::unordered_set<uint32_t> seen;
+    std::vector<uint32_t> out = castlemist::world::terrain_texture_ids(s.terrain);
+    std::unordered_set<uint32_t> seen(out.begin(), out.end());
     auto take = [&](uint32_t id) {
         if (id != 0 && seen.insert(id).second) out.push_back(id);
     };
-    auto take4 = [&](const std::vector<uint32_t>& v) {
-        for (size_t k = 0; k < 4 && k < v.size(); ++k) take(v[k]);
-    };
-    for (const castlemist::world::TerrainChunk& c : s.terrain.chunks) {
-        take4(c.material.textureFileIds);
-        take4(c.material.normalFileIds);
-        take(c.material.pickerFileId);
-        take(c.material.picker2FileId);
-    }
     const int pi = s.environment.light.presetIndex;
     const int ti = cfg.waterBumpTextureIndex;
     if (pi >= 0 && static_cast<size_t>(pi) < s.environment.water.size() && ti >= 0) {
@@ -165,19 +158,6 @@ std::vector<std::string> material_setting_warnings(const WorldMaterialSettings& 
 
 namespace eg = castlemist::exportgltf;
 
-bool dark_coverage(const std::vector<uint8_t>& rgba) {
-    const size_t n = rgba.size() / 4;
-    const size_t step = n > 65536 ? n / 65536 : 1;   // as compute_alpha_cutout: ~64k samples
-    size_t passing = 0;
-    for (size_t p = 0; p < n; p += step) {
-        const uint8_t* t = &rgba[p * 4];
-        if (t[3] < 64) continue;   // discarded by the clip (alpha < 0.25)
-        if (t[0] > 16 || t[1] > 16 || t[2] > 16) return false;
-        ++passing;
-    }
-    return passing > 0;
-}
-
 WorldAlpha world_alpha_mode(const ModelMaterialCPU& mat, bool diffuseHasCutout, bool diffuseLooksLikeEffect,
                             bool diffuseDarkCoverage) {
     const bool isEffect = mat.isEffect || (!mat.hasRenderState && diffuseLooksLikeEffect);
@@ -205,12 +185,6 @@ WorldAlpha world_alpha_mode(const ModelMaterialCPU& mat, bool diffuseHasCutout, 
     case eg::BlendPreset::Multiplicative2x: return WorldAlpha::Multiply2x;  // DstColor / SrcColor
     default: return WorldAlpha::Unmapped;
     }
-}
-
-bool tex_transform_animates(const ModelTexTransformCPU& t) {
-    return t.columns == 1 && t.rows == 1 && t.count == 1 && t.scrollFreq[0] == 0 && t.scrollFreq[1] == 0 &&
-           (t.scroll[0] != 0 || t.scroll[1] != 0) && t.scale[0] == 0 && t.scale[1] == 0 && t.scaleFreq[0] == 0 && t.scaleFreq[1] == 0 && t.rotate == 0 &&
-           t.rotate2 == 0;
 }
 
 void uv_scroll_offset(const ModelTexTransformCPU& t, double seconds, float unitSeconds, float out[2]) {
@@ -254,12 +228,6 @@ std::vector<size_t> blend_back_to_front(const std::vector<float>& nearestDistanc
     return order;
 }
 
-void water_colour(const uint8_t stored[4], float rgb[3]) {
-    // UNPROVEN (note §6): bytes 0, 1, 2 as R, G, B -- the order parseMapEnv
-    // reads every other env colour (gw2model.hpp:1300).
-    for (int k = 0; k < 3; ++k) rgb[k] = static_cast<float>(stored[k]) / 255.0f;
-}
-
 void water_bump_uv(float x, float y, float tile, float speed, float angle, double seconds, float tileUnit,
                    float uv[2]) {
     // UNPROVEN units (note §6): tile repeats per tileUnit map units, speed in
@@ -280,13 +248,6 @@ float water_bump_angle(float stored, bool degrees) {
 float water_bump_strength(float bumpAmount, float scale) {
     const float g = bumpAmount * scale;
     return (std::isfinite(g) && g > 0) ? g : 0.0f;
-}
-
-float water_depth_mix(float terrainZ, float planeZ, float depthAttenuation) {
-    if (!(depthAttenuation > 0) || !std::isfinite(depthAttenuation)) return 0.0f;
-    const float t = (terrainZ - planeZ) / depthAttenuation;
-    if (!(t > 0)) return 0.0f;   // also NaN
-    return t < 1 ? t : 1.0f;
 }
 
 double clip_time(double seconds, float duration) {

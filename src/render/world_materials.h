@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "castlemist/native/granny_pose.hpp"
+#include "castlemist/world/surface_rules.h"
 
 struct CappedTexture;      // castlemist/extract/model_types.h
 struct ModelMaterialCPU;   // castlemist/extract/model_types.h
@@ -45,7 +46,7 @@ enum class WorldAlpha : uint8_t {
 /// @brief True when every texel of @p rgba (RGBA8) that survives the clip
 ///        (alpha >= 64) is black (each channel <= 16), and at least one
 ///        survives: a darkening decal's coverage mask, not a colour.
-bool dark_coverage(const std::vector<uint8_t>& rgba);
+using castlemist::world::dark_coverage;   // moved to world/surface_rules.h
 
 /// @brief The alpha mode of @p mat whose diffuse texture has
 ///        CappedTexture::hasCutout = @p diffuseHasCutout and
@@ -79,7 +80,7 @@ struct PropMaterial {
 ///        scrollFreq == scale == scaleFreq == (0, 0), rotate == rotate2 == 0
 ///        (every entry of the census, note section 4). Anything else (flipbook,
 ///        scale, rotate) is not animated.
-bool tex_transform_animates(const ModelTexTransformCPU& t);
+using castlemist::world::tex_transform_animates;   // moved to world/surface_rules.h
 
 /// @brief The UV offset of scroll entry @p t at @p seconds:
 ///        frac(scroll * seconds / unitSeconds), frac(x) = x - floor(x), in
@@ -126,7 +127,7 @@ void pose_palette(const PoseRig& rig, double seconds, std::vector<float>& palett
 ///        (gw2model.hpp:1300). Byte 3 is ignored. The order is UNPROVEN for
 ///        water (docs/research/gw2-world-materials.md §6: the game shader's
 ///        wtrclrs/wtrclrd are filled by the client, not stored).
-void water_colour(const uint8_t stored[4], float rgb[3]);
+using castlemist::world::water_colour;   // moved to world/surface_rules.h
 
 /// @brief One bump sample's UV at map position (@p x, @p y):
 ///        uv = R(@p angle) (x, y) @p tile / @p tileUnit + (@p speed @p seconds, 0),
@@ -151,7 +152,7 @@ float water_bump_strength(float bumpAmount, float scale);
 /// @brief How deep the water is, 0 shallow .. 1 deep: saturate((terrainZ -
 ///        planeZ) / depthAttenuation) (up is -Z, so terrain below the plane
 ///        has the larger z); 0 when depthAttenuation <= 0 or not finite.
-float water_depth_mix(float terrainZ, float planeZ, float depthAttenuation);
+using castlemist::world::water_depth_mix;   // moved to world/surface_rules.h
 
 /// @brief One line per setting of @p s: its name and value, "UNPROVEN" or
 ///        "castlemist's choice", and the note section
