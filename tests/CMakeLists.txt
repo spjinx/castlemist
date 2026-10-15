@@ -130,21 +130,43 @@ add_test(NAME world_fixture_probe
          COMMAND cm_world_export_fixture "${CMAKE_BINARY_DIR}/world_fixture" --probe-only)
 set_tests_properties(world_fixture_probe PROPERTIES FIXTURES_SETUP world_probe)
 
-# Headless Blender checks of the frame probe (spec D6 "Frame probe"); not added
-# when Blender is not installed.
-find_program(CASTLEMIST_BLENDER blender.exe
-             PATHS "C:/Program Files/Blender Foundation/Blender 4.5"
-                   "C:/Program Files/Blender Foundation/Blender 4.3"
-                   "C:/Program Files/Blender Foundation/Blender 3.6"
-             NO_DEFAULT_PATH)
+# Headless Blender checks of the world export (spec D6 "Blender", "Frame probe";
+# label `blender`). castlemist_world.py needs Blender 4.1 or newer (Mesh.corner_normals),
+# so older versions are refused here. Blender is looked up in $ENV{BLENDER} (the
+# blender.exe path), then PATH, then the newest "Blender Foundation/Blender <v>"
+# under Program Files; with none of 4.1+ the tests are not added.
+set(_cm_blender_hints "")
+if (DEFINED ENV{BLENDER} AND EXISTS "$ENV{BLENDER}")
+    get_filename_component(_cm_blender_env_dir "$ENV{BLENDER}" DIRECTORY)
+    list(APPEND _cm_blender_hints "${_cm_blender_env_dir}")
+endif()
+file(GLOB _cm_blender_dirs "C:/Program Files/Blender Foundation/Blender *")
+list(SORT _cm_blender_dirs COMPARE NATURAL ORDER DESCENDING)
+find_program(CASTLEMIST_BLENDER NAMES blender blender.exe HINTS ${_cm_blender_hints} PATHS ${_cm_blender_dirs})
+set(_cm_blender_ok OFF)
 if (CASTLEMIST_BLENDER)
+    execute_process(COMMAND "${CASTLEMIST_BLENDER}" --version OUTPUT_VARIABLE _cm_blender_ver
+                    ERROR_QUIET TIMEOUT 120 RESULT_VARIABLE _cm_blender_rc)
+    string(REGEX MATCH "Blender ([0-9]+)\\.([0-9]+)" _cm_blender_m "${_cm_blender_ver}")
+    if (_cm_blender_m AND "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}" VERSION_GREATER_EQUAL 4.1)
+        set(_cm_blender_ok ON)
+        message(STATUS "Blender ${CMAKE_MATCH_1}.${CMAKE_MATCH_2} for the world-export tests: ${CASTLEMIST_BLENDER}")
+    else()
+        message(STATUS "Blender at ${CASTLEMIST_BLENDER} is not 4.1 or newer ('${_cm_blender_m}'); Blender tests skipped")
+    endif()
+else()
+    message(STATUS "Blender not found (set BLENDER to blender.exe); Blender tests skipped")
+endif()
+if (_cm_blender_ok)
     set(_cm_world_py "${PROJECT_SOURCE_DIR}/tools/blender/castlemist_world.py")
+    set(_cm_check_fbx "${PROJECT_SOURCE_DIR}/tests/blender/check_fbx.py")
+    set(_cm_blender -b --factory-startup -P)
     add_test(NAME blender_probe_glb
-             COMMAND "${CASTLEMIST_BLENDER}" -b --factory-startup -P "${_cm_world_py}"
+             COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${_cm_world_py}"
                      -- --check-probe "${CMAKE_BINARY_DIR}/world_fixture/probe.glb")
     # One Blender session: convert every .glb in the fixture, then check the .fbx.
     add_test(NAME blender_probe_fbx
-             COMMAND "${CASTLEMIST_BLENDER}" -b --factory-startup -P "${_cm_world_py}"
+             COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${_cm_world_py}"
                      -- --to-fbx "${CMAKE_BINARY_DIR}/world_fixture"
                         --check-probe "${CMAKE_BINARY_DIR}/world_fixture/probe.fbx")
     set_tests_properties(blender_probe_glb blender_probe_fbx PROPERTIES
@@ -152,7 +174,76 @@ if (CASTLEMIST_BLENDER)
         PASS_REGULAR_EXPRESSION "PROBE .* negScale=0 OK"
         FAIL_REGULAR_EXPRESSION "PROBE .* FAIL|Traceback"
         TIMEOUT 300
+        LABELS blender
         RESOURCE_LOCK world_fixture)
+
+    # The skinned probe (Task 11): an armature model, as the world export writes
+    # one, through the same bake and FBX step as every model.
+    add_test(NAME world_fixture_skinned_probe
+             COMMAND cm_world_export_fixture "${CMAKE_BINARY_DIR}/skinned_probe" --skinned-probe)
+    set_tests_properties(world_fixture_skinned_probe PROPERTIES
+        FIXTURES_SETUP skinned_probe RESOURCE_LOCK skinned_probe)
+    add_test(NAME blender_skinned_probe_glb
+             COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${_cm_world_py}"
+                     -- --check-skinned-probe "${CMAKE_BINARY_DIR}/skinned_probe/skinned_probe.glb")
+    add_test(NAME blender_skinned_probe_fbx
+             COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${_cm_world_py}"
+                     -- --to-fbx "${CMAKE_BINARY_DIR}/skinned_probe"
+                        --check-skinned-probe "${CMAKE_BINARY_DIR}/skinned_probe/skinned_probe.fbx")
+    set_tests_properties(blender_skinned_probe_glb blender_skinned_probe_fbx PROPERTIES
+        FIXTURES_REQUIRED skinned_probe
+        PASS_REGULAR_EXPRESSION "SKINNED_PROBE .* negScale=0 OK"
+        FAIL_REGULAR_EXPRESSION "SKINNED_PROBE .* FAIL|Traceback"
+        TIMEOUT 300
+        LABELS blender
+        RESOURCE_LOCK skinned_probe)
+
+    # The importer on the full synthetic export (spec "Testing", Blender).
+    add_test(NAME blender_world_import
+             COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${_cm_world_py}"
+                     -- --import "${CMAKE_BINARY_DIR}/world_fixture" --verify)
+    add_test(NAME blender_world_import_scaled
+             COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${_cm_world_py}"
+                     -- --import "${CMAKE_BINARY_DIR}/world_fixture" --scale 0.0254 --no-colliders --verify)
+    set_tests_properties(blender_world_import blender_world_import_scaled PROPERTIES
+        PASS_REGULAR_EXPRESSION "INSTANCES 4.*VERIFY OK")
+    add_test(NAME blender_world_import_extras
+             COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${PROJECT_SOURCE_DIR}/tests/blender/check_world_extras.py"
+                     -- "${_cm_world_py}" "${CMAKE_BINARY_DIR}/world_fixture" "${CMAKE_BINARY_DIR}/world_extras")
+    set_tests_properties(blender_world_import_extras PROPERTIES PASS_REGULAR_EXPRESSION "EXTRAS OK")
+    set_tests_properties(blender_world_import blender_world_import_scaled blender_world_import_extras PROPERTIES
+        FIXTURES_REQUIRED world_fixture
+        FAIL_REGULAR_EXPRESSION "VERIFY FAIL|EXTRAS FAIL|Traceback"
+        TIMEOUT 300
+        LABELS blender
+        RESOURCE_LOCK world_fixture)
+
+    # --to-fbx through ripper::convert_world_to_fbx (gw2dat_cli world-fbx), then the
+    # .fbx files: the animated model keeps its clip, and the textures resolve.
+    if (CASTLEMIST_BUILD_TOOLS)
+        add_test(NAME blender_world_to_fbx
+                 COMMAND gw2dat_cli world-fbx --dir "${CMAKE_BINARY_DIR}/world_fixture")
+        set_tests_properties(blender_world_to_fbx PROPERTIES
+            FIXTURES_REQUIRED world_fixture FIXTURES_SETUP world_fbx
+            PASS_REGULAR_EXPRESSION "\"fbxSet\":4,"
+            TIMEOUT 600)
+        add_test(NAME blender_world_fbx_clip
+                 COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${_cm_check_fbx}"
+                         -- "${CMAKE_BINARY_DIR}/world_fixture/models/102/102.fbx")
+        set_tests_properties(blender_world_fbx_clip PROPERTIES PASS_REGULAR_EXPRESSION "ACTIONS .*TestClip")
+        add_test(NAME blender_world_fbx_textures
+                 COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${_cm_check_fbx}"
+                         -- "${CMAKE_BINARY_DIR}/world_fixture/models/101/101.fbx")
+        set_tests_properties(blender_world_fbx_textures PROPERTIES
+            PASS_REGULAR_EXPRESSION "IMAGES 1 missing=0.*NEGSCALE 0 INWARD 0")
+        set_tests_properties(blender_world_fbx_clip blender_world_fbx_textures PROPERTIES
+            FIXTURES_REQUIRED "world_fixture;world_fbx")
+        set_tests_properties(blender_world_to_fbx blender_world_fbx_clip blender_world_fbx_textures PROPERTIES
+            FAIL_REGULAR_EXPRESSION "Traceback"
+            TIMEOUT 600
+            LABELS blender
+            RESOURCE_LOCK world_fixture)
+    endif()
 endif()
 
 # Dependency-free manifest validator and Unity dry run (tools/world/validate_manifest.py)

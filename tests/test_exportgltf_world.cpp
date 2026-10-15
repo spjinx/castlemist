@@ -1531,3 +1531,38 @@ CM_TEST(world_folder, parallel_matches_serial) {
     CHECK(j1 == j4);
     CHECK(file_bytes(d1 / "cells" / "c0_0_2x2.glb") == file_bytes(d4 / "cells" / "c0_0_2x2.glb"));
 }
+
+// Task 11: set_manifest_fbx records each .fbx that exists beside its .glb.
+CM_TEST(world_folder, set_manifest_fbx) {
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource src;
+    const fs::path dir = fresh_dir("folder_set_fbx");
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts());
+    CHECK(r.ok);
+    { std::ofstream(dir / "models" / "101" / "101.fbx", std::ios::binary); }
+    CHECK_EQ(set_manifest_fbx(dir.string()), size_t(1));
+    CHECK_FALSE(fs::exists(dir / "manifest.json.tmp"));
+    json man = read_json(dir / "manifest.json");
+    check_valid(man, "set_manifest_fbx");
+    CHECK(man["models"][0]["fbx"] == json("models/101/101.fbx"));
+    CHECK(man["models"][1]["fbx"].is_null());
+    CHECK(man["cells"][0]["fbx"].is_null());
+    CHECK(man["frameProbe"]["fbx"].is_null());
+    // Every .fbx present: all four set; a removed one goes back to null.
+    for (const char* f : {"models/102/102.fbx", "cells/c0_0_2x2.fbx", "probe.fbx"})
+        std::ofstream(dir / f, std::ios::binary);
+    CHECK_EQ(set_manifest_fbx(dir.string()), size_t(4));
+    man = read_json(dir / "manifest.json");
+    CHECK(man["models"][1]["fbx"] == json("models/102/102.fbx"));
+    CHECK(man["cells"][0]["fbx"] == json("cells/c0_0_2x2.fbx"));
+    CHECK(man["frameProbe"]["fbx"] == json("probe.fbx"));
+    fs::remove(dir / "probe.fbx");
+    CHECK_EQ(set_manifest_fbx(dir.string()), size_t(3));
+    man = read_json(dir / "manifest.json");
+    CHECK(man["frameProbe"]["fbx"].is_null());
+    check_valid(man, "set_manifest_fbx all");
+    // No manifest: nothing set, nothing written.
+    const fs::path none = fresh_dir("folder_set_fbx_none");
+    CHECK_EQ(set_manifest_fbx(none.string()), size_t(0));
+    CHECK_FALSE(fs::exists(none / "manifest.json"));
+}

@@ -13,6 +13,7 @@
 
 #include "castlemist/character/key_store.h"
 #include "castlemist/exportgltf/vrchat_export.h"
+#include "castlemist/exportgltf/world_manifest.h"
 #include "castlemist/ripper/face_morphs.h"
 #include "castlemist/ripper/skeleton_merge.h"
 
@@ -306,15 +307,33 @@ std::string find_blender() {
 
 namespace {
 
-// Runs Blender headless on the conversion script; false + `log` on failure.
-// With `logPath`, Blender's stdout and stderr go to that file, and on failure
+// One argument for CreateProcessW's command line, quoted as the MSVC runtime
+// (and Blender's argv) reads it: backslashes before a quote are doubled.
+std::wstring quote_arg(const std::wstring& a) {
+    std::wstring q = L"\"";
+    size_t slashes = 0;
+    for (wchar_t c : a) {
+        if (c == L'\\') { ++slashes; continue; }
+        if (c == L'"') q.append(slashes * 2 + 1, L'\\');
+        else q.append(slashes, L'\\');
+        slashes = 0;
+        q += c;
+    }
+    q.append(slashes * 2, L'\\');
+    return q + L"\"";
+}
+
+// Runs `<blender> -b --factory-startup --python-exit-code 1 -P <script> -- <args...>` headless;
+// true when it exits with 0 inside `timeoutMs`, else false + `log`. With
+// `logPath`, Blender's stdout and stderr go to that file, and on failure
 // castlemist's reason is appended after them.
-bool run_blender(const std::string& blender, const std::string& script, const std::string& glb, const std::string& fbx,
-                 std::string& log, const char* mode = nullptr, const std::string& logPath = {}) {
-    std::wstring cmd = L"\"" + from_utf8(blender).wstring() + L"\" -b --factory-startup -P \"" +
-                       from_utf8(script).wstring() + L"\" -- \"" + from_utf8(glb).wstring() + L"\" \"" +
-                       from_utf8(fbx).wstring() + L"\"";
-    if (mode) cmd += L" --mode " + std::wstring(mode, mode + std::strlen(mode));
+bool run_blender(const std::string& blender, const std::string& script, const std::vector<std::string>& args,
+                 std::string& log, const std::string& logPath, unsigned long timeoutMs) {
+    // --python-exit-code: an uncaught exception in the script exits non-zero
+    // (Blender's default is 0).
+    std::wstring cmd = quote_arg(from_utf8(blender).wstring()) + L" -b --factory-startup --python-exit-code 1 -P " +
+                       quote_arg(from_utf8(script).wstring()) + L" --";
+    for (const std::string& a : args) cmd += L" " + quote_arg(from_utf8(a).wstring());
 
     HANDLE out = INVALID_HANDLE_VALUE;
     if (!logPath.empty()) {
@@ -354,25 +373,47 @@ bool run_blender(const std::string& blender, const std::string& script, const st
     if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, capture ? TRUE : FALSE, CREATE_NO_WINDOW, nullptr,
                         nullptr, &si, &pi))
         return fail("could not start Blender (" + std::to_string(GetLastError()) + ")");
-    const DWORD w = WaitForSingleObject(pi.hProcess, 10 * 60 * 1000);
-    if (w != WAIT_OBJECT_0) TerminateProcess(pi.hProcess, 1);
+    const DWORD w = WaitForSingleObject(pi.hProcess, timeoutMs);
+    if (w != WAIT_OBJECT_0) {
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, 10 * 1000);   // let it go before the log is appended to
+    }
     DWORD code = 1;
     GetExitCodeProcess(pi.hProcess, &code);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
-    std::error_code ec;
-    if (w != WAIT_OBJECT_0) return fail("Blender timed out");
-    if (code != 0 || !fs::exists(from_utf8(fbx), ec))
-        return fail("Blender exited with " + std::to_string(code) + " and no .fbx");
+    if (w != WAIT_OBJECT_0) return fail("Blender timed out after " + std::to_string(timeoutMs / 1000) + " s");
+    if (code != 0) return fail("Blender exited with " + std::to_string(code));
     if (capture) CloseHandle(out);
     return true;
 }
 
-std::string default_script() {
+// The model / avatar conversion: <glb> <fbx> [--mode <mode>]; it must also leave the .fbx.
+bool run_blender(const std::string& blender, const std::string& script, const std::string& glb, const std::string& fbx,
+                 std::string& log, const char* mode = nullptr, const std::string& logPath = {}) {
+    std::vector<std::string> args = {glb, fbx};
+    if (mode) {
+        args.push_back("--mode");
+        args.push_back(mode);
+    }
+    std::string why;
+    const bool ran = run_blender(blender, script, args, why, logPath, 10 * 60 * 1000);
+    std::error_code ec;
+    if (ran && fs::exists(from_utf8(fbx), ec)) return true;
+    if (!ran) {   // the reason is already in the log
+        log = why + " and no .fbx";
+        return false;
+    }
+    log = "Blender exited with 0 and no .fbx";
+    if (!logPath.empty()) std::ofstream(from_utf8(logPath), std::ios::binary | std::ios::app) << "\r\n[castlemist] " << log << "\r\n";
+    return false;
+}
+
+// tools/blender/<name> in the castlemist tree the running executable sits in.
+std::string default_script(const char* name = "castlemist_vrchat.py") {
     wchar_t exe[MAX_PATH] = L"";
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    return to_utf8(character::find_castlemist_root(fs::path(exe).parent_path()) / "tools" / "blender" /
-                   "castlemist_vrchat.py");
+    return to_utf8(character::find_castlemist_root(fs::path(exe).parent_path()) / "tools" / "blender" / name);
 }
 
 std::string safe_name(std::string s) {
@@ -469,6 +510,41 @@ VrchatModelReport export_vrchat_model(const ModelPreview& model, const std::stri
         }
     }
     return r;
+}
+
+bool convert_world_to_fbx(const std::string& exportDirUtf8, std::string& log, const std::string& blenderExe,
+                          size_t* fbxSet) {
+    if (fbxSet) *fbxSet = 0;
+    const std::string blender = blenderExe.empty() ? find_blender() : blenderExe;
+    if (blender.empty()) {
+        log = "Blender not found";
+        return false;
+    }
+    std::error_code ec;
+    const std::string script = default_script("castlemist_world.py");
+    if (!fs::exists(from_utf8(script), ec)) {
+        log = "conversion script missing: " + script;
+        return false;
+    }
+    const fs::path dir = from_utf8(exportDirUtf8);
+    if (!fs::is_regular_file(dir / "manifest.json", ec)) {
+        log = "no manifest.json in " + exportDirUtf8;
+        return false;
+    }
+    const std::string logPath = to_utf8(dir / "blender.log");
+    std::string why;
+    // One session for the whole folder (spec D6); Spirit Vale's time is the
+    // plan's measurement, so the limit is generous.
+    const bool ran = run_blender(blender, script, {"--to-fbx", exportDirUtf8}, why, logPath, 4ul * 60 * 60 * 1000);
+    // Whatever was converted is recorded, also after a failure part-way.
+    const size_t n = exportgltf::set_manifest_fbx(exportDirUtf8);
+    if (fbxSet) *fbxSet = n;
+    if (!ran) {
+        log = why + " (log: " + logPath + "); " + std::to_string(n) + " .fbx recorded in the manifest";
+        return false;
+    }
+    log = "Blender " + blender + ": " + std::to_string(n) + " .fbx recorded in the manifest (log: " + logPath + ")";
+    return true;
 }
 
 VrchatReport export_vrchat(const character::CharacterManifest& manifest, const std::string& dat_path,

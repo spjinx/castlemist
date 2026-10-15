@@ -128,4 +128,13 @@ nlohmann::json world_light_json(const castlemist::model::Extractor::MapEnvLight&
 ///   out. The result always validates against the schema.
 nlohmann::json world_manifest_json(const WorldManifestInput& in);
 
+/// @brief After the Blender FBX step (Task 11): sets `cells[].fbx`, `models[].fbx`
+///        and `frameProbe.fbx` to the relative path of each .fbx that exists next
+///        to its .glb (same stem), and to null where none does; rewrites
+///        `<exportDir>/manifest.json` atomically (manifest.json.tmp, then rename).
+///        Returns the count set. 0, and nothing written, when there is no
+///        readable manifest or the write fails.
+/// @param exportDirUtf8 The export folder, UTF-8.
+size_t set_manifest_fbx(const std::string& exportDirUtf8);
+
 } // namespace castlemist::exportgltf

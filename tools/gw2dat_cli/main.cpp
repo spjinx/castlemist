@@ -2428,6 +2428,9 @@ void cmd_world(const Args& a) {
 ///              [--no-terrain] [--no-props] [--collision] [--no-textures]
 ///              [--animations] [--scale <s>] [--threads <n>]
 /// Task 10: --out-dir writes the whole export folder through export_world_folder.
+/// Task 11: then, unless --no-fbx, ripper::convert_world_to_fbx (Blender found, or
+/// --blender <exe>); its result is the report's "fbx" block. Blender missing or
+/// failing leaves the export ok, with fbx.ok false and the folder valid.
 /// export.log is written by this function AFTER export_world_folder returns, so
 /// manifest.json stays the last file the library writes (spec: Output folder).
 void cmd_world_export_folder(const Args& a) {
@@ -2470,7 +2473,7 @@ void cmd_world_export_folder(const Args& a) {
     opts.collision = !has(a, "no-collision");
     opts.overwrite = has(a, "overwrite");
     if (has(a, "threads")) opts.threads = static_cast<int>(to_u64(a.at("threads")));
-    // --no-fbx: Task 11 adds the Blender FBX step; until then it is accepted and the CLI stops here.
+    const bool fbx = !has(a, "no-fbx");   // Step 4: Blender --to-fbx (Task 11)
 
     const std::string tpl_path = need(a, "template");
     std::string tplErr;
@@ -2508,6 +2511,22 @@ void cmd_world_export_folder(const Args& a) {
     progress(rep.ok ? "export finished: " + std::to_string(rep.cells) + " cells, " + std::to_string(rep.modelsWritten) + " models"
                     : "export FAILED: " + rep.error);
     json j = eg::report_json(rep);
+    if (rep.ok && fbx) {
+        // Step 4 (spec "Front end" 9): every .glb to .fbx in one Blender session, then
+        // the manifest's fbx fields. A Blender failure leaves the folder valid.
+        progress("blender --to-fbx");
+        const auto tf = std::chrono::steady_clock::now();
+        std::string log;
+        size_t set = 0;
+        const bool ok = castlemist::ripper::convert_world_to_fbx(dir, log, has(a, "blender") ? a.at("blender") : std::string(), &set);
+        const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - tf).count();
+        j["fbx"] = {{"ok", ok}, {"log", log}, {"fbxSet", set}, {"seconds", s}};
+        if (!ok) j["fbx"]["note"] = "Unity needs tools/blender/castlemist_world.py --to-fbx to be run on this folder";
+        progress(ok ? "fbx finished: " + std::to_string(set) + " files" : "fbx FAILED: " + log);
+    } else if (rep.ok) {
+        j["fbx"] = {{"ok", false}, {"log", "skipped (--no-fbx)"}, {"fbxSet", 0},
+                    {"note", "Unity needs tools/blender/castlemist_world.py --to-fbx to be run on this folder"}};
+    }
     if (rep.ok) {
         // After the manifest on purpose: the manifest is the last file the export writes.
         std::ofstream lf(std::filesystem::path(std::u8string(dir.begin(), dir.end())) / "export.log", std::ios::binary);
@@ -2516,6 +2535,20 @@ void cmd_world_export_folder(const Args& a) {
     }
     emit(j);
     if (!rep.ok) std::exit(1);
+}
+
+/// world-fbx --dir <exportDir> [--blender <blender.exe>] -- the export folder's
+/// Blender step alone (ripper::convert_world_to_fbx): every .glb to .fbx in one
+/// session, then the manifest's fbx fields. Exit 1 when Blender failed or is missing.
+void cmd_world_fbx(const Args& a) {
+    const std::string dir = utf8_arg("--dir").empty() ? need(a, "dir") : utf8_arg("--dir");
+    const auto t0 = std::chrono::steady_clock::now();
+    std::string log;
+    size_t set = 0;
+    const bool ok = castlemist::ripper::convert_world_to_fbx(dir, log, has(a, "blender") ? a.at("blender") : std::string(), &set);
+    const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    emit({{"ok", ok}, {"log", log}, {"fbxSet", set}, {"seconds", s}});
+    if (!ok) std::exit(1);
 }
 
 void cmd_world_export(const Args& a) {
@@ -2600,7 +2633,7 @@ void cmd_world_export(const Args& a) {
 int main(int argc, char** argv) {
     if (argc < 2) {
         fail("usage: gw2dat_cli <info|list|lookup|resolve|extract|texture|parse|sniff|"
-             "compress|decompress|encode-texture|scananim|map|skybox|world|world-export|character|character-export|"
+             "compress|decompress|encode-texture|scananim|map|skybox|world|world-export|world-fbx|character|character-export|"
              "character-assemble> [--flags]");
     }
     std::string cmd = argv[1];
@@ -2620,6 +2653,7 @@ int main(int argc, char** argv) {
         else if (cmd == "skybox") cmd_skybox(a);
         else if (cmd == "world") cmd_world(a);
         else if (cmd == "world-export") cmd_world_export(a);
+        else if (cmd == "world-fbx") cmd_world_fbx(a);
         else if (cmd == "scanpf") cmd_scanpf(a);
         else if (cmd == "scancloth") cmd_scancloth(a);
         else if (cmd == "scananim") cmd_scananim(a);

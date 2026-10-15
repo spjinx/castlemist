@@ -16,6 +16,8 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <unordered_map>
 
@@ -519,6 +521,56 @@ json world_manifest_json(const WorldManifestInput& in) {
     man["warnings"] = warnings;
     assert(first_non_finite(man, "").empty());
     return man;
+}
+
+size_t set_manifest_fbx(const std::string& exportDirUtf8) {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::path(std::u8string(exportDirUtf8.begin(), exportDirUtf8.end()));
+    json man;
+    {
+        std::ifstream f(dir / "manifest.json", std::ios::binary);
+        if (!f) return 0;
+        man = json::parse(f, nullptr, false);
+    }
+    if (man.is_discarded() || !man.is_object()) return 0;
+    size_t set = 0;
+    // `glb` is relative to the folder; the .fbx beside it has the same stem.
+    auto fill = [&](json& block) {
+        if (!block.is_object() || !block.contains("glb") || !block["glb"].is_string()) return;
+        const std::string glb = block["glb"].get<std::string>();
+        const fs::path rel = fs::path(std::u8string(glb.begin(), glb.end())).replace_extension(".fbx");
+        std::error_code ec;
+        if (fs::is_regular_file(dir / rel, ec)) {
+            const std::u8string u = rel.generic_u8string();
+            block["fbx"] = std::string(u.begin(), u.end());
+            ++set;
+        } else {
+            block["fbx"] = nullptr;
+        }
+    };
+    for (const char* list : {"cells", "models"})
+        if (man.contains(list) && man[list].is_array())
+            for (json& b : man[list]) fill(b);
+    if (man.contains("frameProbe")) fill(man["frameProbe"]);
+
+    const fs::path tmp = dir / "manifest.json.tmp";
+    {
+        std::ofstream f(tmp, std::ios::binary);
+        f << man.dump(2) << '\n';
+        f.close();
+        if (f.fail()) {
+            std::error_code ec;
+            fs::remove(tmp, ec);
+            return 0;
+        }
+    }
+    std::error_code ec;
+    fs::rename(tmp, dir / "manifest.json", ec);
+    if (ec) {
+        fs::remove(tmp, ec);
+        return 0;
+    }
+    return set;
 }
 
 } // namespace castlemist::exportgltf

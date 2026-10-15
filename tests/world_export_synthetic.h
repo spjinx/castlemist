@@ -132,6 +132,98 @@ inline ModelPreview skinned_cube() {
     return mp;
 }
 
+/// @brief The skinned frame probe (world export Task 11): the frame probe's
+///        three bars (world_probe.h, map space: "East" x in [0, 300], "North"
+///        y in [0, 200], "Up" z in [-100, 0], the other axes in [-10, 10]) as
+///        one skinned mesh, each bar bound rigidly to its own joint under
+///        "root"; all joints sit at the origin. "North" has a 90-degree rest
+///        rotation about map +Y, so a wrong rest-frame conversion shows. Clip
+///        "ProbeClip" (1 s, linear): East moves +100 east, North turns 90
+///        degrees about map +Z (its bar ends pointing west), Up moves 50 up
+///        (map -Z). castlemist_world.py --check-skinned-probe measures it.
+inline ModelPreview skinned_probe() {
+    ModelPreview mp;
+    ModelMeshCPU mesh;
+    const float h = 10.0f;
+    const float lo[3][3] = {{0, -h, -h}, {-h, 0, -h}, {-h, -h, -100}};
+    const float hi[3][3] = {{300, h, h}, {h, 200, h}, {h, h, 0}};
+    // static_cube's face layout: normal n, in-plane axes a, b with a x b = n.
+    const float faces[6][9] = {{1, 0, 0, 0, 1, 0, 0, 0, 1},  {-1, 0, 0, 0, 0, 1, 0, 1, 0},
+                               {0, 1, 0, 0, 0, 1, 1, 0, 0},  {0, -1, 0, 1, 0, 0, 0, 0, 1},
+                               {0, 0, 1, 1, 0, 0, 0, 1, 0},  {0, 0, -1, 0, 1, 0, 1, 0, 0}};
+    for (uint32_t bar = 0; bar < 3; ++bar) {
+        float c[3], e[3];
+        for (int i = 0; i < 3; ++i) { c[i] = 0.5f * (lo[bar][i] + hi[bar][i]); e[i] = 0.5f * (hi[bar][i] - lo[bar][i]); }
+        for (const auto& f : faces) {
+            const uint32_t base = static_cast<uint32_t>(mesh.vertices.size());
+            for (int k = 0; k < 4; ++k) {
+                const float sa = (k == 1 || k == 2) ? 1.f : -1.f, sb = (k >= 2) ? 1.f : -1.f;
+                float p[3];
+                for (int i = 0; i < 3; ++i) p[i] = c[i] + e[i] * (f[i] + sa * f[3 + i] + sb * f[6 + i]);
+                GVertex v = syn_vertex(p[0], p[1], p[2], sa > 0 ? 1.f : 0.f, sb > 0 ? 1.f : 0.f, f[0], f[1], f[2]);
+                v.bidx[0] = bar + 1;
+                v.bwt[0] = 1.0f;
+                mesh.vertices.push_back(v);
+            }
+            for (uint32_t i : {0u, 1u, 2u, 0u, 2u, 3u}) mesh.indices.push_back(base + i);
+        }
+    }
+    mesh.vertexCount = static_cast<uint32_t>(mesh.vertices.size());
+    mesh.hasTangents = true;
+    mesh.hasSkin = true;
+    mesh.materialIndex = 0;
+    mp.meshes.push_back(mesh);
+
+    ModelMaterialCPU mat;
+    mat.index = 0;
+    mat.materialFile = 58248;
+    mp.materials.push_back(mat);
+
+    const float s = 0.70710678f;
+    auto joint = [](const char* name, int parent) {
+        ModelJoint j;
+        j.name = name;
+        j.parent = parent;
+        return j;
+    };
+    ModelJoint north = joint("North", 0);
+    north.localQuat[0] = 0; north.localQuat[1] = s; north.localQuat[2] = 0; north.localQuat[3] = s;   // 90 deg about +Y
+    // invWorld is row-major in row-vector form: the column-convention rotation's own rows.
+    const float ry[16] = {0, 0, 1, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 0, 1};
+    std::copy(std::begin(ry), std::end(ry), north.invWorld);
+    mp.joints = {joint("root", -1), joint("East", 0), north, joint("Up", 0)};
+
+    namespace gr = castlemist::granny;
+    gr::Anim clip;
+    clip.valid = true;
+    clip.name = "ProbeClip";
+    clip.duration = 1.0f;
+    auto curve = [](int dim, std::vector<float> controls) {
+        gr::Curve c;
+        c.fmt = gr::F_K32fC32f;
+        c.dim = dim;
+        c.degree = 1;
+        c.knots = {0.0f, 1.0f};
+        c.controls = std::move(controls);
+        return c;
+    };
+    gr::Track east;
+    east.name = "East";
+    east.pos = curve(3, {0, 0, 0, 100, 0, 0});
+    gr::Track northT;
+    northT.name = "North";
+    northT.ori = curve(4, {0, s, 0, s, -0.5f, 0.5f, 0.5f, 0.5f});   // A, then Rz(90) * A
+    gr::Track up;
+    up.name = "Up";
+    up.pos = curve(3, {0, 0, 0, 0, 0, -50});
+    clip.tracks = {east, northT, up};
+    mp.animClips.push_back(clip);
+    mp.animClipTokens = {kSynClipToken + 1};
+    mp.animationTokens = {kSynClipToken + 1};
+    mp.hasAnimation = true;
+    return mp;
+}
+
 /// @brief A uniform scale @p s about z, then a translation, column-major.
 inline void syn_place(float out[16], float x, float y, float z, float s, float yawCos = 1, float yawSin = 0) {
     std::fill(out, out + 16, 0.f);
