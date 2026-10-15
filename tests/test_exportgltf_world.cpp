@@ -24,8 +24,15 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <future>
+#include <new>
+#include <stdexcept>
+#include <thread>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -1424,6 +1431,86 @@ CM_TEST(world_folder, refuses_nonempty_dir) {
     CHECK(r.ok);
     CHECK_FALSE(fs::exists(dir / "old.txt"));
     CHECK(read_json(dir / "manifest.json")["format"] == json("castlemist-world"));
+}
+
+CM_TEST(world_folder, pool_failure_never_hangs) {
+    // Two claimants for one fileId; the encoder fails by throwing after a delay,
+    // so the second caller is already waiting. Both must return false.
+    const fs::path dir = fresh_dir("pool_failure");
+    SharedImagePool pool((dir / "textures").string());
+    std::atomic<int> encodes{0};
+    auto encoder = [&]() -> std::vector<uint8_t> {
+        ++encodes;
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        throw std::runtime_error("encoder failed");
+    };
+    auto claim = [&] { std::string e; const bool ok = pool.ensure(77, encoder, &e); return std::make_pair(ok, e); };
+    auto a = std::async(std::launch::async, claim);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto b = std::async(std::launch::async, claim);
+    const bool done = a.wait_for(std::chrono::seconds(10)) == std::future_status::ready &&
+                      b.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+    CHECK(done);
+    if (!done) { std::fprintf(stderr, "SharedImagePool::ensure hung\n"); std::_Exit(1); }
+    const auto ra = a.get(), rb = b.get();
+    CHECK_FALSE(ra.first);
+    CHECK_FALSE(rb.first);
+    CHECK_FALSE(ra.second.empty());
+    CHECK_FALSE(rb.second.empty());
+    CHECK_EQ(encodes.load(), 1);   // claimed once; the failure stays failed
+    CHECK_EQ(pool.written(), size_t(0));
+    CHECK_FALSE(fs::exists(dir / "textures" / "77.png"));
+    CHECK_FALSE(fs::exists(dir / "textures" / "77.png.tmp"));
+}
+
+CM_TEST(world_folder, never_throws_and_leaves_no_manifest) {
+    // release_textures() runs outside every pool (after the model stage); one
+    // that throws must come back as an error, not an exception.
+    struct Throwing : tw::SyntheticModelSource {
+        void release_textures() override { throw std::runtime_error("release failed"); }
+    } src;
+    const cw::WorldScene s = tw::synthetic_world();
+    const fs::path dir = fresh_dir("folder_throws");
+    WorldFolderReport r;
+    bool threw = false;
+    try { r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts(1)); } catch (...) { threw = true; }
+    CHECK_FALSE(threw);
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("release failed") != std::string::npos);
+    CHECK_FALSE(fs::exists(dir / "manifest.json"));
+}
+
+CM_TEST(world_folder, overwrite_removes_manifest_first) {
+    // An overwrite whose clear stops part-way (a file held open cannot be
+    // deleted on Windows) must not leave the old manifest behind.
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource src;
+    const fs::path dir = fresh_dir("folder_overwrite_order");
+    { std::ofstream(dir / "manifest.json") << "{\"old\": true}"; }
+    { std::ofstream(dir / "a_locked.bin") << "x"; }
+    WorldFolderOptions o = synthetic_opts();
+    o.overwrite = true;
+    {
+        std::ifstream held(dir / "a_locked.bin", std::ios::binary);
+        const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), o);
+        if (fs::exists(dir / "a_locked.bin")) {   // the clear was interrupted
+            CHECK_FALSE(r.ok);
+            CHECK(r.error.find("cannot clear") != std::string::npos);
+            CHECK_FALSE(fs::exists(dir / "manifest.json"));
+        } else {
+            CHECK(r.ok);   // the platform deleted the open file: a plain overwrite
+        }
+    }
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), o);
+    // Without a manifest the folder is no longer a previous export: refused.
+    if (!fs::exists(dir / "manifest.json")) CHECK(r.error.find("not empty") != std::string::npos);
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    const WorldFolderReport r2 = export_world_folder(s, src, nullptr, dir.string(), o);
+    CHECK(r2.ok);
+    CHECK_FALSE(read_json(dir / "manifest.json").contains("old"));
+    CHECK(fs::is_directory(dir / "textures"));
 }
 
 CM_TEST(world_folder, parallel_matches_serial) {

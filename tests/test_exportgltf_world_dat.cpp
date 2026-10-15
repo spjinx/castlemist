@@ -102,7 +102,7 @@ cw::WorldScene one_model_scene(uint32_t fileId) {
 // game trace: blend, preset, cull, emission differ), so by the spec's rule the
 // dat source defaults to wantGame = true; the test prints the difference and
 // holds the default to the traced result.
-CM_TEST(world_export_dat, want_game_same_materials) {
+CM_TEST(world_export_dat, want_game_default_traced) {
     Gw2Dat& dat = shared_dat();
     if (!ensure_template()) SKIP("no struct template");
     constexpr uint32_t kModel = 1766522;
@@ -126,6 +126,9 @@ CM_TEST(world_export_dat, want_game_same_materials) {
         CHECK(mats[g].is_object());
         mats[g].erase("castlemist");
     }
+    // The basis of the default: false and true differ (no render state without
+    // the trace). Equal again would mean the decision should be revisited.
+    CHECK(mats[0] != mats[1]);
     if (mats[0] != mats[1]) {
         const json patch = json::diff(mats[0], mats[1]);
         std::printf("    wantGame false -> true: materials.json differs (%zu ops): %s\n", patch.size(),

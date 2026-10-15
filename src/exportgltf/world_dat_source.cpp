@@ -45,20 +45,28 @@ public:
             slot = s;
         }
         if (mine) {
+            // The guard publishes the slot (null = failed unless set below) however
+            // this scope is left, an exception included, so no waiter blocks forever.
+            std::shared_ptr<const CappedTexture> done;
+            struct Publish {
+                DatModelSource& self; Slot& slot; std::shared_ptr<const CappedTexture>& done;
+                ~Publish() {
+                    {
+                        std::lock_guard<std::mutex> lk(self.mu_);
+                        slot.tex = done;
+                        slot.ready = true;
+                    }
+                    self.cv_.notify_all();
+                }
+            } guard{*this, *slot, done};
             auto t = std::make_shared<CappedTexture>();
             try {
                 decode_texture_capped(dat_, fileId, maxSize, *t);   // never throws (entry_extractor.h)
             } catch (...) {
                 t->mips.clear();
             }
-            std::shared_ptr<const CappedTexture> done = t->mips.empty() ? nullptr : std::move(t);
-            {
-                std::lock_guard<std::mutex> lk(mu_);
-                slot->tex = done;
-                slot->ready = true;
-            }
-            cv_.notify_all();
-            return done;
+            if (!t->mips.empty()) done = std::move(t);
+            return done;   // copied before the guard runs
         }
         std::unique_lock<std::mutex> lk(mu_);
         cv_.wait(lk, [&] { return slot->ready; });

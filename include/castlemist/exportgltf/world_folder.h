@@ -78,6 +78,7 @@ struct WorldFolderReport {
 ///   "no sky" (or any failure of its own) gives `sky: null` and a warning.
 /// - opts.threads workers (0 = hardware_concurrency) share @p src; results are
 ///   kept by model / cell index, so the output does not depend on the count.
+/// - Never throws: any exception becomes `error`, and leaves no manifest.json.
 WorldFolderReport export_world_folder(const castlemist::world::WorldScene& scene, ModelSource& src,
                                       const sky::SkyInputs* sky, const std::string& dirUtf8,
                                       const WorldFolderOptions& opts);

@@ -91,7 +91,8 @@ bool write_bytes(const fs::path& p, const std::vector<uint8_t>& b) {
     std::ofstream f(p, std::ios::binary);
     if (!f) return false;
     f.write(reinterpret_cast<const char*>(b.data()), static_cast<std::streamsize>(b.size()));
-    return static_cast<bool>(f);
+    f.close();   // the final buffered flush can fail (disk full): check after it
+    return !f.fail();
 }
 
 uint64_t capped_bytes(int w, int h) { return uint64_t(std::max(w, 0)) * uint64_t(std::max(h, 0)) * 4 * 4 / 3; }
@@ -282,6 +283,10 @@ bool prepare_dir(const fs::path& d, const std::string& dirUtf8, bool overwrite, 
                 error = "output folder not empty: " + dirUtf8;
                 return false;
             }
+            // manifest.json first: an interrupted clear never leaves a manifest
+            // describing a folder that is half gone.
+            fs::remove(d / "manifest.json", ec);
+            if (ec) { error = "cannot clear " + utf8(d / "manifest.json") + ": " + ec.message(); return false; }
             std::vector<fs::path> entries;
             for (const auto& e : fs::directory_iterator(d, ec)) entries.push_back(e.path());
             for (const fs::path& p : entries) {
@@ -292,6 +297,7 @@ bool prepare_dir(const fs::path& d, const std::string& dirUtf8, bool overwrite, 
     }
     fs::create_directories(d / "cells", ec);
     if (!ec) fs::create_directories(d / "models", ec);
+    if (!ec) fs::create_directories(d / "textures", ec);   // the manifest names it even when empty
     if (ec) { error = "cannot create " + dirUtf8 + ": " + ec.message(); return false; }
     return true;
 }
@@ -338,8 +344,13 @@ json sky_block(const fs::path& dir) {
 
 } // namespace
 
-WorldFolderReport export_world_folder(const cw::WorldScene& scene, ModelSource& src, const sky::SkyInputs* sky,
-                                      const std::string& dirUtf8, const WorldFolderOptions& opts) {
+namespace {
+
+/// The export itself; may throw (export_world_folder catches). @p manifestWritten
+/// is set once manifest.json exists, so a later exception can remove it.
+WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSource& src, const sky::SkyInputs* sky,
+                                           const std::string& dirUtf8, const WorldFolderOptions& opts,
+                                           bool& manifestWritten) {
     WorldFolderReport rep;
     rep.dir = dirUtf8;
     auto t = Clock::now();
@@ -534,11 +545,13 @@ WorldFolderReport export_world_folder(const cw::WorldScene& scene, ModelSource& 
         {
             std::ofstream f(tmp, std::ios::binary);
             f << man.dump(2) << '\n';
-            if (!f) { rep.error = "cannot write " + utf8(tmp); return rep; }
+            f.close();   // check after the final flush (disk full), never before
+            if (f.fail()) { rep.error = "cannot write " + utf8(tmp); return rep; }
         }
         std::error_code ec;
         fs::rename(tmp, dir / "manifest.json", ec);
         if (ec) { rep.error = "cannot rename " + utf8(tmp) + ": " + ec.message(); return rep; }
+        manifestWritten = true;
     }
     lap("manifest");
 
@@ -556,6 +569,30 @@ WorldFolderReport export_world_folder(const cw::WorldScene& scene, ModelSource& 
     rep.clipsFailedDecode = failedDecode;
     rep.warnings = man["warnings"].get<std::vector<std::string>>();
     rep.bytes = folder_bytes(dir);
+    return rep;
+}
+
+} // namespace
+
+WorldFolderReport export_world_folder(const cw::WorldScene& scene, ModelSource& src, const sky::SkyInputs* sky,
+                                      const std::string& dirUtf8, const WorldFolderOptions& opts) {
+    bool manifestWritten = false;
+    std::string error;
+    try {
+        return export_world_folder_impl(scene, src, sky, dirUtf8, opts, manifestWritten);
+    } catch (const std::exception& e) {
+        error = std::string("export: ") + e.what();
+    } catch (...) {
+        error = "export: unknown exception";
+    }
+    // Never throws (spec "Error handling"); a failed export leaves no manifest.json.
+    if (manifestWritten) {
+        std::error_code ec;
+        fs::remove(u8path(dirUtf8) / "manifest.json", ec);
+    }
+    WorldFolderReport rep;
+    rep.dir = dirUtf8;
+    rep.error = error;
     return rep;
 }
 

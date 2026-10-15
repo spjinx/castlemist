@@ -188,8 +188,27 @@ bool SharedImagePool::ensure(uint32_t fileId, const std::function<std::vector<ui
             return it->second.ok;
         }
     }
-    // This caller claimed fileId: encode and write outside the lock.
+    // This caller claimed fileId: encode and write outside the lock. The guard
+    // publishes the slot however this scope is left -- an exception (say a
+    // bad_alloc building a path) included -- so no waiter blocks forever.
     std::string err;
+    bool published = false;
+    struct Publish {
+        Impl& p; uint32_t id; const std::string& err; bool& published;
+        ~Publish() {
+            {
+                std::lock_guard<std::mutex> lk(p.mu);
+                Impl::Slot& s = p.slots[id];
+                s.done = true;
+                s.ok = published;
+                s.error = published ? std::string()
+                          : err.empty() ? "Could not write image " + file_name(id) + ": interrupted."
+                                        : err;
+                if (published) ++p.written;
+            }
+            p.cv.notify_all();
+        }
+    } guard{p, fileId, err, published};
     const fs::path dir = fs::path(std::u8string(p.dir.begin(), p.dir.end()));
     const fs::path dst = dir / file_name(fileId), tmp = dir / (file_name(fileId) + ".tmp");
     std::vector<uint8_t> png;
@@ -215,17 +234,9 @@ bool SharedImagePool::ensure(uint32_t fileId, const std::function<std::vector<ui
         }
         if (!err.empty()) fs::remove(tmp, ec);
     }
-    {
-        std::lock_guard<std::mutex> lk(p.mu);
-        Impl::Slot& s = p.slots[fileId];
-        s.done = true;
-        s.ok = err.empty();
-        s.error = err;
-        if (s.ok) ++p.written;
-    }
-    p.cv.notify_all();
-    if (!err.empty() && error) *error = err;
-    return err.empty();
+    published = err.empty();
+    if (!published && error) *error = err;
+    return published;   // the guard publishes the slot
 }
 
 } // namespace castlemist::exportgltf
