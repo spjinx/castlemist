@@ -6,17 +6,22 @@
 #include "test_framework.h"
 
 #include "castlemist/exportgltf/vrchat_export.h"
+#include "castlemist/exportgltf/world_cell.h"
 #include "castlemist/exportgltf/world_export.h"
 #include "castlemist/exportgltf/world_probe.h"
 #include "castlemist/world/frame.h"
 #include "castlemist/extract/model_types.h"
 #include "castlemist/native/granny_anim.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -286,4 +291,306 @@ CM_TEST(world_gltf, image_uris_need_no_escaping) {
         if (uri.find("metalRough") != std::string::npos) sawGenerated = true;
     }
     CHECK(sawGenerated);
+}
+
+// ------------------------------------------------------------- cell glTF --
+// Task 6: world_cell.h, one .glb per export cell.
+
+namespace {
+
+namespace cw = castlemist::world;
+
+constexpr float kCX0 = -15360.f, kCY1 = 39936.f, kCC = 3072.f;
+
+/// A height that depends only on the global sample (gi, gj), so shared chunk
+/// edges are bit-identical as on real maps (gw2-world-frame.md §3.1).
+float sample_height(int gi, int gj) { return 10.0f + 0.5f * float(gi) - 0.25f * float(gj); }
+
+/// grid() of test_world_cells.cpp (copied), with heights filled in.
+cw::WorldScene cell_grid(int nx, int ny, float pickerScale = 0.25f) {
+    cw::WorldScene s;
+    s.terrain.present = true;
+    s.terrain.chunksX = nx; s.terrain.chunksY = ny;
+    for (int cy = 0; cy < ny; ++cy)
+        for (int cx = 0; cx < nx; ++cx) {
+            cw::TerrainChunk c;
+            c.cx = cx; c.cy = cy; c.samples = 33;
+            c.rect[0] = kCX0 + cx * kCC; c.rect[2] = kCX0 + (cx + 1) * kCC;
+            c.rect[3] = kCY1 - cy * kCC; c.rect[1] = kCY1 - (cy + 1) * kCC;
+            c.material.pickerScale = pickerScale;
+            c.heights.resize(33 * 33);
+            for (int j = 0; j < 33; ++j)
+                for (int i = 0; i < 33; ++i) c.heights[size_t(j) * 33 + i] = sample_height(cx * 32 + i, cy * 32 + j);
+            s.terrain.chunks.push_back(c);
+        }
+    return s;
+}
+
+cw::Cell cell_by_id(const cw::WorldScene& s, const std::string& id) {
+    const cw::CellPlan p = cw::partition_cells(s, cw::CellStats{}, cw::CellBudget{});
+    for (const auto& c : p.cells) if (c.id == id) return c;
+    return cw::Cell{};
+}
+
+void set_all_heights(cw::WorldScene& s, float z) {
+    for (auto& c : s.terrain.chunks) std::fill(c.heights.begin(), c.heights.end(), z);
+}
+
+void add_water(cw::WorldScene& s) {
+    s.water.hasPlane = true; s.water.planeZ = 0;
+    castlemist::model::Extractor::MapEnvWater p;
+    p.depthAttenuation = 10;
+    p.surfaceShallowColor[2] = 255;
+    p.surfaceDeepColor[0] = 255;
+    s.environment.water.push_back(p);
+    s.environment.light.presetIndex = 0;
+}
+
+/// One hull of @p tris triangles (all the same one) placed once, identity transform.
+void add_hull(cw::WorldScene& s, size_t tris) {
+    cw::CollisionMesh m;
+    m.verts = {-9000.f, 33000.f, 1.f, -8000.f, 33000.f, 2.f, -9000.f, 34000.f, 3.f};
+    for (size_t k = 0; k < tris; ++k) m.indices.insert(m.indices.end(), {0u, 1u, 2u});
+    s.collision.meshes.push_back(m);
+    cw::CollisionInstance inst;
+    inst.mesh = uint32_t(s.collision.meshes.size() - 1);
+    inst.world[0] = inst.world[5] = inst.world[10] = inst.world[15] = 1;
+    s.collision.instances.push_back(inst);
+}
+
+void cross3(const float a[3], const float b[3], const float c[3], float out[3]) {
+    const float u[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+    const float v[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+    out[0] = u[1] * v[2] - u[2] * v[1];
+    out[1] = u[2] * v[0] - u[0] * v[2];
+    out[2] = u[0] * v[1] - u[1] * v[0];
+}
+
+/// Column-major 4x4 times a direction.
+void mul_dir(const std::array<float, 16>& m, const float v[3], float out[3]) {
+    for (int r = 0; r < 3; ++r) out[r] = m[0 * 4 + r] * v[0] + m[1 * 4 + r] * v[1] + m[2 * 4 + r] * v[2];
+}
+
+/// The BIN chunk of a .glb.
+std::vector<uint8_t> glb_bin(const fs::path& p) {
+    const std::vector<uint8_t> b = file_bytes(p);
+    auto u32 = [&](size_t i) {
+        return static_cast<uint32_t>(b[i]) | (static_cast<uint32_t>(b[i + 1]) << 8) |
+               (static_cast<uint32_t>(b[i + 2]) << 16) | (static_cast<uint32_t>(b[i + 3]) << 24);
+    };
+    if (b.size() < 20) return {};
+    const size_t binAt = 20 + u32(12);
+    if (b.size() < binAt + 8) return {};
+    const uint32_t len = u32(binAt);
+    if (b.size() < binAt + 8 + len) return {};
+    return std::vector<uint8_t>(b.begin() + std::ptrdiff_t(binAt + 8), b.begin() + std::ptrdiff_t(binAt + 8 + len));
+}
+
+/// Accessor @p a as numbers: FLOAT, UNSIGNED_SHORT or UNSIGNED_INT components.
+std::vector<double> read_accessor(const json& g, const std::vector<uint8_t>& bin, size_t a) {
+    const json& acc = g["accessors"][a];
+    const json& bv = g["bufferViews"][acc["bufferView"].get<size_t>()];
+    const size_t off = bv.value("byteOffset", size_t(0)) + acc.value("byteOffset", size_t(0));
+    const std::string type = acc["type"];
+    const size_t comps = type == "SCALAR" ? 1 : type == "VEC2" ? 2 : type == "VEC3" ? 3 : 4;
+    const size_t n = acc["count"].get<size_t>() * comps;
+    const int ct = acc["componentType"];
+    const size_t cs = ct == 5123 ? 2 : 4;
+    std::vector<double> out;
+    if (off + n * cs > bin.size()) return out;
+    out.resize(n);
+    for (size_t i = 0; i < n; ++i) {
+        if (ct == 5126) { float f; std::memcpy(&f, &bin[off + i * 4], 4); out[i] = f; }
+        else if (ct == 5123) { uint16_t v; std::memcpy(&v, &bin[off + i * 2], 2); out[i] = v; }
+        else { uint32_t v; std::memcpy(&v, &bin[off + i * 4], 4); out[i] = v; }
+    }
+    return out;
+}
+
+const json* node_named(const json& g, const std::string& name) {
+    for (const json& n : g["nodes"]) if (n.value("name", std::string()) == name) return &n;
+    return nullptr;
+}
+
+} // namespace
+
+CM_TEST(world_cell, terrain_welded_vertex_count) {
+    const cw::WorldScene s = cell_grid(4, 4);
+    const cw::Cell c = cell_by_id(s, "c0_0_4x4");
+    CHECK(c.id == "c0_0_4x4");
+    const CellMesh m = build_cell_terrain(s.terrain, c);
+    CHECK_EQ(m.vertices(), size_t(16641));  // (4*32+1)^2: fits 16-bit indices (spec D1)
+    CHECK_EQ(m.idx.size(), size_t(32768 * 3));
+    CHECK_EQ(m.nrm.size(), m.pos.size());
+    CHECK_EQ(m.uv.size(), m.vertices() * 2);
+    if (m.vertices() != 16641 || m.idx.empty()) return;
+    bool small = true;
+    for (uint32_t i : m.idx) if (i >= 65536) small = false;
+    CHECK(small);
+    CHECK_EQ(m.pos[0], -15360.f - c.origin[0]);
+    CHECK_EQ(m.pos[1], 39936.f - c.origin[1]);
+    CHECK_EQ(m.pos[2], sample_height(0, 0));
+    // Last vertex: the south-east corner.
+    const size_t last = m.vertices() - 1;
+    CHECK_EQ(m.pos[last * 3 + 0], -15360.f + 4 * kCC - c.origin[0]);
+    CHECK_EQ(m.pos[last * 3 + 1], 39936.f - 4 * kCC - c.origin[1]);
+    CHECK_EQ(m.pos[last * 3 + 2], sample_height(128, 128));
+    CHECK_EQ(m.uv[0], 0.f);
+    CHECK_EQ(m.uv[1], 0.f);
+    CHECK_EQ(m.uv[m.uv.size() - 2], 1.f);
+    CHECK_EQ(m.uv[m.uv.size() - 1], 1.f);
+    float n[3];
+    cross3(&m.pos[m.idx[0] * 3], &m.pos[m.idx[1] * 3], &m.pos[m.idx[2] * 3], n);
+    CHECK(n[2] < 0);   // up is -Z
+    CHECK(m.nrm[2] < 0);
+}
+
+CM_TEST(world_cell, shared_edge_welded) {
+    const cw::WorldScene s = cell_grid(2, 1);
+    const cw::Cell c = cell_by_id(s, "c0_0_2x1");
+    CHECK(c.id == "c0_0_2x1");
+    const CellMesh m = build_cell_terrain(s.terrain, c);
+    CHECK_EQ(m.vertices(), size_t(65 * 33));
+    std::vector<std::array<float, 3>> p;
+    for (size_t i = 0; i < m.vertices(); ++i) p.push_back({m.pos[i * 3], m.pos[i * 3 + 1], m.pos[i * 3 + 2]});
+    std::sort(p.begin(), p.end());
+    CHECK(std::adjacent_find(p.begin(), p.end()) == p.end());
+    CHECK_EQ(m.idx.size(), size_t(2 * 32 * 32 * 6));
+}
+
+CM_TEST(world_cell, missing_chunk_leaves_its_quads_out) {
+    cw::WorldScene s = cell_grid(2, 1);
+    const cw::Cell c = cell_by_id(s, "c0_0_2x1");
+    s.terrain.chunks.pop_back();   // chunk (1, 0)
+    const CellMesh m = build_cell_terrain(s.terrain, c);
+    CHECK_EQ(m.vertices(), size_t(33 * 33));
+    CHECK_EQ(m.idx.size(), size_t(32 * 32 * 6));
+    for (uint32_t i : m.idx) CHECK(i < m.vertices());
+    if (m.uv.size() >= 2) CHECK_EQ(m.uv[m.uv.size() - 2], 0.5f);  // its east edge is the cell's middle
+}
+
+CM_TEST(world_cell, collider_parts_under_65535) {
+    cw::WorldScene s = cell_grid(4, 4);
+    add_hull(s, 50000);
+    cw::Cell c = cell_by_id(s, "c0_0_4x4");
+    CHECK_EQ(c.collision.size(), size_t(1));
+    const std::vector<CellMesh> parts = build_cell_colliders(s, c);
+    CHECK_EQ(parts.size(), size_t(3));
+    if (parts.size() != 3) return;
+    CHECK_EQ(parts[0].idx.size() / 3, size_t(21845));
+    CHECK_EQ(parts[1].idx.size() / 3, size_t(21845));
+    CHECK_EQ(parts[2].idx.size() / 3, size_t(6310));
+    for (const CellMesh& p : parts) {
+        CHECK(p.vertices() <= size_t(65535));
+        CHECK_EQ(p.vertices(), p.idx.size());
+        bool seq = true;
+        for (size_t i = 0; i < p.idx.size(); ++i) if (p.idx[i] != uint32_t(i)) seq = false;
+        CHECK(seq);
+    }
+    CHECK_EQ(parts[0].pos[0], -9000.f - c.origin[0]);
+    CHECK_EQ(parts[0].pos[1], 33000.f - c.origin[1]);
+    CHECK_EQ(parts[0].pos[2], 1.f);
+}
+
+CM_TEST(world_cell, water_only_where_below) {
+    cw::WorldScene s = cell_grid(1, 1);
+    add_water(s);
+    const cw::Cell c = cell_by_id(s, "c0_0_1x1");
+    set_all_heights(s, -5.f);   // all above the plane (up is -Z)
+    CHECK(build_cell_water(s, c).pos.empty());
+    set_all_heights(s, 5.f);    // all below it
+    const CellMesh w = build_cell_water(s, c);
+    CHECK_EQ(w.vertices(), size_t(33 * 33));
+    CHECK_EQ(w.idx.size(), size_t(32 * 32 * 6));
+    if (w.vertices() != 33 * 33) return;
+    bool flat = true;
+    for (size_t i = 0; i < w.vertices(); ++i) if (w.pos[i * 3 + 2] != 0.f) flat = false;
+    CHECK(flat);
+    CHECK_EQ(w.uv[w.uv.size() - 1], 1.f);
+    s.water.hasPlane = false;
+    CHECK(build_cell_water(s, c).pos.empty());
+}
+
+CM_TEST(world_cell, gltf_layout) {
+    cw::WorldScene s = cell_grid(4, 4);
+    add_water(s);
+    add_hull(s, 4);
+    const cw::Cell c = cell_by_id(s, "c0_0_4x4");
+    const CellMesh terrain = build_cell_terrain(s.terrain, c);
+    set_all_heights(s, 5.f);
+    const CellMesh water = build_cell_water(s, c);
+    CHECK(!water.pos.empty());
+    const std::vector<CellMesh> colliders = build_cell_colliders(s, c);
+    CHECK_EQ(colliders.size(), size_t(1));
+
+    const fs::path dir = fresh_dir("cell_layout");
+    const fs::path glb = dir / "c0_0_4x4.glb";
+    std::string err;
+    CHECK(write_cell_gltf(glb.string(), c, terrain, &water, colliders,
+                          CellImages{"c0_0_4x4_albedo.png", "c0_0_4x4_water.png"}, &err));
+    CHECK(err.empty());
+    const json g = glb_json(glb);
+    CHECK(g.is_object());
+    if (!g.is_object()) return;
+
+    const json& root = scene_root(g);
+    CHECK(root["name"] == "GW2_MapToGltf");
+    const std::array<float, 16> M = map_to_gltf_root(1.0);
+    CHECK_EQ(root["matrix"].size(), size_t(16));
+    for (size_t i = 0; i < 16; ++i) CHECK_EQ(root["matrix"][i].get<float>(), M[i]);
+    CHECK_EQ(root["children"].size(), size_t(1));
+    const json& cell = g["nodes"][root["children"][0].get<size_t>()];
+    CHECK(cell["name"] == "Cell");
+    for (size_t k = 0; k < 3; ++k) CHECK_EQ(cell["translation"][k].get<float>(), c.origin[k]);
+    std::vector<std::string> kids;
+    for (const json& k : cell["children"]) kids.push_back(g["nodes"][k.get<size_t>()]["name"]);
+    CHECK(kids == std::vector<std::string>({"Terrain", "Water", "Collider_0"}));
+
+    CHECK(g["images"][0]["uri"] == "c0_0_4x4_albedo.png");
+    CHECK(g["images"][1]["uri"] == "c0_0_4x4_water.png");
+    std::map<std::string, json> mats;
+    for (const json& m : g["materials"]) mats[m["name"].get<std::string>()] = m;
+    CHECK(mats.count("Terrain") && mats.count("Water") && mats.count("Collision"));
+    CHECK(mats["Water"]["alphaMode"] == "BLEND");
+    CHECK(mats["Terrain"]["pbrMetallicRoughness"].contains("baseColorTexture"));
+    CHECK(mats["Water"]["pbrMetallicRoughness"].contains("baseColorTexture"));
+    CHECK_FALSE(mats["Collision"]["pbrMetallicRoughness"].contains("baseColorTexture"));
+
+    // Faces up after import, read back from the .glb. The root has det < 0, so
+    // glTF takes clockwise as the front face below it: the front normal of a
+    // triangle is M * ((b-a)x(c-a)) of its raw numbers (world_probe.cpp).
+    const json* tnode = node_named(g, "Terrain");
+    CHECK(tnode != nullptr);
+    if (!tnode) return;
+    const std::vector<uint8_t> bin = glb_bin(glb);
+    const json& tprim = g["meshes"][(*tnode)["mesh"].get<size_t>()]["primitives"][0];
+    CHECK_EQ(g["accessors"][tprim["indices"].get<size_t>()]["componentType"].get<int>(), 5123);   // 16-bit
+    const std::vector<double> pos = read_accessor(g, bin, tprim["attributes"]["POSITION"].get<size_t>());
+    const std::vector<double> nrm = read_accessor(g, bin, tprim["attributes"]["NORMAL"].get<size_t>());
+    const std::vector<double> idx = read_accessor(g, bin, tprim["indices"].get<size_t>());
+    CHECK_EQ(pos.size(), size_t(16641 * 3));
+    if (pos.size() != 16641 * 3 || nrm.size() != pos.size() || idx.size() < 3) return;
+    float a[3], b[3], cc[3];
+    for (size_t k = 0; k < 3; ++k) {
+        a[k] = float(pos[size_t(idx[0]) * 3 + k]);
+        b[k] = float(pos[size_t(idx[1]) * 3 + k]);
+        cc[k] = float(pos[size_t(idx[2]) * 3 + k]);
+    }
+    float raw[3], front[3], n0[3];
+    cross3(a, b, cc, raw);
+    mul_dir(M, raw, front);
+    CHECK(front[1] > 0);   // glTF +Y is up
+    bool allUp = true;
+    for (size_t v = 0; v * 3 < nrm.size(); ++v) {
+        const float rn[3] = {float(nrm[v * 3]), float(nrm[v * 3 + 1]), float(nrm[v * 3 + 2])};
+        mul_dir(M, rn, n0);
+        if (!(n0[1] > 0)) allUp = false;
+    }
+    CHECK(allUp);
+    // det(M) < 0: the handedness change the front-face rule above relies on.
+    const float ex[3] = {1, 0, 0}, ey[3] = {0, 1, 0}, ez[3] = {0, 0, 1}, o[3] = {0, 0, 0};
+    float mx[3], my[3], mz[3], xy[3];
+    mul_dir(M, ex, mx); mul_dir(M, ey, my); mul_dir(M, ez, mz);
+    cross3(o, mx, my, xy);
+    CHECK(xy[0] * mz[0] + xy[1] * mz[1] + xy[2] * mz[2] < 0);
 }
