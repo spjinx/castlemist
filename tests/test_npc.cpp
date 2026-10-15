@@ -4,6 +4,7 @@
 #include "test_framework.h"
 
 #include "castlemist/format/content_map.h"
+#include "castlemist/npc/browse.h"
 #include "castlemist/npc/catalogue.h"
 #include "castlemist/npc/export.h"
 #include "castlemist/npc/tokens.h"
@@ -577,4 +578,45 @@ CM_TEST(npc_export, manifest_lists_clips_weapons_and_files) {
     CHECK_EQ(j["weapons"][0]["file"].get<std::string>(), std::string("weapon_200.glb"));
     CHECK_EQ(j["files"][0].get<std::string>(), std::string("model.glb"));
     CHECK_EQ(j["notes"][0].get<std::string>(), std::string("n"));
+}
+
+namespace {
+NpcRecord make_npc(uint32_t id, uint32_t model, const std::string& race, const std::string& codename = "") {
+    NpcRecord r;
+    r.id = id;
+    r.model = model;
+    r.race = race;
+    r.codename = codename;
+    return r;
+}
+}  // namespace
+
+CM_TEST(npc_browse, groups_by_model_then_race) {
+    Catalogue cat;
+    cat.npcs = {make_npc(1, 104256, ""), make_npc(2, 104256, ""), make_npc(3, 0, "humanmale")};
+    std::vector<Group> g = group_creatures(cat, "", {});
+    CHECK_EQ(g.size(), size_t(2));
+    CHECK_EQ(g[0].model, uint32_t(104256));
+    CHECK_EQ(g[0].npcs.size(), size_t(2));
+    CHECK_EQ(g[1].race, std::string("humanmale"));
+    CHECK_EQ(group_label(g[1]), std::string("humanmale"));
+    CHECK_EQ(group_label(g[0]), std::string("model 104256"));
+}
+
+CM_TEST(npc_browse, filters_by_id_codename_race_model_and_skill_name) {
+    NpcRecord r = make_npc(5758, 104256, "humanmale", "vl8Av.4gynM");
+    r.skills = {5491};
+    CHECK(matches(r, "5758", {}));
+    CHECK(matches(r, "VL8A", {}));
+    CHECK(matches(r, "human", {}));
+    CHECK(matches(r, "10425", {}));
+    SkillName names = [](uint32_t id) { return id == 5491 ? std::string("Fireball") : std::string(); };
+    CHECK(matches(r, "fireball", names));
+    CHECK(!matches(r, "fireball", {}));
+}
+
+CM_TEST(npc_browse, a_filter_matching_nothing_gives_no_groups) {
+    Catalogue cat;
+    cat.npcs = {make_npc(1, 104256, "")};
+    CHECK(group_creatures(cat, "zzzz", {}).empty());
 }
