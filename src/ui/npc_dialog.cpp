@@ -243,9 +243,9 @@ void on_names(NamesResult* raw) {
     if (r->generation != g_generation) return;
     if (!r->error.empty()) { set_status(L"Fetching names failed: " + utf8_to_wide(r->error)); return; }
     const size_t named = npc::apply_names(g_cat, r->names);
-    npc::save(g_cat, cache_file());
+    const bool saved = npc::save(g_cat, cache_file());
     refilter();
-    set_status(L"named " + std::to_wstring(named) + L" NPCs");
+    set_status(saved ? L"named " + std::to_wstring(named) + L" NPCs" : std::wstring(L"names applied but cache not saved"));
 }
 
 // ---- buttons ----------------------------------------------------------------
@@ -372,7 +372,7 @@ void open_npc_catalogue(HWND owner) {
     };
     const DWORD lv_style = LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP;
 
-    mk(L"STATIC", L"Filter (id, name, codename, race, model, skill):", SS_LEFT, 10, 12, 290, 18, 0);
+    mk(L"STATIC", L"Filter (id, codename, race, model, skill name):", SS_LEFT, 10, 12, 290, 18, 0);
     g_filter = mk(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, 300, 8, 300, 24, ID_NPC_FILTER);
     mk(L"STATIC", L"Creatures", SS_LEFT, 10, 40, 200, 16, 0);
     g_creatures = mk(WC_LISTVIEWW, L"", lv_style, 10, 58, 300, 290, ID_NPC_CREATURES);
@@ -380,12 +380,12 @@ void open_npc_catalogue(HWND owner) {
     column(g_creatures, 1, L"NPCs", 60);
     mk(L"STATIC", L"NPCs", SS_LEFT, 320, 40, 200, 16, 0);
     g_npcs = mk(WC_LISTVIEWW, L"", lv_style, 320, 58, 570, 290, ID_NPC_LIST);
-    column(g_npcs, 0, L"Id", 60);
+    column(g_npcs, 0, L"Id", 70);
     column(g_npcs, 1, L"Name", 150);
-    column(g_npcs, 2, L"Codename", 160);
-    column(g_npcs, 3, L"Race", 90);
-    column(g_npcs, 4, L"Weapons", 55);
-    column(g_npcs, 5, L"Skills", 45);
+    column(g_npcs, 2, L"Codename", 250);
+    column(g_npcs, 3, L"Race", 100);
+    column(g_npcs, 4, L"Weapons", 70);
+    column(g_npcs, 5, L"Skills", 60);
     for (HWND lv : {g_creatures, g_npcs}) ListView_SetExtendedListViewStyle(lv, LVS_EX_FULLROWSELECT);
     mk(L"STATIC", L"Clips", SS_LEFT, 10, 356, 200, 16, 0);
     g_clips = mk(L"LISTBOX", L"", WS_BORDER | WS_VSCROLL | LBS_NOINTEGRALHEIGHT, 10, 374, 880, 140, ID_NPC_CLIPS);

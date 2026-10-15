@@ -1907,10 +1907,13 @@ void ensure_cmap(const Args& a) {
 
 // The NPC catalogue: the JSON cache beside the exe (or --npc-cache); failing that,
 // built from the dat's content packs (needs the content map), cached.
+std::filesystem::path npc_cache_path(const Args& a) {
+    return has(a, "npc-cache") ? std::filesystem::path(utf8_arg("--npc-cache")) : exe_dir() / "npc_catalogue.json";
+}
+
 castlemist::npc::Catalogue ensure_npc(const Args& a) {
     namespace npc = castlemist::npc;
-    std::filesystem::path cache = has(a, "npc-cache") ? std::filesystem::path(utf8_arg("--npc-cache"))
-                                                      : exe_dir() / "npc_catalogue.json";
+    std::filesystem::path cache = npc_cache_path(a);
     if (std::optional<npc::Catalogue> c = npc::load(cache)) return std::move(*c);
     ensure_cmap(a);
     if (!castlemist::cmap::built()) fail("no content map: pass --cmap, or --dat with an index DB");
@@ -2005,12 +2008,12 @@ void cmd_npc_export(const Args& a) {
 void cmd_npc_names(const Args& a) {
     namespace npc = castlemist::npc;
     npc::Catalogue cat = ensure_npc(a);
+    if (cat.npcs.empty()) fail("no npc catalogue; build it first");
     const std::vector<uint32_t> ids = npc::minipet_ids(cat);
     castlemist::character::WinHttpClient http;
     castlemist::character::Gw2Api api(http, "");
     const size_t named = npc::apply_names(cat, api.names("minis", ids));
-    std::filesystem::path cache = has(a, "npc-cache") ? std::filesystem::path(utf8_arg("--npc-cache"))
-                                                      : exe_dir() / "npc_catalogue.json";
+    std::filesystem::path cache = npc_cache_path(a);
     if (!npc::save(cat, cache)) fail("could not write " + cache.string());
     emit({{"ok", true}, {"minipets", ids.size()}, {"named", named}});
 }
