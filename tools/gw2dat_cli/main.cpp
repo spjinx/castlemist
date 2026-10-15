@@ -55,6 +55,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <stdexcept>
 #include <span>
 #include <sstream>
 #include <string>
@@ -83,6 +84,8 @@
 #include "castlemist/exportgltf/gltf_export.h"
 #include "castlemist/exportgltf/sky_export.h"
 #include "castlemist/exportgltf/world_export.h"
+#include "castlemist/exportgltf/world_dat_source.h"
+#include "castlemist/exportgltf/world_folder.h"
 #include "castlemist/format/struct_template.h"
 #include "castlemist/ripper/assemble.h"
 #include "castlemist/ripper/look.h"
@@ -2424,8 +2427,103 @@ void cmd_world(const Args& a) {
 /// world-export --dat <dat> --file-id <map> --template <json> --out <file.glb>
 ///              [--no-terrain] [--no-props] [--collision] [--no-textures]
 ///              [--animations] [--scale <s>] [--threads <n>]
+/// Task 10: --out-dir writes the whole export folder through export_world_folder.
+/// export.log is written by this function AFTER export_world_folder returns, so
+/// manifest.json stays the last file the library writes (spec: Output folder).
+void cmd_world_export_folder(const Args& a) {
+    namespace eg = castlemist::exportgltf;
+    auto intFlag = [&](const char* k, int def) {
+        if (!has(a, k)) return def;
+        try {
+            size_t pos = 0; const std::string& v = a.at(k);
+            int r = std::stoi(v, &pos);
+            if (pos != v.size()) throw std::invalid_argument(v);
+            return r;
+        } catch (const std::exception&) { fail(std::string("--") + k + " must be an integer"); }
+        return def;
+    };
+    eg::WorldFolderOptions opts;
+    opts.texelsPerChunk = intFlag("texels-per-chunk", opts.texelsPerChunk);
+    const int tpc = opts.texelsPerChunk;
+    if (tpc != 64 && tpc != 128 && tpc != 256 && tpc != 512) fail("--texels-per-chunk must be one of 64, 128, 256, 512");
+    opts.maxTextureSize = intFlag("max-texture", opts.maxTextureSize);
+    const int mt = opts.maxTextureSize;
+    if (mt < 64 || mt > 4096 || (mt & (mt - 1)) != 0) fail("--max-texture must be a power of two from 64 to 4096");
+    if (has(a, "region")) {
+        int v[4]; size_t pos = 0; const std::string& r = a.at("region");
+        try {
+            for (int i = 0; i < 4; ++i) {
+                size_t used = 0;
+                v[i] = std::stoi(r.substr(pos), &used);
+                pos += used;
+                if (i < 3) { if (pos >= r.size() || r[pos] != ',') throw std::invalid_argument(r); ++pos; }
+            }
+            if (pos != r.size()) throw std::invalid_argument(r);
+        } catch (const std::exception&) { fail("--region must be four integers: cx0,cy0,cx1,cy1"); }
+        opts.region.cx0 = v[0]; opts.region.cy0 = v[1]; opts.region.cx1 = v[2]; opts.region.cy1 = v[3];
+    }
+    opts.budget.maxChunks = intFlag("cell-max-chunks", opts.budget.maxChunks);
+    if (has(a, "cell-max-tris")) opts.budget.maxTriangles = to_u64(a.at("cell-max-tris"));
+    if (has(a, "cell-max-texture-mb")) opts.budget.maxTextureMB = std::stod(a.at("cell-max-texture-mb"));
+    if (opts.budget.maxChunks < 1) fail("--cell-max-chunks must be at least 1");
+    opts.sky = !has(a, "no-sky");
+    opts.collision = !has(a, "no-collision");
+    opts.overwrite = has(a, "overwrite");
+    if (has(a, "threads")) opts.threads = static_cast<int>(to_u64(a.at("threads")));
+    // --no-fbx: Task 11 adds the Blender FBX step; until then it is accepted and the CLI stops here.
+
+    const std::string tpl_path = need(a, "template");
+    std::string tplErr;
+    if (!castlemist::tpl::load_from_file(tpl_path, tplErr)) fail("cannot load template: " + tplErr);
+    const json& tpl = *castlemist::tpl::get();
+    const std::string dir = utf8_arg("--out-dir");
+    const uint32_t fileId = static_cast<uint32_t>(to_u64(need(a, "file-id")));
+
+    auto t0 = std::chrono::steady_clock::now();
+    auto secs = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
+    std::string logText;
+    auto progress = [&](const std::string& m) {
+        char buf[32]; std::snprintf(buf, sizeof buf, "[%7.1fs] ", secs());
+        const std::string line = buf + m;
+        std::fprintf(stderr, "%s\n", line.c_str()); std::fflush(stderr);
+        logText += line + "\n";
+    };
+
+    Gw2Dat dat;
+    progress("loading dat");
+    load_dat_file(dat, need(a, "dat"));
+    progress("loading world " + std::to_string(fileId));
+    castlemist::world::WorldScene scene = castlemist::world::load_world(dat, fileId, tpl);
+    progress("world: " + std::to_string(scene.models.size()) + " models, " + std::to_string(scene.props.size()) + " props");
+    std::optional<castlemist::exportgltf::sky::SkyInputs> skyIn;
+    if (opts.sky) {
+        try {
+            auto bytes = castlemist::world::read_file_bytes(dat, fileId);
+            if (bytes) skyIn = castlemist::exportgltf::sky::load_sky_inputs(dat, *bytes, tpl, fileId);
+        } catch (const std::exception& ex) { progress(std::string("sky inputs unavailable: ") + ex.what()); }
+    }
+    auto src = eg::make_dat_model_source(dat);
+    progress("exporting to " + dir);
+    eg::WorldFolderReport rep = eg::export_world_folder(scene, *src, skyIn ? &*skyIn : nullptr, dir, opts);
+    progress(rep.ok ? "export finished: " + std::to_string(rep.cells) + " cells, " + std::to_string(rep.modelsWritten) + " models"
+                    : "export FAILED: " + rep.error);
+    json j = eg::report_json(rep);
+    if (rep.ok) {
+        // After the manifest on purpose: the manifest is the last file the export writes.
+        std::ofstream lf(std::filesystem::path(std::u8string(dir.begin(), dir.end())) / "export.log", std::ios::binary);
+        if (lf) lf << logText << j.dump(2) << "\n";
+        else std::fprintf(stderr, "warning: cannot write export.log\n");
+    }
+    emit(j);
+    if (!rep.ok) std::exit(1);
+}
+
 void cmd_world_export(const Args& a) {
     namespace eg = castlemist::exportgltf;
+    const bool hasOut = has(a, "out") || !utf8_arg("--out").empty();
+    const bool hasDir = has(a, "out-dir") || !utf8_arg("--out-dir").empty();
+    if (hasOut == hasDir) fail("give exactly one of --out <file.glb> or --out-dir <dir>");
+    if (hasDir) return cmd_world_export_folder(a);
     const std::string tpl_path = need(a, "template");
     std::string tplErr;
     // The prop models are built against the active template (tpl::get_or_auto_load).
