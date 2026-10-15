@@ -216,3 +216,14 @@ CM_TEST(bake, water_above_plane_none) {
     CHECK_FALSE(bake_cell_water(w, rect, 4, 4, false, out));
     CHECK(out.empty());
 }
+
+CM_TEST(bake, water_below_plane_without_preset) {
+    WorldScene w = water_scene(5.0f);
+    w.environment.water.clear();
+    const float rect[4] = {0, 0, 100, 100};
+    CHECK_FALSE(water_has_preset(w));
+    CHECK(water_below_plane(w, rect, 2, 2));
+    std::vector<uint8_t> out;
+    CHECK_FALSE(bake_cell_water(w, rect, 2, 2, false, out));   // the bake still needs a preset
+    CHECK_FALSE(water_below_plane(water_scene(-5.0f), rect, 2, 2));
+}

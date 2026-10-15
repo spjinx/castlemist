@@ -140,11 +140,29 @@ bool bake_chunk_albedo(const TerrainChunk& c, const TextureLookup& tex, const Ba
     return true;
 }
 
+bool water_has_preset(const WorldScene& s) {
+    const int pi = s.environment.light.presetIndex;
+    return pi >= 0 && static_cast<size_t>(pi) < s.environment.water.size();
+}
+
+bool water_below_plane(const WorldScene& s, const float rect[4], int texelsW, int texelsH) {
+    if (texelsW <= 0 || texelsH <= 0) return false;
+    const float planeZ = s.water.planeZ;
+    for (int j = 0; j < texelsH; ++j)
+        for (int i = 0; i < texelsW; ++i) {
+            const float x = rect[0] + (i + 0.5f) / texelsW * (rect[2] - rect[0]);
+            const float y = rect[3] - (j + 0.5f) / texelsH * (rect[3] - rect[1]);
+            bool found;
+            const float z = terrain_z(s.terrain, x, y, found);
+            if (found && z > planeZ) return true;
+        }
+    return false;
+}
+
 bool bake_cell_water(const WorldScene& s, const float rect[4], int texelsW, int texelsH, bool srgbColour,
                      std::vector<uint8_t>& rgbaOut) {
+    if (!water_has_preset(s) || !water_below_plane(s, rect, texelsW, texelsH)) return false;
     const int pi = s.environment.light.presetIndex;
-    if (texelsW <= 0 || texelsH <= 0 || pi < 0 || static_cast<size_t>(pi) >= s.environment.water.size())
-        return false;
     const auto& preset = s.environment.water[static_cast<size_t>(pi)];
     float sh[3], dp[3];
     water_colour(preset.surfaceShallowColor, sh);
@@ -154,7 +172,6 @@ bool bake_cell_water(const WorldScene& s, const float rect[4], int texelsW, int 
     const float planeZ = s.water.planeZ;
 
     std::vector<uint8_t> out(static_cast<size_t>(texelsW) * texelsH * 4);
-    bool below = false;
     for (int j = 0; j < texelsH; ++j)
         for (int i = 0; i < texelsW; ++i) {
             const float x = rect[0] + (i + 0.5f) / texelsW * (rect[2] - rect[0]);
@@ -162,16 +179,14 @@ bool bake_cell_water(const WorldScene& s, const float rect[4], int texelsW, int 
             bool found;
             const float z = terrain_z(s.terrain, x, y, found);
             const float tz = found ? z : planeZ;
-            if (tz > planeZ) below = true;
             const float mix = water_depth_mix(tz, planeZ, preset.depthAttenuation);
             uint8_t* o = &out[(static_cast<size_t>(j) * texelsW + i) * 4];
             for (int k = 0; k < 3; ++k) {
                 const float v = sh[k] + (dp[k] - sh[k]) * mix;
                 o[k] = to_byte(srgbColour ? linear_to_srgb(v) : v);
             }
-            o[3] = static_cast<uint8_t>(std::lround(0.45 * 255.0));
+            o[3] = static_cast<uint8_t>(std::lround(kFlatWaterAlpha * 255.0f));
         }
-    if (!below) return false;
     rgbaOut = std::move(out);
     return true;
 }

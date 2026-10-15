@@ -45,8 +45,8 @@ constexpr float kTerrainTint[3] = {0.52f, 0.56f, 0.46f};
 /// Prop albedo (the fly view's LAYER_PROP tint).
 constexpr float kPropTint[3] = {0.78f, 0.76f, 0.72f};
 constexpr float kCollisionTint[3] = {0.90f, 0.42f, 0.36f};
-constexpr float kWaterTint[3] = {0.30f, 0.55f, 0.85f};
-constexpr float kWaterAlpha = 0.45f;
+constexpr const float (&kWaterTint)[3] = castlemist::world::kFlatWaterTint;
+constexpr float kWaterAlpha = castlemist::world::kFlatWaterAlpha;
 /// Clear colour == fog colour (the fly view's).
 constexpr float kClear[4] = {0.10f, 0.11f, 0.13f, 1.0f};
 

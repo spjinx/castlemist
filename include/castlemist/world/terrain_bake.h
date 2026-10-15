@@ -47,11 +47,19 @@ float linear_to_srgb(float c);
 bool bake_chunk_albedo(const TerrainChunk& c, const TextureLookup& tex, const BakeSettings& s,
                        std::vector<uint8_t>& rgbOut);
 
+/// @brief True when light.presetIndex names one of environment.water (pairing UNPROVEN).
+bool water_has_preset(const WorldScene& s);
+
+/// @brief True when the terrain under any texel centre of a texelsW x texelsH grid
+///        over @p rect (row 0 north) is below the water plane (z > planeZ, up is -Z).
+///        Texels off the terrain never count. The one rule for "this cell has water".
+bool water_below_plane(const WorldScene& s, const float rect[4], int texelsW, int texelsH);
+
 /// @brief (cw*T) x (ch*T) RGBA8 of the cell rect (x0, y0, x1, y1; row 0 north):
 ///        lerp(shallow, deep, water_depth_mix(terrainZ, planeZ, depthAttenuation)) with the
-///        env preset light.presetIndex; alpha 115 (0.45). Texels off the terrain count as
-///        shallow. Returns false (nothing written) when there is no preset or no texel's
-///        terrain is below the plane (z > planeZ).
+///        env preset light.presetIndex; alpha 115 (kFlatWaterAlpha). Texels off the terrain count as
+///        shallow. Returns false (nothing written) when !water_has_preset or
+///        !water_below_plane.
 bool bake_cell_water(const WorldScene& s, const float rect[4], int texelsW, int texelsH, bool srgbColour,
                      std::vector<uint8_t>& rgbaOut);
 

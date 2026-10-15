@@ -23,6 +23,12 @@ bool dark_coverage(const std::vector<uint8_t>& rgba);
 ///        scale, rotate) is not animated.
 bool tex_transform_animates(const ModelTexTransformCPU& t);
 
+/// @brief The map view's flat water, drawn when the map has a plane but no env
+///        water preset (sub-project 2): linear RGB tint and alpha, castlemist's choice.
+inline constexpr float kFlatWaterTint[3] = {0.30f, 0.55f, 0.85f};
+/// @brief The flat water's alpha, also the preset water's base alpha (castlemist's choice).
+inline constexpr float kFlatWaterAlpha = 0.45f;
+
 /// @brief A water preset's stored colour as 0..1: bytes 0, 1, 2 as R, G, B
 ///        divided by 255 (order UNPROVEN, docs/research/gw2-world-materials.md
 ///        section 6). Byte 3 is ignored.

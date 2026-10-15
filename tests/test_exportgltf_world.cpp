@@ -10,6 +10,7 @@
 #include "castlemist/exportgltf/world_export.h"
 #include "castlemist/exportgltf/world_probe.h"
 #include "castlemist/world/frame.h"
+#include "castlemist/world/surface_rules.h"
 #include "castlemist/extract/model_types.h"
 #include "castlemist/native/granny_anim.hpp"
 
@@ -593,4 +594,63 @@ CM_TEST(world_cell, gltf_layout) {
     mul_dir(M, ex, mx); mul_dir(M, ey, my); mul_dir(M, ez, mz);
     cross3(o, mx, my, xy);
     CHECK(xy[0] * mz[0] + xy[1] * mz[1] + xy[2] * mz[2] < 0);
+}
+
+CM_TEST(world_cell, water_flat_without_preset) {
+    // Spec D3 "No preset": a plane without an env water preset still gets its
+    // water, in the map view's flat colour.
+    cw::WorldScene s = cell_grid(1, 1);
+    s.water.hasPlane = true; s.water.planeZ = 0;
+    const cw::Cell c = cell_by_id(s, "c0_0_1x1");
+    set_all_heights(s, -5.f);
+    CHECK(build_cell_water(s, c).pos.empty());   // still depth-tested
+    set_all_heights(s, 5.f);
+    const CellMesh water = build_cell_water(s, c);
+    CHECK_EQ(water.vertices(), size_t(33 * 33));
+    const CellMesh terrain = build_cell_terrain(s.terrain, c);
+
+    const fs::path glb = fresh_dir("cell_flat_water") / "c0_0_1x1.glb";
+    CHECK(write_cell_gltf(glb.string(), c, terrain, &water, {}, CellImages{"c0_0_1x1_albedo.png", ""}));
+    const json g = glb_json(glb);
+    CHECK(g.is_object());
+    if (!g.is_object()) return;
+    CHECK_EQ(g["images"].size(), size_t(1));
+    const json* wm = nullptr;
+    for (const json& m : g["materials"]) if (m["name"] == "Water") wm = &m;
+    CHECK(wm != nullptr);
+    if (!wm) return;
+    CHECK((*wm)["alphaMode"] == "BLEND");
+    const json& pbr = (*wm)["pbrMetallicRoughness"];
+    CHECK_FALSE(pbr.contains("baseColorTexture"));
+    CHECK_EQ(pbr["baseColorFactor"].size(), size_t(4));
+    for (size_t k = 0; k < 3; ++k) CHECK_EQ(pbr["baseColorFactor"][k].get<float>(), cw::kFlatWaterTint[k]);
+    CHECK_EQ(pbr["baseColorFactor"][3].get<float>(), cw::kFlatWaterAlpha);
+    CHECK((*wm)["extras"]["note"] == std::string(kFlatWaterNote));
+    CHECK(std::string(kFlatWaterNote).rfind("water: no preset; flat colour", 0) == 0);
+}
+
+CM_TEST(world_cell, odd_chunk_warned_not_dropped_silently) {
+    cw::WorldScene s = cell_grid(2, 1);
+    const cw::Cell c = cell_by_id(s, "c0_0_2x1");
+    cw::TerrainChunk& odd = s.terrain.chunks[1];   // chunk (1, 0)
+    odd.samples = 17;
+    odd.heights.assign(17 * 17, 0.f);
+    std::vector<std::string> warn;
+    const CellMesh m = build_cell_terrain(s.terrain, c, &warn);
+    CHECK_EQ(m.vertices(), size_t(33 * 33));
+    CHECK_EQ(warn.size(), size_t(1));
+    if (warn.size() == 1) {
+        CHECK(warn[0].find("c0_0_2x1") != std::string::npos);
+        CHECK(warn[0].find("(1, 0)") != std::string::npos);
+        CHECK(warn[0].find("17") != std::string::npos);
+    }
+    // A present chunk with no usable samples is warned too.
+    odd.heights.clear();
+    warn.clear();
+    build_cell_terrain(s.terrain, c, &warn);
+    CHECK_EQ(warn.size(), size_t(1));
+    // A full cell warns nothing.
+    warn.clear();
+    build_cell_terrain(cell_grid(2, 1).terrain, c, &warn);
+    CHECK(warn.empty());
 }

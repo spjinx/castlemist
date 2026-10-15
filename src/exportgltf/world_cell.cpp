@@ -6,6 +6,7 @@
 
 #include "castlemist/exportgltf/world_export.h"
 #include "castlemist/world/collision.h"
+#include "castlemist/world/surface_rules.h"
 #include "castlemist/world/terrain_bake.h"
 #include "castlemist/world/terrain_mesh.h"
 
@@ -49,7 +50,7 @@ void push_quad(std::vector<uint32_t>& idx, uint32_t a, uint32_t b, uint32_t c, u
 
 } // namespace
 
-CellMesh build_cell_terrain(const cw::Terrain& t, const cw::Cell& c) {
+CellMesh build_cell_terrain(const cw::Terrain& t, const cw::Cell& c, std::vector<std::string>* warnings) {
     CellMesh m;
     const int n = cell_samples(t, c);
     if (n < 2) return m;
@@ -62,7 +63,18 @@ CellMesh build_cell_terrain(const cw::Terrain& t, const cw::Cell& c) {
     for (int ly = 0; ly < c.h; ++ly)
         for (int lx = 0; lx < c.w; ++lx) {
             const cw::TerrainChunk* k = cw::find_chunk(t, c.cx0 + lx, c.cy0 + ly);
-            if (!usable(k) || k->samples != n) continue;
+            if (!k) continue;
+            if (!usable(k) || k->samples != n) {
+                if (warnings) {
+                    const std::string at = "cell " + c.id + ": terrain chunk (" + std::to_string(k->cx) + ", " +
+                                           std::to_string(k->cy) + ") ";
+                    warnings->push_back(usable(k) ? at + "has " + std::to_string(k->samples) +
+                                                        " samples per side, not the cell's " + std::to_string(n) +
+                                                        "; left out"
+                                                  : at + "has no usable samples; left out");
+                }
+                continue;
+            }
             Slot& s = slots[size_t(ly) * c.w + lx];
             s.k = k;
             s.nrm = cw::chunk_normals(t, size_t(k - t.chunks.data()));
@@ -120,9 +132,7 @@ CellMesh build_cell_water(const cw::WorldScene& s, const cw::Cell& c) {
     CellMesh m;
     const int n = cell_samples(s.terrain, c);
     if (n < 2 || !s.water.hasPlane) return m;
-    std::vector<uint8_t> probe;
-    if (!cw::bake_cell_water(s, c.rect, c.w * kWaterTexelsPerChunk, c.h * kWaterTexelsPerChunk, false, probe))
-        return m;
+    if (!cw::water_below_plane(s, c.rect, c.w * kWaterTexelsPerChunk, c.h * kWaterTexelsPerChunk)) return m;
     const int seg = n - 1;
     const int W = c.w * seg + 1, H = c.h * seg + 1;
     const double dx = (double(c.rect[2]) - c.rect[0]) / (W - 1), dy = (double(c.rect[3]) - c.rect[1]) / (H - 1);
@@ -226,9 +236,14 @@ bool write_cell_gltf(const std::string& glbPathUtf8, const cw::Cell& c, const Ce
         children.push_back(w.add_node(json{{"name", "Terrain"}, {"mesh", write_cell_mesh(w, terrain, "Terrain", mat)}}));
     }
     if (hasWater) {
-        const int mat = w.add_material(json{
-            {"name", "Water"}, {"pbrMetallicRoughness", textured_pbr(waterTex)}, {"alphaMode", "BLEND"}});
-        children.push_back(w.add_node(json{{"name", "Water"}, {"mesh", write_cell_mesh(w, *water, "Water", mat)}}));
+        json mat = {{"name", "Water"}, {"pbrMetallicRoughness", textured_pbr(waterTex)}, {"alphaMode", "BLEND"}};
+        if (waterTex < 0) {   // no env preset, so no baked texture: the map view's flat water
+            mat["pbrMetallicRoughness"]["baseColorFactor"] = {cw::kFlatWaterTint[0], cw::kFlatWaterTint[1],
+                                                              cw::kFlatWaterTint[2], cw::kFlatWaterAlpha};
+            mat["extras"] = {{"note", kFlatWaterNote}};
+        }
+        const int matIndex = w.add_material(mat);
+        children.push_back(w.add_node(json{{"name", "Water"}, {"mesh", write_cell_mesh(w, *water, "Water", matIndex)}}));
     }
     int collisionMat = -1;
     for (size_t k = 0; k < colliders.size(); ++k) {
