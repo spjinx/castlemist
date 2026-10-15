@@ -117,6 +117,9 @@ public:
     int add_skin(nlohmann::json skin);            ///< Pushes to `skins`, returns its index.
     void add_animation(nlohmann::json animation); ///< Pushes to `animations`.
     void add_scene_root(int nodeIndex);           ///< Adds `nodeIndex` to the (sole) scene's node list.
+    /// @brief Lists @p name in `extensionsUsed` (once), for a material or
+    ///        node that carries that extension (e.g. KHR_materials_unlit).
+    void use_extension(const std::string& name);
 
     /// @brief Assembles the final .glb: the 12-byte header, the JSON chunk
     ///        (space-padded to 4 bytes) and the BIN chunk (zero-padded to 4 bytes).

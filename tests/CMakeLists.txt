@@ -113,8 +113,46 @@ castlemist_add_test(sim
 
 castlemist_add_test(exportgltf
     SOURCES test_exportgltf_writer.cpp test_exportgltf_vrchat.cpp test_exportgltf_sky.cpp
+            test_exportgltf_world.cpp
     DEPS    castlemist::exportgltf ext::json
     PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/exportgltf")
+
+# The world export's test fixture writer (sub-project 4): cm_world_export_fixture
+# <dir> [--probe-only] writes probe.glb (and, from later tasks, a whole fixture
+# export) into <dir> for the Blender ctests below.
+add_executable(cm_world_export_fixture tools/world_export_fixture.cpp)
+target_link_libraries(cm_world_export_fixture PRIVATE castlemist::exportgltf)
+castlemist_link_runtime(cm_world_export_fixture)
+set_target_properties(cm_world_export_fixture PROPERTIES FOLDER "castlemist/tests")
+
+add_test(NAME world_fixture_probe
+         COMMAND cm_world_export_fixture "${CMAKE_BINARY_DIR}/world_fixture" --probe-only)
+set_tests_properties(world_fixture_probe PROPERTIES FIXTURES_SETUP world_probe)
+
+# Headless Blender checks of the frame probe (spec D6 "Frame probe"); not added
+# when Blender is not installed.
+find_program(CASTLEMIST_BLENDER blender.exe
+             PATHS "C:/Program Files/Blender Foundation/Blender 4.5"
+                   "C:/Program Files/Blender Foundation/Blender 4.3"
+                   "C:/Program Files/Blender Foundation/Blender 3.6"
+             NO_DEFAULT_PATH)
+if (CASTLEMIST_BLENDER)
+    set(_cm_world_py "${PROJECT_SOURCE_DIR}/tools/blender/castlemist_world.py")
+    add_test(NAME blender_probe_glb
+             COMMAND "${CASTLEMIST_BLENDER}" -b --factory-startup -P "${_cm_world_py}"
+                     -- --check-probe "${CMAKE_BINARY_DIR}/world_fixture/probe.glb")
+    # One Blender session: convert every .glb in the fixture, then check the .fbx.
+    add_test(NAME blender_probe_fbx
+             COMMAND "${CASTLEMIST_BLENDER}" -b --factory-startup -P "${_cm_world_py}"
+                     -- --to-fbx "${CMAKE_BINARY_DIR}/world_fixture"
+                        --check-probe "${CMAKE_BINARY_DIR}/world_fixture/probe.fbx")
+    set_tests_properties(blender_probe_glb blender_probe_fbx PROPERTIES
+        FIXTURES_REQUIRED world_probe
+        PASS_REGULAR_EXPRESSION "PROBE .* negScale=0 OK"
+        FAIL_REGULAR_EXPRESSION "PROBE .* FAIL|Traceback"
+        TIMEOUT 300
+        RESOURCE_LOCK world_fixture)
+endif()
 
 castlemist_add_test(ripper
     SOURCES test_ripper_dye.cpp test_ripper_shader_dye.cpp test_ripper_atlas.cpp test_ripper_export.cpp test_ripper_skeleton.cpp test_ripper_assemble.cpp test_ripper_look.cpp

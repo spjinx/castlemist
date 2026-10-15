@@ -119,6 +119,13 @@ void GltfWriter::add_animation(json animation) { doc_["animations"].push_back(st
 
 void GltfWriter::add_scene_root(int nodeIndex) { doc_["scenes"][0]["nodes"].push_back(nodeIndex); }
 
+void GltfWriter::use_extension(const std::string& name) {
+    json& used = doc_["extensionsUsed"];
+    for (const json& e : used)
+        if (e == name) return;
+    used.push_back(name);
+}
+
 std::vector<uint8_t> GltfWriter::finish() {
     doc_["buffers"] = json::array({json{{"byteLength", bin_.size()}}});
 
