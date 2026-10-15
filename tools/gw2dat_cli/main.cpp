@@ -1940,7 +1940,8 @@ json npc_json(const castlemist::npc::NpcRecord& n) {
     for (const auto& w : n.weapons)
         weapons.push_back({{"slot", w.slot}, {"item", w.item}, {"skin", w.skin}, {"model", w.model}});
     return {{"id", n.id}, {"codename", n.codename}, {"model", n.model}, {"sound_script", n.sound_script}, {"race", n.race},
-            {"modifier", n.modifier}, {"weapons", weapons}, {"skills", n.skills}};
+            {"modifier", n.modifier}, {"weapons", weapons}, {"skills", n.skills}, {"minipet", n.minipet},
+            {"name", n.name}};
 }
 
 // The NPC catalogue: --model F (body model fileId), --race R, --limit N (default 100).
@@ -1998,6 +1999,20 @@ void cmd_npc_export(const Args& a) {
     load_dat_file(dat, need(a, "dat"));
     castlemist::npc::ExportResult r = castlemist::npc::export_npc(dat, *n, std::filesystem::path(utf8_arg("--out-dir")));
     emit({{"ok", r.ok}, {"folder", r.folder.generic_string()}, {"files", r.files}, {"notes", r.notes}});
+}
+
+// Names the minipet characters from the public GW2 API (/v2/minis; goes online, no key) and re-saves the cache.
+void cmd_npc_names(const Args& a) {
+    namespace npc = castlemist::npc;
+    npc::Catalogue cat = ensure_npc(a);
+    const std::vector<uint32_t> ids = npc::minipet_ids(cat);
+    castlemist::character::WinHttpClient http;
+    castlemist::character::Gw2Api api(http, "");
+    const size_t named = npc::apply_names(cat, api.names("minis", ids));
+    std::filesystem::path cache = has(a, "npc-cache") ? std::filesystem::path(utf8_arg("--npc-cache"))
+                                                      : exe_dir() / "npc_catalogue.json";
+    if (!npc::save(cat, cache)) fail("could not write " + cache.string());
+    emit({{"ok", true}, {"minipets", ids.size()}, {"named", named}});
 }
 
 // What uses a file: the content objects that list --file-id (or --base-id's
@@ -2554,6 +2569,7 @@ int main(int argc, char** argv) {
         else if (cmd == "npc-list") cmd_npc_list(a);
         else if (cmd == "npc-show") cmd_npc_show(a);
         else if (cmd == "npc-export") cmd_npc_export(a);
+        else if (cmd == "npc-names") cmd_npc_names(a);
         else if (cmd == "look-options") cmd_look_options(a);
         else if (cmd == "composite-types") cmd_composite_types(a);
         else if (cmd == "look-set") cmd_look_set(a);

@@ -10,11 +10,14 @@
 #include <cstdio>
 #include <filesystem>
 #include <exception>
+#include <map>
 #include <memory>
 #include <optional>
 #include <thread>
 #include <unordered_map>
 
+#include "castlemist/character/gw2_api.h"
+#include "castlemist/character/http.h"
 #include "castlemist/npc/browse.h"
 #include "castlemist/npc/catalogue.h"
 #include "castlemist/npc/export.h"
@@ -26,13 +29,21 @@ namespace {
 namespace npc = castlemist::npc;
 
 constexpr UINT WM_APP_NPC_BUILT = WM_APP + 30;  // lParam: BuildResult* (owned by the receiver)
+constexpr UINT WM_APP_NPC_NAMES = WM_APP + 31;  // lParam: NamesResult* (owned by the receiver)
 constexpr int ID_NPC_FILTER = 2200, ID_NPC_CREATURES = 2201, ID_NPC_LIST = 2202, ID_NPC_CLIPS = 2203;
-constexpr UINT_PTR ID_NPC_SHOW_CLIPS = 2204, ID_NPC_OPEN_MODEL = 2205, ID_NPC_EXPORT = 2206, ID_NPC_CLOSE = 2207;
+constexpr UINT_PTR ID_NPC_SHOW_CLIPS = 2204, ID_NPC_OPEN_MODEL = 2205, ID_NPC_EXPORT = 2206, ID_NPC_CLOSE = 2207,
+                ID_NPC_FETCH_NAMES = 2208;
 
 struct BuildResult {
     unsigned generation = 0;
     bool from_cache = false;
     std::optional<npc::Catalogue> catalogue;  ///< nullopt: the cache did not load.
+};
+
+struct NamesResult {
+    unsigned generation = 0;
+    std::map<uint32_t, std::string> names;  ///< minipet dataId -> name.
+    std::string error;                      ///< Non-empty when the fetch failed.
 };
 
 HWND g_wnd = nullptr, g_filter = nullptr, g_creatures = nullptr, g_npcs = nullptr, g_clips = nullptr,
@@ -85,7 +96,10 @@ void fill_npcs() {
     SendMessageW(g_clips, LB_RESETCONTENT, 0, 0);
     if (g_group < 0 || g_group >= static_cast<int>(g_groups.size())) return;
     for (const npc::NpcRecord* n : g_groups[g_group].npcs)
-        add_row(g_npcs, {std::to_wstring(n->id), utf8_to_wide(n->codename), utf8_to_wide(n->race),
+        add_row(g_npcs, {std::to_wstring(n->id),
+                         n->name.empty() ? (n->minipet ? L"(mini " + std::to_wstring(n->minipet) + L")" : std::wstring())
+                                         : utf8_to_wide(n->name),
+                         utf8_to_wide(n->codename), utf8_to_wide(n->race),
                          std::to_wstring(n->weapons.size()), std::to_wstring(n->skills.size())});
     if (ListView_GetItemCount(g_npcs) > 0) ListView_SetItemState(g_npcs, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
 }
@@ -195,6 +209,45 @@ void on_built(BuildResult* raw) {
     show_coverage(r->from_cache);
 }
 
+// ---- names ------------------------------------------------------------------
+
+void post_names(HWND hwnd, NamesResult* r) {
+    if (!IsWindow(hwnd) || !PostMessageW(hwnd, WM_APP_NPC_NAMES, 0, reinterpret_cast<LPARAM>(r))) delete r;
+}
+
+// Fetches the minipets' names from the public API (no key) on a worker; the result is applied on the UI thread.
+void fetch_names() {
+    if (g_cat.npcs.empty()) { set_status(L"No catalogue loaded yet."); return; }
+    const std::vector<uint32_t> ids = npc::minipet_ids(g_cat);
+    if (ids.empty()) { set_status(L"No minipet characters to name."); return; }
+    const unsigned gen = g_generation;
+    HWND hwnd = g_wnd;
+    set_status(L"Fetching names from the GW2 API...");
+    std::thread([hwnd, gen, ids]() {
+        auto* r = new NamesResult{gen, {}, {}};
+        try {
+            castlemist::character::WinHttpClient http;
+            castlemist::character::Gw2Api api(http, "");
+            r->names = api.names("minis", ids);
+        } catch (const std::exception& e) {
+            r->error = e.what();
+        } catch (...) {
+            r->error = "unknown error";
+        }
+        post_names(hwnd, r);
+    }).detach();
+}
+
+void on_names(NamesResult* raw) {
+    std::unique_ptr<NamesResult> r(raw);
+    if (r->generation != g_generation) return;
+    if (!r->error.empty()) { set_status(L"Fetching names failed: " + utf8_to_wide(r->error)); return; }
+    const size_t named = npc::apply_names(g_cat, r->names);
+    npc::save(g_cat, cache_file());
+    refilter();
+    set_status(L"named " + std::to_wstring(named) + L" NPCs");
+}
+
 // ---- buttons ----------------------------------------------------------------
 
 void show_clips() {
@@ -259,6 +312,7 @@ LRESULT CALLBACK NpcWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             if (const npc::NpcRecord* n = current_npc()) navigate_to_file_id(n->model);
             return 0;
         case ID_NPC_EXPORT: export_selected(); return 0;
+        case ID_NPC_FETCH_NAMES: fetch_names(); return 0;
         case ID_NPC_CLOSE: DestroyWindow(hwnd); return 0;
         }
         break;
@@ -267,6 +321,7 @@ LRESULT CALLBACK NpcWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         if (castlemist::cmap::built()) start_build(true);
         else set_status(L"The content map build failed - see the chat-link decoder.");
         return 0;
+    case WM_APP_NPC_NAMES: on_names(reinterpret_cast<NamesResult*>(lparam)); return 0;
     case WM_APP_NPC_BUILT: on_built(reinterpret_cast<BuildResult*>(lparam)); return 0;
     case WM_CLOSE: DestroyWindow(hwnd); return 0;
     case WM_DESTROY:
@@ -317,7 +372,7 @@ void open_npc_catalogue(HWND owner) {
     };
     const DWORD lv_style = LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP;
 
-    mk(L"STATIC", L"Filter (id, codename, race, model, skill name):", SS_LEFT, 10, 12, 290, 18, 0);
+    mk(L"STATIC", L"Filter (id, name, codename, race, model, skill):", SS_LEFT, 10, 12, 290, 18, 0);
     g_filter = mk(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, 300, 8, 300, 24, ID_NPC_FILTER);
     mk(L"STATIC", L"Creatures", SS_LEFT, 10, 40, 200, 16, 0);
     g_creatures = mk(WC_LISTVIEWW, L"", lv_style, 10, 58, 300, 290, ID_NPC_CREATURES);
@@ -325,17 +380,19 @@ void open_npc_catalogue(HWND owner) {
     column(g_creatures, 1, L"NPCs", 60);
     mk(L"STATIC", L"NPCs", SS_LEFT, 320, 40, 200, 16, 0);
     g_npcs = mk(WC_LISTVIEWW, L"", lv_style, 320, 58, 570, 290, ID_NPC_LIST);
-    column(g_npcs, 0, L"Id", 70);
-    column(g_npcs, 1, L"Codename", 250);
-    column(g_npcs, 2, L"Race", 100);
-    column(g_npcs, 3, L"Weapons", 70);
-    column(g_npcs, 4, L"Skills", 60);
+    column(g_npcs, 0, L"Id", 60);
+    column(g_npcs, 1, L"Name", 150);
+    column(g_npcs, 2, L"Codename", 160);
+    column(g_npcs, 3, L"Race", 90);
+    column(g_npcs, 4, L"Weapons", 55);
+    column(g_npcs, 5, L"Skills", 45);
     for (HWND lv : {g_creatures, g_npcs}) ListView_SetExtendedListViewStyle(lv, LVS_EX_FULLROWSELECT);
     mk(L"STATIC", L"Clips", SS_LEFT, 10, 356, 200, 16, 0);
     g_clips = mk(L"LISTBOX", L"", WS_BORDER | WS_VSCROLL | LBS_NOINTEGRALHEIGHT, 10, 374, 880, 140, ID_NPC_CLIPS);
     mk(L"BUTTON", L"Show clips", BS_PUSHBUTTON, 10, 524, 100, 28, ID_NPC_SHOW_CLIPS);
     mk(L"BUTTON", L"Open model", BS_PUSHBUTTON, 115, 524, 100, 28, ID_NPC_OPEN_MODEL);
     mk(L"BUTTON", L"Export...", BS_PUSHBUTTON, 220, 524, 100, 28, ID_NPC_EXPORT);
+    mk(L"BUTTON", L"Fetch names (GW2 API)", BS_PUSHBUTTON, 325, 524, 170, 28, ID_NPC_FETCH_NAMES);
     mk(L"BUTTON", L"Close", BS_PUSHBUTTON, 810, 524, 80, 28, ID_NPC_CLOSE);
     g_status = mk(L"STATIC", L"", SS_LEFT, 10, 566, 880, 20, 0);
 

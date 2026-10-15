@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <fstream>
+#include <map>
+#include <set>
 #include <span>
 
 namespace castlemist::npc {
@@ -35,6 +37,7 @@ namespace {
 namespace cmap = castlemist::cmap;
 
 constexpr uint32_t kCharacterType = 67;
+constexpr uint32_t kMinipetType = 48;
 
 uint32_t first_in_container(const std::vector<uint32_t>& ids, const ContainerOf& container_of, const char* want) {
     for (uint32_t fid : ids)
@@ -125,6 +128,24 @@ Catalogue build_catalogue(const std::vector<cmap::PackBytes>& packs, const Conta
         }
     }
 
+    // Minipets: each type-48 object refs its character; keep the lowest minipet dataId per character.
+    std::map<uint32_t, uint32_t> minipet_of;
+    for (size_t pi = 0; pi < set.packs.size(); ++pi) {
+        for (const detail::Object& obj : set.packs[pi].objects) {
+            if (obj.type != kMinipetType || obj.data_id == 0) continue;
+            for (const detail::Ref& r : obj.refs) {
+                auto [tp, to] = set.resolve(pi, r);
+                if (!tp || !to || to->type != kCharacterType) continue;
+                auto [it, fresh] = minipet_of.emplace(to->data_id, obj.data_id);
+                if (!fresh && obj.data_id < it->second) it->second = obj.data_id;
+            }
+        }
+    }
+    for (NpcRecord& n : cat.npcs) {
+        auto it = minipet_of.find(n.id);
+        if (it != minipet_of.end()) n.minipet = it->second;
+    }
+
     std::stable_sort(cat.npcs.begin(), cat.npcs.end(),
                      [](const NpcRecord& a, const NpcRecord& b) { return a.id < b.id; });
     std::vector<NpcRecord> unique;
@@ -158,6 +179,24 @@ Catalogue build_catalogue(const std::string& dat_path, const std::vector<MftData
     return build_catalogue(packs, container_of);
 }
 
+std::vector<uint32_t> minipet_ids(const Catalogue& c) {
+    std::set<uint32_t> ids;
+    for (const NpcRecord& n : c.npcs)
+        if (n.minipet != 0) ids.insert(n.minipet);
+    return {ids.begin(), ids.end()};
+}
+
+size_t apply_names(Catalogue& c, const std::map<uint32_t, std::string>& minipet_names) {
+    size_t set = 0;
+    for (NpcRecord& n : c.npcs) {
+        auto it = minipet_names.find(n.minipet);
+        if (n.minipet == 0 || it == minipet_names.end()) continue;
+        n.name = it->second;
+        ++set;
+    }
+    return set;
+}
+
 bool save(const Catalogue& c, const std::filesystem::path& path) {
     using nlohmann::json;
     json npcs = json::array();
@@ -172,9 +211,11 @@ bool save(const Catalogue& c, const std::filesystem::path& path) {
                         {"race", n.race},
                         {"modifier", n.modifier},
                         {"weapons", weapons},
-                        {"skills", n.skills}});
+                        {"skills", n.skills},
+                        {"minipet", n.minipet},
+                        {"name", n.name}});
     }
-    json doc = {{"version", 1}, {"warnings", c.warnings}, {"npcs", npcs}};
+    json doc = {{"version", 2}, {"warnings", c.warnings}, {"npcs", npcs}};
     try {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         if (!out) return false;
@@ -192,7 +233,7 @@ std::optional<Catalogue> load(const std::filesystem::path& path) {
         if (!in) return std::nullopt;
         json doc = json::parse(in, nullptr, false);
         if (doc.is_discarded() || !doc.is_object()) return std::nullopt;
-        if (!doc.contains("version") || doc["version"] != 1) return std::nullopt;
+        if (!doc.contains("version") || doc["version"] != 2) return std::nullopt;
         Catalogue c;
         if (doc.contains("warnings")) c.warnings = doc["warnings"].get<std::vector<std::string>>();
         if (!doc.contains("npcs") || !doc["npcs"].is_array()) return std::nullopt;
@@ -209,6 +250,8 @@ std::optional<Catalogue> load(const std::filesystem::path& path) {
                     n.weapons.push_back({w.at("slot").get<uint32_t>(), w.at("item").get<uint32_t>(),
                                          w.at("skin").get<uint32_t>(), w.at("model").get<uint32_t>()});
                 n.skills = j.at("skills").get<std::vector<uint32_t>>();
+                n.minipet = j.at("minipet").get<uint32_t>();
+                n.name = j.at("name").get<std::string>();
                 c.npcs.push_back(std::move(n));
             }
         }

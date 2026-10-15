@@ -23,7 +23,7 @@ bool contains(const std::string& haystack, const std::string& lowered_needle) {
 bool matches(const NpcRecord& npc, const std::string& filter, const SkillName& skill_name) {
     if (filter.empty()) return true;
     const std::string needle = lower(filter);
-    if (contains(std::to_string(npc.id), needle) || contains(npc.codename, needle) || contains(npc.race, needle) ||
+    if (contains(std::to_string(npc.id), needle) || contains(npc.codename, needle) || contains(npc.race, needle) || contains(npc.name, needle) ||
         contains(std::to_string(npc.model), needle))
         return true;
     if (skill_name) {

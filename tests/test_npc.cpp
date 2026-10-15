@@ -225,6 +225,26 @@ std::vector<uint8_t> cat_char_pack(uint32_t data_id, bool with_files, bool with_
     return b.d;
 }
 
+// A minipet (type 48, dataId `mini`) at content 0 whose ref at +100 targets a character (type 67, dataId
+// `chr`) at content 300 of the same pack.
+std::vector<uint8_t> cat_minipet_pack(uint32_t mini, uint32_t chr) {
+    PackBuilder b;
+    const size_t ie = 200, lo = 260, content = 400;
+    b.set_dynarray(3, 2, ie);
+    b.put_u32(ie, 48);
+    b.put_u32(ie + 4, 0);
+    b.put_u32(ie + 16, 67);
+    b.put_u32(ie + 20, 300);
+    b.set_dynarray(4, 1, lo);
+    b.put_u32(lo, 100);
+    b.set_dynarray(10, 600, content);
+    b.ensure(content + 600);
+    b.put_u32(content + 40, mini);
+    b.put_u32(content + 100, 300);
+    b.put_u32(content + 300 + 40, chr);
+    return b.d;
+}
+
 std::string stub_container(uint32_t fid) { return fid == 500 ? "MODL" : fid == 777 ? "AMSP" : ""; }
 
 }  // namespace
@@ -276,6 +296,35 @@ CM_TEST(npc_catalogue, lists_a_character_the_content_map_does_not_hold) {
     cmap::clear();
 }
 
+CM_TEST(npc_catalogue, links_a_minipet_to_its_character) {
+    cmap::clear();
+    std::vector<cmap::PackBytes> packs = {{1, 900, cat_file_refs_pack()},
+                                          {2, 901, cat_skin_pack(6506)},
+                                          {3, 902, cat_minipet_pack(3001, 4242)}};
+    cmap::build_from_packs(packs);
+    Catalogue c = build_catalogue(packs, stub_container);
+    CHECK(cmap::built());
+    const NpcRecord* r = c.find(4242);
+    CHECK(r != nullptr);
+    if (r) CHECK_EQ(r->minipet, 3001u);
+    CHECK_EQ(minipet_ids(c).size(), size_t(1));
+    cmap::clear();
+}
+
+CM_TEST(npc_catalogue, apply_names_sets_names_by_minipet) {
+    Catalogue c;
+    NpcRecord a, b, d;
+    a.id = 1; a.minipet = 30;
+    b.id = 2; b.minipet = 10;
+    d.id = 3;
+    c.npcs = {a, b, d};
+    CHECK((minipet_ids(c) == std::vector<uint32_t>{10, 30}));
+    CHECK_EQ(apply_names(c, {{10, "Ten"}, {99, "Nope"}}), size_t(1));
+    CHECK_EQ(c.npcs[0].name, std::string());
+    CHECK_EQ(c.npcs[1].name, std::string("Ten"));
+    CHECK_EQ(c.npcs[2].name, std::string());
+}
+
 CM_TEST(npc_catalogue, without_a_content_map_the_catalogue_is_empty_with_a_warning) {
     cmap::clear();
     std::vector<cmap::PackBytes> packs = {{4, 903, cat_char_pack(99, false, false)}};
@@ -290,6 +339,7 @@ CM_TEST(npc_catalogue, round_trips_through_json) {
     NpcRecord r;
     r.id = 7; r.codename = "abc.def"; r.model = 11; r.sound_script = 12;
     r.race = "charrmale"; r.modifier = "ghost";
+    r.minipet = 321; r.name = "Mini Foo";
     r.weapons = {{200, 1, 2, 3}};
     r.skills = {5, 6};
     c.npcs.push_back(r);
@@ -307,6 +357,8 @@ CM_TEST(npc_catalogue, round_trips_through_json) {
         CHECK_EQ(g.sound_script, 12u);
         CHECK_EQ(g.race, std::string("charrmale"));
         CHECK_EQ(g.modifier, std::string("ghost"));
+        CHECK_EQ(g.minipet, 321u);
+        CHECK_EQ(g.name, std::string("Mini Foo"));
         CHECK_EQ(g.weapons.size(), size_t(1));
         CHECK_EQ(g.weapons[0].model, 3u);
         CHECK_EQ(g.skills.size(), size_t(2));
@@ -317,7 +369,7 @@ CM_TEST(npc_catalogue, round_trips_through_json) {
 
 CM_TEST(npc_catalogue, load_rejects_wrong_version) {
     auto path = std::filesystem::temp_directory_path() / "cm_npc_catalogue_bad.json";
-    { std::ofstream(path) << R"({"version":2,"warnings":[],"npcs":[]})"; }
+    { std::ofstream(path) << R"({"version":1,"warnings":[],"npcs":[]})"; }
     CHECK(!load(path).has_value());
     { std::ofstream(path) << "not json"; }
     CHECK(!load(path).has_value());
@@ -327,11 +379,11 @@ CM_TEST(npc_catalogue, load_rejects_wrong_version) {
 
 CM_TEST(npc_catalogue, load_rejects_a_cache_without_npcs) {
     auto path = std::filesystem::temp_directory_path() / "cm_npc_catalogue_nonpcs.json";
-    { std::ofstream(path) << R"({"version":1,"warnings":[]})"; }
+    { std::ofstream(path) << R"({"version":2,"warnings":[]})"; }
     CHECK(!load(path).has_value());
-    { std::ofstream(path) << R"({"version":1,"warnings":[],"npcs":{}})"; }
+    { std::ofstream(path) << R"({"version":2,"warnings":[],"npcs":{}})"; }
     CHECK(!load(path).has_value());
-    { std::ofstream(path) << R"({"version":1,"warnings":[],"npcs":[]})"; }
+    { std::ofstream(path) << R"({"version":2,"warnings":[],"npcs":[]})"; }
     CHECK(load(path).has_value());
     std::filesystem::remove(path);
 }
@@ -613,6 +665,8 @@ CM_TEST(npc_browse, filters_by_id_codename_race_model_and_skill_name) {
     SkillName names = [](uint32_t id) { return id == 5491 ? std::string("Fireball") : std::string(); };
     CHECK(matches(r, "fireball", names));
     CHECK(!matches(r, "fireball", {}));
+    r.name = "Rift Hound";
+    CHECK(matches(r, "hound", {}));
 }
 
 CM_TEST(npc_browse, a_filter_matching_nothing_gives_no_groups) {
