@@ -1047,15 +1047,16 @@ CM_TEST(world_manifest, keys_match_schema) {
     CHECK(man["frame"]["units"]["unityScale"]["status"] == "UNPROVEN");
     const auto root = map_to_gltf_root(1);
     for (size_t k = 0; k < 16; ++k) CHECK_EQ(man["frame"]["gltfRoot"][k].get<float>(), root[k]);
-    // Light (spec D5, the brief's "Settled"): toSun as stored, unityForward = -map_to_unity(toSun).
+    // Light (spec D5, amended in Task 13): the stored sunDir is the direction the
+    // light travels, so toSun = -sunDir, unityForward = map_to_unity(sunDir).
     const auto& L = m.scene.environment.light;
     float uf[3], bd[3];
     cw::map_to_unity(L.sunDir, uf);
     cw::map_to_blender(L.sunDir, bd);
     for (size_t k = 0; k < 3; ++k) {
-        CHECK_EQ(man["light"]["sun"]["toSun"][k].get<float>(), L.sunDir[k]);
-        CHECK_EQ(man["light"]["sun"]["unityForward"][k].get<float>(), -uf[k]);
-        CHECK_EQ(man["light"]["sun"]["blenderDirection"][k].get<float>(), -bd[k]);
+        CHECK_EQ(man["light"]["sun"]["toSun"][k].get<float>(), -L.sunDir[k]);
+        CHECK_EQ(man["light"]["sun"]["unityForward"][k].get<float>(), uf[k]);
+        CHECK_EQ(man["light"]["sun"]["blenderDirection"][k].get<float>(), bd[k]);
         CHECK_NEAR(man["light"]["ambient"][k].get<float>(), L.fillColor[k] * std::min(L.fillIntensity, 1.0f), 1e-6);
     }
     // Spawn: unity filled in from map; the probe sits at the spawn.
@@ -1069,6 +1070,34 @@ CM_TEST(world_manifest, keys_match_schema) {
     CHECK_EQ(man["water"]["preset"].get<int>(), 0);
     CHECK(man["terrain"]["present"] == true);
     CHECK_EQ(man["terrain"]["segments"].get<int>(), 32);
+}
+
+// The env chunk's light direction is the direction the light travels (in map
+// space, up = -Z): every day preset measured stores z > 0, e.g. Spirit Vale's
+// (0.707, 0, 0.707), a sun 45 degrees up in the west. The manifest's vectors
+// must then point the sun down onto the map in each frame.
+CM_TEST(world_manifest, sun_shines_down) {
+    castlemist::model::Extractor::MapEnvLight l;
+    l.present = true;
+    l.sunDir[0] = 0.70710678f; l.sunDir[1] = 0; l.sunDir[2] = 0.70710678f;   // Spirit Vale 1151420, day
+    const json j = world_light_json(l);
+    const json& sun = j["sun"];
+    CHECK(sun["unityForward"][1].get<float>() < -0.7f);      // Unity up = +Y: travels down
+    CHECK(sun["blenderDirection"][2].get<float>() < -0.7f);  // Blender up = +Z: travels down
+    CHECK(sun["toSun"][2].get<float>() < -0.7f);             // map up = -Z: the sun is above
+    // East-west: the light travels east (+X), so the sun is in the west.
+    CHECK(sun["unityForward"][0].get<float>() > 0.7f);
+    CHECK(sun["blenderDirection"][0].get<float>() > 0.7f);
+    CHECK(sun["toSun"][0].get<float>() < -0.7f);
+    // The three agree: unityForward = -map_to_unity(toSun), blenderDirection = -map_to_blender(toSun).
+    float ts[3], u[3], b[3];
+    for (size_t k = 0; k < 3; ++k) ts[k] = sun["toSun"][k].get<float>();
+    cw::map_to_unity(ts, u);
+    cw::map_to_blender(ts, b);
+    for (size_t k = 0; k < 3; ++k) {
+        CHECK_EQ(sun["unityForward"][k].get<float>(), -u[k]);
+        CHECK_EQ(sun["blenderDirection"][k].get<float>(), -b[k]);
+    }
 }
 
 CM_TEST(world_manifest, settings_labelled) {

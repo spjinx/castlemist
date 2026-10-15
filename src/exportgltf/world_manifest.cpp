@@ -275,16 +275,19 @@ std::vector<ManifestSetting> world_export_settings(const WorldFolderOptions& o) 
 }
 
 json world_light_json(const castlemist::model::Extractor::MapEnvLight& l) {
-    float uf[3], bd[3];
+    // The env chunk's direction is the one the light travels (map space, up = -Z;
+    // every measured day preset has z > 0, Task 13), so it maps straight to a
+    // Unity light's forward and a Blender sun's -Z; toward the sun is its negation.
+    float uf[3], bd[3], toSun[3];
     cw::map_to_unity(l.sunDir, uf);
     cw::map_to_blender(l.sunDir, bd);
-    for (int k = 0; k < 3; ++k) { uf[k] = -uf[k]; bd[k] = -bd[k]; }
+    for (int k = 0; k < 3; ++k) toSun[k] = -l.sunDir[k];
     const float a = std::min(l.fillIntensity, 1.0f);
     const float ambient[3] = {l.fillColor[0] * a, l.fillColor[1] * a, l.fillColor[2] * a};
     return {{"present", l.present},
             {"presetIndex", l.presetIndex},
             {"sun",
-             {{"toSun", vec(l.sunDir, 3)},
+             {{"toSun", vec(toSun, 3)},
               {"unityForward", vec(uf, 3)},
               {"blenderDirection", vec(bd, 3)},
               {"color", vec(l.sunColor, 3)},

@@ -75,6 +75,8 @@ def main():
     print("SUN (%.3f,%.3f,%.3f)" % tuple(got))
     if sun is None or sun.data.type != 'SUN' or got.dot(want) < 0.9999:
         fails.append("sun")
+    if got.z >= 0:   # blenderDirection is the direction the light travels: down onto the map
+        fails.append("sun points up")
 
     scene.frame_set(scene.render.fps)   # t = 1 s
     maps = [n for m in mats for n in m.node_tree.nodes if n.type == 'MAPPING']

@@ -154,9 +154,9 @@
           "additionalProperties": false,
           "required": ["toSun", "unityForward", "blenderDirection", "color", "intensity"],
           "properties": {
-            "toSun": { "description": "MapEnvLight::sunDir as stored (toward the sun), map space.", "$ref": "#/$defs/vec3" },
-            "unityForward": { "description": "-map_to_unity(toSun).", "$ref": "#/$defs/vec3" },
-            "blenderDirection": { "description": "-map_to_blender(toSun).", "$ref": "#/$defs/vec3" },
+            "toSun": { "description": "Toward the sun, map space: -MapEnvLight::sunDir (the env chunk stores the direction the light travels).", "$ref": "#/$defs/vec3" },
+            "unityForward": { "description": "The direction the light travels, Unity axes: -map_to_unity(toSun).", "$ref": "#/$defs/vec3" },
+            "blenderDirection": { "description": "The direction the light travels, Blender axes: -map_to_blender(toSun).", "$ref": "#/$defs/vec3" },
             "color": { "$ref": "#/$defs/vec3" },
             "intensity": { "type": "number" }
           }

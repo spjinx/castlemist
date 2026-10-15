@@ -96,9 +96,11 @@ struct WorldManifestInput {
     std::function<std::string(uint32_t propIndex)> clipOf;   ///< "" = null
 };
 
-/// @brief The manifest's `light` (spec D5): sun.toSun = MapEnvLight::sunDir as
-///        stored (toward the sun), unityForward = -map_to_unity(sunDir),
-///        blenderDirection = -map_to_blender(sunDir), colours and intensities raw,
+/// @brief The manifest's `light` (spec D5, amended in Task 13): MapEnvLight::sunDir
+///        as parsed from the env chunk is the direction the light travels (map
+///        space, up = -Z: day presets store z > 0), so unityForward =
+///        map_to_unity(sunDir), blenderDirection = map_to_blender(sunDir) and
+///        sun.toSun = -sunDir (toward the sun); colours and intensities raw,
 ///        ambient = fillColor * min(fillIntensity, 1) (castlemist's choice).
 nlohmann::json world_light_json(const castlemist::model::Extractor::MapEnvLight& l);
 

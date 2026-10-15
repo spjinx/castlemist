@@ -64,9 +64,9 @@ with Poiyomi Toon 10, importing the Spirit Vale export (1151420).
    - which layers VRChat's player collides with. The colliders are on Default.
 7. **The water sits at the shore.** Spirit Vale has no water plane, so check
    this on a map that has one.
-8. **The sky and the sun look right.** Note that `sun.unityForward` points
-   up on both Spirit Vale and the fixture (y > 0). The importer uses it as
-   given and warns.
+8. **The sky and the sun look right.** `sun.unityForward` is the direction
+   the light travels, so it points down (y < 0) on a lit map; the importer
+   warns if a manifest's points up.
 9. **Poiyomi materials.** Opaque, cutout and blended props look right. Packed
    maps give metal and shine. Emission glows. Dark decals are Fade. Nothing
    is pink.
