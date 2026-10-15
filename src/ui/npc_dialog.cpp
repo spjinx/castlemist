@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
+#include <exception>
 #include <memory>
 #include <optional>
 #include <thread>
@@ -151,13 +152,25 @@ void start_build(bool use_cache) {
     }
     const std::string dat_path = g_app->data_gw2.file_info.file_path;
     set_status(L"Building the NPC catalogue from the dat... (one-time)");
+    // Hold the shared map for the whole build so a rebuild can't clear it under the worker.
+    acquire_content_map_reader();
     std::thread([hwnd, gen, cache, dat_path, entries, file_ids, containers]() {
         auto container_of = [&](uint32_t fid) {
             auto it = containers->find(fid);
             return it == containers->end() ? std::string() : it->second;
         };
-        npc::Catalogue cat = npc::build_catalogue(dat_path, entries, file_ids, container_of, nullptr);
-        if (!cat.npcs.empty()) npc::save(cat, cache);  // never cache an empty (failed) build
+        npc::Catalogue cat;
+        try {
+            cat = npc::build_catalogue(dat_path, entries, file_ids, container_of, nullptr);
+            if (!cat.npcs.empty()) npc::save(cat, cache);  // never cache an empty (failed) build
+        } catch (const std::exception& e) {
+            cat = {};
+            cat.warnings.push_back(std::string("build failed: ") + e.what());
+        } catch (...) {
+            cat = {};
+            cat.warnings.push_back("build failed");
+        }
+        release_content_map_reader();
         post_result(hwnd, new BuildResult{gen, false, std::move(cat)});
     }).detach();
 }
@@ -178,6 +191,7 @@ void on_built(BuildResult* raw) {
     if (!r->catalogue) { start_build(false); return; }  // unreadable cache: rebuild
     g_cat = std::move(*r->catalogue);
     refilter();
+    if (g_cat.npcs.empty() && !g_cat.warnings.empty()) { set_status(utf8_to_wide(g_cat.warnings.front())); return; }
     show_coverage(r->from_cache);
 }
 

@@ -47,8 +47,8 @@ HMENU build_menu() {
     HMENU tools_menu = CreatePopupMenu();
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DECODE_LINK, L"&Decode Chat Link... ([&...])");
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_CHARACTER, L"&Character Ripper... (GW2 API)");
-    AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DOWNLOAD_NAMES, L"Download all game &names (GW2 API)");
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_NPC_CATALOGUE, L"&NPC catalogue...");
+    AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DOWNLOAD_NAMES, L"Download all game &names (GW2 API)");
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DECODE_TOKEN,
                 L"Decode &Token / Filename Bytes...");
     AppendMenuW(tools_menu, MF_SEPARATOR, 0, nullptr);
