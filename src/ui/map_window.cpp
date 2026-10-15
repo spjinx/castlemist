@@ -217,6 +217,9 @@ struct MapWin {
     Clock::time_point lastReorder{};
     /// UI-thread time of each add_models batch (ms), for the headless stats.
     std::vector<float> addMs;
+    /// Texture fileIds already being decoded (model pool + terrain thread).
+    std::shared_ptr<MapWinTextureClaims> claims;
+    bool terrainTexStarted = false, terrainTexDone = false;
     bool collDone = false;   ///< the collision build came back (index or error)
 
     FlyState fly;
@@ -375,7 +378,11 @@ void recover_device(MapWin& m) {
         if (!m.models.empty()) m.view.add_models(m.models);
     }
     apply_layer_buttons(m);
-    flash(m, L"The graphics device was reset; the map was reloaded onto a new one.");
+    // create() dropped the texture cache with the old device; the decoded
+    // textures were not kept, so they stay gone (the models draw untextured).
+    flash(m, L"The graphics device was reset; the map was reloaded onto a new one. "
+             L"Textures are not restored after a device reset; reopen the window to see them.",
+          10);
 }
 
 void render_now(MapWin& m) {
@@ -397,6 +404,8 @@ void update_status(MapWin& m) {
             swprintf(buf, 512, L" (%d failed)", st.modelsFailed);
             s += buf;
         }
+        swprintf(buf, 512, L"  |  tex %d (%.0f MB)", st.textures, st.textureMB);
+        s += buf;
         swprintf(buf, 512, L"  |  vis %d  draws %d  %d ktri  %.1f ms", st.visible, st.draws, st.ktris, st.ms);
         s += buf;
     }
@@ -430,12 +439,13 @@ void headless_capture(MapWin& m) {
                   "map=%u ok=%d models=%zu loaded=%d failed=%d props=%zu visible=%d draws=%d ktris=%d ms=%.2f "
                   "chunks=%d collisionTris=%zu warnings=%zu world_s=%.2f collision_s=%.2f models_s=%.2f total_s=%.2f "
                   "add_batches=%zu add_ms_median=%.2f add_ms_max=%.2f "
+                  "textures=%d texturesFailed=%d textureMB=%.1f "
                   "shot=%d timeout=%d error=\"%s\"\n",
                   m.mapFileId, (m.scene && m.viewOk) ? 1 : 0, models_total(m), st.modelsLoaded, st.modelsFailed,
                   m.scene ? m.scene->props.size() : size_t(0), st.visible, st.draws, st.ktris, st.ms, st.chunks,
                   m.coll ? m.coll->triangle_count() : size_t(0), m.scene ? m.scene->warnings.size() : size_t(0),
                   m.worldSeconds, m.collSeconds, m.modelsSeconds, elapsed, add.size(), addMedian, addMax,
-                  shot ? 1 : 0,
+                  st.textures, st.texturesFailed, st.textureMB, shot ? 1 : 0,
                   elapsed >= kHeadlessTimeout ? 1 : 0, m.error.c_str());
     if (std::ofstream f(m.headless->statsPath, std::ios::binary); f) f << line;
     if (m.headless->quitWindow) PostMessageW(m.headless->quitWindow, WM_CLOSE, 0, 0);
@@ -447,7 +457,8 @@ void maybe_capture(MapWin& m) {
     const bool failed = !m.error.empty() && !m.scene;
     const bool modelsDone = m.scene && (m.modelsArrived >= models_total(m) ||
                                         (m.workers > 0 && m.workersDone >= m.workers));
-    if (failed || (modelsDone && m.collDone) || elapsed >= kHeadlessTimeout) headless_capture(m);
+    const bool texturesDone = !m.terrainTexStarted || m.terrainTexDone;
+    if (failed || (modelsDone && m.collDone && texturesDone) || elapsed >= kHeadlessTimeout) headless_capture(m);
 }
 
 void on_world(MapWin& m, std::unique_ptr<MapWinWorldMsg> r) {
@@ -475,11 +486,19 @@ void on_world(MapWin& m, std::unique_ptr<MapWinWorldMsg> r) {
              r->seconds, m.scene->models.size(), m.scene->props.size(), m.scene->warnings.size());
     m.stage = buf;
     mapwin_start_collision(m.wnd, m.gen, m.scene);
+    // Textures: the terrain thread starts first so it claims the terrain's;
+    // each model worker then decodes the diffuse textures nobody claimed yet.
+    m.claims = std::make_shared<MapWinTextureClaims>();
+    if (r->dat) {
+        std::shared_ptr<Gw2Dat> dat = r->dat;   // copied: the model pool takes r->dat below
+        mapwin_start_terrain_textures(m.wnd, m.gen, std::move(dat), m.scene, m.claims);
+        m.terrainTexStarted = true;
+    }
     if (!m.scene->models.empty()) {
         m.queue = std::make_shared<MapWinModelQueue>(m.scene, m.fly.pos);
         for (int k = 0; k < 3; ++k) m.reorderPos[k] = m.fly.pos[k];
         m.lastReorder = Clock::now();
-        m.workers = mapwin_start_models(m.wnd, m.gen, std::move(r->dat), m.queue);
+        m.workers = mapwin_start_models(m.wnd, m.gen, std::move(r->dat), m.queue, m.claims);
     }
     m.dirty = true;
     update_status(m);
@@ -506,10 +525,26 @@ void on_collision(MapWin& m, std::unique_ptr<MapWinCollisionMsg> r) {
     flash(m, buf, 8);
 }
 
+/// The terrain-texture thread's batches: uploaded (and timed) like a model batch.
+void on_textures(MapWin& m, std::unique_ptr<MapWinTexturesMsg> r) {
+    if (!r->textures.empty() && m.viewOk) {
+        const auto t0 = Clock::now();
+        m.view.add_textures(r->textures);
+        m.addMs.push_back(std::chrono::duration<float, std::milli>(Clock::now() - t0).count());
+        m.dirty = true;
+    }
+    if (r->done) m.terrainTexDone = true;
+    maybe_capture(m);
+}
+
 void on_models(MapWin& m, std::unique_ptr<MapWinModelsMsg> r) {
-    if (!r->batch.empty()) {
+    if (!r->batch.empty() || !r->textures.empty()) {
         if (m.viewOk) {
+            // Textures first, so the batch's models find theirs; both count
+            // in the batch's UI-thread time. The textures are not kept (a
+            // device reset does not restore them).
             const auto t0 = Clock::now();
+            m.view.add_textures(r->textures);
             m.view.add_models(r->batch);
             m.addMs.push_back(std::chrono::duration<float, std::milli>(Clock::now() - t0).count());
         }
@@ -678,10 +713,11 @@ void destroy_state(HWND hwnd) {
     }
     mapwin_next_generation();   // stop every worker of this window; late posts are dropped
     // Payloads already queued for this window would be discarded with it,
-    // unfreed: take them out now. (Range: WORLD..COLLISION, all three.)
-    static_assert(WM_APP_MAPWIN_MODELS > WM_APP_MAPWIN_WORLD && WM_APP_MAPWIN_COLLISION > WM_APP_MAPWIN_MODELS);
+    // unfreed: take them out now. (Range: WORLD..TEXTURES, all four.)
+    static_assert(WM_APP_MAPWIN_MODELS > WM_APP_MAPWIN_WORLD && WM_APP_MAPWIN_COLLISION > WM_APP_MAPWIN_MODELS &&
+                  WM_APP_MAPWIN_TEXTURES == WM_APP_MAPWIN_COLLISION + 1);
     MSG q;
-    while (PeekMessageW(&q, hwnd, WM_APP_MAPWIN_WORLD, WM_APP_MAPWIN_COLLISION, PM_REMOVE))
+    while (PeekMessageW(&q, hwnd, WM_APP_MAPWIN_WORLD, WM_APP_MAPWIN_TEXTURES, PM_REMOVE))
         mapwin_free_payload(q.message, q.lParam);
     KillTimer(hwnd, TIMER_MW_FRAME);
     KillTimer(hwnd, TIMER_MW_STATUS);
@@ -708,6 +744,9 @@ LRESULT CALLBACK MapWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         return 0;
     case WM_APP_MAPWIN_MODELS:
         if (auto r = take<MapWinModelsMsg>(lparam, m)) on_models(*m, std::move(r));
+        return 0;
+    case WM_APP_MAPWIN_TEXTURES:
+        if (auto r = take<MapWinTexturesMsg>(lparam, m)) on_textures(*m, std::move(r));
         return 0;
     case WM_SIZE:
         if (wparam == SIZE_MINIMIZED) return 0;   // keep the surface (and swap chain) at its size

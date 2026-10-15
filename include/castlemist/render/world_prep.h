@@ -11,12 +11,44 @@
 #include <cstdint>
 #include <memory>
 #include <utility>
+#include <vector>
+
+#include "castlemist/world/terrain_blend.h"
+#include "castlemist/world/world_scene.h"
 
 struct ModelPreview;   // castlemist/extract/model_types.h
 
 namespace castlemist::render {
 
 struct PreparedModel;   // src/render/world_props.h (internal)
+
+/// @brief WorldView's material settings. Every UNPROVEN value is named in
+///        WorldView::warnings() (Task 9).
+///
+/// Declared here rather than in world_view.h so the load workers (which see
+/// only this header) read the same defaults, e.g. `maxTextureSize`;
+/// world_view.h includes this header.
+struct WorldMaterialSettings {
+    float groundRepeatsPerChunk = castlemist::world::kGroundRepeatsPerChunk;   ///< UNPROVEN, note §1.6
+    float uvScrollUnitSeconds = 1;    ///< UNPROVEN: offset = frac(scroll * t / unit) on uvIndex, note §4
+    bool terrainNormalMaps = true;    ///< UNPROVEN sign: tangent +X east, bitangent = increasing t (south), note §1.2, §2
+    float terrainSpecPower = 32;      ///< castlemist's choice: forward stand-in for the light buffer's L.a, note §1.4
+    int maxTextureSize = 512;         ///< memory bound (spec)
+    int waterBumpTextureIndex = 1;    ///< UNPROVEN beyond AMAT 187551 (ssBump0 = textureIndex 1), note §6
+    float waterTileUnit = 1000;       ///< UNPROVEN: units of bumpTile/bumpSpeed/bumpAngle, note §6
+    float waterSpecPower = 64;        ///< castlemist's choice
+    /// castlemist's choice: colour textures decode sRGB to linear; the shaders
+    /// gamma-encode (world_view_shaders.h:53).
+    bool srgbColourTextures = true;
+};
+
+/// @brief The terrain and water textures of @p s, for the terrain-texture
+///        thread: distinct non-zero fileIds, per chunk in index order
+///        `textureFileIds[0..3]`, `normalFileIds[0..3]`, `pickerFileId`,
+///        `picker2FileId`; then the water bump
+///        `environment.water[light.presetIndex].textureFileIds[cfg.waterBumpTextureIndex]`
+///        when it exists. No Direct3D; safe on any thread.
+std::vector<uint32_t> world_texture_ids(const castlemist::world::WorldScene& s, const WorldMaterialSettings& cfg);
 
 /// @brief One streamed model, ready for WorldView::add_models.
 ///

@@ -20,7 +20,9 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -31,6 +33,7 @@
 #include "castlemist/world/world_scene.h"
 
 struct ModelPreview;
+struct CappedTexture;   // castlemist/extract/model_types.h
 
 namespace castlemist::ui {
 
@@ -79,6 +82,28 @@ struct MapWinModelQueue {
     std::vector<std::vector<uint64_t>> sequencesOf;
 };
 
+/// @brief The texture fileIds some thread of one window already decodes, so
+///        each texture is decoded once across the model workers and the
+///        terrain-texture thread. Thread-safe.
+struct MapWinTextureClaims {
+    /// @brief True for the first caller of a non-zero @p fileId; false for 0
+    ///        or an id already taken.
+    bool claim(uint32_t fileId) {
+        if (fileId == 0) return false;
+        std::lock_guard<std::mutex> lock(m_);
+        return taken_.insert(fileId).second;
+    }
+
+private:
+    std::mutex m_;
+    std::unordered_set<uint32_t> taken_;
+};
+
+/// @brief A batch posts once its decoded textures reach this many bytes
+///        (CappedTexture::bytes), which keeps each UI-thread add_textures +
+///        add_models under the 50 ms target.
+inline constexpr size_t kMapWinBatchTextureBytes = 16u * 1024 * 1024;
+
 /// @brief Frees a worker payload by its message (WM_APP_MAPWIN_*); for
 ///        draining the queue of a window being destroyed.
 void mapwin_free_payload(UINT msg, LPARAM lparam);
@@ -102,12 +127,22 @@ struct MapWinCollisionMsg {
 
 /// @brief WM_APP_MAPWIN_MODELS: up to 32 models, each with its preview and
 ///        its worker-prepared mesh (null when it failed), so the window only
-///        uploads. `workerDone` is set on a worker's last post (possibly with
-///        an empty batch).
+///        uploads, plus the diffuse textures this worker claimed and decoded
+///        for them (failed decodes included, with empty mips). `workerDone`
+///        is set on a worker's last post (possibly with an empty batch).
 struct MapWinModelsMsg {
     uint64_t gen = 0;
     std::vector<castlemist::render::WorldModelLoad> batch;
+    std::vector<std::shared_ptr<const CappedTexture>> textures;
     bool workerDone = false;
+};
+
+/// @brief WM_APP_MAPWIN_TEXTURES: decoded terrain, page and water textures
+///        from the terrain-texture thread. `done` is set on its last post.
+struct MapWinTexturesMsg {
+    uint64_t gen = 0;
+    std::vector<std::shared_ptr<const CappedTexture>> textures;
+    bool done = false;
 };
 
 /// @brief Opens a Gw2Dat on @p datPath and runs load_world on @p mapFileId
@@ -118,11 +153,25 @@ void mapwin_start_world(HWND wnd, uint64_t gen, std::string datPath, uint32_t ma
 ///        WM_APP_MAPWIN_COLLISION.
 void mapwin_start_collision(HWND wnd, uint64_t gen, std::shared_ptr<const castlemist::world::WorldScene> scene);
 
+/// @brief Starts the terrain-texture thread: decodes every
+///        world_texture_ids(*scene) fileId it claim()s from @p claims
+///        (decode_texture_capped at WorldMaterialSettings::maxTextureSize) and
+///        posts WM_APP_MAPWIN_TEXTURES batches as the model pool does (32
+///        textures, 250 ms or 16 MB), `done` on the last. Start it before
+///        mapwin_start_models, so the terrain claims its textures first.
+void mapwin_start_terrain_textures(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat,
+                                   std::shared_ptr<const castlemist::world::WorldScene> scene,
+                                   std::shared_ptr<MapWinTextureClaims> claims);
+
 /// @brief Starts the model pool: mapwin_pool_size(hardware_concurrency) workers,
 ///        sharing the one parsed, read-only @p dat, pop models from @p queue
 ///        (nearest to the camera at the time each is taken) and post batches
-///        of up to 32 or every 250 ms.
+///        of up to 32 models, every 250 ms, or once the batch's textures reach
+///        kMapWinBatchTextureBytes. Each worker decodes the diffuse texture of
+///        every material (diffuseTex >= 0, diffuseUv <= 1) whose fileId it
+///        claim()s from @p claims and attaches it to its batch.
 /// @return the number of workers started (each posts workerDone once).
-int mapwin_start_models(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat, std::shared_ptr<MapWinModelQueue> queue);
+int mapwin_start_models(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat, std::shared_ptr<MapWinModelQueue> queue,
+                        std::shared_ptr<MapWinTextureClaims> claims);
 
 } // namespace castlemist::ui

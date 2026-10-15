@@ -706,3 +706,37 @@ CM_TEST(world_view, prepared_add_matches_preview_add) {
     CHECK_EQ(v.stats().modelsLoaded, 0);
     CHECK_EQ(v.stats().modelsFailed, 1);
 }
+
+// ---- Task 8: the texture cache ----
+
+// Device recovery re-adds the models but not the textures: create() drops the
+// cache with the old device, and nothing brings it back.
+CM_TEST(world_view, recreate_drops_textures) {
+    HWND wnd = hidden_window(320, 240);
+    if (!wnd) SKIP("no window");
+    struct Closer { HWND h; ~Closer() { DestroyWindow(h); } } closer{wnd};
+    WorldView v;
+    if (!v.create(wnd)) SKIP("no D3D11 device (hardware or WARP)");
+    auto cube = std::make_shared<const ModelPreview>(cube_model());
+    v.set_world(props_scene());
+    auto tex = std::make_shared<CappedTexture>();
+    tex->fileId = 77;
+    tex->width = tex->height = 4;
+    tex->mips.emplace_back(4 * 4 * 4, uint8_t(200));
+    v.add_textures({tex, nullptr});   // a null entry is skipped
+    v.add_models({{0u, cube}});
+    CHECK_EQ(v.stats().textures, 1);
+    CHECK_EQ(v.stats().texturesFailed, 0);
+    CHECK(v.stats().textureMB > 0.0f);
+
+    if (!v.create(wnd)) SKIP("second D3D11 device could not be created");
+    v.resize(320, 240);
+    v.set_world(props_scene());
+    v.add_models({{0u, cube}});
+    const WorldCamera cam = v.frame_all(nullptr);
+    v.render(cam);
+    CHECK_FALSE(v.device_lost());
+    CHECK_EQ(v.stats().modelsLoaded, 1);
+    CHECK_EQ(v.stats().textures, 0);
+    CHECK_EQ(v.stats().textureMB, 0.0f);
+}

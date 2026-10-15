@@ -18,7 +18,8 @@
 #include "castlemist/render/world_prep.h"
 #include "castlemist/world/world_scene.h"
 
-struct ModelPreview;   // castlemist/extract/model_types.h
+struct ModelPreview;    // castlemist/extract/model_types.h
+struct CappedTexture;   // castlemist/extract/model_types.h
 
 namespace castlemist::render {
 
@@ -47,6 +48,11 @@ struct WorldViewStats {
     /// Collision meshes on the GPU: 0 until the Collision layer is first shown
     /// after set_world (they upload lazily, then stay).
     int collisionMeshes = 0;
+    /// The texture cache: textures on the GPU, fileIds whose decode or upload
+    /// failed, and the GPU size of the ready ones (MB, all mips). Cleared by
+    /// set_world and create().
+    int textures = 0, texturesFailed = 0;
+    float textureMB = 0;
 };
 
 /// @brief Draws one WorldScene into one window.
@@ -67,7 +73,7 @@ public:
     ///        water plane and lighting, records every prop instance, and keeps
     ///        a CPU copy of the collision. Replaces anything set before, loaded
     ///        models included. Needs a created view (before create() nothing is
-    ///        uploaded). The collision meshes upload on the first
+    ///        uploaded). Clears the texture cache. The collision meshes upload on the first
     ///        set_layer(Collision, true) or the first render() with that layer
     ///        on (not while device_lost()); the CPU copy is then released.
     void set_world(const castlemist::world::WorldScene& s);
@@ -80,6 +86,13 @@ public:
     ///        create() or while device_lost(). Call it on the thread that
     ///        renders. The previews are kept (for picking).
     void add_models(const std::vector<WorldModelLoad>& batch);
+    /// @brief Uploads worker-decoded textures (decode_texture_capped) into the
+    ///        view's cache, keyed by fileId: once per fileId, a decode that
+    ///        failed (empty mips) is counted in `texturesFailed`, null entries
+    ///        are skipped. Does nothing before create() or while device_lost().
+    ///        Call it on the thread that renders. create() drops the cache with
+    ///        the old device and nothing restores it.
+    void add_textures(const std::vector<std::shared_ptr<const CappedTexture>>& batch);
     /// @brief As above from (index into the scene's `models`, decoded
     ///        preview) pairs: prepares them across cores on the calling
     ///        thread first, then forwards. For tests and tools; the map window

@@ -184,3 +184,11 @@ CM_TEST(map_window, wait_workers_waits_for_a_counted_thread) {
     t.join();
     CHECK(mapwin_wait_workers(1000));       // and succeeds once it ended
 }
+
+CM_TEST(map_window, texture_claims_once) {
+    MapWinTextureClaims c;
+    CHECK(c.claim(5));
+    CHECK_FALSE(c.claim(5));   // already taken by another worker
+    CHECK_FALSE(c.claim(0));   // no texture
+    CHECK(c.claim(6));
+}

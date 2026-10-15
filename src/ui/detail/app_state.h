@@ -371,6 +371,7 @@ constexpr UINT WM_APP_DATA_STATUS_DONE = WM_APP + 19;
 constexpr UINT WM_APP_MAPWIN_WORLD = WM_APP + 20;
 constexpr UINT WM_APP_MAPWIN_MODELS = WM_APP + 21;
 constexpr UINT WM_APP_MAPWIN_COLLISION = WM_APP + 22;
+constexpr UINT WM_APP_MAPWIN_TEXTURES = WM_APP + 23;
 
 enum class MiddleTab { Compressed = 0, Decompressed = 1, Structure = 2, Preview = 3 };
 

@@ -14,6 +14,7 @@
 #include "detail/mesh_bake.h"
 #include "world_camera.h"
 #include "world_draw.h"
+#include "world_materials.h"
 #include "world_props.h"
 #include "world_view_shaders.h"
 
@@ -128,6 +129,8 @@ struct WorldView::Impl {
     std::vector<InstCPU> waterInst;
 
     InstancedBatch batch;   ///< this frame's instanced draw
+
+    TextureCache textures;  ///< fileId -> texture, filled by add_textures
 
     // Lighting (MapEnvRig layout; defaults are the fly view's).
     float sunDir[3], sunColor[3], fillColor[3];
@@ -510,6 +513,7 @@ void WorldView::set_world(const castlemist::world::WorldScene& s) {
     d->hasExtent = false;
     d->hasFrame = false;
     d->st = WorldViewStats{};
+    d->textures.clear();
     const auto& L = s.environment.light;
     if (L.present) {
         std::memcpy(d->sunDir, L.sunDir, sizeof d->sunDir);
@@ -579,6 +583,12 @@ void WorldView::add_models(const std::vector<WorldModelLoad>& batch) {
         d->previews[m] = l.preview;
         for (uint32_t pi : d->instOf[m]) place(d->props[pi], d->models[m]);
     }
+}
+
+void WorldView::add_textures(const std::vector<std::shared_ptr<const CappedTexture>>& batch) {
+    if (!d->gpu_ok()) return;
+    for (const auto& t : batch)
+        if (t) d->textures.add(d->dev.Get(), *t);
 }
 
 void WorldView::add_models(const std::vector<std::pair<uint32_t, std::shared_ptr<const ModelPreview>>>& batch) {
@@ -660,7 +670,13 @@ bool WorldView::layer(WorldLayer l) const {
     return i >= 0 && i < static_cast<int>(WorldLayer::Count) && d->layers[i];
 }
 
-WorldViewStats WorldView::stats() const { return d->st; }
+WorldViewStats WorldView::stats() const {
+    WorldViewStats s = d->st;
+    s.textures = d->textures.ready();
+    s.texturesFailed = d->textures.failed();
+    s.textureMB = static_cast<float>(static_cast<double>(d->textures.bytes()) / (1024.0 * 1024.0));
+    return s;
+}
 
 bool WorldView::device_lost() const { return d->lost; }
 

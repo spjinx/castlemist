@@ -42,6 +42,19 @@ void post(HWND wnd, UINT msg, uint64_t gen, std::unique_ptr<T> payload) {
 
 bool cancelled(uint64_t gen) { return g_gen.load() != gen; }
 
+constexpr size_t kBatch = 32;
+constexpr auto kInterval = std::chrono::milliseconds(250);
+
+/// @brief Decodes @p fileId once for the window's texture cache (capped at
+///        WorldMaterialSettings::maxTextureSize). A failed decode is still
+///        returned (empty mips) so the view counts it. Never throws past
+///        allocation of the result.
+std::shared_ptr<const CappedTexture> decode_for_cache(Gw2Dat& dat, uint32_t fileId) {
+    auto t = std::make_shared<CappedTexture>();
+    decode_texture_capped(dat, fileId, castlemist::render::WorldMaterialSettings{}.maxTextureSize, *t);
+    return t;
+}
+
 } // namespace
 
 MapWinLiveThread::MapWinLiveThread() { ++g_live; }
@@ -63,6 +76,7 @@ void mapwin_free_payload(UINT msg, LPARAM lparam) {
     case WM_APP_MAPWIN_WORLD: delete reinterpret_cast<MapWinWorldMsg*>(lparam); break;
     case WM_APP_MAPWIN_COLLISION: delete reinterpret_cast<MapWinCollisionMsg*>(lparam); break;
     case WM_APP_MAPWIN_MODELS: delete reinterpret_cast<MapWinModelsMsg*>(lparam); break;
+    case WM_APP_MAPWIN_TEXTURES: delete reinterpret_cast<MapWinTexturesMsg*>(lparam); break;
     default: break;
     }
 }
@@ -134,7 +148,50 @@ void mapwin_start_collision(HWND wnd, uint64_t gen, std::shared_ptr<const castle
     }).detach();
 }
 
-int mapwin_start_models(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat, std::shared_ptr<MapWinModelQueue> queue) {
+void mapwin_start_terrain_textures(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat,
+                                   std::shared_ptr<const castlemist::world::WorldScene> scene,
+                                   std::shared_ptr<MapWinTextureClaims> claims) {
+    std::thread([wnd, gen, dat = std::move(dat), scene = std::move(scene), claims = std::move(claims)]() {
+        MapWinLiveThread live;
+        try {
+            const std::vector<uint32_t> ids =
+                (scene && dat) ? castlemist::render::world_texture_ids(*scene, castlemist::render::WorldMaterialSettings{})
+                               : std::vector<uint32_t>{};
+            auto batch = std::make_unique<MapWinTexturesMsg>();
+            batch->gen = gen;
+            size_t bytes = 0;
+            auto lastPost = Clock::now();
+            for (uint32_t id : ids) {
+                if (cancelled(gen)) break;
+                if (!claims || !claims->claim(id)) continue;
+                auto t = decode_for_cache(*dat, id);
+                bytes += t->bytes();
+                batch->textures.push_back(std::move(t));
+                if (batch->textures.size() >= kBatch || bytes >= kMapWinBatchTextureBytes ||
+                    Clock::now() - lastPost >= kInterval) {
+                    post(wnd, WM_APP_MAPWIN_TEXTURES, gen, std::move(batch));
+                    batch = std::make_unique<MapWinTexturesMsg>();
+                    batch->gen = gen;
+                    bytes = 0;
+                    lastPost = Clock::now();
+                }
+            }
+            batch->done = true;
+            post(wnd, WM_APP_MAPWIN_TEXTURES, gen, std::move(batch));
+        } catch (...) {
+            try {
+                auto done = std::make_unique<MapWinTexturesMsg>();
+                done->gen = gen;
+                done->done = true;
+                post(wnd, WM_APP_MAPWIN_TEXTURES, gen, std::move(done));
+            } catch (...) {
+            }
+        }
+    }).detach();
+}
+
+int mapwin_start_models(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat, std::shared_ptr<MapWinModelQueue> queue,
+                        std::shared_ptr<MapWinTextureClaims> claims) {
     // One parsed dat for every worker, as build_map_scene does
     // (src/extract/map_scene.cpp, "Load the unique models IN PARALLEL"):
     // load_dat_file closes the dat's own stream, read_entry_bytes opens a
@@ -146,14 +203,13 @@ int mapwin_start_models(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat, std
     // outlive the window while any of them still runs.
     const int workers = mapwin_pool_size(std::thread::hardware_concurrency());
     for (int w = 0; w < workers; ++w) {
-        std::thread([wnd, gen, dat, queue]() {
+        std::thread([wnd, gen, dat, queue, claims]() {
             MapWinLiveThread live;
             try {
                 const castlemist::world::WorldScene& scene = *queue->scene;
-                constexpr size_t kBatch = 32;
-                constexpr auto kInterval = std::chrono::milliseconds(250);
                 auto batch = std::make_unique<MapWinModelsMsg>();
                 batch->gen = gen;
+                size_t texBytes = 0;
                 auto lastPost = Clock::now();
                 uint32_t mi = 0;
                 // pop() takes the model nearest the camera as of the window's
@@ -188,6 +244,19 @@ int mapwin_start_models(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat, std
                                 // The CPU prep (flatten, AO, MatVtx, ranges) runs
                                 // here, so the window's add_models only uploads.
                                 auto prep = castlemist::render::prepare_world_model_shared(*m, withSkin);
+                                // Each diffuse texture once across the pool
+                                // (and the terrain thread): the first worker
+                                // to claim its fileId decodes it.
+                                for (const ModelMaterialCPU& mat : m->materials) {
+                                    if (mat.diffuseTex < 0 || mat.diffuseUv > 1 ||
+                                        static_cast<size_t>(mat.diffuseTex) >= m->textures.size())
+                                        continue;
+                                    const uint32_t id = m->textures[static_cast<size_t>(mat.diffuseTex)].fileId;
+                                    if (!claims || !claims->claim(id)) continue;
+                                    auto t = decode_for_cache(*dat, id);
+                                    texBytes += t->bytes();
+                                    batch->textures.push_back(std::move(t));
+                                }
                                 out.preview = std::move(m);
                                 out.prep = std::move(prep);
                             }
@@ -198,10 +267,12 @@ int mapwin_start_models(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat, std
                         }
                     }
                     batch->batch.push_back(std::move(out));
-                    if (batch->batch.size() >= kBatch || Clock::now() - lastPost >= kInterval) {
+                    if (batch->batch.size() >= kBatch || texBytes >= kMapWinBatchTextureBytes ||
+                        Clock::now() - lastPost >= kInterval) {
                         post(wnd, WM_APP_MAPWIN_MODELS, gen, std::move(batch));
                         batch = std::make_unique<MapWinModelsMsg>();
                         batch->gen = gen;
+                        texBytes = 0;
                         lastPost = Clock::now();
                     }
                 }
