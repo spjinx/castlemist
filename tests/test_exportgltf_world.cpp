@@ -8,8 +8,10 @@
 #include "castlemist/exportgltf/vrchat_export.h"
 #include "castlemist/exportgltf/world_cell.h"
 #include "castlemist/exportgltf/world_export.h"
+#include "castlemist/exportgltf/world_manifest.h"
 #include "castlemist/exportgltf/world_probe.h"
 #include "castlemist/world/frame.h"
+#include "castlemist/world/props.h"
 #include "castlemist/world/surface_rules.h"
 #include "castlemist/extract/model_types.h"
 #include "castlemist/native/granny_anim.hpp"
@@ -22,6 +24,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <string>
 #include <vector>
@@ -653,4 +656,395 @@ CM_TEST(world_cell, odd_chunk_warned_not_dropped_silently) {
     warn.clear();
     build_cell_terrain(cell_grid(2, 1).terrain, c, &warn);
     CHECK(warn.empty());
+}
+
+// ------------------------------------------------------------ world manifest
+// Spec "manifest.json (version 1)"; schema tools/world/castlemist-world.schema.json.
+
+namespace {
+
+/// The spec's prop (pos {10, 20, 30}, rot {0.3, -0.2, 1.1}, scale 2), built as
+/// test_world.cpp's prop_transform_matches_client builds it.
+cw::PropInstance spec_prop() {
+    castlemist::model::Extractor::MapProp p;
+    p.fileId = 101;
+    p.pos[0] = 10; p.pos[1] = 20; p.pos[2] = 30;
+    p.rot[0] = 0.3f; p.rot[1] = -0.2f; p.rot[2] = 1.1f;
+    p.scale = 2.0f;
+    p.group = "propArray";
+    cw::WorldScene s;
+    cw::build_props({p}, s);
+    return s.props.empty() ? cw::PropInstance{} : s.props[0];
+}
+
+/// Resolve a local "#/$defs/<name>" $ref against @p root.
+const json& schema_deref(const json& root, const json& s) {
+    if (s.is_object() && s.contains("$ref")) {
+        const std::string ref = s["$ref"].get<std::string>();
+        const std::string pre = "#/$defs/";
+        if (ref.rfind(pre, 0) == 0 && root["$defs"].contains(ref.substr(pre.size())))
+            return schema_deref(root, root["$defs"][ref.substr(pre.size())]);
+    }
+    return s;
+}
+
+/// Keys of @p obj are a superset of the schema's `required` and a subset of its `properties`.
+void check_keys(const json& root, const json& schema, const json& obj, const std::string& where) {
+    const json& s = schema_deref(root, schema);
+    CHECK(obj.is_object());
+    CHECK(s.contains("properties"));
+    if (!obj.is_object() || !s.contains("properties")) return;
+    for (const auto& r : s.value("required", json::array()))
+        if (!obj.contains(r.get<std::string>()))
+            ::castlemist::test::fail(__FILE__, __LINE__, where + ": missing required " + r.get<std::string>());
+    for (auto it = obj.begin(); it != obj.end(); ++it)
+        if (!s["properties"].contains(it.key()))
+            ::castlemist::test::fail(__FILE__, __LINE__, where + ": key not in schema " + it.key());
+}
+
+/// The same rule wherever the schema names properties: walks the whole manifest
+/// through properties / additionalProperties / items, so no nested object drifts.
+void check_keys_deep(const json& root, const json& schema, const json& v, const std::string& where) {
+    const json& s = schema_deref(root, schema);
+    if (!s.is_object()) return;
+    if (v.is_object()) {
+        if (s.contains("properties")) {
+            check_keys(root, s, v, where);
+            for (auto it = v.begin(); it != v.end(); ++it)
+                if (s["properties"].contains(it.key()))
+                    check_keys_deep(root, s["properties"][it.key()], it.value(), where + "." + it.key());
+        } else if (s.contains("additionalProperties") && s["additionalProperties"].is_object()) {
+            for (auto it = v.begin(); it != v.end(); ++it)
+                check_keys_deep(root, s["additionalProperties"], it.value(), where + "." + it.key());
+        }
+    } else if (v.is_array() && s.contains("items")) {
+        for (size_t k = 0; k < v.size(); ++k)
+            check_keys_deep(root, s["items"], v[k], where + "[" + std::to_string(k) + "]");
+    }
+}
+
+json read_schema() {
+    std::ifstream in(fs::path(CM_SOURCE_DIR) / "tools" / "world" / "castlemist-world.schema.json");
+    if (!in) return json();
+    try { return json::parse(in); } catch (...) { return json(); }
+}
+
+/// A one-cell scene: 1 x 1 chunk under water, two props of model 101 (the
+/// second non-uniformly scaled), one of model 102 whose folder failed.
+struct SyntheticManifest {
+    cw::WorldScene scene;
+    cw::Cell cell;
+    WorldFolderOptions opts;
+    WorldManifestInput in;
+};
+
+void make_synthetic(SyntheticManifest& m) {
+    m.scene = cell_grid(1, 1);
+    m.scene.mapFileId = 1151420;
+    m.scene.hasBounds = true;
+    m.scene.bounds[0] = kCX0; m.scene.bounds[1] = kCY1 - kCC; m.scene.bounds[2] = kCX0 + kCC; m.scene.bounds[3] = kCY1;
+    add_water(m.scene);
+    m.scene.environment.light.present = true;
+    m.scene.warnings.push_back("scene: a synthetic warning");
+    cw::PropInstance a = spec_prop();
+    a.world[12] = kCX0 + 100; a.world[13] = kCY1 - 100; a.world[14] = -10;
+    cw::PropInstance b = a;
+    b.world[4] *= 2; b.world[5] *= 2; b.world[6] *= 2;   // non-uniform
+    cw::PropInstance c = a;
+    c.model = 1;
+    c.group = "propAnimArray";
+    m.scene.models = {cw::PropModel{101}, cw::PropModel{102}};
+    m.scene.props = {a, b, c};
+    m.cell = cell_by_id(m.scene, "c0_0_1x1");
+    m.cell.props = {0, 1, 2};
+
+    ManifestModel m0;
+    m0.index = 0; m0.fileId = 101; m0.ok = true;
+    m0.folder = "models/101"; m0.glb = "models/101/101.glb"; m0.materials = "models/101/materials.json";
+    m0.triangles = 12; m0.textureBytes = 1398101; m0.clips = {"idle"}; m0.darkDecalMaterials = {"Mat_58246"};
+    m0.uvScroll = json::array({json{{"material", "Mat_1"}, {"uvIndex", 1}, {"scroll", {0, 0.2}}}});
+    ManifestModel m1;
+    m1.index = 1; m1.fileId = 102; m1.ok = false; m1.error = "model did not load";
+
+    ManifestCell mc;
+    mc.cell = &m.cell; mc.glb = "cells/c0_0_1x1.glb"; mc.albedo = "cells/c0_0_1x1_albedo.png";
+    mc.water = "cells/c0_0_1x1_water.png"; mc.albedoW = 256; mc.albedoH = 256;
+    mc.colliderParts = 1; mc.colliderTriangles = 12;
+
+    m.in.scene = &m.scene; m.in.opts = &m.opts;
+    m.in.models = {m0, m1};
+    m.in.cells = {mc};
+    m.in.sky = json{{"json", "sky/sky.json"}, {"default", "day"}, {"equirect", "sky/day/baked/equirect.png"}};
+    m.in.spawn = json{{"map", {kCX0 + 1536, kCY1 - 1536, 5}}};
+    m.in.counts = json{{"animated", 1}, {"animatedResolved", 0}};
+    m.in.warnings = {"export: a synthetic warning"};
+    m.in.clipOf = [](uint32_t) { return std::string(); };
+}
+
+bool has_warning(const json& man, const std::string& needle) {
+    if (!man.contains("warnings")) return false;
+    for (const auto& w : man["warnings"]) if (w.get<std::string>().find(needle) != std::string::npos) return true;
+    return false;
+}
+
+} // namespace
+
+CM_TEST(world_manifest, unity_trs_roundtrip) {
+    const cw::PropInstance p = spec_prop();
+    const float origin[3] = {5, 5, 0};
+    UnityTrs u{};
+    CHECK(unity_trs(p.world, origin, u));
+    CHECK_NEAR(u.s, 2.0, 1e-5);
+    CHECK(u.r[3] >= 0);
+    CHECK_NEAR(double(u.r[0]) * u.r[0] + double(u.r[1]) * u.r[1] + double(u.r[2]) * u.r[2] + double(u.r[3]) * u.r[3],
+               1.0, 1e-5);
+    // Expected: map_matrix_to_unity(M with its translation minus the origin).
+    float local[16], want[16];
+    std::memcpy(local, p.world, sizeof local);
+    for (int k = 0; k < 3; ++k) local[12 + k] -= origin[k];
+    cw::map_matrix_to_unity(local, want);
+    // Rebuilt: T(t) * R(r) * S(s), R the standard (Unity Quaternion) rotation matrix.
+    const double x = u.r[0], y = u.r[1], z = u.r[2], w = u.r[3];
+    const double R[3][3] = {{1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)},
+                            {2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)},
+                            {2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)}};
+    for (int c = 0; c < 3; ++c)
+        for (int r = 0; r < 3; ++r) CHECK_NEAR(u.s * R[r][c], want[c * 4 + r], 1e-4);
+    for (int r = 0; r < 3; ++r) CHECK_NEAR(u.t[r], want[12 + r], 1e-4);
+    // And the Unity transform applied to map_to_unity(v) lands on map_to_unity(M' v).
+    const float v[3] = {1, 2, 3};
+    float mv[3], uv[3], umv[3];
+    for (int r = 0; r < 3; ++r) mv[r] = local[r] * v[0] + local[4 + r] * v[1] + local[8 + r] * v[2] + local[12 + r];
+    cw::map_to_unity(v, uv);
+    cw::map_to_unity(mv, umv);
+    for (int r = 0; r < 3; ++r)
+        CHECK_NEAR(u.s * (R[r][0] * uv[0] + R[r][1] * uv[1] + R[r][2] * uv[2]) + u.t[r], umv[r], 1e-3);
+    // Every branch of Shepperd's method: identity and the three 180-degree turns.
+    const float axes[4][3] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    for (const auto& ax : axes) {
+        float m[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        if (ax[0] + ax[1] + ax[2] > 0)
+            for (int c = 0; c < 3; ++c)
+                for (int r = 0; r < 3; ++r) m[c * 4 + r] = 2 * ax[r] * ax[c] - (r == c ? 1.f : 0.f);
+        const float zero[3] = {0, 0, 0};
+        UnityTrs q{};
+        CHECK(unity_trs(m, zero, q));
+        float um[16];
+        cw::map_matrix_to_unity(m, um);
+        const double qx = q.r[0], qy = q.r[1], qz = q.r[2], qw = q.r[3];
+        const double Q[3][3] = {{1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)},
+                                {2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)},
+                                {2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)}};
+        for (int c = 0; c < 3; ++c)
+            for (int r = 0; r < 3; ++r) CHECK_NEAR(Q[r][c], um[c * 4 + r], 1e-5);
+        CHECK(qw >= 0);
+        CHECK_NEAR(q.s, 1.0, 1e-6);
+    }
+}
+
+CM_TEST(world_manifest, unity_trs_rejects_bad) {
+    const float zero[3] = {0, 0, 0};
+    UnityTrs u{};
+    float nonUniform[16] = {1, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};   // scale (1, 2, 1)
+    CHECK_FALSE(unity_trs(nonUniform, zero, u));
+    float mirrored[16] = {-1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};   // det < 0
+    CHECK_FALSE(unity_trs(mirrored, zero, u));
+    float negUniform[16] = {-2, 0, 0, 0, 0, -2, 0, 0, 0, 0, -2, 0, 0, 0, 0, 1};   // scale -2: det < 0
+    CHECK_FALSE(unity_trs(negUniform, zero, u));
+    float nan[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    nan[13] = std::numeric_limits<float>::quiet_NaN();
+    CHECK_FALSE(unity_trs(nan, zero, u));
+    float inf[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    inf[0] = std::numeric_limits<float>::infinity();
+    CHECK_FALSE(unity_trs(inf, zero, u));
+    const float nanOrigin[3] = {0, std::numeric_limits<float>::quiet_NaN(), 0};
+    float id[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    CHECK_FALSE(unity_trs(id, nanOrigin, u));
+    float zeroScale[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    CHECK_FALSE(unity_trs(zeroScale, zero, u));
+    float shear[16] = {1, 0, 0, 0, 0.6f, 0.8f, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};   // equal lengths, not orthogonal
+    CHECK_FALSE(unity_trs(shear, zero, u));
+    float projective[16] = {1, 0, 0, 0.5f, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    CHECK_FALSE(unity_trs(projective, zero, u));
+    // The spec prop with one axis doubled: non-uniform after a rotation.
+    cw::PropInstance p = spec_prop();
+    for (int r = 0; r < 3; ++r) p.world[8 + r] *= 2;
+    CHECK_FALSE(unity_trs(p.world, zero, u));
+    CHECK(unity_trs(spec_prop().world, zero, u));
+}
+
+CM_TEST(world_manifest, keys_match_schema) {
+    const json schema = read_schema();
+    CHECK(schema.is_object());
+    if (!schema.is_object()) return;
+    CHECK(schema["$schema"] == "https://json-schema.org/draft/2020-12/schema");
+    CHECK(schema["$id"] == "castlemist-world/1");
+    SyntheticManifest m;
+    make_synthetic(m);
+    const json man = world_manifest_json(m.in);
+    CHECK(man.is_object());
+    if (!man.is_object()) return;
+    CHECK_EQ(man.value("version", 0), kWorldManifestVersion);
+    CHECK_EQ(man.value("version", 0), 1);
+    CHECK(man.value("format", std::string()) == "castlemist-world");
+    check_keys(schema, schema, man, "manifest");
+    const bool shaped = man.contains("cells") && man["cells"].is_array() && !man["cells"].empty() &&
+                        man.contains("models") && man["models"].is_array() && !man["models"].empty();
+    CHECK(shaped);
+    if (!shaped) return;
+    const json& cellsS = schema_deref(schema, schema["properties"]["cells"]);
+    check_keys(schema, cellsS["items"], man["cells"][0], "cells[0]");
+    CHECK(!man["cells"][0]["instances"].empty());
+    if (man["cells"][0]["instances"].empty()) return;
+    const json& cellS = schema_deref(schema, cellsS["items"]);
+    check_keys(schema, schema_deref(schema, cellS["properties"]["instances"])["items"], man["cells"][0]["instances"][0],
+               "cells[0].instances[0]");
+    check_keys(schema, schema_deref(schema, schema["properties"]["models"])["items"], man["models"][0], "models[0]");
+    check_keys_deep(schema, schema, man, "manifest");
+    // The output dumps and parses again (no NaN / inf); kept on disk for inspection.
+    CHECK(json::parse(man.dump()) == man);
+    std::ofstream(fresh_dir("manifest") / "manifest.json") << man.dump(2);
+
+    // Content: one instance written (prop 0); prop 1 is non-uniform, prop 2's model failed.
+    const json& cell = man["cells"][0];
+    CHECK_EQ(cell["instances"].size(), size_t(1));
+    CHECK_EQ(cell["instances"][0]["prop"].get<int>(), 0);
+    CHECK_EQ(cell["instances"][0]["model"].get<int>(), 0);
+    CHECK(cell["instances"][0]["clip"].is_null());
+    CHECK_EQ(cell["instances"][0]["m"].size(), size_t(16));
+    CHECK_EQ(man["counts"]["props"].get<int>(), 3);
+    CHECK_EQ(man["counts"]["propsWritten"].get<int>(), 1);
+    CHECK_EQ(man["counts"]["propsSkipped"].get<int>(), 2);
+    CHECK_EQ(man["counts"]["models"].get<int>(), 2);
+    CHECK_EQ(man["counts"]["modelsFailed"].get<int>(), 1);
+    CHECK_EQ(man["counts"]["cells"].get<int>(), 1);
+    CHECK_EQ(man["counts"]["chunks"].get<int>(), 1);
+    CHECK_EQ(man["counts"]["animated"].get<int>(), 1);
+    CHECK_EQ(man["counts"]["clipsFailedDecode"].get<int>(), 0);
+    CHECK(has_warning(man, "props: 1 placements with a non-uniform or degenerate transform skipped"));
+    CHECK(has_warning(man, "props: 1 placements of failed or missing models skipped"));
+    CHECK(man["warnings"][0] == "scene: a synthetic warning");
+    CHECK(has_warning(man, "export: a synthetic warning"));
+    CHECK(man["models"][1]["status"] == "failed");
+    CHECK(man["models"][1]["error"] == "model did not load");
+    CHECK(man["models"][0]["status"] == "ok");
+    CHECK(man["models"][0]["fbx"].is_null());
+    CHECK(man["models"][0]["uvScroll"][0]["unit"] == "per second, UNPROVEN");
+    CHECK(cell["water"]["texture"] == "cells/c0_0_1x1_water.png");
+    CHECK(cell["chunks"] == json({0, 0, 0, 0}));
+    CHECK(man["map"]["fileId"] == 1151420);
+    // The unity block is unity_trs relative to the cell origin.
+    UnityTrs u{};
+    CHECK(unity_trs(m.scene.props[0].world, m.cell.origin, u));
+    for (size_t k = 0; k < 3; ++k) CHECK_EQ(cell["instances"][0]["unity"]["t"][k].get<float>(), u.t[k]);
+    for (size_t k = 0; k < 4; ++k) CHECK_EQ(cell["instances"][0]["unity"]["r"][k].get<float>(), u.r[k]);
+    CHECK_EQ(cell["instances"][0]["unity"]["s"].get<float>(), u.s);
+    // Frame: the rows of map_to_unity / map_to_blender; units and scale UNPROVEN.
+    CHECK(man["frame"]["toUnity"] == json({{1, 0, 0}, {0, 0, -1}, {0, 1, 0}}));
+    CHECK(man["frame"]["toBlender"] == json({{1, 0, 0}, {0, 1, 0}, {0, 0, -1}}));
+    CHECK(man["frame"]["units"]["perMetre"].is_null());
+    CHECK(man["frame"]["units"]["status"] == "UNPROVEN");
+    CHECK_NEAR(man["frame"]["units"]["unityScale"]["value"].get<double>(), 0.0254, 1e-7);
+    CHECK(man["frame"]["units"]["unityScale"]["status"] == "UNPROVEN");
+    const auto root = map_to_gltf_root(1);
+    for (size_t k = 0; k < 16; ++k) CHECK_EQ(man["frame"]["gltfRoot"][k].get<float>(), root[k]);
+    // Light (spec D5, the brief's "Settled"): toSun as stored, unityForward = -map_to_unity(toSun).
+    const auto& L = m.scene.environment.light;
+    float uf[3], bd[3];
+    cw::map_to_unity(L.sunDir, uf);
+    cw::map_to_blender(L.sunDir, bd);
+    for (size_t k = 0; k < 3; ++k) {
+        CHECK_EQ(man["light"]["sun"]["toSun"][k].get<float>(), L.sunDir[k]);
+        CHECK_EQ(man["light"]["sun"]["unityForward"][k].get<float>(), -uf[k]);
+        CHECK_EQ(man["light"]["sun"]["blenderDirection"][k].get<float>(), -bd[k]);
+        CHECK_NEAR(man["light"]["ambient"][k].get<float>(), L.fillColor[k] * std::min(L.fillIntensity, 1.0f), 1e-6);
+    }
+    // Spawn: unity filled in from map; the probe sits at the spawn.
+    float su[3];
+    const float sm[3] = {kCX0 + 1536, kCY1 - 1536, 5};
+    cw::map_to_unity(sm, su);
+    for (size_t k = 0; k < 3; ++k) CHECK_EQ(man["spawn"]["unity"][k].get<float>(), su[k]);
+    CHECK(man["frameProbe"]["map"] == man["spawn"]["map"]);
+    CHECK(man["frameProbe"]["expect"] == frame_probe_expect());
+    CHECK(man["water"]["plane"] == true);
+    CHECK_EQ(man["water"]["preset"].get<int>(), 0);
+    CHECK(man["terrain"]["present"] == true);
+    CHECK_EQ(man["terrain"]["segments"].get<int>(), 32);
+}
+
+CM_TEST(world_manifest, settings_labelled) {
+    SyntheticManifest m;
+    make_synthetic(m);
+    const json man = world_manifest_json(m.in);
+    const bool shaped = man.contains("settings") && man["settings"].is_object() && !man["settings"].empty();
+    CHECK(shaped);
+    if (!shaped) return;
+    const std::vector<std::string> allowed = {"UNPROVEN", "castlemist's choice", "measured"};
+    size_t unproven = 0;
+    for (auto it = man["settings"].begin(); it != man["settings"].end(); ++it) {
+        const std::string st = it.value().value("status", std::string());
+        if (std::find(allowed.begin(), allowed.end(), st) == allowed.end())
+            ::castlemist::test::fail(__FILE__, __LINE__, "setting " + it.key() + " has status '" + st + "'");
+        CHECK(it.value().contains("value"));
+        CHECK(!it.value().value("source", std::string()).empty());
+        if (st != "UNPROVEN") continue;
+        ++unproven;
+        bool found = false;
+        for (const auto& w : man["warnings"]) {
+            const std::string s = w.get<std::string>();
+            if (s.find(it.key()) != std::string::npos && s.find("UNPROVEN") != std::string::npos) found = true;
+        }
+        if (!found) ::castlemist::test::fail(__FILE__, __LINE__, "no UNPROVEN warning for " + it.key());
+    }
+    CHECK(unproven >= 8);
+    CHECK(man["settings"]["groundRepeatsPerChunk"]["value"] == 8);
+    CHECK(man["settings"]["groundRepeatsPerChunk"]["status"] == "UNPROVEN");
+    CHECK(man["settings"]["unityScale"]["status"] == "UNPROVEN");
+    CHECK(man["settings"]["ambient"]["status"] == "castlemist's choice");
+    CHECK(man["settings"]["texelsPerChunk"]["value"] == 256);
+    CHECK(man["settings"]["cellMaxTriangles"]["value"] == 1000000);
+    // The settings are world_export_settings and follow the options.
+    WorldFolderOptions o;
+    o.texelsPerChunk = 128;
+    const auto set = world_export_settings(o);
+    CHECK(!set.empty());
+    bool saw = false;
+    for (const auto& s : set) if (s.name == "texelsPerChunk") { saw = true; CHECK(s.value == 128); }
+    CHECK(saw);
+}
+
+CM_TEST(world_manifest, flat_water_and_non_finite) {
+    SyntheticManifest m;
+    make_synthetic(m);
+    // A plane but no preset (spec D3 "No preset"): flat water, with Task 6's note.
+    m.scene.environment.water.clear();
+    set_all_heights(m.scene, 5.f);
+    m.in.cells[0].water.clear();
+    // A NaN placement and an inf in the light: skipped / null, never invalid JSON.
+    m.scene.props[0].world[13] = std::numeric_limits<float>::quiet_NaN();
+    m.scene.environment.light.sunIntensity = std::numeric_limits<float>::infinity();
+    const json man = world_manifest_json(m.in);
+    const bool shaped = man.contains("cells") && man["cells"].is_array() && !man["cells"].empty();
+    CHECK(shaped);
+    if (!shaped) return;
+    CHECK(has_warning(man, kFlatWaterNote));
+    CHECK(man["water"]["plane"] == true);
+    CHECK(man["water"]["preset"].is_null());
+    CHECK(man["cells"][0]["water"].is_object());
+    CHECK(man["cells"][0]["water"]["texture"].is_null());
+    CHECK(man["cells"][0]["water"]["note"] == std::string(kFlatWaterNote));
+    CHECK(man["cells"][0]["instances"].empty());
+    CHECK_EQ(man["counts"]["propsSkipped"].get<int>(), 3);
+    CHECK(has_warning(man, "props: 2 placements with a non-uniform or degenerate transform skipped"));
+    CHECK(man["light"]["sun"]["intensity"].is_null());
+    CHECK(has_warning(man, "light.sun.intensity"));
+    const std::string text = man.dump();
+    CHECK(text.find("NaN") == std::string::npos);
+    CHECK(json::parse(text) == man);
+    // Without a plane there is no water at all.
+    m.scene.water.hasPlane = false;
+    const json dry = world_manifest_json(m.in);
+    CHECK(dry["water"] == json({{"plane", false}}));
+    CHECK(dry["cells"][0]["water"].is_null());
+    CHECK_FALSE(has_warning(dry, kFlatWaterNote));
 }

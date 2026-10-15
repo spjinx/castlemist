@@ -116,6 +116,7 @@ castlemist_add_test(exportgltf
             test_exportgltf_world.cpp
     DEPS    castlemist::exportgltf ext::json
     PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/exportgltf")
+target_compile_definitions(cm_test_exportgltf PRIVATE CM_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 
 # The world export's test fixture writer (sub-project 4): cm_world_export_fixture
 # <dir> [--probe-only] writes probe.glb (and, from later tasks, a whole fixture

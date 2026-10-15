@@ -1,0 +1,344 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "castlemist-world/1",
+  "title": "castlemist world export manifest, version 1",
+  "description": "manifest.json of a castlemist world export folder (docs/superpowers/specs/2026-10-15-world-export-design.md, 'manifest.json (version 1)'). Written by src/exportgltf/world_manifest.cpp. Keywords are limited to: $schema $id $defs $ref title description type properties required additionalProperties items enum const minimum maximum minItems maxItems (tools/world/validate_manifest.py checks exactly these). Map space is left-handed, +X east, +Y north, up -Z; Unity values are map_to_unity, (x, y, z) -> (x, -z, y), in map units before unityScale.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "version", "castlemist", "map", "frame", "settings", "terrain", "models", "cells", "water",
+               "sky", "light", "spawn", "frameProbe", "counts", "warnings"],
+  "properties": {
+    "format": { "const": "castlemist-world" },
+    "version": { "description": "Integer major; importers refuse an unknown one.", "const": 1 },
+    "castlemist": { "description": "The castlemist version that wrote the export.", "type": "string" },
+    "map": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fileId", "bounds"],
+      "properties": {
+        "fileId": { "type": "integer", "minimum": 0 },
+        "bounds": { "description": "parm rect x0, y0, x1, y1 in map space, or null.",
+                    "type": ["array", "null"], "items": { "type": "number" }, "minItems": 4, "maxItems": 4 }
+      }
+    },
+    "frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["space", "handedness", "east", "north", "up", "toUnity", "toBlender", "gltfRoot", "units"],
+      "properties": {
+        "space": { "const": "gw2-map" },
+        "handedness": { "const": "left" },
+        "east": { "const": "+X" },
+        "north": { "const": "+Y" },
+        "up": { "const": "-Z" },
+        "toUnity": { "description": "Rows of world/frame.h map_to_unity.", "$ref": "#/$defs/mat3" },
+        "toBlender": { "description": "Rows of world/frame.h map_to_blender.", "$ref": "#/$defs/mat3" },
+        "gltfRoot": { "description": "map_to_gltf_root(1), column-major.", "$ref": "#/$defs/mat4" },
+        "units": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["perMetre", "status", "source", "unityScale"],
+          "properties": {
+            "perMetre": { "description": "Map units per metre: UNPROVEN, so null.", "type": ["number", "null"] },
+            "status": { "$ref": "#/$defs/status" },
+            "source": { "type": "string" },
+            "unityScale": {
+              "description": "Scale the Unity importer puts on the map's root GameObject.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["value", "status", "source"],
+              "properties": {
+                "value": { "type": "number", "minimum": 0 },
+                "status": { "$ref": "#/$defs/status" },
+                "source": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "settings": {
+      "description": "Spec D3 'UNPROVEN settings that travel' plus the export's own settings; each UNPROVEN one is also a line in warnings.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["groundRepeatsPerChunk", "srgbColourTextures", "pickerSolidByteOrder", "waterPresetPairing",
+                   "waterArea", "waterAlpha", "uvScrollUnitSeconds", "darkDecalRule", "blendModes",
+                   "collisionHullSelection", "unityScale", "clipPhase", "texelsPerChunk", "waterTexelsPerChunk",
+                   "maxTextureSize", "cellMaxChunks", "cellMaxTriangles", "cellMaxTextureMB", "ambient",
+                   "unityAxisConversion"],
+      "properties": {
+        "groundRepeatsPerChunk": { "$ref": "#/$defs/setting" },
+        "srgbColourTextures": { "$ref": "#/$defs/setting" },
+        "pickerSolidByteOrder": { "$ref": "#/$defs/setting" },
+        "waterPresetPairing": { "$ref": "#/$defs/setting" },
+        "waterArea": { "$ref": "#/$defs/setting" },
+        "waterAlpha": { "$ref": "#/$defs/setting" },
+        "uvScrollUnitSeconds": { "$ref": "#/$defs/setting" },
+        "darkDecalRule": { "$ref": "#/$defs/setting" },
+        "blendModes": { "$ref": "#/$defs/setting" },
+        "collisionHullSelection": { "$ref": "#/$defs/setting" },
+        "unityScale": { "$ref": "#/$defs/setting" },
+        "clipPhase": { "$ref": "#/$defs/setting" },
+        "texelsPerChunk": { "$ref": "#/$defs/setting" },
+        "waterTexelsPerChunk": { "$ref": "#/$defs/setting" },
+        "maxTextureSize": { "$ref": "#/$defs/setting" },
+        "cellMaxChunks": { "$ref": "#/$defs/setting" },
+        "cellMaxTriangles": { "$ref": "#/$defs/setting" },
+        "cellMaxTextureMB": { "$ref": "#/$defs/setting" },
+        "ambient": { "$ref": "#/$defs/setting" },
+        "unityAxisConversion": { "$ref": "#/$defs/setting" }
+      }
+    },
+    "terrain": {
+      "description": "{present: false} on a map with no terrain; every other key is then absent.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["present"],
+      "properties": {
+        "present": { "type": "boolean" },
+        "chunksX": { "type": "integer", "minimum": 0 },
+        "chunksY": { "type": "integer", "minimum": 0 },
+        "chunkSize": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+        "segments": { "type": "integer", "minimum": 0 },
+        "region": { "description": "Inclusive chunk rect cx0, cy0, cx1, cy1.", "$ref": "#/$defs/int4" }
+      }
+    },
+    "models": { "type": "array", "items": { "$ref": "#/$defs/model" } },
+    "cells": { "type": "array", "items": { "$ref": "#/$defs/cell" } },
+    "water": {
+      "description": "{plane: false}, or the plane with its env preset, or (no preset) the flat colour and its note.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plane"],
+      "properties": {
+        "plane": { "type": "boolean" },
+        "z": { "type": "number" },
+        "preset": { "type": ["integer", "null"], "minimum": 0 },
+        "shallow": { "$ref": "#/$defs/rgba" },
+        "deep": { "$ref": "#/$defs/rgba" },
+        "depthAttenuation": { "type": "number" },
+        "flatColour": { "$ref": "#/$defs/rgba" },
+        "note": { "type": "string" }
+      }
+    },
+    "sky": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["json", "default"],
+      "properties": {
+        "json": { "type": "string" },
+        "default": { "type": "string" },
+        "equirect": { "type": ["string", "null"] }
+      }
+    },
+    "light": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["presetIndex", "sun", "fill", "ambient"],
+      "properties": {
+        "present": { "type": "boolean" },
+        "presetIndex": { "type": "integer", "minimum": -1 },
+        "sun": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["toSun", "unityForward", "blenderDirection", "color", "intensity"],
+          "properties": {
+            "toSun": { "description": "MapEnvLight::sunDir as stored (toward the sun), map space.", "$ref": "#/$defs/vec3" },
+            "unityForward": { "description": "-map_to_unity(toSun).", "$ref": "#/$defs/vec3" },
+            "blenderDirection": { "description": "-map_to_blender(toSun).", "$ref": "#/$defs/vec3" },
+            "color": { "$ref": "#/$defs/vec3" },
+            "intensity": { "type": "number" }
+          }
+        },
+        "fill": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["color", "intensity"],
+          "properties": {
+            "color": { "$ref": "#/$defs/vec3" },
+            "intensity": { "type": "number" }
+          }
+        },
+        "ambient": { "description": "fillColor * min(fillIntensity, 1) (castlemist's choice).", "$ref": "#/$defs/vec3" }
+      }
+    },
+    "spawn": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["map", "unity"],
+      "properties": {
+        "map": { "$ref": "#/$defs/vec3" },
+        "unity": { "description": "map_to_unity(map), before unityScale.", "$ref": "#/$defs/vec3" }
+      }
+    },
+    "frameProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["glb", "fbx", "map", "expect"],
+      "properties": {
+        "glb": { "type": "string" },
+        "fbx": { "type": ["string", "null"] },
+        "map": { "$ref": "#/$defs/vec3" },
+        "unity": { "$ref": "#/$defs/vec3" },
+        "expect": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["unity", "blender", "lengths"],
+          "properties": {
+            "unity": { "$ref": "#/$defs/axes" },
+            "blender": { "$ref": "#/$defs/axes" },
+            "lengths": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 }
+          }
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["props", "propsWritten", "propsSkipped", "models", "modelsFailed", "collisionInstances", "cells",
+                   "chunks", "chunksUnbaked", "animated", "animatedResolved", "clipsFailedDecode"],
+      "properties": {
+        "props": { "$ref": "#/$defs/count" },
+        "propsWritten": { "$ref": "#/$defs/count" },
+        "propsSkipped": { "$ref": "#/$defs/count" },
+        "models": { "$ref": "#/$defs/count" },
+        "modelsFailed": { "$ref": "#/$defs/count" },
+        "collisionInstances": { "$ref": "#/$defs/count" },
+        "cells": { "$ref": "#/$defs/count" },
+        "chunks": { "$ref": "#/$defs/count" },
+        "chunksUnbaked": { "$ref": "#/$defs/count" },
+        "animated": { "$ref": "#/$defs/count" },
+        "animatedResolved": { "$ref": "#/$defs/count" },
+        "clipsFailedDecode": { "$ref": "#/$defs/count" }
+      }
+    },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "status": { "enum": ["UNPROVEN", "castlemist's choice", "measured"] },
+    "count": { "type": "integer", "minimum": 0 },
+    "vec3": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+    "vec4": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 },
+    "rgba": { "type": "array", "items": { "type": "number", "minimum": 0, "maximum": 1 }, "minItems": 4, "maxItems": 4 },
+    "int4": { "type": "array", "items": { "type": "integer" }, "minItems": 4, "maxItems": 4 },
+    "mat3": { "type": "array", "items": { "$ref": "#/$defs/vec3" }, "minItems": 3, "maxItems": 3 },
+    "mat4": { "type": "array", "items": { "type": "number" }, "minItems": 16, "maxItems": 16 },
+    "axes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["east", "north", "up"],
+      "properties": {
+        "east": { "$ref": "#/$defs/vec3" },
+        "north": { "$ref": "#/$defs/vec3" },
+        "up": { "$ref": "#/$defs/vec3" }
+      }
+    },
+    "setting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "status", "source"],
+      "properties": {
+        "value": { "type": ["number", "string", "boolean"] },
+        "status": { "$ref": "#/$defs/status" },
+        "source": { "type": "string" }
+      }
+    },
+    "uvScroll": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["material", "uvIndex", "scroll", "unit"],
+      "properties": {
+        "material": { "type": "string" },
+        "uvIndex": { "type": "integer", "minimum": 0 },
+        "scroll": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+        "unit": { "const": "per second, UNPROVEN" }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "fileId", "folder", "glb", "fbx", "materials", "triangles", "textureBytes", "clips",
+                   "darkDecalMaterials", "uvScroll", "status"],
+      "properties": {
+        "index": { "description": "scene.models index.", "type": "integer", "minimum": 0 },
+        "fileId": { "type": "integer", "minimum": 0 },
+        "folder": { "type": ["string", "null"] },
+        "glb": { "type": ["string", "null"] },
+        "fbx": { "type": ["string", "null"] },
+        "materials": { "type": ["string", "null"] },
+        "triangles": { "$ref": "#/$defs/count" },
+        "textureBytes": { "$ref": "#/$defs/count" },
+        "clips": { "type": "array", "items": { "type": "string" } },
+        "darkDecalMaterials": { "type": "array", "items": { "type": "string" } },
+        "uvScroll": { "type": "array", "items": { "$ref": "#/$defs/uvScroll" } },
+        "status": { "enum": ["ok", "failed"] },
+        "error": { "type": "string" }
+      }
+    },
+    "cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "chunks", "rect", "origin", "glb", "fbx", "albedo", "albedoSize", "water", "colliderParts",
+                   "colliderTriangles", "budget", "instances"],
+      "properties": {
+        "id": { "description": "c<cx0>_<cy0>_<w>x<h> or c_all.", "type": "string" },
+        "chunks": { "description": "Inclusive chunk rect cx0, cy0, cx1, cy1; null for c_all.",
+                    "type": ["array", "null"], "items": { "type": "integer" }, "minItems": 4, "maxItems": 4 },
+        "rect": { "$ref": "#/$defs/vec4" },
+        "origin": { "description": "Rect centre, z 0: the Cell node's translation (map space).", "$ref": "#/$defs/vec3" },
+        "glb": { "type": "string" },
+        "fbx": { "type": ["string", "null"] },
+        "albedo": { "type": ["string", "null"] },
+        "albedoSize": { "type": ["array", "null"], "items": { "type": "integer", "minimum": 0 }, "minItems": 2, "maxItems": 2 },
+        "water": {
+          "description": "The cell's water plane; texture null (and a note) for the flat colour.",
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["texture", "z"],
+          "properties": {
+            "texture": { "type": ["string", "null"] },
+            "z": { "type": "number" },
+            "note": { "type": "string" }
+          }
+        },
+        "colliderParts": { "$ref": "#/$defs/count" },
+        "colliderTriangles": { "$ref": "#/$defs/count" },
+        "budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["triangles", "textureMB", "split", "overBudget"],
+          "properties": {
+            "triangles": { "$ref": "#/$defs/count" },
+            "textureMB": { "type": "number", "minimum": 0 },
+            "split": { "type": "boolean" },
+            "overBudget": { "type": "boolean" }
+          }
+        },
+        "instances": { "type": "array", "items": { "$ref": "#/$defs/instance" } }
+      }
+    },
+    "instance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prop", "model", "group", "m", "unity", "clip"],
+      "properties": {
+        "prop": { "description": "scene.props index.", "type": "integer", "minimum": 0 },
+        "model": { "description": "Position in the manifest's models array.", "type": "integer", "minimum": 0 },
+        "group": { "type": "string" },
+        "m": { "description": "PropInstance::world: column-major, map space, absolute.", "$ref": "#/$defs/mat4" },
+        "unity": {
+          "description": "Local to the Cell node, before unityScale: map_matrix_to_unity(m - origin) as t, r (xyzw, w >= 0), s.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["t", "r", "s"],
+          "properties": {
+            "t": { "$ref": "#/$defs/vec3" },
+            "r": { "$ref": "#/$defs/vec4" },
+            "s": { "type": "number", "minimum": 0 }
+          }
+        },
+        "clip": { "type": ["string", "null"] }
+      }
+    }
+  }
+}
