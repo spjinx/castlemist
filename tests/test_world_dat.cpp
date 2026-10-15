@@ -296,7 +296,7 @@ CM_TEST(world_dat, terrain_materials_match_reference) {
                 CHECK_EQ(hits, size_t(1));
             }
             for (const auto& w : warnings)
-                if (w.find("ramp") == std::string::npos && w.find(" have a uvData") == std::string::npos) CHECK(w.find("UNPROVEN") != std::string::npos);
+                if (w.find("ramp") == std::string::npos) CHECK(w.find("UNPROVEN") != std::string::npos);
         }
 
         // The terrain's paged image, read independently of resolve_terrain_materials.

@@ -381,7 +381,7 @@ void resolve_terrain_materials(Terrain& t, const castlemist::model::Extractor::M
     if (withUvData)
         warnings.push_back("terrain materials: " + std::to_string(withUvData) +
                            " chunks have a uvData (kept as stored in TerrainMaterial::uvData; not animated: which ground UV it "
-                           "moves is per-AMAT, note §1.5-1.6)");
+                           "moves is per-AMAT, and its units are UNPROVEN, note §1.5-1.6)");
     if (droppedCount) {
         std::string names;
         for (const auto& n : dropped) names += (names.empty() ? "" : ", ") + n;
