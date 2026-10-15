@@ -39,19 +39,29 @@ bool finite16(const float w[16]) {
 }
 
 bool upload_mesh(ID3D11Device* dev, const PreparedModel& p, MeshGPU& out) {
-    if (!dev || !p.ok || p.verts.empty() || p.indices.empty()) return false;
+    const bool mat = !p.matVerts.empty();
+    const size_t nv = mat ? p.matVerts.size() : p.verts.size();
+    if (!dev || !p.ok || nv == 0 || p.indices.empty()) return false;
+    if (!p.skinVerts.empty() && p.skinVerts.size() != nv) return false;
+    MeshGPU m;
+    m.stride = mat ? static_cast<UINT>(sizeof(MatVtx)) : static_cast<UINT>(sizeof(MapVtx));
     D3D11_BUFFER_DESC bd{};
     bd.Usage = D3D11_USAGE_IMMUTABLE;
-    bd.ByteWidth = static_cast<UINT>(p.verts.size() * sizeof(MapVtx));
+    bd.ByteWidth = static_cast<UINT>(nv * m.stride);
     bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-    D3D11_SUBRESOURCE_DATA sd{p.verts.data(), 0, 0};
-    MeshGPU m;
+    D3D11_SUBRESOURCE_DATA sd{mat ? static_cast<const void*>(p.matVerts.data()) : p.verts.data(), 0, 0};
     if (FAILED(dev->CreateBuffer(&bd, &sd, &m.vb))) return false;
+    if (!p.skinVerts.empty()) {
+        bd.ByteWidth = static_cast<UINT>(p.skinVerts.size() * sizeof(SkinVtx));
+        sd.pSysMem = p.skinVerts.data();
+        if (FAILED(dev->CreateBuffer(&bd, &sd, &m.vbSkin))) return false;
+    }
     bd.ByteWidth = static_cast<UINT>(p.indices.size() * sizeof(uint32_t));
     bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
     sd.pSysMem = p.indices.data();
     if (FAILED(dev->CreateBuffer(&bd, &sd, &m.ib))) return false;
     m.lodRanges = p.lodRanges;
+    m.subRanges = p.subRanges;
     std::memcpy(m.center, p.center, sizeof m.center);
     m.radius = p.radius;
     m.ok = true;
@@ -172,7 +182,7 @@ int InstancedBatch::draw(ID3D11Device* dev, ID3D11DeviceContext* ctx, const Inst
             blending = true;
         }
         ID3D11Buffer* vbs[] = {bk.mesh->vb.Get(), instVB_.Get()};
-        const UINT strides[] = {sizeof(MapVtx), sizeof(InstGPU)};
+        const UINT strides[] = {bk.mesh->stride, sizeof(InstGPU)};
         const UINT offsets[] = {0, first[b] * static_cast<UINT>(sizeof(InstGPU))};
         ctx->IASetVertexBuffers(0, 2, vbs, strides, offsets);
         ctx->IASetIndexBuffer(bk.mesh->ib.Get(), DXGI_FORMAT_R32_UINT, 0);

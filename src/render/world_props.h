@@ -16,9 +16,17 @@
 
 namespace castlemist::render {
 
-/// @brief One model flattened to MapVtx with its AO baked, ready to upload.
+/// @brief One mesh ready to upload: a prop model (prepare_world_model:
+///        `matVerts`, `subRanges`, optionally `skinVerts`; `verts` empty) or
+///        a collision mesh / the water quad (`verts` only).
+///
+/// Built off the UI thread (prepare_world_model_shared, world_prep.h) and
+/// read-only afterwards.
 struct PreparedModel {
-    std::vector<MapVtx> verts;
+    std::vector<MapVtx> verts;       ///< collision and water; empty for a prop model
+    std::vector<MatVtx> matVerts;    ///< prop models: the flattened vertices with UVs and baked AO
+    std::vector<SkinVtx> skinVerts;  ///< parallel to matVerts; only when prepared withSkin
+    std::vector<std::vector<SubRange>> subRanges;   ///< per LOD: one range per non-empty submesh
     std::vector<uint32_t> indices;
     std::vector<std::pair<uint32_t, uint32_t>> lodRanges;   ///< (first index, count) per LOD
     float center[3] = {0, 0, 0};   ///< model-space bounding-sphere centre
@@ -26,12 +34,19 @@ struct PreparedModel {
     bool ok = false;
 };
 
-/// @brief Flattens every submesh (mesh_bake::flatten) and bakes AO.
+/// @brief Flattens every submesh (mesh_bake::flatten, with the per-LOD
+///        submesh ranges), bakes AO, then copies the vertices to `matVerts`
+///        in the same order with UV0 (GVertex u, v) and UV1 (uv1[0]) and
+///        clears `verts`.
+///
+/// With @p withSkin, `skinVerts` gets each vertex's `bidx` and
+/// round(`bwt` * 255); a mesh without `hasSkin` gets weights {0,0,0,0}
+/// (identity), and a model with more than 256 joints gets no `skinVerts`.
 ///
 /// `ok` is false -- and nothing is uploaded or drawn for the model -- when it
 /// has no meshes, no triangles at LOD 0, or a non-finite centre or radius. A
 /// radius <= 0 is replaced by the farthest vertex from the centre.
-PreparedModel prepare_world_model(const ModelPreview& m);
+PreparedModel prepare_world_model(const ModelPreview& m, bool withSkin = false);
 
 /// @brief One collision mesh as a single-LOD MapVtx mesh: per-vertex normals
 ///        averaged from the stored winding's face normals (area-weighted),

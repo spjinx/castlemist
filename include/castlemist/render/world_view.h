@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "castlemist/render/world_prep.h"
 #include "castlemist/world/world_scene.h"
 
 struct ModelPreview;   // castlemist/extract/model_types.h
@@ -70,13 +71,19 @@ public:
     ///        set_layer(Collision, true) or the first render() with that layer
     ///        on (not while device_lost()); the CPU copy is then released.
     void set_world(const castlemist::world::WorldScene& s);
-    /// @brief Uploads streamed prop models: each pair is (index into the
-    ///        scene's `models`, its decoded preview). Instances of a model are
-    ///        drawn once it has arrived. A null, out-of-range, empty or
-    ///        non-finite model counts as failed; a model already added
-    ///        (loaded or failed) is ignored. Does nothing before create() or
-    ///        while device_lost(). The CPU half runs across cores; call it on
-    ///        the thread that renders. The previews are kept (for picking).
+    /// @brief Uploads streamed, already prepared prop models
+    ///        (prepare_world_model_shared, typically on a load worker): GPU
+    ///        buffers and instance placement only, no CPU prep. Instances of a
+    ///        model are drawn once it has arrived. An out-of-range model, a null
+    ///        preview, or a null or not-ok prep counts as failed; a model
+    ///        already added (loaded or failed) is ignored. Does nothing before
+    ///        create() or while device_lost(). Call it on the thread that
+    ///        renders. The previews are kept (for picking).
+    void add_models(const std::vector<WorldModelLoad>& batch);
+    /// @brief As above from (index into the scene's `models`, decoded
+    ///        preview) pairs: prepares them across cores on the calling
+    ///        thread first, then forwards. For tests and tools; the map window
+    ///        prepares on its workers instead.
     void add_models(const std::vector<std::pair<uint32_t, std::shared_ptr<const ModelPreview>>>& batch);
     /// @brief Culls, draws and presents one frame.
     void render(const WorldCamera& cam);

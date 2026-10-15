@@ -28,7 +28,10 @@ namespace castlemist::render {
 /// One uploaded instanced mesh (a prop model, a collision mesh or the water quad).
 struct MeshGPU {
     Microsoft::WRL::ComPtr<ID3D11Buffer> vb, ib;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> vbSkin;   ///< SkinVtx stream; null unless prepared withSkin
+    UINT stride = sizeof(MapVtx);   ///< vb's stride: sizeof(MatVtx) for a prop model, sizeof(MapVtx) otherwise
     std::vector<std::pair<uint32_t, uint32_t>> lodRanges;   ///< (first index, count)
+    std::vector<std::vector<SubRange>> subRanges;           ///< per LOD (prop models only)
     float center[3] = {0, 0, 0};   ///< model-space sphere
     float radius = 0;
     bool ok = false;
@@ -52,8 +55,10 @@ void place(InstCPU& in, const MeshGPU& m);
 /// All 16 floats finite.
 bool finite16(const float w[16]);
 
-/// Immutable vertex + index buffers for one prepared mesh. False (and @p out
-/// untouched) for a not-ok or empty mesh or a failed buffer.
+/// Immutable vertex + index buffers for one prepared mesh: `matVerts`
+/// (stride 32) when non-empty, else `verts` (stride 16), plus `skinVerts`
+/// when present. False (and @p out untouched) for a not-ok or empty mesh or
+/// a failed buffer.
 bool upload_mesh(ID3D11Device* dev, const PreparedModel& p, MeshGPU& out);
 
 /// Prepares every collision mesh across cores and uploads it, then places

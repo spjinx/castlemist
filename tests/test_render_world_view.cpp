@@ -3,6 +3,8 @@
 
 #include "test_framework.h"
 
+#include "castlemist/render/world_prep.h"
+
 #include "world_camera.h"
 #include "world_props.h"
 
@@ -105,7 +107,7 @@ ModelPreview cube_model(float h = 50.0f) {
 CM_TEST(world_view, prepare_cube_ok) {
     const PreparedModel p = prepare_world_model(cube_model());
     CHECK(p.ok);
-    CHECK_EQ(p.verts.size(), size_t(24));
+    CHECK_EQ(p.matVerts.size(), size_t(24));   // verts is cleared once matVerts holds them
     CHECK(p.lodRanges.size() >= 1);
     CHECK_EQ(p.lodRanges.size(), size_t(2));
     if (p.lodRanges.size() < 2) return;
@@ -116,7 +118,7 @@ CM_TEST(world_view, prepare_cube_ok) {
     CHECK_NEAR(p.radius, 50.0f * std::sqrt(3.0f), 1e-3f);
     CHECK_NEAR(p.center[0], 0.0f, 1e-6f);
     // AO is baked, with the 0.30 floor (0.30 * 255 = 76.5 -> 76 or 77).
-    for (const MapVtx& v : p.verts) {
+    for (const MatVtx& v : p.matVerts) {
         CHECK(v.ao >= 76);
         CHECK(v.ao <= 255);
     }
@@ -563,4 +565,144 @@ CM_TEST(world_view, recreate_then_reload_restores_the_view) {
     v.set_layer(WorldLayer::Props, true);
     v.render(cam);
     CHECK_EQ(v.stats().visible, 6);   // the five props are back too
+}
+
+// ---- Task 7: CPU prep on the workers (MatVtx, SkinVtx, per-submesh ranges) ----
+
+namespace {
+
+/// cube_model's mesh (material 0, two LODs) plus a second mesh (material 1)
+/// with one triangle and no lodIndices, so it has fewer LODs than the model.
+ModelPreview two_mesh_model() {
+    ModelPreview mp = cube_model();
+    ModelMeshCPU t;
+    for (int k = 0; k < 3; ++k) {
+        GVertex v{};
+        v.px = 60.0f + k; v.py = (k == 1) ? 10.0f : 0.0f; v.pz = (k == 2) ? 10.0f : 0.0f;
+        v.nx = 1;
+        t.vertices.push_back(v);
+    }
+    t.indices = {0, 1, 2};
+    t.materialIndex = 1;
+    t.vertexCount = 3;
+    mp.meshes.push_back(std::move(t));
+    return mp;
+}
+
+} // namespace
+
+CM_TEST(world_view, flatten_subranges_cover_each_lod_once) {
+    const ModelPreview mp = two_mesh_model();
+    std::vector<MapVtx> verts;
+    std::vector<uint32_t> idx;
+    std::vector<std::pair<uint32_t, uint32_t>> lods;
+    std::vector<std::vector<SubRange>> subs;
+    flatten(mp, verts, idx, lods, &subs);
+    CHECK_EQ(lods.size(), size_t(2));
+    CHECK_EQ(subs.size(), lods.size());
+    if (subs.size() != lods.size()) return;
+    for (size_t lod = 0; lod < lods.size(); ++lod) {
+        const auto& s = subs[lod];
+        CHECK_EQ(s.size(), size_t(2));
+        if (s.size() != 2) continue;
+        CHECK_EQ(s[0].first, lods[lod].first);
+        uint32_t sum = 0;
+        for (size_t i = 0; i < s.size(); ++i) {
+            if (i + 1 < s.size()) CHECK_EQ(s[i + 1].first, s[i].first + s[i].count);
+            sum += s[i].count;
+        }
+        CHECK_EQ(sum, lods[lod].second);
+        CHECK_EQ(s[0].material, 0u);
+        CHECK_EQ(s[1].material, 1u);
+    }
+    // The 4-argument form (map_fly) gives the same buffers.
+    std::vector<MapVtx> v4;
+    std::vector<uint32_t> i4;
+    std::vector<std::pair<uint32_t, uint32_t>> l4;
+    flatten(mp, v4, i4, l4);
+    CHECK(i4 == idx);
+    CHECK(l4 == lods);
+}
+
+CM_TEST(world_view, prepare_matvtx_carries_uvs) {
+    CHECK_EQ(sizeof(MatVtx), size_t(32));
+    CHECK_EQ(sizeof(SkinVtx), size_t(8));
+    ModelPreview mp = cube_model();
+    GVertex& g = mp.meshes[0].vertices[5];
+    g.u = 0.25f; g.v = 0.5f;
+    g.uv1[0][0] = 2.0f; g.uv1[0][1] = 3.0f;
+    const PreparedModel p = prepare_world_model(mp);
+    CHECK(p.ok);
+    CHECK(p.verts.empty());
+    CHECK_EQ(p.matVerts.size(), size_t(24));
+    if (p.matVerts.size() != 24) return;
+    const MatVtx& o = p.matVerts[5];
+    CHECK_NEAR(o.u0, 0.25f, 1e-7f);
+    CHECK_NEAR(o.v0, 0.5f, 1e-7f);
+    CHECK_NEAR(o.u1, 2.0f, 1e-7f);
+    CHECK_NEAR(o.v1, 3.0f, 1e-7f);
+    CHECK_NEAR(o.px, g.px, 1e-7f);
+    CHECK(o.ao >= 76);   // AO baked before the copy
+    CHECK_EQ(p.subRanges.size(), p.lodRanges.size());
+}
+
+CM_TEST(world_view, prepare_skin_only_when_asked) {
+    ModelPreview mp = two_mesh_model();
+    mp.meshes[0].hasSkin = true;
+    GVertex& g = mp.meshes[0].vertices[3];
+    g.bidx[0] = 7; g.bidx[1] = 2; g.bidx[2] = 1; g.bidx[3] = 0;
+    g.bwt[0] = 0.5f; g.bwt[1] = 0.25f; g.bwt[2] = 0.25f; g.bwt[3] = 0.0f;
+    mp.meshes[1].hasSkin = false;
+
+    CHECK(prepare_world_model(mp, false).skinVerts.empty());
+    const PreparedModel p = prepare_world_model(mp, true);
+    CHECK(p.ok);
+    CHECK_EQ(p.skinVerts.size(), p.matVerts.size());
+    if (p.skinVerts.size() != 27) return;
+    const SkinVtx& s = p.skinVerts[3];
+    CHECK_EQ(int(s.bone[0]), 7);
+    CHECK_EQ(int(s.bone[1]), 2);
+    CHECK_EQ(int(s.weight[0]), 128);
+    CHECK_EQ(int(s.weight[1]), 64);
+    CHECK_EQ(int(s.weight[2]), 64);
+    CHECK_EQ(int(s.weight[3]), 0);
+    for (size_t i = 24; i < 27; ++i)   // the unskinned second mesh
+        for (int k = 0; k < 4; ++k) CHECK_EQ(int(p.skinVerts[i].weight[k]), 0);
+
+    // More than 256 joints: no skinVerts (the byte indices cannot reach them).
+    mp.joints.resize(257);
+    CHECK(prepare_world_model(mp, true).skinVerts.empty());
+}
+
+CM_TEST(world_view, prepared_add_matches_preview_add) {
+    HWND wnd = hidden_window(320, 240);
+    if (!wnd) SKIP("no window");
+    struct Closer { HWND h; ~Closer() { DestroyWindow(h); } } closer{wnd};
+    WorldView v;
+    if (!v.create(wnd)) SKIP("no D3D11 device (hardware or WARP)");
+    v.set_layer(WorldLayer::Water, false);
+    auto cube = std::make_shared<const ModelPreview>(cube_model());
+
+    v.set_world(props_scene());
+    const WorldCamera cam = v.frame_all(nullptr);
+    v.add_models({{0u, cube}});
+    v.render(cam);
+    const WorldViewStats a = v.stats();
+
+    v.set_world(props_scene());
+    CHECK_EQ(v.stats().modelsLoaded, 0);
+    v.add_models(std::vector<WorldModelLoad>{WorldModelLoad{0, cube, prepare_world_model_shared(*cube, false)}});
+    CHECK_EQ(v.stats().modelsLoaded, 1);
+    v.render(cam);
+    const WorldViewStats b = v.stats();
+    CHECK_EQ(a.visible, 5);
+    CHECK_EQ(b.visible, a.visible);
+    CHECK_EQ(b.draws, a.draws);
+    CHECK_EQ(b.ktris, a.ktris);
+
+    // A null or not-ok prep counts as failed.
+    v.set_world(props_scene());
+    v.add_models(std::vector<WorldModelLoad>{WorldModelLoad{0, cube, nullptr}});
+    CHECK_EQ(v.stats().modelsLoaded, 0);
+    CHECK_EQ(v.stats().modelsFailed, 1);
 }

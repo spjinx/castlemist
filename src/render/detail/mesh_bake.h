@@ -39,6 +39,30 @@ struct MapVtx {
 };
 static_assert(sizeof(MapVtx) == 16, "MapVtx must stay 16 bytes -- the input layout hardcodes the stride");
 
+/// @brief One submesh's indices inside one LOD range of a flattened model.
+struct SubRange {
+    uint32_t first = 0, count = 0;   ///< into the flattened index buffer
+    uint32_t material = 0;           ///< ModelMeshCPU::materialIndex
+};
+
+/// @brief One material-pass vertex: MapVtx's 16 bytes (same offsets, so the
+///        same input layout reads it) plus UV0 and UV1. 32 bytes.
+struct MatVtx {
+    float px, py, pz;         ///< offset 0
+    uint8_t nx, ny, nz, ao;   ///< offset 12, as MapVtx
+    float u0, v0;             ///< offset 16: GVertex u, v
+    float u1, v1;             ///< offset 24: GVertex uv1[0]
+};
+static_assert(sizeof(MatVtx) == 32, "MatVtx is 32 bytes -- the material input layout hardcodes the stride");
+
+/// @brief Skinning for one vertex (animated props only), a second stream
+///        parallel to MatVtx. `weight` is round(bwt * 255); all zero = identity.
+struct SkinVtx {
+    uint8_t bone[4];
+    uint8_t weight[4];
+};
+static_assert(sizeof(SkinVtx) == 8, "SkinVtx is 8 bytes");
+
 /// @brief Encodes one normal component (-1..1) as `c * 0.5 + 0.5` in a byte.
 uint8_t enc_n(float c);
 
@@ -53,6 +77,12 @@ void bake_ao(std::vector<MapVtx>& v, const std::vector<uint32_t>& idx);
 /// (first index, index count) into @p indices.
 void flatten(const ModelPreview& mp, std::vector<MapVtx>& verts, std::vector<uint32_t>& indices,
              std::vector<std::pair<uint32_t, uint32_t>>& lodRanges);
+
+/// @brief As above, and when @p subRanges is non-null also appends, per LOD,
+///        each mesh's appended indices in mesh order (empty ones skipped):
+///        consecutive, starting at that LOD's first index, summing to its count.
+void flatten(const ModelPreview& mp, std::vector<MapVtx>& verts, std::vector<uint32_t>& indices,
+             std::vector<std::pair<uint32_t, uint32_t>>& lodRanges, std::vector<std::vector<SubRange>>* subRanges);
 
 /// @brief Six frustum planes (xyz = normal, w = d; normalized, inside >= 0)
 ///        from a row-vector view-proj with D3D's 0..1 depth range.

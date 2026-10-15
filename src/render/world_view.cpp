@@ -567,27 +567,40 @@ void WorldView::set_world(const castlemist::world::WorldScene& s) {
     }
 }
 
-void WorldView::add_models(const std::vector<std::pair<uint32_t, std::shared_ptr<const ModelPreview>>>& batch) {
+void WorldView::add_models(const std::vector<WorldModelLoad>& batch) {
     if (!d->gpu_ok()) return;
-    std::vector<size_t> todo;   // indices into batch
-    for (size_t i = 0; i < batch.size(); ++i) {
-        const uint32_t m = batch[i].first;
-        if (!batch[i].second || m >= d->models.size()) { ++d->st.modelsFailed; continue; }
+    for (const WorldModelLoad& l : batch) {
+        const uint32_t m = l.model;
+        if (!l.preview || m >= d->models.size()) { ++d->st.modelsFailed; continue; }
         if (d->modelTried[m]) continue;   // loaded, failed, or earlier in this batch
         d->modelTried[m] = 1;
-        todo.push_back(i);
-    }
-    // The CPU half (flatten + AO) touches no D3D and runs across cores; the
-    // buffers are created serially afterwards, as fly_add_models does.
-    std::vector<PreparedModel> prep(todo.size());
-    parallel_for(todo.size(), [&](size_t k) { prep[k] = prepare_world_model(*batch[todo[k]].second); });
-    for (size_t k = 0; k < todo.size(); ++k) {
-        const uint32_t m = batch[todo[k]].first;
-        if (!upload_mesh(d->dev.Get(), prep[k], d->models[m])) { ++d->st.modelsFailed; continue; }
+        if (!l.prep || !upload_mesh(d->dev.Get(), *l.prep, d->models[m])) { ++d->st.modelsFailed; continue; }
         ++d->st.modelsLoaded;
-        d->previews[m] = batch[todo[k]].second;
+        d->previews[m] = l.preview;
         for (uint32_t pi : d->instOf[m]) place(d->props[pi], d->models[m]);
     }
+}
+
+void WorldView::add_models(const std::vector<std::pair<uint32_t, std::shared_ptr<const ModelPreview>>>& batch) {
+    if (!d->gpu_ok()) return;
+    // The CPU half (flatten + AO) touches no D3D and runs across cores; the
+    // prepared overload then creates the buffers serially. Models the view
+    // will ignore (out of range, already tried, null) are not prepared.
+    std::vector<WorldModelLoad> loads(batch.size());
+    std::vector<uint8_t> seen(d->models.size(), 0);
+    std::vector<size_t> todo;
+    for (size_t i = 0; i < batch.size(); ++i) {
+        loads[i].model = batch[i].first;
+        loads[i].preview = batch[i].second;
+        const uint32_t m = batch[i].first;
+        if (!batch[i].second || m >= d->models.size() || d->modelTried[m] || seen[m]) continue;
+        seen[m] = 1;
+        todo.push_back(i);
+    }
+    parallel_for(todo.size(), [&](size_t k) {
+        loads[todo[k]].prep = prepare_world_model_shared(*batch[todo[k]].second, false);
+    });
+    add_models(loads);
 }
 
 void WorldView::render(const WorldCamera& cam) {

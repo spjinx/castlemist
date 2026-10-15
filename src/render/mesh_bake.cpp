@@ -183,6 +183,11 @@ uint8_t enc_n(float c) {
 void flatten(const ModelPreview& mp, std::vector<MapVtx>& verts,
              std::vector<uint32_t>& indices,
              std::vector<std::pair<uint32_t, uint32_t>>& lodRanges) {
+    flatten(mp, verts, indices, lodRanges, nullptr);
+}
+
+void flatten(const ModelPreview& mp, std::vector<MapVtx>& verts, std::vector<uint32_t>& indices,
+             std::vector<std::pair<uint32_t, uint32_t>>& lodRanges, std::vector<std::vector<SubRange>>* subRanges) {
     size_t maxLods = 1;
     for (const auto& m : mp.meshes) maxLods = std::max(maxLods, m.lodIndices.size() + 1);
 
@@ -203,7 +208,10 @@ void flatten(const ModelPreview& mp, std::vector<MapVtx>& verts,
 
     for (size_t lod = 0; lod < maxLods; ++lod) {
         uint32_t start = static_cast<uint32_t>(indices.size());
+        std::vector<SubRange>* subs = nullptr;
+        if (subRanges) subs = &subRanges->emplace_back();
         for (size_t mi = 0; mi < mp.meshes.size(); ++mi) {
+            const uint32_t meshStart = static_cast<uint32_t>(indices.size());
             const ModelMeshCPU& m = mp.meshes[mi];
             const std::vector<uint32_t>* src = &m.indices;
             if (lod > 0) {
@@ -213,6 +221,8 @@ void flatten(const ModelPreview& mp, std::vector<MapVtx>& verts,
             for (uint32_t i : *src) {
                 if (i < m.vertices.size()) indices.push_back(base[mi] + i);
             }
+            const uint32_t n = static_cast<uint32_t>(indices.size()) - meshStart;
+            if (subs && n) subs->push_back({meshStart, n, m.materialIndex});
         }
         lodRanges.emplace_back(start, static_cast<uint32_t>(indices.size()) - start);
     }

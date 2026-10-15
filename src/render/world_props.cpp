@@ -3,19 +3,21 @@
 
 #include "world_props.h"
 
+#include "castlemist/render/world_prep.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 
 namespace castlemist::render {
 
-PreparedModel prepare_world_model(const ModelPreview& m) {
+PreparedModel prepare_world_model(const ModelPreview& m, bool withSkin) {
     PreparedModel p;
     if (m.meshes.empty()) return p;
     if (!std::isfinite(m.radius) || !std::isfinite(m.center[0]) || !std::isfinite(m.center[1]) ||
         !std::isfinite(m.center[2]))
         return p;
-    flatten(m, p.verts, p.indices, p.lodRanges);
+    flatten(m, p.verts, p.indices, p.lodRanges, &p.subRanges);
     if (p.verts.empty() || p.lodRanges.empty() || p.lodRanges[0].second == 0) {
         p = PreparedModel{};
         return p;
@@ -31,8 +33,39 @@ PreparedModel prepare_world_model(const ModelPreview& m) {
         }
         p.radius = std::max(std::sqrt(r2), 1.0f);
     }
+
+    // MatVtx in flatten's vertex order: mesh by mesh, each mesh's vertices.
+    const bool skin = withSkin && m.joints.size() <= 256;
+    p.matVerts.reserve(p.verts.size());
+    if (skin) p.skinVerts.reserve(p.verts.size());
+    size_t vi = 0;
+    for (const ModelMeshCPU& mesh : m.meshes) {
+        for (const GVertex& g : mesh.vertices) {
+            const MapVtx& s = p.verts[vi++];
+            MatVtx o;
+            o.px = s.px; o.py = s.py; o.pz = s.pz;
+            o.nx = s.nx; o.ny = s.ny; o.nz = s.nz; o.ao = s.ao;
+            o.u0 = g.u; o.v0 = g.v;
+            o.u1 = g.uv1[0][0]; o.v1 = g.uv1[0][1];
+            p.matVerts.push_back(o);
+            if (skin) {
+                SkinVtx k{};
+                for (int j = 0; j < 4; ++j) {
+                    k.bone[j] = static_cast<uint8_t>(std::min<uint32_t>(g.bidx[j], 255));
+                    const float w = std::isfinite(g.bwt[j]) ? std::clamp(g.bwt[j], 0.0f, 1.0f) : 0.0f;
+                    k.weight[j] = mesh.hasSkin ? static_cast<uint8_t>(std::lround(w * 255.0f)) : 0;
+                }
+                p.skinVerts.push_back(k);
+            }
+        }
+    }
+    std::vector<MapVtx>().swap(p.verts);   // the GVertex-order copy is in matVerts now
     p.ok = true;
     return p;
+}
+
+std::shared_ptr<const PreparedModel> prepare_world_model_shared(const ModelPreview& m, bool withSkin) {
+    return std::make_shared<const PreparedModel>(prepare_world_model(m, withSkin));
 }
 
 PreparedModel prepare_collision_mesh(const castlemist::world::CollisionMesh& m) {
