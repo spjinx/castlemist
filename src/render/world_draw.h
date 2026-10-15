@@ -109,6 +109,8 @@ struct PropMatPipeline {
     ID3D11BlendState* const* blendOf;
     const TextureCache* textures;
     bool srgb;                        ///< WorldMaterialSettings::srgbColourTextures
+    double time = 0;                  ///< WorldView::time(): the material clock
+    float scrollUnitSeconds = 1;      ///< WorldMaterialSettings::uvScrollUnitSeconds
 };
 
 /// One frame's instanced draw: cull_into() for each layer (opaque first,

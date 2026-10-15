@@ -185,6 +185,10 @@ struct WorldView::Impl {
 
     TextureCache textures;  ///< fileId -> texture, filled by add_textures
     WorldShading shading = WorldShading::Materials;
+    bool motion = true;
+    bool hasWater = false;      ///< a water preset is loaded (set_world)
+    double clock = 0;           ///< set_time
+    int scrollingMaterials = 0, stillTransforms = 0;   ///< loaded props' scrolling materials; texTransforms drawn still
     WorldMaterialSettings mat;
 
     // Lighting (MapEnvRig layout; defaults are the fly view's).
@@ -678,7 +682,8 @@ struct WorldView::Impl {
         ID3D11BlendState* blendOf[static_cast<int>(WorldAlpha::Count)];
         for (int k = 0; k < static_cast<int>(WorldAlpha::Count); ++k) blendOf[k] = bsProp[k].Get();
         const PropMatPipeline pm{pl,      ilProp.Get(), vsProp.Get(), psProp.Get(), cbMat.Get(), sWrap.Get(),
-                                 blendOf, &textures,    mat.srgbColourTextures};
+                                 blendOf, &textures,    mat.srgbColourTextures,
+                                 motion ? clock : 0.0, mat.uvScrollUnitSeconds};
         int matUntextured = 0;
         const bool propsUp = matProps && propBatch.upload(dev.Get(), ctx.Get());
         if (propsUp) draws += propBatch.draw_materials(ctx.Get(), pm, 1, tris, matUntextured);
@@ -760,6 +765,8 @@ void WorldView::set_world(const castlemist::world::WorldScene& s) {
     d->colInsts.clear();
     d->waterMesh.clear();
     d->waterInst.clear();
+    d->scrollingMaterials = d->stillTransforms = 0;
+    d->hasWater = !s.environment.water.empty();
     d->hasExtent = false;
     d->hasFrame = false;
     d->st = WorldViewStats{};
@@ -834,11 +841,12 @@ void WorldView::add_models(const std::vector<WorldModelLoad>& batch) {
         // The material pass's state: each material's diffuse, and its alpha
         // mode for every combination of the texture's flags (read when the
         // texture is Ready, at draw time; prop_alpha_index).
-        const std::vector<PropMaterial> pms = prop_materials(*l.preview);
+        const std::vector<PropMaterial> pms = prop_materials(*l.preview, &d->stillTransforms);
         std::vector<PropMatGPU>& mats = d->models[m].materials;
         mats.resize(pms.size());
         for (size_t k = 0; k < pms.size(); ++k) {
             mats[k].m = pms[k];
+            if (pms[k].scroll >= 0) ++d->scrollingMaterials;
             for (int f = 0; f < 8; ++f)
                 mats[k].alphaBy[f] =
                     world_alpha_mode(l.preview->materials[k], (f & 1) != 0, (f & 2) != 0, (f & 4) != 0);
@@ -936,6 +944,7 @@ bool WorldView::layer(WorldLayer l) const {
 
 WorldViewStats WorldView::stats() const {
     WorldViewStats s = d->st;
+    s.scrollingMaterials = d->scrollingMaterials;
     s.textures = d->textures.ready();
     s.texturesFailed = d->textures.failed();
     s.textureMB = static_cast<float>(static_cast<double>(d->textures.bytes()) / (1024.0 * 1024.0));
@@ -1005,7 +1014,22 @@ WorldShading WorldView::shading() const { return d->shading; }
 void WorldView::set_material_settings(const WorldMaterialSettings& s) { d->mat = s; }
 const WorldMaterialSettings& WorldView::material_settings() const { return d->mat; }
 
-std::vector<std::string> WorldView::warnings() const { return material_setting_warnings(d->mat); }
+void WorldView::set_motion(bool on) { d->motion = on; }
+bool WorldView::motion() const { return d->motion; }
+void WorldView::set_time(double seconds) { d->clock = seconds; }
+double WorldView::time() const { return d->motion ? d->clock : 0.0; }
+bool WorldView::animating() const {
+    // No instance plays a clip yet (sub-project 3 draws the bind pose).
+    return d->shading == WorldShading::Materials && d->motion && (d->scrollingMaterials > 0 || d->hasWater);
+}
+
+std::vector<std::string> WorldView::warnings() const {
+    std::vector<std::string> w = material_setting_warnings(d->mat);
+    if (d->stillTransforms > 0)
+        w.push_back(std::to_string(d->stillTransforms) +
+                    " texTransforms entries are not scroll-only (flipbook, scale or rotate); drawn still (note \xc2\xa7" "4)");
+    return w;
+}
 
 bool WorldView::capture_chunk_albedo(size_t chunk, int size, std::vector<uint8_t>& rgba) {
     rgba.clear();

@@ -68,6 +68,8 @@ struct WorldViewStats {
     /// no diffuse, a diffuse on UV2+, or its texture pending or failed. 0
     /// under Geometry, which draws one range per (model, LOD) bucket.
     int materialsUntextured = 0;
+    /// Loaded prop materials whose diffuse scrolls (texTransforms, note section 4).
+    int scrollingMaterials = 0;
 };
 
 /// @brief Draws one WorldScene into one window.
@@ -150,6 +152,16 @@ public:
     ///        only steer what the owner decodes (world_texture_ids).
     void set_material_settings(const WorldMaterialSettings& s);
     const WorldMaterialSettings& material_settings() const;
+    /// @brief The Motion toggle (on after create()). Off freezes the material clock.
+    void set_motion(bool on);
+    bool motion() const;
+    /// @brief The material clock, seconds; the window drives it.
+    void set_time(double seconds);
+    /// @brief Effective clock: motion ? the set_time value : 0.
+    double time() const;
+    /// @brief Materials shading && motion && (a scrolling prop material or a
+    ///        water preset is loaded); the owner repaints on a timer while true.
+    bool animating() const;
     /// @brief Verification hook: chunk @p chunk's (index into the scene's
     ///        `terrain.chunks`) §1.2 albedo only (no light, fog or gamma),
     ///        linear, into a @p size x @p size RGBA8 UNORM offscreen target

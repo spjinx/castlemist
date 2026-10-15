@@ -10,6 +10,7 @@
 #include "castlemist/render/world_prep.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <unordered_set>
@@ -141,6 +142,9 @@ std::vector<std::string> material_setting_warnings(const WorldMaterialSettings& 
     out.emplace_back("all animated props start at t = 0 and loop: UNPROVEN (note \xc2\xa7" "5)");
     out.emplace_back("pickerSolid byte order: UNPROVEN, solid pages use the stored bytes as RGBA (note \xc2\xa7" "1.6)");
     out.emplace_back("water preset k pairs with lighting preset k: UNPROVEN (note \xc2\xa7" "6)");
+    out.emplace_back("dark decals: castlemist's choice, a Clip texture whose visible texels (alpha >= 64) are all black "
+                     "(<= 16) blends on its alpha instead; derived from AMAT 58246's decals, not the game's shader "
+                     "(note \xc2\xa7" "3)");
     out.emplace_back("terrain uvData recorded, not animated: UNPROVEN target and units (note \xc2\xa7" "1.5)");
     return out;
 }
@@ -189,15 +193,41 @@ WorldAlpha world_alpha_mode(const ModelMaterialCPU& mat, bool diffuseHasCutout, 
     }
 }
 
-std::vector<PropMaterial> prop_materials(const ModelPreview& m) {
+bool tex_transform_animates(const ModelTexTransformCPU& t) {
+    return t.columns == 1 && t.rows == 1 && t.count == 1 && t.scrollFreq[0] == 0 && t.scrollFreq[1] == 0 &&
+           t.scale[0] == 0 && t.scale[1] == 0 && t.scaleFreq[0] == 0 && t.scaleFreq[1] == 0 && t.rotate == 0 &&
+           t.rotate2 == 0;
+}
+
+void uv_scroll_offset(const ModelTexTransformCPU& t, double seconds, float unitSeconds, float out[2]) {
+    out[0] = out[1] = 0;
+    if (!(unitSeconds > 0)) return;
+    for (int k = 0; k < 2; ++k) {
+        const double x = static_cast<double>(t.scroll[k]) * seconds / static_cast<double>(unitSeconds);
+        out[k] = static_cast<float>(x - std::floor(x));
+    }
+}
+
+std::vector<PropMaterial> prop_materials(const ModelPreview& m, int* stillEntries) {
     std::vector<PropMaterial> out(m.materials.size());
     for (size_t i = 0; i < m.materials.size(); ++i) {
         const ModelMaterialCPU& mat = m.materials[i];
+        if (stillEntries)
+            for (const ModelTexTransformCPU& t : mat.texTransforms)
+                if (!tex_transform_animates(t)) ++*stillEntries;
         if (mat.diffuseTex < 0 || static_cast<size_t>(mat.diffuseTex) >= m.textures.size() || mat.diffuseUv > 1)
             continue;
         out[i].diffuseFileId = m.textures[static_cast<size_t>(mat.diffuseTex)].fileId;
         out[i].uvSet = mat.diffuseUv;
         out[i].textured = true;
+        for (size_t k = 0; k < mat.texTransforms.size(); ++k) {   // the diffuse's own UV set only
+            const ModelTexTransformCPU& t = mat.texTransforms[k];
+            if (t.uvIndex != mat.diffuseUv || !tex_transform_animates(t)) continue;
+            out[i].scroll = static_cast<int>(k);
+            out[i].scrollRate[0] = t.scroll[0];
+            out[i].scrollRate[1] = t.scroll[1];
+            break;
+        }
     }
     return out;
 }

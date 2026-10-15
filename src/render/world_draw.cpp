@@ -267,6 +267,12 @@ int InstancedBatch::draw_materials(ID3D11DeviceContext* ctx, const PropMatPipeli
         c.uvSet = static_cast<float>(pm.m.uvSet);
         c.alphaMode = static_cast<float>(static_cast<int>(a));
         c.textured = 1.0f;
+        if (pm.m.scroll >= 0) {   // added to the diffuse's own UV set only (the shader's uUvSet pick)
+            ModelTexTransformCPU t;
+            t.scroll[0] = pm.m.scrollRate[0];
+            t.scroll[1] = pm.m.scrollRate[1];
+            uv_scroll_offset(t, pl.time, pl.scrollUnitSeconds, c.uvOffset);
+        }
         D3D11_MAPPED_SUBRESOURCE ms;
         if (FAILED(ctx->Map(pl.cbMat, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return;
         std::memcpy(ms.pData, &c, sizeof c);

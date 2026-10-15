@@ -662,3 +662,78 @@ CM_TEST(world_materials, geometry_shading_is_subproject2_look) {
     CHECK(ia.size() == im.size());
     CHECK(ia != im);
 }
+
+CM_TEST(world_materials, scroll_offset_is_frac) {
+    ModelTexTransformCPU t;
+    t.columns = t.rows = t.count = 1;
+    float o[2];
+    t.scroll[0] = 0; t.scroll[1] = 0.2f;
+    uv_scroll_offset(t, 2.5, 1.0f, o);
+    CHECK(std::fabs(o[0]) < 1e-5f && std::fabs(o[1] - 0.5f) < 1e-5f);
+    uv_scroll_offset(t, 6.0, 1.0f, o);
+    CHECK(std::fabs(o[1] - 0.2f) < 1e-5f);
+    t.scroll[1] = -0.1f;
+    uv_scroll_offset(t, 1.0, 1.0f, o);
+    CHECK(std::fabs(o[1] - 0.9f) < 1e-5f);
+    t.scroll[1] = 0.2f;
+    uv_scroll_offset(t, 2.5, 2.0f, o);
+    CHECK(std::fabs(o[1] - 0.25f) < 1e-5f);
+}
+
+CM_TEST(world_materials, only_scroll_only_entries_animate) {
+    ModelTexTransformCPU t;
+    t.uvIndex = 1; t.columns = t.rows = t.count = 1;
+    t.scroll[1] = 0.2f;
+    CHECK(tex_transform_animates(t));
+    ModelTexTransformCPU a = t; a.columns = 2;
+    CHECK(!tex_transform_animates(a));
+    a = t; a.count = 0;
+    CHECK(!tex_transform_animates(a));
+    a = t; a.scale[0] = a.scale[1] = 1;
+    CHECK(!tex_transform_animates(a));
+    a = t; a.rotate = 0.1f;
+    CHECK(!tex_transform_animates(a));
+}
+
+CM_TEST(world_materials, scroll_entry_matches_diffuse_uv) {
+    ModelPreview m;
+    m.textures.resize(1);
+    m.textures[0].fileId = 7;
+    m.materials.resize(1);
+    ModelMaterialCPU& mat = m.materials[0];
+    mat.diffuseTex = 0;
+    mat.diffuseUv = 0;
+    ModelTexTransformCPU e;
+    e.columns = e.rows = e.count = 1;
+    e.scroll[1] = 0.2f;
+    e.uvIndex = 1; mat.texTransforms.push_back(e);
+    e.uvIndex = 0; mat.texTransforms.push_back(e);
+    int still = 0;
+    const std::vector<PropMaterial> pm = prop_materials(m, &still);
+    CHECK_EQ(pm[0].scroll, 1);
+    CHECK_EQ(still, 0);
+    CHECK_EQ(pm[0].scrollRate[1], 0.2f);
+}
+
+CM_TEST(world_materials, setting_warnings_name_dark_decal_rule) {
+    bool found = false;
+    for (const std::string& l : material_setting_warnings(WorldMaterialSettings{}))
+        found = found || (l.find("dark decals") != std::string::npos && l.find("58246") != std::string::npos &&
+                          l.find("castlemist's choice") != std::string::npos);
+    CHECK(found);
+}
+
+CM_TEST(world_view, motion_off_freezes_time) {
+    HWND wnd = hidden_window(64, 64);
+    if (!wnd) return;
+    struct Closer { HWND h; ~Closer() { DestroyWindow(h); } } closer{wnd};
+    WorldView v;
+    if (!v.create(wnd)) return;
+    CHECK(v.motion());
+    v.set_motion(false);
+    v.set_time(2.5);
+    CHECK_EQ(v.time(), 0.0);
+    v.set_motion(true);
+    CHECK_EQ(v.time(), 2.5);
+    CHECK(!v.animating());
+}

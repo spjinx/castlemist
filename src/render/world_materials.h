@@ -16,6 +16,7 @@
 
 struct CappedTexture;      // castlemist/extract/model_types.h
 struct ModelMaterialCPU;   // castlemist/extract/model_types.h
+struct ModelTexTransformCPU;   // castlemist/extract/model_types.h
 struct ModelPreview;       // castlemist/extract/model_types.h
 
 namespace castlemist::render {
@@ -68,13 +69,27 @@ struct PropMaterial {
     uint32_t diffuseFileId = 0;   ///< ModelPreview::textures[diffuseTex].fileId
     uint8_t uvSet = 0;            ///< 0 = MatVtx uv0, 1 = uv1
     bool textured = false;        ///< has a diffuse on UV0 or UV1
-    int scroll = -1;              ///< Task 11: the texTransforms entry that scrolls it
+    int scroll = -1;              ///< the texTransforms entry that scrolls it (first with uvIndex == uvSet that animates)
+    float scrollRate[2] = {0, 0}; ///< that entry's scroll, UV per unit
 };
+
+/// @brief True when @p t is a plain scroll: columns == rows == count == 1,
+///        scrollFreq == scale == scaleFreq == (0, 0), rotate == rotate2 == 0
+///        (every entry of the census, note section 4). Anything else (flipbook,
+///        scale, rotate) is not animated.
+bool tex_transform_animates(const ModelTexTransformCPU& t);
+
+/// @brief The UV offset of scroll entry @p t at @p seconds:
+///        frac(scroll * seconds / unitSeconds), frac(x) = x - floor(x), in
+///        double (UNPROVEN unit, note section 4). A unitSeconds <= 0 gives (0, 0).
+void uv_scroll_offset(const ModelTexTransformCPU& t, double seconds, float unitSeconds, float out[2]);
 
 /// @brief One PropMaterial per ModelPreview::materials entry (same index):
 ///        textured when diffuseTex names a texture of @p m and diffuseUv <= 1
 ///        (MatVtx carries two UV sets; a UV2+ diffuse draws untextured).
-std::vector<PropMaterial> prop_materials(const ModelPreview& m);
+///        @p stillEntries (when non-null) gains the count of texTransforms
+///        entries that do not animate (drawn still, note section 4).
+std::vector<PropMaterial> prop_materials(const ModelPreview& m, int* stillEntries = nullptr);
 
 /// @brief Draw order for pass 2: indices of @p nearestDistance, farthest
 ///        first; equal distances keep index order.
