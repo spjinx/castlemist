@@ -11,10 +11,17 @@
 
 import ida_dbg, ida_idd, idaapi, struct, datetime
 
+# RVAs for Gw2-64.exe PE timestamp 1791828055 (the 2026-10-14 patch). They
+# move with every client patch; re-find them with the signatures in
+# tools/hook/gw2_textkey_hook.cpp (SIG_INSERT, SIG_BULK). TLSINDEX is the PE TLS
+# directory's AddressOfIndex, which is also the rip target of SIG_GAMECTX in
+# tools/hook/gw2_maploader_probe.cpp.
+#   July 2026 IDB:     insert 0x10CBBB0  bulk 0x10D6A10  tls 0x27C9140
+#   PE ts 1789758548:  insert 0x10D8490  bulk 0x10E32F0  tls 0x280E5A0
 BASE      = 0x140000000
-BP_INSERT = BASE + 0x10CBBB0
-BP_BULK   = BASE + 0x10D6A10
-TLSINDEX  = BASE + 0x27C9140     # dword TlsIndex
+BP_INSERT = BASE + 0x10DC7A0
+BP_BULK   = BASE + 0x10E7600
+TLSINDEX  = BASE + 0x28155C0     # dword TlsIndex
 OUT = r"C:\Users\Ridwan Hidayatullah\Documents\gw2app\textkeys.csv"
 
 _seen = set()

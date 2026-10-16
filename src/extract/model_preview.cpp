@@ -574,10 +574,10 @@ std::vector<uint8_t> load_modl_bytes_by_fileid(Gw2Dat& dat, uint32_t fileId) {
 } // namespace castlemist::extract
 
 // Public (entry_extractor.h, global namespace): a model against the open dat.
-std::shared_ptr<ModelPreview> load_model_by_fileid(Gw2Dat& dat, uint32_t file_id) {
+std::shared_ptr<ModelPreview> load_model_by_fileid(Gw2Dat& dat, uint32_t file_id, bool want_game) {
     auto tpl = castlemist::tpl::get_or_auto_load();
     if (!tpl) return nullptr;
     std::vector<uint8_t> bytes = castlemist::extract::load_modl_bytes_by_fileid(dat, file_id);
     if (bytes.empty()) return nullptr;
-    return castlemist::extract::build_model_preview(bytes, dat, *tpl, /*want_game=*/true);
+    return castlemist::extract::build_model_preview(bytes, dat, *tpl, want_game);
 }

@@ -131,19 +131,20 @@ castlemist_add_layer(extract DEPS castlemist::format castlemist::media
 # types: the solver is fed a ModelMeshCPU straight out of model extraction.
 castlemist_add_layer(sim    DEPS castlemist::extract ext::glm)
 
+# world turns a GW2 map into one renderer-free WorldScene (terrain, props,
+# collision, water, environment) on top of extract's parsers.
+castlemist_add_layer(world DEPS castlemist::extract ext::json)
+
 # exportgltf also sits beside render: it turns the same CPU ModelPreview/MapScene
 # payloads into a binary glTF (.glb) -- a precisely specified, Khronos-ratified
 # format, unlike FBX's undocumented binary container. Needs extract's types,
 # stb_image_write.h (from the same ext::stb checkout format/media already use)
 # to encode embedded textures as PNGs, and ext::json (already used by
-# native/db) to build the glTF JSON chunk without hand-rolled escaping.
-castlemist_add_layer(exportgltf DEPS castlemist::extract ext::stb ext::json)
+# native/db) to build the glTF JSON chunk without hand-rolled escaping. world
+# is for export_world_gltf, which writes a WorldScene (world never depends back).
+castlemist_add_layer(exportgltf DEPS castlemist::extract castlemist::world ext::stb ext::json)
 # Recorded in the VRChat export's materials.json.
 target_compile_definitions(castlemist_exportgltf PRIVATE CASTLEMIST_VERSION_STRING="${PROJECT_VERSION}")
-
-# world turns a GW2 map into one renderer-free WorldScene (terrain, props,
-# collision, water, environment) on top of extract's parsers.
-castlemist_add_layer(world DEPS castlemist::extract ext::json)
 
 # ripper turns a character manifest into exported pieces: composite lookup,
 # dye baking and atlas cropping on top of extract + exportgltf.
