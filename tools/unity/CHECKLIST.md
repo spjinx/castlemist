@@ -8,6 +8,13 @@ with Poiyomi Toon 10, importing the Spirit Vale export (1151420; 66 cells at the
 
 ## Setup
 
+Lighting comes out dark on some maps, by the spec's own choices (review M9):
+the ambient is `fill x min(fillIntensity, 1)`, and Spirit Vale's
+`fillIntensity` is 0, so Unity's Flat ambient is black; Blender's sun energy is
+the raw intensity (1.3 on Spirit Vale). Both are labelled castlemist's choice.
+Raise the ambient (Lighting window) or the sun's intensity to taste; nothing in
+the manifest changes.
+
 1. Export the map with `gw2dat_cli world-export --out-dir <dir>`. The export
    needs its `.fbx` files: the CLI writes them when Blender is found. If it did
    not, run `gw2dat_cli world-fbx --dir <dir>` or

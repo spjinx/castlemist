@@ -37,7 +37,8 @@ copy. `exportgltf` is CPU-only and depends on `extract` and `world`, never on
 `sim` is the other edge that does not read like the picture: it sits beside
 `render` but depends on `extract`, because the solver is fed a `ModelMeshCPU`
 straight out of model extraction. `exportgltf` sits beside it for the same
-reason: it turns a `ModelPreview`/`MapScene` into a binary glTF (`.glb`) file
+reason: it turns a `ModelPreview` into a binary glTF (`.glb`) file, and a map's
+`world::WorldScene` into a world export folder (per-cell `.glb` and a manifest)
 -- geometry, embedded PNG textures, skeleton/skin and animation all in one
 self-contained file -- with no Direct3D involved. glTF was chosen over FBX
 after a hand-written FBX binary writer proved to be fighting an undocumented
@@ -50,7 +51,7 @@ and use Blender's own FBX exporter.
 **Extraction runs on a worker thread; rendering runs on the UI thread.**
 
 That is why `extract` produces plain `std::vector` payloads — `ModelPreview`,
-`AudioClipCPU`, `MapScene` — and never a Direct3D object. The renderer uploads
+`AudioClipCPU`, the world layer's `WorldScene` — and never a Direct3D object. The renderer uploads
 them later. It is also why `extract_entry` has two overloads: one that borrows
 an open `Gw2Dat`, and one that takes a path and opens its own handle, touching
 no shared mutable state.

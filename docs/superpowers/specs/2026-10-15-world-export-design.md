@@ -878,10 +878,8 @@ throws and never yields a silently empty export.
   (Queensdale (0.809, 0, 0.588), Lion's Arch (0.747, 0, 0.664), Spirit Vale (0.707, 0, 0.707)); read as "toward the
   sun", all three suns would be below the horizon. The manifest's `unityForward` and `blenderDirection` follow the
   stored vector (`map_to_unity(sunDir)`, `map_to_blender(sunDir)`), and `toSun = -sunDir`. Spirit Vale's
-  `unityForward` is (0.707, -0.707, 0), so the light shines down. Not changed, and left to the final review: the
-  `MapEnvRig` comment (`map_types.h`) and the world view's `dot(N, sunDir)` still treat the stored vector as
-  toward-sun, and `sky.json`'s `sun.direction` (`sky_export.cpp` `sun_json`) is the stored vector, converted by
-  `gw2_to_unity` and otherwise unchanged, and still called toward-sun.
+  `unityForward` is (0.707, -0.707, 0), so the light shines down. The final review's fixes (I7) settle the rest; see
+  "Fix wave" below.
 - **Axis conversion (Task 1, Task 12).** D6 says a failing frame probe is fixed "in the FBX axis settings of
   `castlemist_world.py`, never in the importer". The measurement says otherwise. On Blender 4.5 the glb lands on
   `map_to_blender` (east +X, north +Y, up +Z). Unity turns the FBX 180 degrees about Y (east -X, north -Z) unless
@@ -922,9 +920,8 @@ throws and never yields a silently empty export.
   (a moving object must not be static), and on water. D6's "static on props" holds for the other props.
 - **Terrain diagonal (Task 13).** The cell terrain quads are split along `CollisionIndex`'s diagonal (NW-SE,
   p00-p11), not NE-SW as first written: with NE-SW only 24 of 32 downward rays agreed with the scene's
-  `CollisionIndex`, with NW-SE all 32 do. castlemist's own world view (`world_view.cpp` `grid_indices`) still draws
-  NE-SW, so the window shows a slightly different surface from the one it walks on and exports. Which diagonal the
-  game uses is unproven.
+  `CollisionIndex`, with NW-SE all 32 do. The world view (`world_view.cpp` `grid_indices`) drew NE-SW until the fix
+  wave (M1) and now draws NW-SE too. Which diagonal the game uses is unproven.
 - **Poiyomi (Task 12).** Poiyomi 10 is untested: none exists on this machine. Poiyomi Pro 9.0.alpha18 was copied
   read-only from `C:/UnityProjects/2019WorldUDON-Migrated/Assets/_PoiyomiShaders` into a scratch project, and the
   importer built Poiyomi materials from it (shader found; `_Mode`, queue, `RenderType`, `_MochieBRDF`, `MOCHIE_PBR`
@@ -985,3 +982,21 @@ throws and never yields a silently empty export.
   colliders, water, sky and sun, the Poiyomi look, draw calls and import time in the Frame Debugger, a VRChat build).
   No VRChat 2022.3 project with Poiyomi 10 was used, and the user's projects in `C:/UnityProjects` were not opened.
 - **Task 15 (done).** See the D8 note above.
+- **Fix wave after the final review (2026-10-16).** Behaviour changes:
+  - **I1, region.** `--region` snaps outward to whole blocks (`CellPlan::region`), so split cells are never cut; the
+    manifest's `terrain.region` is that kept rectangle, not the request. A region that keeps no cells is an error,
+    and the CLI refuses an inverted or negative region.
+  - **I3, FBX.** `castlemist_world.py --to-fbx` now records the `.fbx` files in `manifest.json` itself (as
+    `set_manifest_fbx` does), so either `--to-fbx` or `gw2dat_cli world-fbx --dir` makes a folder Unity-ready; every
+    "no FBX" message names both.
+  - **I6, overwrite.** `--overwrite` and the GUI's "Replace?" clear a folder only when its `manifest.json` parses with
+    `"format": "castlemist-world"`; any other non-empty folder is refused, with the reason.
+  - **I7, sun.** The env `sunDir` (`MapEnvLight::sunDir`) and `sky.json`'s `sun.direction` are the direction the
+    light travels (values unchanged). The world view negates the env vector once, in `set_world`, so its shaders get
+    toward-sun and the Map Window is lit from above (before: from below). `MapEnvRig::sunDir` stays toward-sun.
+  - Also: writes past MAX_PATH go through extended-length paths (I4); closing the app during an export asks, cancels
+    the export and Blender, and Blender runs in a kill-on-close job (I5); empty models are counted apart as
+    `modelsEmpty` in the report (M2).
+  - **Lion's Arch, re-measured** with the template refreshed for the 2026-10-14 patch (`--no-fbx`, into a
+    165-character folder): 96 cells, 1651 models written, 48 failed (all "no drawable meshes"), 18 319 instances,
+    validator OK. The 93-cell row above is Task 13's, on the earlier template.
