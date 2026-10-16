@@ -10,9 +10,10 @@ with Poiyomi Toon 10, importing the Spirit Vale export (1151420; 66 cells at the
 
 1. Export the map with `gw2dat_cli world-export --out-dir <dir>`. The export
    needs its `.fbx` files: the CLI writes them when Blender is found. If it did
-   not, run `gw2dat_cli world-fbx --dir <dir>` (or
-   `blender -b --factory-startup -P tools/blender/castlemist_world.py -- --to-fbx <dir>`
-   and then `world-fbx`, which records the paths in the manifest).
+   not, run `gw2dat_cli world-fbx --dir <dir>` or
+   `blender -b --factory-startup -P tools/blender/castlemist_world.py -- --to-fbx <dir>`.
+   Either one records the `.fbx` paths in `manifest.json`, which is where the
+   importer looks for them.
 2. Copy `tools/unity/Castlemist` into the project's `Assets/`. Then copy the
    export folder into `Assets/`. Do it in that order, so the postprocessor
    sets the texture roles and `bakeAxisConversion` on the first import. The

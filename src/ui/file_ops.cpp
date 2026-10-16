@@ -654,7 +654,7 @@ void do_export_world_map(HWND hwnd) {
                     const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - tf).count();
                     j["fbx"] = {{"ok", r->fbxOk}, {"log", r->fbxLog}, {"fbxSet", r->fbxSet}, {"seconds", s}};
                     if (!r->fbxOk)
-                        j["fbx"]["note"] = "Unity needs tools/blender/castlemist_world.py --to-fbx to be run on this folder";
+                        j["fbx"]["note"] = castlemist::ripper::kWorldFbxAdvice;
                     progress(r->fbxOk ? "fbx finished: " + std::to_string(r->fbxSet) + " files"
                                       : "fbx FAILED: " + r->fbxLog);
                     // After the manifest on purpose: the manifest is the last file the export writes.
@@ -706,10 +706,12 @@ void on_world_export_done(HWND hwnd, LPARAM lparam) {
     } else {
         msg += (r.fbxLog == "Blender not found" ? std::string("FBX skipped: Blender not found.")
                                                 : "FBX failed: " + r.fbxLog) +
-               "\nThe folder is still valid; Unity needs tools/blender/castlemist_world.py --to-fbx to be run on it.";
+               "\nThe folder is still valid. " + std::string(castlemist::ripper::kWorldFbxAdvice) + ".";
     }
     msg += "\n\nTook " + std::string(took) + ". export.log in the folder has the full report.";
-    const bool clean = e.warnings.empty() && e.modelsFailed == 0 && r.fbxOk;
+    // Failures and the FBX step decide the icon, not the warning count: every real
+    // map carries per-material notes (review M10).
+    const bool clean = e.modelsFailed == 0 && r.fbxOk;
     MessageBoxW(hwnd, utf8_to_wide(msg).c_str(), L"World export finished", clean ? MB_ICONINFORMATION : MB_ICONWARNING);
 }
 

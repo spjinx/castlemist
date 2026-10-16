@@ -2523,11 +2523,11 @@ void cmd_world_export_folder(const Args& a) {
         const bool ok = castlemist::ripper::convert_world_to_fbx(dir, log, has(a, "blender") ? a.at("blender") : std::string(), &set);
         const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - tf).count();
         j["fbx"] = {{"ok", ok}, {"log", log}, {"fbxSet", set}, {"seconds", s}};
-        if (!ok) j["fbx"]["note"] = "Unity needs tools/blender/castlemist_world.py --to-fbx to be run on this folder";
+        if (!ok) j["fbx"]["note"] = castlemist::ripper::kWorldFbxAdvice;
         progress(ok ? "fbx finished: " + std::to_string(set) + " files" : "fbx FAILED: " + log);
     } else if (rep.ok) {
         j["fbx"] = {{"ok", false}, {"log", "skipped (--no-fbx)"}, {"fbxSet", 0},
-                    {"note", "Unity needs tools/blender/castlemist_world.py --to-fbx to be run on this folder"}};
+                    {"note", castlemist::ripper::kWorldFbxAdvice}};
     }
     if (rep.ok) {
         // After the manifest on purpose: the manifest is the last file the export writes.

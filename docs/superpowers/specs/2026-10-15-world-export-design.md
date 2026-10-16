@@ -671,7 +671,9 @@ throws and never yields a silently empty export.
 - A cell with no terrain, water or collider is still written if it has
   instances, and omitted otherwise.
 - No sky: `sky: null`. No Blender: `fbx: null` everywhere, and the report says
-  Unity needs `castlemist_world.py --to-fbx` to be run.
+  Unity needs `gw2dat_cli world-fbx --dir <folder>` or
+  `castlemist_world.py --to-fbx <folder>` to be run (either records the `.fbx`
+  files in the manifest; see Amendments, I3).
 - A Blender failure keeps its log in `export.log` and leaves the rest of the
   folder valid.
 - Errors that stop the export: dat I/O, a missing template, an output folder

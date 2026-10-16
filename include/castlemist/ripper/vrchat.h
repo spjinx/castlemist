@@ -84,6 +84,14 @@ std::string find_blender();
 bool convert_world_to_fbx(const std::string& exportDirUtf8, std::string& log, const std::string& blenderExe = {},
                           size_t* fbxSet = nullptr);
 
+/// What to do when a world export has no .fbx files (review I3). Both commands
+/// convert every .glb and record the .fbx files in manifest.json, which is the
+/// only place the Unity importer looks.
+inline constexpr const char* kWorldFbxAdvice =
+    "Unity needs the .fbx files: with Blender 4.1 or newer, run gw2dat_cli world-fbx --dir <folder>, or "
+    "blender -b --factory-startup -P tools/blender/castlemist_world.py -- --to-fbx <folder>; "
+    "either records them in manifest.json";
+
 } // namespace castlemist::ripper
 
 #endif // CASTLEMIST_RIPPER_VRCHAT_H

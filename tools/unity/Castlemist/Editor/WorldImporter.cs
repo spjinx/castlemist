@@ -281,7 +281,7 @@ namespace Castlemist
                         if (!e.Ok) continue;
                         if (e.Fbx == null)
                         {
-                            sum.warnings.Add("model " + e.FileId + ": no .fbx (run castlemist_world.py --to-fbx): no prefab");
+                            sum.warnings.Add("model " + e.FileId + ": no .fbx (run gw2dat_cli world-fbx --dir <folder>, or castlemist_world.py --to-fbx <folder>): no prefab");
                             continue;
                         }
                         if (!Exists(e.Fbx, "model " + e.FileId + " fbx")) continue;
@@ -461,7 +461,7 @@ namespace Castlemist
                 string what = "cell " + c.Id;
                 if (c.Fbx == null)
                 {
-                    if (c.Glb != null) sum.warnings.Add(what + ": no .fbx (run castlemist_world.py --to-fbx): no terrain, water or colliders");
+                    if (c.Glb != null) sum.warnings.Add(what + ": no .fbx (run gw2dat_cli world-fbx --dir <folder>, or castlemist_world.py --to-fbx <folder>): no terrain, water or colliders");
                     return;
                 }
                 if (!Exists(c.Fbx, what + " fbx")) return;
@@ -602,7 +602,7 @@ namespace Castlemist
             public void Probe()
             {
                 if (m.FrameProbe == null) { sum.warnings.Add("frameProbe: null in the manifest: frame not checked"); return; }
-                if (m.FrameProbe.Fbx == null) { sum.warnings.Add("frameProbe: no .fbx (run castlemist_world.py --to-fbx): frame not checked"); return; }
+                if (m.FrameProbe.Fbx == null) { sum.warnings.Add("frameProbe: no .fbx (run gw2dat_cli world-fbx --dir <folder>, or castlemist_world.py --to-fbx <folder>): frame not checked"); return; }
                 if (!Exists(m.FrameProbe.Fbx, "frame probe")) return;
                 var asset = AssetDatabase.LoadAssetAtPath<GameObject>(P(m.FrameProbe.Fbx));
                 if (asset == null) { sum.errors.Add(P(m.FrameProbe.Fbx) + ": no GameObject"); return; }
