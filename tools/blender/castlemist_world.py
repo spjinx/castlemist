@@ -8,7 +8,11 @@ Commands run in order, in one Blender session:
                                   models/*/*.glb) to a .fbx beside it; files whose .fbx
                                   is newer than the .glb are skipped. Prints
                                   TO_FBX converted=<n> skipped=<n> failed=<n> seconds=<s>;
-                                  a file that fails is reported and the rest still run
+                                  a file that fails is reported and the rest still run.
+                                  Each .fbx is written to a temporary file and renamed.
+                                  Then the manifest's fbx fields are set to the .fbx
+                                  files present (TO_FBX_MANIFEST fbxSet=<n>), as
+                                  gw2dat_cli world-fbx does, so Unity can import
     --import <exportDir> [--no-colliders] [--no-dark-decal] [--scale 1.0] [--verify]
                          [--save <file.blend>]
                                   builds the scene (spec D6 "Blender"), see import_world()
@@ -600,7 +604,22 @@ def bake_objects(objs, actions=None):
 
 # ------------------------------------------------------------------ glb -> fbx --
 
+FBX_TMP_SUFFIX = ".castlemist_tmp.fbx"
+
+
 def glb_to_fbx(src, out):
+    """Writes <out> through a temporary file and a rename, so a killed or failed
+    Blender never leaves a truncated .fbx newer than its .glb (review M3)."""
+    tmp = out[:-4] + FBX_TMP_SUFFIX
+    try:
+        _glb_to_fbx(src, tmp)
+        os.replace(tmp, out)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def _glb_to_fbx(src, out):
     empty_scene()
     import_gltf(src)
     bake_objects(list(bpy.context.scene.objects))
@@ -648,7 +667,54 @@ def to_fbx(export_dir):
                 failed += 1
                 print("TO_FBX_FAIL %s: %s: %s" % (src, type(e).__name__, e))
     print("TO_FBX converted=%d skipped=%d failed=%d seconds=%.1f" % (done, skipped, failed, time.time() - t0))
+    n = set_manifest_fbx(export_dir)
+    if n is not None:
+        print("TO_FBX_MANIFEST fbxSet=%d" % n)
     return failed == 0
+
+
+def set_manifest_fbx(export_dir):
+    """The manifest's fbx fields, as exportgltf::set_manifest_fbx (world_manifest.cpp)
+    sets them: on every cell, model and the frameProbe with a glb, the .fbx beside
+    it when that file exists, else null. Written to manifest.json.tmp, then
+    renamed. Returns the number set, or None when there is no castlemist world
+    manifest (review I3: --to-fbx alone is enough for the Unity importer)."""
+    path = os.path.join(export_dir, "manifest.json")
+    try:
+        with open(path, "rb") as f:
+            man = json.loads(f.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(man, dict) or man.get("format") != "castlemist-world":
+        return None
+    n = 0
+
+    def fill(block):
+        nonlocal n
+        if not isinstance(block, dict) or not isinstance(block.get("glb"), str):
+            return
+        rel = os.path.splitext(block["glb"])[0] + ".fbx"
+        if os.path.isfile(os.path.join(export_dir, rel)):
+            block["fbx"] = rel.replace("\\", "/")
+            n += 1
+        else:
+            block["fbx"] = None
+
+    for key in ("cells", "models"):
+        for b in man.get(key) or []:
+            fill(b)
+    fill(man.get("frameProbe"))
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "wb") as f:
+            f.write((json.dumps(man, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+        os.replace(tmp, path)
+    except OSError as e:
+        print("TO_FBX_MANIFEST_FAIL %s: %s" % (path, e))
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        return None
+    return n
 
 
 # -------------------------------------------------------------------- import --
@@ -943,6 +1009,10 @@ def import_world(export_dir, colliders=True, dark_decal=True, scale=1.0, verify=
             e.instance_collection = col
             e.empty_display_size = 1.0
             props.objects.link(e)
+            # Quaternion, not the default XYZ Euler: matrix_world is decomposed into the
+            # rotation mode, and XYZ loses up to 1e-2 relative near a 90 degree Y turn
+            # (gimbal lock; review I2), QUATERNION about 1e-6.
+            e.rotation_mode = 'QUATERNION'
             e.matrix_world = S @ C_B @ matrix_of(inst["m"]) @ C_B
             e["castlemist_cell"] = cid
             e["castlemist_prop"] = int(inst.get("prop", 0))
@@ -970,6 +1040,14 @@ def import_world(export_dir, colliders=True, dark_decal=True, scale=1.0, verify=
             o.matrix_world = Matrix.Translation(at) @ S @ o.matrix_world
         bpy.context.view_layer.update()
         probe_result = measure_probe(objs, at)
+        # Measured: hidden from then on, so a render or view from the spawn is not
+        # blocked by the probe (review M6; the Unity importer hides it too).
+        for o in objs:
+            o.hide_render = True
+        pcol.hide_render = True
+        lpc = layer_collection(pcol)
+        if lpc is not None:
+            lpc.hide_viewport = True
     spawn = man.get("spawn")
     if spawn and spawn.get("map"):
         sp = bpy.data.objects.new("Spawn", None)
@@ -1076,6 +1154,9 @@ def verify_world(man, placed, cell_info, probe_result, colliders, S):
 
 
 def main():
+    if bpy.app.version < (4, 1, 0):   # Mesh.corner_normals and the glTF importer's behaviour (review M4)
+        print("castlemist_world.py needs Blender 4.1 or newer; this is %s" % bpy.app.version_string)
+        sys.exit(2)
     args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     if not args:
         raise SystemExit(__doc__)

@@ -213,7 +213,14 @@ if (_cm_blender_ok)
              COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${PROJECT_SOURCE_DIR}/tests/blender/check_world_extras.py"
                      -- "${_cm_world_py}" "${CMAKE_BINARY_DIR}/world_fixture" "${CMAKE_BINARY_DIR}/world_extras")
     set_tests_properties(blender_world_import_extras PROPERTIES PASS_REGULAR_EXPRESSION "EXTRAS OK")
-    set_tests_properties(blender_world_import blender_world_import_scaled blender_world_import_extras PROPERTIES
+    # Review I3: --to-fbx alone records the .fbx files in the manifest (no gw2dat_cli needed).
+    add_test(NAME blender_to_fbx_manifest
+             COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${_cm_world_py}"
+                     -- --to-fbx "${CMAKE_BINARY_DIR}/world_fixture")
+    set_tests_properties(blender_to_fbx_manifest PROPERTIES
+        PASS_REGULAR_EXPRESSION "TO_FBX_MANIFEST fbxSet=4")
+    set_tests_properties(blender_world_import blender_world_import_scaled blender_world_import_extras
+                         blender_to_fbx_manifest PROPERTIES
         FIXTURES_REQUIRED world_fixture
         FAIL_REGULAR_EXPRESSION "VERIFY FAIL|EXTRAS FAIL|Traceback"
         TIMEOUT 300
