@@ -15,8 +15,10 @@
 // ImportWorld runs WorldImporter.Import on the folder (scale: the manifest's
 // unityScale unless given), logs the warnings, the PROBE line and the PLAN
 // line (validate_manifest.py --plan's format), then CELL lines checking that
-// each cell's terrain lies under its Cell_<id> origin. Exit 0 when there are
-// no errors and the probe passed (or there was none).
+// each cell's terrain lies under its Cell_<id> origin, INSTANCES checking the
+// prop matrices and FOLIAGE_TREES the foliage tree instances (count, order,
+// LODGroup and matrix against each record's m). Exit 0 when there are no
+// errors, the probe passed (or there was none) and those checks passed.
 //
 //   ... -executeMethod Castlemist.BatchEntry.CheckSkinnedProbe -castlemistFile Assets/<dir>/skinned_probe.fbx
 //     [-castlemistNoBakeAxis]
@@ -175,7 +177,54 @@ namespace Castlemist
             bool instOk = maxErr < 1e-4;
             Debug.Log("INSTANCES checked=" + checkedInst + " maxRelErr=" + maxErr.ToString("E2", CultureInfo.InvariantCulture) +
                       " rootScale=" + scale.ToString("R", CultureInfo.InvariantCulture) + (instOk ? " OK" : " FAIL"));
-            return ok && instOk;
+            return ok && instOk && CheckFoliage(folder, m, root);
+        }
+
+        /// World-foliage D8: Cell_<id>/Foliage/Trees holds one instance per tree
+        /// record of an ok model, in record order, each with a LODGroup, and its
+        /// world matrix equals root * C * m * C^-1 from the record's own m.
+        static bool CheckFoliage(string folder, WorldManifest m, GameObject root)
+        {
+            double maxErr = 0;
+            int checkedTrees = 0, want = 0;
+            var fails = new List<string>();
+            foreach (WorldManifest.CellEntry c in m.Cells)
+            {
+                if (c.FoliageFile == null) continue;
+                List<FoliageRecord> recs = FoliageRecords.Read(folder + "/" + c.FoliageFile);
+                var trees = recs.Where(r => FoliageRecords.IsTree(r, m.Foliage) && r.Model < m.Models.Count && m.Models[(int)r.Model].Ok).ToList();
+                want += trees.Count;
+                Transform parent = root.transform.Find("Cell_" + c.Id + "/Foliage/Trees");
+                int have = parent != null ? parent.childCount : 0;
+                if (have != trees.Count) { fails.Add(c.Id + ": " + have + " trees, " + trees.Count + " records"); continue; }
+                for (int k = 0; k < have; ++k)
+                {
+                    Transform t = parent.GetChild(k);
+                    FoliageRecord r = trees[k];
+                    if (t.name != m.Models[(int)r.Model].FileId + "_" + r.Placement) fails.Add(c.Id + ": child " + k + " is " + t.name);
+                    LODGroup lg = t.GetComponent<LODGroup>();
+                    if (lg == null || lg.lodCount != 1) fails.Add(t.name + ": no LOD0-only LODGroup");
+                    Matrix4x4 got = root.transform.worldToLocalMatrix * t.localToWorldMatrix;
+                    for (int i = 0; i < 3; ++i)
+                        for (int k2 = 0; k2 < 4; ++k2)
+                        {
+                            double w = 0;
+                            if (k2 < 3)
+                                for (int a = 0; a < 3; ++a)
+                                    for (int b = 0; b < 3; ++b)
+                                        w += m.ToUnity[i, a] * r.M[b * 3 + a] * m.ToUnity[k2, b];
+                            else
+                                for (int a = 0; a < 3; ++a) w += m.ToUnity[i, a] * r.M[9 + a];
+                            double err = Math.Abs(got[i, k2] - w) / Math.Max(1.0, Math.Abs(w));
+                            if (err > maxErr) maxErr = err;
+                        }
+                    ++checkedTrees;
+                }
+            }
+            bool ok = fails.Count == 0 && maxErr < 1e-4;
+            Debug.Log("FOLIAGE_TREES checked=" + checkedTrees + " records=" + want + " maxRelErr=" +
+                      maxErr.ToString("E2", CultureInfo.InvariantCulture) + (ok ? " OK" : " FAIL " + string.Join("; ", fails.Take(5))));
+            return ok;
         }
 
         public static void CheckSkinnedProbe()

@@ -210,8 +210,9 @@ if (_cm_blender_ok)
     add_test(NAME blender_world_import_scaled
              COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${_cm_world_py}"
                      -- --import "${CMAKE_BINARY_DIR}/world_fixture" --scale 0.0254 --no-colliders --verify)
+    # 4 props; foliage (world-foliage D8): one geometry-nodes object per (cell, model), 4 records.
     set_tests_properties(blender_world_import blender_world_import_scaled PROPERTIES
-        PASS_REGULAR_EXPRESSION "INSTANCES 4.*VERIFY OK")
+        PASS_REGULAR_EXPRESSION "INSTANCES 4.*FOLIAGE_OBJECTS 2.*FOLIAGE_INSTANCES 4.*VERIFY OK")
     add_test(NAME blender_world_import_extras
              COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${PROJECT_SOURCE_DIR}/tests/blender/check_world_extras.py"
                      -- "${_cm_world_py}" "${CMAKE_BINARY_DIR}/world_fixture" "${CMAKE_BINARY_DIR}/world_extras")
@@ -281,7 +282,7 @@ if (CASTLEMIST_PYTHON)
         PROPERTIES FIXTURES_REQUIRED world_fixture RESOURCE_LOCK world_fixture TIMEOUT 120)
     set_tests_properties(world_manifest_validate PROPERTIES PASS_REGULAR_EXPRESSION "^OK")
     set_tests_properties(world_manifest_plan PROPERTIES PASS_REGULAR_EXPRESSION
-        "PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0")
+        "PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2")   # trees: the collider tree and the geometry-only collider
     set_tests_properties(world_manifest_selftest PROPERTIES PASS_REGULAR_EXPRESSION "SELFTEST OK")
 endif()
 

@@ -17,6 +17,9 @@ record's model and layer must be in range, the records sorted by (model,
 placement), the bit-0 count equal to colliderTrees, and each record's unity
 TRS must reproduce its m relative to the cell origin within 1e-4. The cells'
 sums must equal counts.foliage.
+
+--plan ends with foliageTrees=<n>: the records the Unity importer places as
+tree prefab instances (plan_foliage_trees).
 """
 import json
 import math
@@ -441,11 +444,39 @@ def plan(m, root):
             elif i.get("clip"):
                 pairs.add((mi, i["clip"]))
     line = ("PLAN materials=%d prefabs=%d controllers=%d cells=%d instances=%d colliders=%d terrainColliders=%d "
-            "water=%d lights=1 skybox=%d" % (
+            "water=%d lights=1 skybox=%d foliageTrees=%d" % (
                 mats + terrain * len(cells) + water_cells, len(ok), len(pairs), len(cells), inst,
                 sum(1 for c in cells if c.get("colliderParts", 0) > 0), terrain * len(cells), water_cells,
-                1 if m.get("sky") else 0))
+                1 if m.get("sky") else 0, plan_foliage_trees(m, root)))
     return line, errors
+
+
+def plan_foliage_trees(m, root):
+    """Tree records the Unity importer places as prefab instances (world-foliage D8,
+    mesh terrain): records whose layer has type 3, or layer 0xFFFF (a collider
+    linked by geometry only), and whose model has status ok. A missing or
+    unreadable bin counts nothing here (semantic() reports it)."""
+    models = m.get("models") or []
+    fol = m.get("foliage")
+    layers = (fol.get("layers") if isinstance(fol, dict) else None) or []
+    tree_layer = [isinstance(l, dict) and l.get("type") == 3 for l in layers]
+    n = 0
+    for c in m.get("cells") or []:
+        f = c.get("foliage")
+        if not isinstance(f, dict) or not isinstance(f.get("file"), str):
+            continue
+        try:
+            recs = read_foliage_records(os.path.join(root, f["file"]))
+        except OSError:
+            continue
+        for r in recs:
+            mi = r["model"]
+            if not (mi < len(models) and models[mi].get("status") == "ok"):
+                continue
+            li = r["layer"]
+            if li == FOLIAGE_GEOMETRY_ONLY_LAYER or (li < len(tree_layer) and tree_layer[li]):
+                n += 1
+    return n
 
 
 # ---------------------------------------------------------------- driver

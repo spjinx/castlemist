@@ -14,6 +14,7 @@
 //   Prefabs/<fileId>.prefab          a variant of models/<fileId>/<fileId>.fbx, materials
 //                                    remapped with ModelImporter.AddRemap
 //   Controllers/<fileId>_<clip>.controller   one looping state, per (model, clip) used
+//   Prefabs/Foliage/<fileId>.prefab  the model prefab + a LOD0-only LODGroup (FoliageImporter)
 //   GW2_<fileId>.unity               the scene:
 //     GW2_<fileId>    localScale = unityScale (the only scale; ruling W7)
 //       Cell_<id>     localPosition = frame.toUnity * cell.origin
@@ -22,6 +23,8 @@
 //         Colliders/Collider_k   MeshCollider only (no renderer)
 //         Props/<fileId>_<prop>  prefab instance, unity.t / r / s as given;
 //                                Animator + controller when the instance has a clip
+//         Foliage/Trees/<fileId>_<placement>  tree prefab instance per foliage tree
+//                                record (FoliageImporter; world-foliage spec D8)
 //       Sun           Directional Light (light.sun raw), ambient Flat
 //       Spawn         at spawn.unity (when present)
 //       FrameProbe    probe.fbx at frameProbe.unity, checked by FrameProbe, then disabled
@@ -85,6 +88,7 @@ namespace Castlemist
             b.Timed("modelImport", b.ModelImport);
             b.Timed("prefabs", b.Prefabs);
             b.Timed("controllers", b.Controllers);
+            b.Timed("foliagePrefabs", b.FoliagePrefabs);
             b.Timed("scene", () => b.Scene(unityScale));
             b.Timed("skyLight", b.SkyAndLight);
             b.Timed("probe", b.Probe);
@@ -123,8 +127,16 @@ namespace Castlemist
             readonly Dictionary<string, Material> terrainMats = new Dictionary<string, Material>();
             readonly Dictionary<string, Material> waterMats = new Dictionary<string, Material>();
             GameObject mapRoot;
+            FoliageImporter foliage;
 
             public Build(string root, WorldManifest m, ImportSummary sum) { this.root = root; this.m = m; this.sum = sum; }
+
+            // World-foliage D8: the bins read, the tree prefabs saved.
+            public void FoliagePrefabs()
+            {
+                foliage = new FoliageImporter(root, m, sum, prefabs);
+                foliage.Prefabs();
+            }
 
             public void Timed(string name, Action a)
             {
@@ -452,7 +464,9 @@ namespace Castlemist
                         }
                         sum.instances++;
                     }
+                    if (foliage != null) foliage.PlaceCell(c, cell);
                 }
+                if (foliage != null) foliage.Finish();
                 if (skipped > 0) sum.warnings.Add("instances: " + skipped + " skipped (their model has no prefab)");
             }
 

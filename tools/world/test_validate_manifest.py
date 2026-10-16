@@ -112,6 +112,14 @@ class Export(unittest.TestCase):
         self.assertTrue(ok, lines)
         self.assertTrue(any(l.startswith("PLAN materials=5 ") for l in lines), lines)
 
+    def test_plan_foliage_trees(self):
+        # Layer type 3 or layer 0xFFFF (world-foliage D8): the collider tree and the geometry-only one.
+        lines, ok = self.run_copy(plan=True)
+        self.assertTrue(any(l.startswith("PLAN ") and l.endswith(" foliageTrees=2") for l in lines), lines)
+        # Layer 0 no longer a tree layer: only the geometry-only collider is left.
+        lines, ok = self.run_copy(edit=lambda j: j["foliage"]["layers"][0].__setitem__("type", 1), plan=True)
+        self.assertTrue(any(l.startswith("PLAN ") and l.endswith(" foliageTrees=1") for l in lines), lines)
+
     def test_model_index_out_of_range_in_plan(self):
         lines, ok = self.run_copy(edit=lambda j: j["cells"][0]["instances"][1].__setitem__("model", 9), plan=True)
         self.assertFalse(ok)
@@ -143,7 +151,7 @@ class Export(unittest.TestCase):
         sky = {"json": "sky/sky.json", "default": "day", "equirect": "sky/day/baked/equirect.png"}
         lines, ok = self.run_copy(edit=lambda j: j.__setitem__("sky", dict(sky)), prep=self.sky_folder, plan=True)
         self.assertTrue(ok, lines)
-        self.assertTrue(any(l.startswith("PLAN ") and l.endswith("skybox=1") for l in lines), lines)
+        self.assertTrue(any(l.startswith("PLAN ") and " skybox=1 foliageTrees=" in l for l in lines), lines)
         lines, ok = self.run_copy(edit=lambda j: j.__setitem__("sky", dict(sky, default="dusk")), prep=self.sky_folder)
         self.assertFalse(ok)
         self.assertTrue(any("sky.default: missing file: sky/dusk" in l for l in lines), lines)

@@ -10,7 +10,9 @@
 //  - instance unity.t is in map units relative to the cell origin, Unity axes;
 //    unityScale is applied once, on the map root (ruling W7);
 //  - unity.r is a Unity quaternion (x, y, z, w);
-//  - light, water, frameProbe, sky, spawn and map.bounds may be null.
+//  - light, water, frameProbe, sky, spawn and map.bounds may be null;
+//  - foliage (the world-foliage block) and cells[].foliage are optional; the
+//    records themselves are read by FoliageRecords.
 // An unknown format or major version, or a missing required field, throws
 // ManifestException naming the field. No UnityEngine dependency (the
 // tools/unity/Tests~ harness compiles it with plain dotnet).
@@ -211,6 +213,7 @@ namespace Castlemist
         public LightEntry Light;   // null: not finite or absent
         public double[] SpawnUnity;  // null: no spawn hint
         public ProbeEntry FrameProbe;  // null: no probe
+        public FoliageBlock Foliage;   // null: no foliage block (world-foliage D7)
         public readonly List<string> Warnings = new List<string>();
 
         public sealed class UvScroll
@@ -251,6 +254,40 @@ namespace Castlemist
             public bool HasTerrain;
             public int ColliderParts;
             public readonly List<InstanceEntry> Instances = new List<InstanceEntry>();
+            /// cells[].foliage (world-foliage D7); FoliageFile null: no records.
+            public string FoliageFile;
+            public int FoliageRecords, FoliageColliderTrees;
+        }
+
+        public sealed class FoliageLayer
+        {
+            public int Index, Type;
+            public double FadeFar;  // fadeRange[1]
+            /// Manifest models[] positions by slot; -1 for an unused slot.
+            public readonly List<int> Models = new List<int>();
+        }
+
+        public sealed class FoliageModel
+        {
+            public int Model;
+            public double FadeFar;
+        }
+
+        public sealed class FoliageBlock
+        {
+            public string Scatter;
+            public readonly List<FoliageLayer> Layers = new List<FoliageLayer>();
+            public readonly List<FoliageModel> Models = new List<FoliageModel>();
+
+            /// foliage.models[].fadeFar for a model, else the largest far value of
+            /// the layers naming it, else 0.
+            public double FadeFar(int model)
+            {
+                foreach (FoliageModel fm in Models) if (fm.Model == model) return fm.FadeFar;
+                double f = 0;
+                foreach (FoliageLayer l in Layers) if (l.Models.Contains(model)) f = Math.Max(f, l.FadeFar);
+                return f;
+            }
         }
 
         public sealed class WaterEntry
@@ -358,6 +395,13 @@ namespace Castlemist
                 };
                 JObj w = c.OptObj("water");
                 if (w != null) cell.WaterTexture = w.OptStr("texture");
+                JObj fo = c.OptObj("foliage");
+                if (fo != null)
+                {
+                    cell.FoliageFile = fo.Str("file");
+                    cell.FoliageRecords = fo.Int("records");
+                    cell.FoliageColliderTrees = (int)fo.OptNum("colliderTrees", 0);
+                }
                 foreach (JObj inst in c.Objs("instances"))
                 {
                     JObj u = inst.Obj("unity");
@@ -374,6 +418,26 @@ namespace Castlemist
                     });
                 }
                 m.Cells.Add(cell);
+            }
+
+            JObj fol = r.OptObj("foliage");
+            if (fol != null)
+            {
+                m.Foliage = new FoliageBlock { Scatter = fol.OptStr("scatter") };
+                foreach (JObj l in fol.Objs("layers"))
+                {
+                    var layer = new FoliageLayer { Index = l.Int("index"), Type = l.Int("type"), FadeFar = l.Vec("fadeRange", 2)[1] };
+                    List<object> slots = l.OptArr("models");
+                    for (int i = 0; i < slots.Count; ++i)
+                    {
+                        if (slots[i] == null) { layer.Models.Add(-1); continue; }
+                        if (!(slots[i] is double)) throw new ManifestException(l.Path + ".models[" + i + "]: not a number");
+                        layer.Models.Add((int)(double)slots[i]);
+                    }
+                    m.Foliage.Layers.Add(layer);
+                }
+                foreach (JObj fm in fol.Objs("models"))
+                    m.Foliage.Models.Add(new FoliageModel { Model = fm.Int("model"), FadeFar = fm.OptNum("fadeFar", 0) });
             }
 
             JObj water = r.OptObj("water");

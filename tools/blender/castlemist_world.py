@@ -15,7 +15,9 @@ Commands run in order, in one Blender session:
                                   gw2dat_cli world-fbx does, so Unity can import
     --import <exportDir> [--no-colliders] [--no-dark-decal] [--scale 1.0] [--verify]
                          [--save <file.blend>]
-                                  builds the scene (spec D6 "Blender"), see import_world()
+                                  builds the scene (spec D6 "Blender"), see import_world();
+                                  every foliage record (world-foliage D8) becomes a point of
+                                  one geometry-nodes object per (cell, model)
     --check-probe <file.glb|fbx>  imports the frame probe into an empty scene and prints
                                   PROBE east=(x,y,z) north=(..) up=(..) negScale=<0|1> OK
                                   or ... FAIL <axis>
@@ -63,11 +65,13 @@ import json
 import math
 import os
 import re
+import struct
 import sys
 import time
 
 import bpy
 from mathutils import Matrix, Quaternion, Vector
+from mathutils.kdtree import KDTree
 
 # Blender's -Y (its "forward") -> FBX -Z: castlemist_vrchat.py's setting.
 FBX_AXIS_FORWARD = '-Z'
@@ -92,6 +96,10 @@ SKINNED_EXPECT = {
 SKINNED_TOLERANCE = 0.5
 
 _SUFFIX = re.compile(r"\.\d{3,}$")
+
+# castlemist-foliage-1 (world-foliage spec D7): 100 bytes, little-endian.
+FOLIAGE_RECORD = struct.Struct("<IHHI12f3f4f3f")
+FOLIAGE_GROUP = "CM_Foliage"
 
 
 def base_name(name):
@@ -897,6 +905,105 @@ def matrix_of(m16):
     return Matrix([[float(m16[c * 4 + r]) for c in range(4)] for r in range(4)])
 
 
+def read_foliage(path):
+    """The records of one foliage/<cell>.bin: dicts with model, layer, flags,
+    placement, m (column-major 4x4, map space, absolute) and unity (t, r, s).
+    Raises ValueError when the size is not a whole number of records."""
+    with open(path, "rb") as f:
+        data = f.read()
+    if len(data) % FOLIAGE_RECORD.size:
+        raise ValueError("%d bytes is not a multiple of %d" % (len(data), FOLIAGE_RECORD.size))
+    out = []
+    for at in range(0, len(data), FOLIAGE_RECORD.size):
+        v = FOLIAGE_RECORD.unpack_from(data, at)
+        a = v[4:16]
+        out.append({"model": v[0], "layer": v[1], "flags": v[2], "placement": v[3],
+                    "m": [a[0], a[1], a[2], 0.0, a[3], a[4], a[5], 0.0, a[6], a[7], a[8], 0.0,
+                          a[9], a[10], a[11], 1.0],
+                    "unity": {"t": list(v[16:19]), "r": list(v[19:23]), "s": v[23]}})
+    return out
+
+
+def euler_xyz(r):
+    """Blender's XYZ Euler (R = Rz Ry Rx) of a 3x3 rotation given as rows, in
+    double precision (mathutils works in float, which loses about 1e-2 near a
+    90 degree Y turn; review I2)."""
+    cy = math.hypot(r[0][0], r[1][0])
+    if cy > 1e-9:
+        return (math.atan2(r[2][1], r[2][2]), math.atan2(-r[2][0], cy), math.atan2(r[1][0], r[0][0]))
+    return (math.atan2(-r[1][2], r[1][1]), math.atan2(-r[2][0], cy), 0.0)
+
+
+def foliage_trs(m16, S):
+    """(location, cm_rot, cm_scale) of S C_b M C_b^-1 (C_b^-1 = C_b), computed
+    from the record's m in doubles: the instance's Blender matrix."""
+    a = [[float(m16[c * 4 + r]) for c in range(3)] for r in range(3)]
+    f = (1.0, 1.0, -1.0)
+    b = [[S * f[i] * a[i][j] * f[j] for j in range(3)] for i in range(3)]
+    sc = [math.sqrt(sum(b[i][j] ** 2 for i in range(3))) for j in range(3)]
+    rot = [[b[i][j] / sc[j] if sc[j] > 0 else 0.0 for j in range(3)] for i in range(3)]
+    loc = (S * float(m16[12]), S * float(m16[13]), -S * float(m16[14]))
+    return loc, euler_xyz(rot), sc
+
+
+def foliage_node_group():
+    """CM_Foliage: Instance on Points of the Collection input, rotation from the
+    cm_rot point attribute (Euler XYZ), scale from cm_scale; not realised."""
+    ng = bpy.data.node_groups.get(FOLIAGE_GROUP)
+    if ng is not None:
+        return ng
+    ng = bpy.data.node_groups.new(FOLIAGE_GROUP, 'GeometryNodeTree')
+    ng.interface.new_socket("Geometry", in_out='INPUT', socket_type='NodeSocketGeometry')
+    ng.interface.new_socket("Collection", in_out='INPUT', socket_type='NodeSocketCollection')
+    ng.interface.new_socket("Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
+    n, ln = ng.nodes, ng.links
+    gi = n.new('NodeGroupInput')
+    go = n.new('NodeGroupOutput')
+    ci = n.new('GeometryNodeCollectionInfo')
+    ci.transform_space = 'ORIGINAL'
+    iop = n.new('GeometryNodeInstanceOnPoints')
+    rot = n.new('GeometryNodeInputNamedAttribute')
+    rot.data_type = 'FLOAT_VECTOR'
+    rot.inputs["Name"].default_value = "cm_rot"
+    e2r = n.new('FunctionNodeEulerToRotation')
+    scl = n.new('GeometryNodeInputNamedAttribute')
+    scl.data_type = 'FLOAT_VECTOR'
+    scl.inputs["Name"].default_value = "cm_scale"
+    ln.new(gi.outputs["Geometry"], iop.inputs["Points"])
+    ln.new(gi.outputs["Collection"], ci.inputs["Collection"])
+    ln.new(ci.outputs["Instances"], iop.inputs["Instance"])
+    ln.new(rot.outputs["Attribute"], e2r.inputs["Euler"])
+    ln.new(e2r.outputs["Rotation"], iop.inputs["Rotation"])
+    ln.new(scl.outputs["Attribute"], iop.inputs["Scale"])
+    ln.new(iop.outputs["Instances"], go.inputs["Geometry"])
+    for k, nd in enumerate((gi, ci, rot, e2r, scl, iop, go)):
+        nd.location = (k * 200.0, 0.0)
+    return ng
+
+
+def foliage_collection_key():
+    return foliage_node_group().interface.items_tree["Collection"].identifier
+
+
+def foliage_object(name, col, records, S, collection):
+    """One object at identity: a vertex per record at its Blender position, the
+    cm_rot and cm_scale point attributes, and the CM_Foliage modifier on the
+    model's collection."""
+    trs = [foliage_trs(r["m"], S) for r in records]
+    me = bpy.data.meshes.new(name)
+    me.from_pydata([t[0] for t in trs], [], [])
+    a = me.attributes.new("cm_rot", 'FLOAT_VECTOR', 'POINT')
+    a.data.foreach_set("vector", [v for t in trs for v in t[1]])
+    a = me.attributes.new("cm_scale", 'FLOAT_VECTOR', 'POINT')
+    a.data.foreach_set("vector", [v for t in trs for v in t[2]])
+    ob = bpy.data.objects.new(name, me)
+    col.objects.link(ob)
+    mod = ob.modifiers.new(FOLIAGE_GROUP, 'NODES')
+    mod.node_group = foliage_node_group()
+    mod[foliage_collection_key()] = collection
+    return ob
+
+
 def import_world(export_dir, colliders=True, dark_decal=True, scale=1.0, verify=False):
     """Builds the scene from <export_dir>/manifest.json (spec D6 "Blender"):
       GW2 <fileId>
@@ -904,7 +1011,13 @@ def import_world(export_dir, colliders=True, dark_decal=True, scale=1.0, verify=
                baked (bake_objects), and <fileId>_<clip> per clip placed
         Cells/<id>: <id> Terrain, <id> Water, <id> Props (collection-instance
                empties, matrix_world = S C_b M C_b^-1, C_b = diag(1, 1, -1),
-               S = scale) and <id> Colliders (hidden)
+               S = scale), <id> Colliders (hidden) and <id> Foliage: one
+               geometry-nodes object "<id> <fileId> foliage" per model with
+               records in the cell's foliage bin (world-foliage D8), a point
+               per record, instanced by the shared CM_Foliage group
+        A missing or malformed foliage bin is an IMPORT_ERROR naming it (the
+        import returns False); records of a failed or missing model are skipped
+        and counted.
         Frame Probe (probe.glb at frameProbe.map), Spawn, Sun
       World: sky.equirect as an Environment Texture, else the ambient colour.
     Dark-decal materials get blend_method 'BLEND' (unless dark_decal is off);
@@ -968,6 +1081,9 @@ def import_world(export_dir, colliders=True, dark_decal=True, scale=1.0, verify=
     cell_info = []
     placed = {}
     skipped = 0
+    errors = []
+    foliage = []          # (object, records, cell)
+    fol_skipped = 0
     for cell in man.get("cells") or []:
         cid = cell["id"]
         ccol = new_collection(cid, cells_col)
@@ -1017,7 +1133,38 @@ def import_world(export_dir, colliders=True, dark_decal=True, scale=1.0, verify=
             e["castlemist_cell"] = cid
             e["castlemist_prop"] = int(inst.get("prop", 0))
             placed[(cid, int(inst.get("prop", 0)))] = (e, inst, cell)
+        fol = cell.get("foliage")
+        if isinstance(fol, dict) and fol.get("file"):
+            path = os.path.join(export_dir, fol["file"])
+            recs = None
+            if not os.path.isfile(path):
+                errors.append("foliage: cell %s: missing file %s" % (cid, fol["file"]))
+            else:
+                try:
+                    recs = read_foliage(path)
+                except (OSError, ValueError) as ex:
+                    errors.append("foliage: cell %s: %s: %s" % (cid, fol["file"], ex))
+                if recs is not None and len(recs) != fol.get("records"):
+                    errors.append("foliage: cell %s: %s holds %d records, the manifest says %s"
+                                  % (cid, fol["file"], len(recs), fol.get("records")))
+            by_model = {}
+            for r in recs or []:
+                if r["model"] in entries:
+                    by_model.setdefault(r["model"], []).append(r)
+                else:
+                    fol_skipped += 1
+            if by_model:
+                fcol = new_collection(cid + " Foliage", ccol)
+                for mi in sorted(by_model):
+                    entry = entries[mi]
+                    ob = foliage_object("%s %s foliage" % (cid, entry.file_id), fcol, by_model[mi],
+                                        float(scale), entry.col)
+                    ob["castlemist_cell"] = cid
+                    ob["castlemist_foliage_model"] = mi
+                    foliage.append((ob, by_model[mi], cell))
         cell_info.append(ci)
+    if fol_skipped:
+        warnings.append("foliage: %d records of failed or missing models skipped" % fol_skipped)
     for ci in cell_info:
         lcc = layer_collection(bpy.data.collections[ci["id"] + " Colliders"])
         if lcc is not None:
@@ -1086,14 +1233,74 @@ def import_world(export_dir, colliders=True, dark_decal=True, scale=1.0, verify=
     bpy.context.view_layer.update()
     for w in warnings:
         print("IMPORT_WARN " + w)
-    print("IMPORT models=%d cells=%d instances=%d skipped=%d darkDecal=%d uvScroll=%d seconds=%.1f" % (
-        len(entries), len(cell_info), len(placed), skipped, n_decal, n_scroll, time.time() - t0))
+    for e in errors:
+        print("IMPORT_ERROR " + e)
+    print("IMPORT models=%d cells=%d instances=%d skipped=%d foliageObjects=%d foliageRecords=%d "
+          "foliageSkipped=%d darkDecal=%d uvScroll=%d seconds=%.1f" % (
+              len(entries), len(cell_info), len(placed), skipped, len(foliage), sum(len(f[1]) for f in foliage),
+              fol_skipped, n_decal, n_scroll, time.time() - t0))
     if not verify:
-        return True
-    return verify_world(man, placed, cell_info, probe_result, colliders, S)
+        return not errors
+    return verify_world(man, placed, cell_info, probe_result, colliders, S, foliage, errors)
 
 
-def verify_world(man, placed, cell_info, probe_result, colliders, S):
+def verify_foliage(foliage, S, fails):
+    """world-foliage D8 --verify: each foliage object's evaluated instances
+    (depsgraph.object_instances, through one reference mesh of the model's
+    collection) against the records' Unity TRS under the cell origin, as the
+    props are checked: 3x3 within 1e-4, translation within 1e-4 max(1, |t|).
+    Each record must be matched by exactly one instance."""
+    print("FOLIAGE_OBJECTS %d" % len(foliage))
+    by_ob = {}
+    for ob, recs, cell in foliage:
+        col = ob.modifiers[FOLIAGE_GROUP][foliage_collection_key()]
+        meshes = sorted((o for o in col.all_objects if o.type == 'MESH'), key=lambda o: o.name)
+        if not meshes:
+            fails.append("foliage %s: model collection %s has no mesh" % (ob.name, col.name))
+            continue
+        by_ob[ob.name] = (meshes[0], recs, cell, [])
+    dg = bpy.context.evaluated_depsgraph_get()
+    for inst in dg.object_instances:
+        if not inst.is_instance or inst.parent is None:
+            continue
+        slot = by_ob.get(inst.parent.original.name)
+        if slot is not None and inst.object.original == slot[0]:
+            slot[3].append(inst.matrix_world.copy() @ slot[0].matrix_world.inverted())
+    n_inst = sum(len(v[3]) for v in by_ob.values())
+    print("FOLIAGE_INSTANCES %d" % n_inst)
+    want = sum(len(f[1]) for f in foliage)
+    if n_inst != want:
+        fails.append("foliage instances %d != records %d" % (n_inst, want))
+    err_r = err_t = 0.0
+    for name, (_ref, recs, cell, got) in by_ob.items():
+        origin = C_B @ Vector([float(v) for v in cell["origin"]])
+        exp = []
+        kd = KDTree(len(recs))
+        for k, r in enumerate(recs):
+            t, q, s = r["unity"]["t"], r["unity"]["r"], float(r["unity"]["s"])
+            U = Matrix.Translation(Vector(t)) @ Quaternion((q[3], q[0], q[1], q[2])).to_matrix().to_4x4() @ Matrix.Scale(s, 4)
+            B = Matrix.Scale(S, 4) @ Matrix.Translation(origin) @ P_UB @ U @ P_UB
+            exp.append(B)
+            kd.insert(B.translation, k)
+        kd.balance()
+        hit = [0] * len(recs)
+        for M in got:
+            _co, k, _d = kd.find(M.translation)
+            hit[k] += 1
+            B = exp[k]
+            for i in range(3):
+                for j in range(3):
+                    err_r = max(err_r, abs(M[i][j] - B[i][j]))
+                err_t = max(err_t, abs(M[i][3] - B[i][3]) / max(1.0, abs(B[i][3])))
+        if any(h != 1 for h in hit):
+            fails.append("foliage %s: %d records not matched by exactly one instance"
+                         % (name, sum(1 for h in hit if h != 1)))
+    print("FOLIAGE_MATRIX_MAX_ERR rot=%.3g t=%.3g" % (err_r, err_t))
+    if not (err_r < 1e-4 and err_t < 1e-4):
+        fails.append("foliage matrix error rot=%.3g t=%.3g" % (err_r, err_t))
+
+
+def verify_world(man, placed, cell_info, probe_result, colliders, S, foliage=(), errors=()):
     """The headless checks of spec "Testing" (Blender). The instance matrices are
     checked against the manifest's other form of each placement, its Unity TRS
     under the cell origin (t, r, s; map_to_unity frame): S T(C_b origin) P U P,
@@ -1149,6 +1356,8 @@ def verify_world(man, placed, cell_info, probe_result, colliders, S):
     want_c = sum(int(c.get("colliderParts") or 0) for c in man.get("cells") or []) if colliders else 0
     if len(cols) != want_c:
         fails.append("colliders %d != %d" % (len(cols), want_c))
+    verify_foliage(foliage, S[0][0], fails)
+    fails.extend(errors)
     print("VERIFY OK" if not fails else "VERIFY FAIL " + "; ".join(fails))
     return not fails
 

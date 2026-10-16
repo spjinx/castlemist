@@ -87,9 +87,34 @@ namespace Castlemist.Tests
             });
             Run("summary.plan_line", () =>
             {
-                var s = new ImportSummary { materials = 4, prefabs = 2, controllers = 1, cells = 1, instances = 4, colliders = 1, terrainColliders = 1, water = 1, lights = 1, skybox = 0 };
-                // Task 9's expected PLAN line for the fixture, verbatim.
-                Check(s.PlanLine() == "PLAN materials=4 prefabs=2 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0", s.PlanLine());
+                var s = new ImportSummary { materials = 5, prefabs = 3, controllers = 1, cells = 1, instances = 4, colliders = 1, terrainColliders = 1, water = 1, lights = 1, skybox = 0, foliageTrees = 2 };
+                // The world_manifest_plan ctest's expected line for the fixture, verbatim.
+                Check(s.PlanLine() == "PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2", s.PlanLine());
+            });
+            Run("foliage.records", () =>
+            {
+                var d = new byte[2 * FoliageRecords.RecordBytes];
+                BitConverter.GetBytes(7u).CopyTo(d, 100);
+                BitConverter.GetBytes((ushort)0xFFFF).CopyTo(d, 104);
+                BitConverter.GetBytes((ushort)5).CopyTo(d, 106);
+                BitConverter.GetBytes(0xFFFFFFFFu).CopyTo(d, 108);
+                BitConverter.GetBytes(-2212f).CopyTo(d, 160);
+                BitConverter.GetBytes(0.9486833f).CopyTo(d, 184);
+                BitConverter.GetBytes(1.2f).CopyTo(d, 188);
+                BitConverter.GetBytes(10f).CopyTo(d, 196);
+                var r = FoliageRecords.Parse(d, "x.bin");
+                Check(r.Count == 2 && r[1].Model == 7 && r[1].Layer == 0xFFFF && r[1].Collider && r[1].Placement == 0xFFFFFFFF, "header");
+                Check(r[1].T[0] == -2212f && r[1].R[3] == 0.9486833f && r[1].S == 1.2f && r[1].TiltDeg == 10f, "unity");
+                Check(FoliageRecords.IsTree(r[1], null) && !FoliageRecords.IsTree(r[0], null), "tree rule");
+                Throws<ManifestException>(() => FoliageRecords.Parse(new byte[99], "y.bin"), "y.bin: foliage size 99");
+                Throws<ManifestException>(() => FoliageRecords.Read("no/such/foliage.bin"), "missing file no/such/foliage.bin");
+            });
+            Run("foliage.cull_height", () =>
+            {
+                // size / (2 fadeFar tan 30): 2 tan 30 = 1.1547.
+                Check(Math.Abs(FoliageRecords.CullHeight(1000, 7500) - 1000 / (7500 * 2 * Math.Tan(Math.PI / 6))) < 1e-12, "formula");
+                Check(FoliageRecords.CullHeight(1e-3, 7500) == 1e-4 && FoliageRecords.CullHeight(1e6, 10) == 1.0, "clamp");
+                Check(FoliageRecords.CullHeight(10, 0) == 1e-4, "no fadeFar");
             });
             Run("materials.blend_and_maps", () =>
             {
@@ -111,7 +136,7 @@ namespace Castlemist.Tests
                 Run("fixture.manifest", () =>
                 {
                     WorldManifest m = WorldManifest.Parse(File.ReadAllText(Path.Combine(dir, "manifest.json")));
-                    Check(m.Models.Count == 2 && m.Models[1].Clips[0] == "TestClip", "models");
+                    Check(m.Models.Count == 3 && m.Models[1].Clips[0] == "TestClip", "models");
                     Check(m.Cells.Count == 1 && m.Cells[0].Instances.Count == 4 && m.Cells[0].HasTerrain, "cells");
                     Check(m.Cells[0].ColliderParts == 1 && m.Cells[0].WaterTexture != null, "collider/water");
                     WorldManifest.InstanceEntry i = m.Cells[0].Instances[3];
@@ -119,6 +144,18 @@ namespace Castlemist.Tests
                     Check(m.Light != null && m.Light.Ambient.Length == 3 && m.Sky == null && m.FrameProbe.Fbx == "probe.fbx", "light/sky/probe");
                     double[] o = m.MapToUnity(m.Cells[0].Origin);
                     Check(o[0] == -12288.0 && o[2] == 36864.0, "origin");
+                });
+                Run("fixture.foliage", () =>
+                {
+                    WorldManifest m = WorldManifest.Parse(File.ReadAllText(Path.Combine(dir, "manifest.json")));
+                    Check(m.Foliage != null && m.Foliage.Layers.Count == 2 && m.Foliage.Layers[0].Type == 3 && m.Foliage.Layers[1].Type == 1, "layers");
+                    Check(m.Foliage.FadeFar(0) == 7500 && m.Foliage.FadeFar(2) == 3000, "fadeFar");
+                    WorldManifest.CellEntry c = m.Cells[0];
+                    Check(c.FoliageFile == "foliage/c0_0_2x2.bin" && c.FoliageRecords == 4 && c.FoliageColliderTrees == 2, "cell");
+                    var recs = FoliageRecords.Read(Path.Combine(dir, c.FoliageFile));
+                    int trees = 0;
+                    foreach (FoliageRecord r in recs) if (FoliageRecords.IsTree(r, m.Foliage)) ++trees;
+                    Check(recs.Count == 4 && trees == 2, "trees " + trees);
                 });
                 Run("fixture.materials", () =>
                 {

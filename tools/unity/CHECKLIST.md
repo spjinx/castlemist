@@ -61,7 +61,10 @@ the manifest changes.
 1. **The summary equals the dry run.** The importer's `PLAN …` line must equal
    `python tools/world/validate_manifest.py <export> --plan` character for
    character. For the fixture (`cm_world_export_fixture`), that line is
-   `PLAN materials=4 prefabs=2 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0`.
+   `PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2`
+   (the line had no `foliageTrees` field, and 4 materials and 2 prefabs, before
+   the world-foliage work). In batchmode, `FOLIAGE_TREES checked=<n> ... OK`
+   also checks every foliage tree instance against its record's `m`.
 2. **The compile is clean.** No `error CS` and no `warning CS` from
    `Assets/Castlemist`.
 3. **The frame probe passes.** It prints
@@ -107,4 +110,6 @@ the manifest changes.
 | 2026-10-15 | 2022.3.22f1 batchmode, Poiyomi Pro 9.0.α18 | Spirit Vale, 36-cell export | 1-3 | PASS: the same PLAN line; probe OK; importer 59 s |
 | 2026-10-15 | 6000.0.42f1 batchmode | fixture | 1-3 | PASS: the same PLAN line; probe OK; skinned probe OK |
 | 2026-10-15 | dry run | Spirit Vale, 66-cell export (budget 500 000) | 1 | `python tools/world/validate_manifest.py <dir> --plan` prints `PLAN materials=1057 prefabs=380 controllers=37 cells=66 instances=2354 colliders=52 terrainColliders=66 water=0 lights=1 skybox=1`; the Unity importer was not run on it |
+| 2026-10-16 | 2022.3.22f1 batchmode, no Poiyomi (Standard fallback) | fixture (with model 103 and foliage) | 1-3 | PASS: `PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2`, equal to the dry run; no `error CS` / `warning CS`; probe OK; `FOLIAGE_TREES checked=2 records=2 maxRelErr=1.19E-007 OK`; the 2 type-1 records counted as deferred in a warning |
+| 2026-10-16 | 2022.3.22f1 batchmode, no Poiyomi | Spirit Vale, 66-cell export with foliage (world-foliage Task 8) | 1-3 | PASS: `PLAN materials=1061 prefabs=381 controllers=37 cells=66 instances=2354 colliders=52 terrainColliders=66 water=0 lights=1 skybox=1 foliageTrees=284`, equal to the dry run; probe OK; 66 cells centred; 2354 instances within 3.95e-6 and 284 foliage trees within 9.42e-7 of `m`. Importer 91 s (280 s wall, first import) |
 | — | VRChat 2022.3 + Poiyomi 10, editor | Spirit Vale | 4-11 | not tried (no editor session; items 4 to 11 need one). Poiyomi 10 is not on this machine; only Pro 9.0.α18 was tried |

@@ -17,6 +17,9 @@
 //   lights           Directional lights (always 1: a default sun when the
 //                    manifest's light is null)
 //   skybox           1 when RenderSettings.skybox was set from the sky
+//   foliageTrees     foliage tree prefab instances placed (world-foliage D8):
+//                    records whose layer has type 3 or is 0xFFFF and whose
+//                    model is ok (validate_manifest.py plan_foliage_trees)
 // No UnityEngine dependency.
 
 using System.Collections.Generic;
@@ -28,6 +31,12 @@ namespace Castlemist
         public int materials, prefabs, controllers, cells, instances, colliders, terrainColliders, water, lights, skybox;
         /// Collider_k parts in all cells (not part of the PLAN line).
         public int colliderParts;
+        /// Foliage tree instances placed (in the PLAN line).
+        public int foliageTrees;
+        /// Foliage records not placed (not in the PLAN line): layer type 1-2
+        /// (detail) records, which the patches will place; and records skipped
+        /// because their model failed or has no prefab.
+        public int foliageDeferred, foliageSkipped;
         public List<string> warnings = new List<string>();
         public List<string> errors = new List<string>();
         /// The frame probe's PROBE line, or null when there was no probe.
@@ -40,7 +49,7 @@ namespace Castlemist
             return "PLAN materials=" + materials + " prefabs=" + prefabs + " controllers=" + controllers +
                    " cells=" + cells + " instances=" + instances + " colliders=" + colliders +
                    " terrainColliders=" + terrainColliders + " water=" + water + " lights=" + lights +
-                   " skybox=" + skybox;
+                   " skybox=" + skybox + " foliageTrees=" + foliageTrees;
         }
     }
 }
