@@ -42,6 +42,8 @@ struct SkyInputs {
     std::vector<std::string> decodeWarnings;      ///< "fileId N: not a decodable texture"
     /// parseMapEnv() with the auto (brightest) preset. Only the "day" mode
     /// gets it: no proven link ties the 3 lighting presets to the sky modes.
+    /// sky.json's sun.direction is its sunDir in Unity axes: the direction the
+    /// light travels (a Directional Light's forward), not toward the sun.
     castlemist::model::Extractor::MapEnvLight daySun;
     uint32_t mapFileId = 0;
 };

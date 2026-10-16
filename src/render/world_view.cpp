@@ -1122,7 +1122,10 @@ void WorldView::set_world(const castlemist::world::WorldScene& s) {
     d->textures.clear();
     const auto& L = s.environment.light;
     if (L.present) {
-        std::memcpy(d->sunDir, L.sunDir, sizeof d->sunDir);
+        // The env's sunDir is the direction the light travels (z > 0 = down; spec
+        // Amendments, D5); the shaders' uSunDir is toward the sun (dot(N, L)), so it
+        // is negated once here (review I7: unnegated, the map was lit from below).
+        for (int k = 0; k < 3; ++k) d->sunDir[k] = -L.sunDir[k];
         std::memcpy(d->sunColor, L.sunColor, sizeof d->sunColor);
         std::memcpy(d->fillColor, L.fillColor, sizeof d->fillColor);
         d->sunIntensity = L.sunIntensity;

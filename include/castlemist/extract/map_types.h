@@ -23,7 +23,10 @@
 /// When @ref present is false the renderer uses its default rig.
 struct MapEnvRig {
     bool  present = false;                      ///< A usable rig was parsed.
-    float sunDir[3] = {0.45f, 0.80f, -0.40f};   ///< Normalized, points *toward* the sun (-Z is up).
+    /// Normalized, points *toward* the sun (-Z is up): the renderer's convention.
+    /// Env data (Extractor::MapEnvLight::sunDir) is the light-travel direction
+    /// and must be negated when copied in (WorldView::set_world does).
+    float sunDir[3] = {0.45f, 0.80f, -0.40f};
     float sunColor[3] = {1.00f, 0.91f, 0.75f};  ///< Linear RGB, 0..1.
     float sunIntensity = 1.0f;                  ///< Sun strength.
     float fillColor[3] = {0.49f, 0.68f, 0.97f}; ///< Intensity-weighted mean of the non-sun lights.

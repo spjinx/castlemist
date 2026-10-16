@@ -740,3 +740,67 @@ CM_TEST(world_view, recreate_drops_textures) {
     CHECK_EQ(v.stats().textures, 0);
     CHECK_EQ(v.stats().textureMB, 0.0f);
 }
+
+namespace {
+
+/// Mean luma of the pixels that are not the clear colour; -1 when unreadable or none.
+double lit_mean_luma(const std::string& path) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return -1;
+    std::vector<uint8_t> bmp;
+    uint8_t buf[4096];
+    for (size_t r; (r = std::fread(buf, 1, sizeof buf, f)) > 0;) bmp.insert(bmp.end(), buf, buf + r);
+    std::fclose(f);
+    if (bmp.size() <= 54 || bmp[0] != 'B' || bmp[1] != 'M') return -1;
+    int32_t bw = 0, bh = 0;
+    std::memcpy(&bw, &bmp[18], 4);
+    std::memcpy(&bh, &bmp[22], 4);
+    const int stride = (bw * 3 + 3) & ~3;
+    if (bmp.size() < 54 + static_cast<size_t>(stride) * bh) return -1;
+    double sum = 0;
+    long n = 0;
+    for (int y = 0; y < bh; ++y)
+        for (int x = 0; x < bw; ++x) {
+            const uint8_t* p = &bmp[54 + static_cast<size_t>(y) * stride + x * 3];
+            if (std::abs(p[0] - 33) + std::abs(p[1] - 28) + std::abs(p[2] - 25) <= 6) continue;
+            sum += 0.114 * p[0] + 0.587 * p[1] + 0.299 * p[2];
+            ++n;
+        }
+    return n ? sum / n : -1;
+}
+
+} // namespace
+
+// Review I7: the env's sunDir is the direction the light travels (z > 0 = down,
+// up = -Z). Flat ground under a sun travelling straight down must be lit by it,
+// and brighter than under one travelling straight up (which lights it from below).
+CM_TEST(world_view, env_sun_travel_direction_lights_the_ground) {
+    HWND wnd = hidden_window(320, 240);
+    if (!wnd) SKIP("no window");
+    struct Closer { HWND h; ~Closer() { DestroyWindow(h); } } closer{wnd};
+    WorldView v;
+    if (!v.create(wnd)) SKIP("no D3D11 device (hardware or WARP)");
+    char tmp[MAX_PATH] = {};
+    GetTempPathA(MAX_PATH, tmp);
+    double luma[2] = {-1, -1};
+    for (int k = 0; k < 2; ++k) {
+        castlemist::world::WorldScene s = two_chunk_scene();
+        for (auto& c : s.terrain.chunks)
+            for (float& h : c.heights) h = 100.0f;   // flat: every normal is up (-Z)
+        auto& L = s.environment.light;
+        L.present = true;
+        L.sunDir[0] = 0; L.sunDir[1] = 0; L.sunDir[2] = k == 0 ? 1.0f : -1.0f;   // down, then up
+        L.sunColor[0] = L.sunColor[1] = L.sunColor[2] = 1.0f;
+        L.sunIntensity = 1.0f;
+        L.fillIntensity = 0.1f;
+        v.set_world(s);
+        const WorldCamera cam = v.frame_all(nullptr);
+        v.render(cam);
+        const std::string path = std::string(tmp) + "cm_world_view_sun" + std::to_string(k) + ".bmp";
+        CHECK(v.save_screenshot(path.c_str()));
+        luma[k] = lit_mean_luma(path);
+    }
+    std::printf("      sun travelling down: luma %.1f; travelling up: %.1f\n", luma[0], luma[1]);
+    CHECK(luma[0] > 0 && luma[1] > 0);
+    CHECK(luma[0] > luma[1] + 10.0);
+}

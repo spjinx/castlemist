@@ -1268,6 +1268,8 @@ public:
     // PackMapEnvDataLightV*{ color byte3, intensity float, direction float3 }.
     struct MapEnvLight {
         bool  present = false;
+        // The direction the light travels, map space (up = -Z, so a day sun has
+        // z > 0); measured in the world export's Task 13. Toward the sun is -sunDir.
         float sunDir[3] = {0.45f, 0.80f, 0.40f};
         float sunColor[3] = {1.0f, 0.91f, 0.75f};
         float sunIntensity = 1.0f;

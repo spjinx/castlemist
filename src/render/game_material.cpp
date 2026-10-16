@@ -352,6 +352,8 @@ void setup_game_uniforms() {
     g_game_uniforms_ready = true;
 }
 
+// rig.sunDir is toward the sun (MapEnvRig); a caller holding env data
+// (MapEnvLight::sunDir, the light-travel direction) negates it first.
 void set_environment_rig(const MapEnvRig& rig) {
     if (rig.present) { g_env_rig = rig; g_env_rig_active = true; }
     else { g_env_rig = MapEnvRig{}; g_env_rig_active = false; }
