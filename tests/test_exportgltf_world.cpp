@@ -1161,7 +1161,7 @@ CM_TEST(world_manifest, settings_labelled) {
     CHECK(man["settings"]["unityScale"]["status"] == "UNPROVEN");
     CHECK(man["settings"]["ambient"]["status"] == "castlemist's choice");
     CHECK(man["settings"]["texelsPerChunk"]["value"] == 256);
-    CHECK(man["settings"]["cellMaxTriangles"]["value"] == 1000000);
+    CHECK(man["settings"]["cellMaxTriangles"]["value"] == 500000);
     // The settings are world_export_settings and follow the options.
     WorldFolderOptions o;
     o.texelsPerChunk = 128;

@@ -15,7 +15,10 @@
 namespace castlemist::world {
 
 /// @brief Per-cell budget. castlemist's choice; VRChat states no per-area limit (UNPROVEN).
-struct CellBudget { int maxChunks = 4; uint64_t maxTriangles = 1'000'000; double maxTextureMB = 256.0; };
+/// maxTriangles follows the world export plan's budget rule (Task 13): no
+/// Queensdale block split at 1 000 000, so it is Queensdale's p90 block
+/// (496 740 triangles) rounded up to a multiple of 250 000.
+struct CellBudget { int maxChunks = 4; uint64_t maxTriangles = 500'000; double maxTextureMB = 256.0; };
 
 /// @brief Measured costs the partition needs; filled by the caller.
 struct CellStats {

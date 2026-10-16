@@ -100,7 +100,8 @@ CM_TEST(cells, heavy_block_splits_to_quadrants) {
     s.models.resize(1);
     add_prop(s, 0, 0); add_prop(s, 3, 3);
     CellStats st; st.modelTriangles = {600000};
-    const auto p = partition_cells(s, st, {});
+    CellBudget b; b.maxTriangles = 1'000'000;   // the block is over it, each quadrant under it
+    const auto p = partition_cells(s, st, b);
     CHECK_EQ(p.cells.size(), size_t(4));
     for (const char* id : {"c0_0_2x2", "c2_0_2x2", "c0_2_2x2", "c2_2_2x2"}) {
         const Cell* c = by_id(p, id);
