@@ -142,7 +142,7 @@ castlemist_add_layer(exportgltf DEPS castlemist::extract ext::stb ext::json)
 target_compile_definitions(castlemist_exportgltf PRIVATE CASTLEMIST_VERSION_STRING="${PROJECT_VERSION}")
 
 # npc: NPC catalogue (cntc pack reader + catalogue) on top of extract/exportgltf.
-castlemist_add_layer(npc DEPS castlemist::extract castlemist::exportgltf ext::json)
+castlemist_add_layer(npc DEPS castlemist::extract castlemist::exportgltf castlemist::ripper ext::json)
 
 # world turns a GW2 map into one renderer-free WorldScene (terrain, props,
 # collision, water, environment) on top of extract's parsers.

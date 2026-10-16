@@ -7,6 +7,7 @@
 #include "castlemist/npc/browse.h"
 #include "castlemist/npc/catalogue.h"
 #include "castlemist/npc/export.h"
+#include "castlemist/npc/look.h"
 #include "castlemist/npc/tokens.h"
 #include "character.h"
 #include "decompress.h"
@@ -704,4 +705,165 @@ CM_TEST(npc_browse, a_filter_matching_nothing_gives_no_groups) {
     Catalogue cat;
     cat.npcs = {make_npc(1, 104256, "")};
     CHECK(group_creatures(cat, "zzzz", {}).empty());
+}
+
+// ---- Look presets -> character assembly --------------------------------------------------------------
+
+namespace {
+/// A token is its name 5-bit packed: a = 1 ... z = 26, first letter in the low bits.
+uint64_t pack_name(const std::string& name) {
+    uint64_t t = 0;
+    for (size_t i = 0; i < name.size(); ++i) t |= static_cast<uint64_t>(name[i] - 'a' + 1) << (5 * i);
+    return t;
+}
+
+castlemist::composite::CompositeFileData piece(uint64_t token, uint8_t type) {
+    castlemist::composite::CompositeFileData f;
+    f.token = token;
+    f.type = type;
+    return f;
+}
+
+/// HumanFemale with a Coat (token "coatx"), hair styles {h0, h1, "hairx"}, faces {f0, "facex"}, and the look "banditvar".
+castlemist::composite::Composite look_composite() {
+    namespace comp = castlemist::composite;
+    comp::Composite c;
+    comp::CompositeRace r;
+    r.name = "HumanFemale";
+    r.file_data[pack_name("coatx")] = piece(pack_name("coatx"), 9);
+    r.hair_styles = {pack_name("haira"), pack_name("hairb"), pack_name("hairx")};
+    r.faces = {pack_name("facea"), pack_name("facex")};
+    comp::CompositeVariant v;
+    v.token = pack_name("banditvar");
+    v.bone_scale_index = 3;
+    v.components = {{pack_name("coatx"), {}}, {pack_name("hairx"), {}}, {pack_name("facex"), {}}};
+    r.variants.push_back(v);
+    c.races.push_back(r);
+    return c;
+}
+
+NpcRecord look_npc(const std::string& race, const std::string& look) {
+    NpcRecord n = make_npc(1082, 0, race);
+    n.looks = {{race, pack_name(look)}};
+    return n;
+}
+}  // namespace
+
+CM_TEST(npc_look, maps_a_variant_to_pieces_face_hair_and_physique) {
+    auto a = npc_assembly(look_npc("humanfemale", "banditvar"), 0, look_composite());
+    CHECK(a.has_value());
+    if (!a) return;
+    CHECK_EQ(a->manifest.race, std::string("Human"));
+    CHECK_EQ(a->manifest.gender, std::string("Female"));
+    CHECK_EQ(a->manifest.pieces.size(), size_t(1));
+    CHECK_EQ(a->manifest.pieces[0].slot, std::string("Coat"));
+    CHECK_EQ(a->manifest.pieces[0].skin_token, pack_name("coatx"));
+    CHECK(a->manifest.pieces[0].status == castlemist::character::PieceStatus::Ok);
+    CHECK_EQ(a->options.hair, 2);
+    CHECK_EQ(a->options.face, 1);
+    CHECK_EQ(a->options.physique, 3);
+    CHECK(a->notes.empty() || a->notes[0] == kColorsUnprovenNote);
+}
+
+CM_TEST(npc_look, truncated_race_token_resolves) {
+    castlemist::composite::Composite c = look_composite();
+    c.races[0].name = "SylvariFemale";
+    auto a = npc_assembly(look_npc("sylvarifemal", "banditvar"), 0, c);
+    CHECK(a.has_value());
+    if (a) {
+        CHECK_EQ(a->manifest.race, std::string("Sylvari"));
+        CHECK_EQ(a->manifest.gender, std::string("Female"));
+    }
+}
+
+CM_TEST(npc_look, an_unresolvable_look_is_nullopt_with_a_reason_and_never_throws) {
+    std::string why;
+    CHECK(!npc_assembly(look_npc("humanfemale", "nosuchlook"), 0, look_composite(), &why).has_value());
+    CHECK_EQ(why, std::string("variant nosuchlook: not in composite"));
+    why.clear();
+    CHECK(!npc_assembly(look_npc("charrmale", "banditvar"), 0, look_composite(), &why).has_value());
+    CHECK_EQ(why, std::string("race charrmale: not in composite"));
+    why.clear();
+    CHECK(!npc_assembly(look_npc("humanfemale", "banditvar"), 5, look_composite(), &why).has_value());
+    CHECK_EQ(why, std::string("no look record 5"));
+}
+
+CM_TEST(npc_look, a_variant_missing_here_is_found_through_variant_ref_race) {
+    castlemist::composite::Composite c = look_composite();
+    castlemist::composite::CompositeRace other = c.races[0];
+    other.name = "HumanMale";
+    other.variants.clear();
+    other.variant_ref_race = pack_name("humanfemale");
+    c.races.push_back(other);
+    auto a = npc_assembly(look_npc("humanmale", "banditvar"), 0, c);
+    CHECK(a.has_value());
+    if (a) CHECK_EQ(a->manifest.gender, std::string("Male"));
+}
+
+CM_TEST(npc_look, an_unknown_component_token_is_a_note) {
+    castlemist::composite::Composite c = look_composite();
+    c.races[0].variants[0].components.push_back({pack_name("mystery"), {}});
+    auto a = npc_assembly(look_npc("humanfemale", "banditvar"), 0, c);
+    CHECK(a.has_value());
+    if (!a) return;
+    bool found = false;
+    for (const std::string& n : a->notes) found = found || n == "component mystery: not in composite";
+    CHECK(found);
+    CHECK_EQ(a->manifest.pieces.size(), size_t(1));
+}
+
+CM_TEST(npc_look, colours_are_not_applied_while_the_byte_format_is_unproven) {
+    castlemist::composite::Composite c = look_composite();
+    castlemist::composite::VariantColor col;
+    col.brightness = 115, col.contrast = 128, col.hue = 6, col.saturation = 125, col.lightness = 80;
+    c.races[0].variants[0].skin = col;
+    c.races[0].variants[0].components[0].colors[0] = col;
+    CHECK(!castlemist::npc::variant_color_shift(col).has_value());
+    auto a = npc_assembly(look_npc("humanfemale", "banditvar"), 0, c);
+    CHECK(a.has_value());
+    if (!a) return;
+    CHECK(!a->options.skin_tint.has_value());
+    CHECK(a->manifest.pieces[0].dyes.empty());
+    bool found = false;
+    for (const std::string& n : a->notes) found = found || n == kColorsUnprovenNote;
+    CHECK(found);
+}
+
+CM_TEST(npc_look, colour_mapping_matches_measured_examples) {
+    // The best-measured mapping (not yet proven, see variant_color_shift): neutral bytes are the identity shift,
+    // and a real palette skin colour {7, 1.3125, 350, 0.296875, 1.4765625} round-trips through its bytes.
+    using castlemist::composite::VariantColor;
+    auto neutral = castlemist::npc::candidate_color_shift(VariantColor{128, 128, 0, 128, 128});
+    CHECK_NEAR(neutral.brightness, 0.0f, 1e-4f);
+    CHECK_NEAR(neutral.contrast, 1.0f, 1e-4f);
+    CHECK_NEAR(neutral.hue, 0.0f, 1e-4f);
+    CHECK_NEAR(neutral.saturation, 1.0f, 1e-4f);
+    CHECK_NEAR(neutral.lightness, 1.0f, 1e-4f);
+    auto skin = castlemist::npc::candidate_color_shift(VariantColor{135, 168, 249, 38, 189});
+    CHECK_NEAR(skin.brightness, 7.0f, 1e-4f);
+    CHECK_NEAR(skin.contrast, 1.3125f, 1e-4f);
+    CHECK_NEAR(skin.hue, 350.0f, 1.0f);  // one hue byte is 1.4 degrees
+    CHECK_NEAR(skin.saturation, 0.296875f, 1e-4f);
+    CHECK_NEAR(skin.lightness, 1.4765625f, 1e-4f);
+}
+
+CM_TEST(npc_look, physique_none_is_silent_and_out_of_range_is_a_note) {
+    castlemist::composite::Composite c = look_composite();
+    c.races[0].body_bone_scales.resize(14);
+    c.races[0].variants[0].bone_scale_index = 0xFFFFFFFFu;  // "none" in the real data (743 of 1315 HumanFemale variants)
+    auto none = npc_assembly(look_npc("humanfemale", "banditvar"), 0, c);
+    CHECK(none.has_value());
+    if (none) {
+        CHECK_EQ(none->options.physique, -1);
+        for (const std::string& n : none->notes) CHECK(n.rfind("physique", 0) != 0);
+    }
+    c.races[0].variants[0].bone_scale_index = 28;  // beyond the race's 14 physiques
+    auto big = npc_assembly(look_npc("humanfemale", "banditvar"), 0, c);
+    CHECK(big.has_value());
+    if (big) {
+        CHECK_EQ(big->options.physique, -1);
+        bool found = false;
+        for (const std::string& n : big->notes) found = found || n == "physique 28: not in composite";
+        CHECK(found);
+    }
 }

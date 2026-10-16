@@ -61,6 +61,18 @@ Out of scope here: model NPCs that look incomplete in the viewer (waiting on an 
    content map's dye palettes (`cmap::palette`, which holds `ColorShift` floats for every dye colour). The right mapping
    makes most variant component colours equal (within quantisation) to some real palette colour. If no candidate reaches
    ≥ 90%, ship with tints off (textures as authored) and add the note `"colours not applied: byte format unproven"`.
+
+   **Measured 2026-10-16:** over 6 race/genders (HumanFemale/Male, CharrMale, NornFemale, SylvariMale, AsuraFemale;
+   114 828 non-zero, non-neutral colour tuples) against every colour of all 85 content-map palettes (2 070 distinct
+   shifts, all materials). Best mapping: `brightness = byte - 128`, `contrast = byte/128`, `hue = byte * 360/256` degrees,
+   `saturation = byte/128`, `lightness = byte/128`; `{128,128,0,128,128}` is the identity shift. Exact (quantised) hit
+   rate against a real palette colour: 79.3% overall (components 78.9%; with only each colour's first material 63.0%;
+   skin 83.8%, eye 85.7%, pattern 86.5%, hair 78.6%, hair2 76.4%). Rivals: hue as raw degrees 3.1%, hue*255/360 46.7%,
+   unsigned brightness 0%, brightness*2+128 4.2%, sat/light swapped 0.5%, contrast/sat/light *100 0%. The misses are hand-tuned
+   colours a few steps (often multiples of 5) from a palette entry, plus two sentinel tuples (3,0,181,219,3) and
+   (0,102,219,3,0) that occur in pairs. The mapping is clearly the right shape but misses the 90% bar, so
+   `variant_color_shift` stays `nullopt` and `npc_assembly` adds the note; `candidate_color_shift` holds the mapping for a
+   later switch-on.
 5. **Export:** `export_npc` for a race-body NPC with a resolvable look writes `body.glb` with
    `ripper::assemble_character(manifest, dat_path, body.glb, options)`, using look 0 by default. The manifest gains
    `looks` (all records), `look_used` and the assembly report's parts. The CLI `npc-export` gains `--look N`.

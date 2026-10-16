@@ -34,6 +34,9 @@
 //   cntc-dump --dat <path> --out-dir <dir>   -- research: every content pack, decompressed
 //   composite-types --race R --gender G --dat <path> [--type N]
 //            -- research: a race's Composite entries by piece type, physiques, face presets
+//   composite-colors --race R --gender G --dat <path>
+//            -- research: every variant's colour byte tuples by role (components c0-c3, eye, hair, hair2,
+//               pattern, skin); what npc/look.h's byte->dye-shift mapping was measured against
 //   character-assemble --manifest <json> --dat <path> --out <dir | file.glb with --combined>
 //            [--combined] [--weapons stowed|hands|none] [--face N] [--hair N] [--metres] [--index <db>]
 //            [--skin-color ID] [--hair-color ID] [--hair-color2 ID] [--no-look]
@@ -78,6 +81,7 @@
 #include "castlemist/db/index_db.h"
 #include "castlemist/npc/catalogue.h"
 #include "castlemist/npc/export.h"
+#include "castlemist/npc/look.h"
 #include "castlemist/npc/tokens.h"
 #include "castlemist/extract/entry_extractor.h"
 #include "castlemist/exportgltf/gltf_export.h"
@@ -1990,6 +1994,26 @@ void cmd_npc_show(const Args& a) {
                 clips.push_back({{"name", c.name}, {"group", castlemist::npc::clip_group(c.name)},
                                  {"prefix", castlemist::npc::clip_prefix(c.name)}, {"duration", c.duration}});
     }
+    // The first look (or --look N) mapped onto Character Ripper inputs.
+    if (!n->looks.empty() && has(a, "dat")) {
+        Gw2Dat dat;
+        load_dat_file(dat, a.at("dat"));
+        const size_t li = has(a, "look") ? static_cast<size_t>(to_u64(a.at("look"))) : 0;
+        if (auto comp = castlemist::ripper::load_composite(dat)) {
+            std::string why;
+            if (auto as = castlemist::npc::npc_assembly(*n, li, *comp, &why)) {
+                json pieces = json::array();
+                for (const auto& p : as->manifest.pieces)
+                    pieces.push_back({{"slot", p.slot}, {"token", castlemist::npc::decode_token(p.skin_token)}});
+                j["assembly"] = {{"look", li}, {"race", as->manifest.race}, {"gender", as->manifest.gender},
+                                 {"pieces", pieces}, {"face", as->options.face}, {"hair", as->options.hair},
+                                 {"ears", as->options.ears}, {"skin_style", as->options.skin_style},
+                                 {"physique", as->options.physique}, {"notes", as->notes}};
+            } else {
+                j["assembly"] = {{"look", li}, {"error", why}};
+            }
+        }
+    }
     j["ok"] = true;
     if (!j.contains("clips_note")) j["clips"] = clips;
     emit(j);
@@ -2109,8 +2133,12 @@ void cmd_palette(const Args& a) {
         json pj{{"id", id}, {"base", {p->base[0], p->base[1], p->base[2]}}, {"count", p->colors.size()}};
         if (has(a, "id")) {
             json colors = json::array();
-            for (const auto& c : p->colors)
-                colors.push_back({{"id", c.id}, {"shift", c.materials.empty() ? json() : shift_json(c.materials[0])}});
+            for (const auto& c : p->colors) {
+                json mats = json::array();
+                for (const auto& m : c.materials) mats.push_back(shift_json(m));
+                colors.push_back({{"id", c.id}, {"shift", c.materials.empty() ? json() : shift_json(c.materials[0])},
+                                  {"materials", mats}});
+            }
             pj["colors"] = colors;
         }
         out.push_back(pj);
@@ -2368,6 +2396,37 @@ void cmd_composite_types(const Args& a) {
           {"variant_samples", variants}});
 }
 
+// Research (like animmach): every variant colour of a race as raw byte tuples
+// [brightness, contrast, hue, saturation, lightness], labelled by role. The
+// measurement of npc/look.h's byte->DyeShift mapping ran over this output.
+void cmd_composite_colors(const Args& a) {
+    namespace rp = castlemist::ripper;
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    auto comp = rp::load_composite(dat);
+    if (!comp) fail("no Composite in the dat");
+    const auto* r = comp->race(need(a, "race") + need(a, "gender"));
+    if (!r) fail("no such race");
+    auto col = [](const castlemist::composite::VariantColor& c) {
+        return json::array({c.brightness, c.contrast, c.hue, c.saturation, c.lightness});
+    };
+    json variants = json::array();
+    for (const auto& v : r->variants) {
+        json comps = json::array();
+        for (const auto& c : v.components) {
+            json cj = json::array();
+            for (const auto& k : c.colors) cj.push_back(col(k));
+            comps.push_back({{"token", castlemist::npc::decode_token(c.token)}, {"colors", cj}});
+        }
+        variants.push_back({{"token", castlemist::npc::decode_token(v.token)}, {"components", comps},
+                            {"bone_scale_index", v.bone_scale_index}, {"skin_index", v.skin_index},
+                            {"skin_style", v.skin_style},
+                            {"eye", col(v.eye)}, {"hair", col(v.hair)}, {"hair2", col(v.hair2)},
+                            {"pattern", col(v.pattern)}, {"skin", col(v.skin)}});
+    }
+    emit({{"ok", true}, {"race", r->name}, {"variants", variants}});
+}
+
 // What a race can look like: face / hair style counts and its skin and hair
 // palettes with swatch colours (needs the content map for the colours).
 void cmd_look_options(const Args& a) {
@@ -2589,6 +2648,7 @@ int main(int argc, char** argv) {
         else if (cmd == "npc-names") cmd_npc_names(a);
         else if (cmd == "look-options") cmd_look_options(a);
         else if (cmd == "composite-types") cmd_composite_types(a);
+        else if (cmd == "composite-colors") cmd_composite_colors(a);
         else if (cmd == "look-set") cmd_look_set(a);
         else if (cmd == "look-thumbs") cmd_look_thumbs(a);
         else if (cmd == "character-vrchat") cmd_character_vrchat(a);
