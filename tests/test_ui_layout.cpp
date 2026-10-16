@@ -34,6 +34,9 @@ const Id kIds[] = {
     {"ID_FILE_LOAD_TEMPLATE", ID_FILE_LOAD_TEMPLATE},
     {"ID_FILE_LOAD_KEYS", ID_FILE_LOAD_KEYS},
     {"ID_FILE_OPEN_INDEX", ID_FILE_OPEN_INDEX},
+    {"ID_FILE_EXPORT_GLTF_MODEL", ID_FILE_EXPORT_GLTF_MODEL},
+    {"ID_FILE_EXPORT_WORLD_MAP", ID_FILE_EXPORT_WORLD_MAP},
+    {"ID_FILE_EXPORT_GLTF_MODEL_ATLAS", ID_FILE_EXPORT_GLTF_MODEL_ATLAS},
     {"ID_TOOLS_DECODE_LINK", ID_TOOLS_DECODE_LINK},
 
     {"ID_LISTVIEW", ID_LISTVIEW},
@@ -157,6 +160,23 @@ CM_TEST(control_ids, are_unique) {
         seen[id.value] = id.name;
     }
     CHECK_EQ(seen.size(), sizeof(kIds) / sizeof(kIds[0]));
+}
+
+// File > Export World (Map)... took over Export glTF (Map)'s id (1017): it
+// must be the only command answering to it, among the menu commands and the
+// export ids that live outside the 1000-range.
+CM_TEST(ui, export_world_menu_id_unique) {
+    CHECK_EQ(ID_FILE_EXPORT_WORLD_MAP, static_cast<UINT_PTR>(1017));
+    size_t hits = 0;
+    for (const Id& id : kIds)
+        if (id.value == ID_FILE_EXPORT_WORLD_MAP) ++hits;
+    const UINT_PTR others[] = {ID_FILE_OPEN_LOOSE, ID_FILE_BUILD_INDEX, ID_VIEW_THEME_DARK, ID_VIEW_THEME_LIGHT,
+                               ID_VIEW_THEME_CUSTOM, ID_VIEW_THEME_ACCENT, ID_TOOLS_CHARACTER,
+                               ID_TOOLS_DOWNLOAD_NAMES, ID_TOOLS_DECODE_TOKEN, ID_TOOLS_DATA_STATUS,
+                               ID_TOOLS_MAP_WINDOW, ID_FILE_EXPORT_VRCHAT_MODEL, ID_FILE_EXPORT_SKYBOX_MAP};
+    for (UINT_PTR v : others)
+        if (v == ID_FILE_EXPORT_WORLD_MAP) ++hits;
+    CHECK_EQ(hits, static_cast<size_t>(1));
 }
 
 // Menu commands and child-control ids share one WM_COMMAND stream, so the two

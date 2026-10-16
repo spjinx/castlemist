@@ -85,7 +85,7 @@ constexpr UINT_PTR ID_TOOLS_DECODE_TOKEN = 1015;   // token/filename-bytes decod
 constexpr UINT_PTR ID_TOOLS_DATA_STATUS = 1021;    // Data status window: is every export input current?
 constexpr UINT_PTR ID_TOOLS_MAP_WINDOW = 1022;     // Map Window: fly/walk one map (ui/map_window.cpp)
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL = 1016; // Export glTF... (single model, plain decoded textures)
-constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MAP = 1017;   // Export glTF... (whole map scene)
+constexpr UINT_PTR ID_FILE_EXPORT_WORLD_MAP = 1017;  // Export World (Map)... (cell folder, manifest, per-cell glTF, FBX)
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL_ATLAS = 1018; // Export glTF... (single model, baked to a fresh UV atlas)
 constexpr UINT_PTR ID_FILE_EXPORT_VRCHAT_MODEL = 2185;     // Export for VRChat (Model)... (folder: glb, fbx, blend, Textures, materials.json)
 constexpr UINT_PTR ID_FILE_EXPORT_SKYBOX_MAP = 2186;       // Export Skybox (Map)... (folder: sky.json, <mode>/baked, <mode>/skybox)
@@ -742,8 +742,10 @@ void try_autoload_keys();
 void do_export(HWND hwnd, bool export_compressed);
 void do_export_gltf_model(HWND hwnd);
 void do_export_gltf_model_atlas(HWND hwnd);
-void do_export_gltf_map(HWND hwnd);
+void do_export_world_map(HWND hwnd);
 void on_gltf_export_done(HWND hwnd);
+void on_world_export_done(HWND hwnd, LPARAM lparam);
+bool world_export_running();
 void do_export_vrchat_model(HWND hwnd);
 void on_vrchat_model_done(HWND hwnd, LPARAM lparam);
 void do_export_skybox_map(HWND hwnd);

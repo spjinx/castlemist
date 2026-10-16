@@ -22,12 +22,14 @@ void set_export_enabled(bool enabled) {
     bool modelReady = enabled && g_app != nullptr &&
                       g_app->current_entry.kind == PreviewKind::Model && g_app->current_entry.model;
     bool mapReady = enabled && g_app != nullptr &&
-                    g_app->current_entry.kind == PreviewKind::Map && g_app->current_entry.map;
+                    g_app->current_entry.kind == PreviewKind::Map && !g_app->current_entry.decompressed.empty();
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MODEL, modelReady ? MF_ENABLED : (MF_GRAYED | MF_DISABLED));
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MODEL_ATLAS,
                    modelReady ? MF_ENABLED : (MF_GRAYED | MF_DISABLED));
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_VRCHAT_MODEL, modelReady ? MF_ENABLED : (MF_GRAYED | MF_DISABLED));
-    EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MAP, mapReady ? MF_ENABLED : (MF_GRAYED | MF_DISABLED));
+    // Greyed while an Export World (Map) runs: one export at a time.
+    EnableMenuItem(g_file_menu, ID_FILE_EXPORT_WORLD_MAP,
+                   mapReady && !world_export_running() ? MF_ENABLED : (MF_GRAYED | MF_DISABLED));
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_SKYBOX_MAP, mapReady ? MF_ENABLED : (MF_GRAYED | MF_DISABLED));
 }
 
