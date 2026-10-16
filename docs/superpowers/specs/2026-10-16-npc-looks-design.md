@@ -70,9 +70,13 @@ Out of scope here: model NPCs that look incomplete in the viewer (waiting on an 
    skin 83.8%, eye 85.7%, pattern 86.5%, hair 78.6%, hair2 76.4%). Rivals: hue as raw degrees 3.1%, hue*255/360 46.7%,
    unsigned brightness 0%, brightness*2+128 4.2%, sat/light swapped 0.5%, contrast/sat/light *100 0%. The misses are hand-tuned
    colours a few steps (often multiples of 5) from a palette entry, plus two sentinel tuples (3,0,181,219,3) and
-   (0,102,219,3,0) that occur in pairs. The mapping is clearly the right shape but misses the 90% bar, so
-   `variant_color_shift` stays `nullopt` and `npc_assembly` adds the note; `candidate_color_shift` holds the mapping for a
-   later switch-on.
+   (0,102,219,3,0) that occur in pairs.
+   **Decision (controller, 2026-10-16):** the 90% bar was the wrong test, because variants use hand-tuned colours that
+   are in no palette. 79.3% exact against 0-47% for every rival mapping, and an identity tuple that decodes to no shift,
+   is enough: `variant_color_shift` returns the measured mapping for every tuple, `npc_assembly` applies component dyes
+   and the skin/hair/hair2/eye/pattern tints, and adds the single note "colours: measured mapping (79.3% exact palette
+   match)". `boneScaleIndex` is never applied as a physique (values run to 153 against 14 presets): physique stays -1
+   with the note "physique N: not in composite" (silent for 0xFFFFFFFF).
 5. **Export:** `export_npc` for a race-body NPC with a resolvable look writes `body.glb` with
    `ripper::assemble_character(manifest, dat_path, body.glb, options)`, using look 0 by default. The manifest gains
    `looks` (all records), `look_used` and the assembly report's parts. The CLI `npc-export` gains `--look N`.

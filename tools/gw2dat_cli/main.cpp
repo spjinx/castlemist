@@ -1995,7 +1995,9 @@ void cmd_npc_show(const Args& a) {
                                  {"prefix", castlemist::npc::clip_prefix(c.name)}, {"duration", c.duration}});
     }
     // The first look (or --look N) mapped onto Character Ripper inputs.
-    if (!n->looks.empty() && has(a, "dat")) {
+    if (!n->looks.empty() && !has(a, "dat")) {
+        j["assembly"] = {{"error", "pass --dat to map the look"}};
+    } else if (!n->looks.empty()) {
         Gw2Dat dat;
         load_dat_file(dat, a.at("dat"));
         const size_t li = has(a, "look") ? static_cast<size_t>(to_u64(a.at("look"))) : 0;
@@ -2012,6 +2014,8 @@ void cmd_npc_show(const Args& a) {
             } else {
                 j["assembly"] = {{"look", li}, {"error", why}};
             }
+        } else {
+            j["assembly"] = {{"error", "no Composite in the dat"}};
         }
     }
     j["ok"] = true;

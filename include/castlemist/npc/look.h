@@ -30,17 +30,15 @@ struct NpcAssembly {
 std::optional<NpcAssembly> npc_assembly(const NpcRecord& npc, size_t look_index,
                                         const composite::Composite& composite, std::string* why = nullptr);
 
-/// Note added when the colour bytes are not applied.
-inline constexpr const char* kColorsUnprovenNote = "colours not applied: byte format unproven";
+/// Note added when variant colours were applied.
+inline constexpr const char* kColorsNote = "colours: measured mapping (79.3% exact palette match)";
 
-/// A variant colour as a dye shift, or nullopt while the byte format is unproven (see
-/// docs/superpowers/specs/2026-10-16-npc-looks-design.md, "Colour bytes": the measured mapping reaches
-/// only ~79% against the real palettes, below the 90% bar).
+/// A variant colour as a dye shift: the measured mapping of candidate_color_shift, for every tuple (the
+/// identity tuple {128,128,0,128,128} gives the neutral shift). See the spec's "Colour bytes".
 std::optional<character::DyeShift> variant_color_shift(const composite::VariantColor& c);
 
-/// The best-measured mapping, whether or not it is proven: brightness byte - 128, contrast / 128,
-/// hue * 360 / 256 degrees, saturation / 128, lightness / 128. Kept so the mapping can be switched on
-/// by one line in variant_color_shift once it is proven.
+/// The measured mapping: brightness byte - 128, contrast / 128,
+/// hue * 360 / 256 degrees, saturation / 128, lightness / 128.
 character::DyeShift candidate_color_shift(const composite::VariantColor& c);
 
 }  // namespace castlemist::npc

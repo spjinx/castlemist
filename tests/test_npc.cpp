@@ -761,8 +761,10 @@ CM_TEST(npc_look, maps_a_variant_to_pieces_face_hair_and_physique) {
     CHECK(a->manifest.pieces[0].status == castlemist::character::PieceStatus::Ok);
     CHECK_EQ(a->options.hair, 2);
     CHECK_EQ(a->options.face, 1);
-    CHECK_EQ(a->options.physique, 3);
-    CHECK(a->notes.empty() || a->notes[0] == kColorsUnprovenNote);
+    CHECK_EQ(a->options.physique, -1);  // boneScaleIndex is never applied as a physique
+    bool noted = false;
+    for (const std::string& n : a->notes) noted = noted || n == "physique 3: not in composite";
+    CHECK(noted);
 }
 
 CM_TEST(npc_look, truncated_race_token_resolves) {
@@ -812,21 +814,49 @@ CM_TEST(npc_look, an_unknown_component_token_is_a_note) {
     CHECK_EQ(a->manifest.pieces.size(), size_t(1));
 }
 
-CM_TEST(npc_look, colours_are_not_applied_while_the_byte_format_is_unproven) {
+CM_TEST(npc_look, measured_colours_become_dyes_and_tints) {
     castlemist::composite::Composite c = look_composite();
     castlemist::composite::VariantColor col;
-    col.brightness = 115, col.contrast = 128, col.hue = 6, col.saturation = 125, col.lightness = 80;
+    col.brightness = 135, col.contrast = 168, col.hue = 249, col.saturation = 38, col.lightness = 189;
     c.races[0].variants[0].skin = col;
-    c.races[0].variants[0].components[0].colors[0] = col;
-    CHECK(!castlemist::npc::variant_color_shift(col).has_value());
+    c.races[0].variants[0].components[0].colors[1] = col;
+    auto want = castlemist::npc::candidate_color_shift(col);
+    auto got = castlemist::npc::variant_color_shift(col);
+    CHECK(got.has_value());
+    if (got) CHECK_NEAR(got->contrast, want.contrast, 1e-6f);
     auto a = npc_assembly(look_npc("humanfemale", "banditvar"), 0, c);
     CHECK(a.has_value());
     if (!a) return;
-    CHECK(!a->options.skin_tint.has_value());
-    CHECK(a->manifest.pieces[0].dyes.empty());
+    CHECK(a->options.skin_tint.has_value());
+    if (a->options.skin_tint) CHECK_NEAR(a->options.skin_tint->hue, want.hue, 1e-4f);
+    CHECK_EQ(a->manifest.pieces[0].dyes.size(), size_t(1));
+    if (!a->manifest.pieces[0].dyes.empty()) {
+        const auto& d = a->manifest.pieces[0].dyes[0];
+        CHECK_EQ(d.slot, 1);
+        CHECK(d.shift.has_value());
+        if (d.shift) CHECK_NEAR(d.shift->lightness, want.lightness, 1e-6f);
+    }
     bool found = false;
-    for (const std::string& n : a->notes) found = found || n == kColorsUnprovenNote;
+    for (const std::string& n : a->notes) found = found || n == kColorsNote;
     CHECK(found);
+}
+
+CM_TEST(npc_look, a_non_armour_component_and_an_out_of_range_skin_style_are_notes) {
+    castlemist::composite::Composite c = look_composite();
+    c.races[0].file_data[pack_name("bodyx")] = piece(pack_name("bodyx"), 1);
+    c.races[0].variants[0].components.push_back({pack_name("bodyx"), {}});
+    c.races[0].variants[0].skin_style = 5;
+    auto a = npc_assembly(look_npc("humanfemale", "banditvar"), 0, c);
+    CHECK(a.has_value());
+    if (!a) return;
+    bool t = false, s = false;
+    for (const std::string& n : a->notes) {
+        t = t || n == "component bodyx: type 1 not an armour piece";
+        s = s || n == "skin style 5: not in composite";
+    }
+    CHECK(t);
+    CHECK(s);
+    CHECK_EQ(a->options.skin_style, 0);
 }
 
 CM_TEST(npc_look, colour_mapping_matches_measured_examples) {

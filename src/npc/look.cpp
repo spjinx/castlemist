@@ -78,10 +78,8 @@ character::DyeShift candidate_color_shift(const composite::VariantColor& c) {
             c.saturation / 128.0f, c.lightness / 128.0f};
 }
 
-std::optional<character::DyeShift> variant_color_shift(const composite::VariantColor&) {
-    // The mapping above reproduces ~79% of the variants' colour tuples exactly against the real palettes (the rest
-    // are hand-tuned colours near palette entries), short of the 90% bar the spec sets. Unproven, so not applied.
-    return std::nullopt;
+std::optional<character::DyeShift> variant_color_shift(const composite::VariantColor& c) {
+    return candidate_color_shift(c);
 }
 
 std::optional<NpcAssembly> npc_assembly(const NpcRecord& npc, size_t look_index, const composite::Composite& comp,
@@ -109,14 +107,13 @@ std::optional<NpcAssembly> npc_assembly(const NpcRecord& npc, size_t look_index,
     split_race(race->name, out.manifest.race, out.manifest.gender);
     out.manifest.name = npc.name.empty() ? npc.codename : npc.name;
     ripper::AssemblyOptions& opt = out.options;
-    bool colours_dropped = false;
+    bool colours_applied = false;
 
-    // A colour: converted when the format is proven, else left as authored.
+    // A colour: an all-zero tuple is an unset slot and stays as authored.
     auto tint = [&](const composite::VariantColor& c) -> std::optional<character::DyeShift> {
         if (all_zero(c)) return std::nullopt;
-        std::optional<character::DyeShift> s = variant_color_shift(c);
-        if (!s) colours_dropped = true;
-        return s;
+        colours_applied = true;
+        return variant_color_shift(c);
     };
 
     for (const composite::VariantComponent& comp_ref : variant->components) {
@@ -129,7 +126,11 @@ std::optional<NpcAssembly> npc_assembly(const NpcRecord& npc, size_t look_index,
             opt.ears = i;
         } else if (auto it = race->file_data.find(token); it != race->file_data.end()) {
             const char* slot = slot_name(it->second.type);
-            if (!slot) continue;  // a bare-body part: the skin style covers it
+            if (!slot) {  // a bare-body part: the skin style covers it
+                out.notes.push_back("component " + decode_token(token) + ": type " +
+                                    std::to_string(static_cast<int>(it->second.type)) + " not an armour piece");
+                continue;
+            }
             character::ManifestPiece p;
             p.slot = slot;
             p.skin_token = token;
@@ -149,22 +150,22 @@ std::optional<NpcAssembly> npc_assembly(const NpcRecord& npc, size_t look_index,
         }
     }
 
-    // 0xFFFFFFFF is "none" (743 of 1315 HumanFemale variants). Real indices run past the race's 14 physiques
-    // (up to 153), so an index the race has no preset for is left at the models as they come, with a note.
-    if (variant->bone_scale_index != 0xFFFFFFFFu) {
-        if (race->body_bone_scales.empty() || variant->bone_scale_index < race->body_bone_scales.size())
-            opt.physique = static_cast<int>(variant->bone_scale_index);
-        else
-            out.notes.push_back("physique " + std::to_string(variant->bone_scale_index) + ": not in composite");
-    }
-    opt.skin_style = static_cast<int>(variant->skin_style);
+    // boneScaleIndex is never applied as a physique: real values run to 153 against 14 presets, so what it
+    // indexes is unknown. 0xFFFFFFFF is "none" (743 of 1315 HumanFemale variants) and stays silent.
+    opt.physique = -1;
+    if (variant->bone_scale_index != 0xFFFFFFFFu)
+        out.notes.push_back("physique " + std::to_string(variant->bone_scale_index) + ": not in composite");
+    if (variant->skin_style < std::max<size_t>(race->skin_styles.size(), 1))
+        opt.skin_style = static_cast<int>(variant->skin_style);
+    else
+        out.notes.push_back("skin style " + std::to_string(variant->skin_style) + ": not in composite");
 
     opt.skin_tint = tint(variant->skin);
     opt.hair_tint = tint(variant->hair);
     opt.hair_tint2 = tint(variant->hair2);
     opt.eye_tint = tint(variant->eye);
     opt.pattern_tint = tint(variant->pattern);
-    if (colours_dropped) out.notes.push_back(kColorsUnprovenNote);
+    if (colours_applied) out.notes.push_back(kColorsNote);
     return out;
 }
 
