@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <tuple>
@@ -328,7 +329,8 @@ std::wstring quote_arg(const std::wstring& a) {
 // `logPath`, Blender's stdout and stderr go to that file, and on failure
 // castlemist's reason is appended after them.
 bool run_blender(const std::string& blender, const std::string& script, const std::vector<std::string>& args,
-                 std::string& log, const std::string& logPath, unsigned long timeoutMs) {
+                 std::string& log, const std::string& logPath, unsigned long timeoutMs,
+                 const std::atomic<bool>* cancel = nullptr) {
     // --python-exit-code: an uncaught exception in the script exits non-zero
     // (Blender's default is 0).
     std::wstring cmd = quote_arg(from_utf8(blender).wstring()) + L" -b --factory-startup --python-exit-code 1 -P " +
@@ -367,13 +369,42 @@ bool run_blender(const std::string& blender, const std::string& script, const st
         si.hStdOutput = out;
         si.hStdError = out;
     }
+    // Blender runs in a job object that kills it when the job's last handle
+    // closes: if castlemist exits (or dies) during a conversion, Blender goes
+    // with it instead of converting on, invisible, for up to the limit (review I5).
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    if (job) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION lim{};
+        lim.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &lim, sizeof lim)) {
+            CloseHandle(job);
+            job = nullptr;
+        }
+    }
     PROCESS_INFORMATION pi{};
     std::vector<wchar_t> buf(cmd.begin(), cmd.end());
     buf.push_back(0);
-    if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, capture ? TRUE : FALSE, CREATE_NO_WINDOW, nullptr,
-                        nullptr, &si, &pi))
+    if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, capture ? TRUE : FALSE,
+                        CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, nullptr, &si, &pi)) {
+        if (job) CloseHandle(job);
         return fail("could not start Blender (" + std::to_string(GetLastError()) + ")");
-    const DWORD w = WaitForSingleObject(pi.hProcess, timeoutMs);
+    }
+    if (job && !AssignProcessToJobObject(job, pi.hProcess)) {
+        CloseHandle(job);   // still runs, only without the kill-on-exit guarantee
+        job = nullptr;
+    }
+    ResumeThread(pi.hThread);
+    // Waits in slices so a cancel (the app closing) stops Blender promptly.
+    const ULONGLONG start = GetTickCount64();
+    DWORD w = WAIT_TIMEOUT;
+    bool cancelled = false;
+    for (;;) {
+        const ULONGLONG used = GetTickCount64() - start;
+        if (used >= timeoutMs) break;
+        w = WaitForSingleObject(pi.hProcess, static_cast<DWORD>(std::min<ULONGLONG>(250, timeoutMs - used)));
+        if (w != WAIT_TIMEOUT) break;
+        if (cancel && cancel->load()) { cancelled = true; break; }
+    }
     if (w != WAIT_OBJECT_0) {
         TerminateProcess(pi.hProcess, 1);
         WaitForSingleObject(pi.hProcess, 10 * 1000);   // let it go before the log is appended to
@@ -382,6 +413,8 @@ bool run_blender(const std::string& blender, const std::string& script, const st
     GetExitCodeProcess(pi.hProcess, &code);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
+    if (job) CloseHandle(job);
+    if (cancelled) return fail("Blender stopped: export cancelled");
     if (w != WAIT_OBJECT_0) return fail("Blender timed out after " + std::to_string(timeoutMs / 1000) + " s");
     if (code != 0) return fail("Blender exited with " + std::to_string(code));
     if (capture) CloseHandle(out);
@@ -513,7 +546,7 @@ VrchatModelReport export_vrchat_model(const ModelPreview& model, const std::stri
 }
 
 bool convert_world_to_fbx(const std::string& exportDirUtf8, std::string& log, const std::string& blenderExe,
-                          size_t* fbxSet) {
+                          size_t* fbxSet, const std::atomic<bool>* cancel) {
     if (fbxSet) *fbxSet = 0;
     const std::string blender = blenderExe.empty() ? find_blender() : blenderExe;
     if (blender.empty()) {
@@ -535,7 +568,7 @@ bool convert_world_to_fbx(const std::string& exportDirUtf8, std::string& log, co
     std::string why;
     // One session for the whole folder (spec D6); Spirit Vale's time is the
     // plan's measurement, so the limit is generous.
-    const bool ran = run_blender(blender, script, {"--to-fbx", exportDirUtf8}, why, logPath, 4ul * 60 * 60 * 1000);
+    const bool ran = run_blender(blender, script, {"--to-fbx", exportDirUtf8}, why, logPath, 4ul * 60 * 60 * 1000, cancel);
     // Whatever was converted is recorded, also after a failure part-way.
     const size_t n = exportgltf::set_manifest_fbx(exportDirUtf8);
     if (fbxSet) *fbxSet = n;

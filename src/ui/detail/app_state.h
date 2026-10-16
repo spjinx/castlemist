@@ -725,6 +725,10 @@ void do_export_world_map(HWND hwnd);
 void on_gltf_export_done(HWND hwnd);
 void on_world_export_done(HWND hwnd, LPARAM lparam);
 bool world_export_running();
+/// Asks a running world export to stop (the app is closing; review I5).
+void cancel_world_export();
+/// Waits up to @p ms for the world export thread to finish; true when none runs.
+bool wait_world_export(int ms);
 void do_export_vrchat_model(HWND hwnd);
 void on_vrchat_model_done(HWND hwnd, LPARAM lparam);
 void do_export_skybox_map(HWND hwnd);

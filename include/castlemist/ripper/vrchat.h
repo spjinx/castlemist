@@ -9,6 +9,7 @@
 // setup note listing the bone chains to give PhysBones. Blender (headless, with
 // tools/blender/castlemist_vrchat.py) turns the .glb into the .fbx Unity takes.
 
+#include <atomic>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -81,8 +82,10 @@ std::string find_blender();
 /// part-way, so the manifest names every .fbx that exists. `blenderExe` empty:
 /// find_blender(). False + `log` on failure or when Blender is missing
 /// ("Blender not found"); `fbxSet`, when given, receives set_manifest_fbx's count.
+/// Blender runs in a kill-on-close job object, so it never outlives castlemist;
+/// `cancel`, when it becomes true, stops it (false, "export cancelled").
 bool convert_world_to_fbx(const std::string& exportDirUtf8, std::string& log, const std::string& blenderExe = {},
-                          size_t* fbxSet = nullptr);
+                          size_t* fbxSet = nullptr, const std::atomic<bool>* cancel = nullptr);
 
 /// What to do when a world export has no .fbx files (review I3). Both commands
 /// convert every .glb and record the .fbx files in manifest.json, which is the

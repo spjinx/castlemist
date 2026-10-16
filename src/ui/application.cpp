@@ -840,8 +840,14 @@ int run(HINSTANCE hInstance, int cmd_show) {
     // generation (model workers between models); give them a moment so none
     // is still running into process teardown.
     const bool workers_done = mapwin_wait_workers(3000);
+    // A world export is cancelled (WM_CLOSE asked first) and given a moment to
+    // stop; one still inside load_world or Blender's last file cannot be, so
+    // the process ends below without CRT teardown, which also closes Blender's
+    // kill-on-close job (review I5).
+    cancel_world_export();
+    const bool export_done = wait_world_export(5000);
     OleUninitialize();
-    if (!workers_done) {
+    if (!workers_done || !export_done) {
         // A Map window thread is still inside load_world (or one model load),
         // which cannot be cancelled. Returning would run the CRT's static
         // destructors under it (the struct template, the theme, ...); end the

@@ -522,10 +522,24 @@ struct WorldExportMsg {
 
 /// Only one world export at a time (it reads the whole map, then runs Blender).
 std::atomic<bool> g_world_export_running{false};
+/// Set when the app closes during an export (review I5): export_world_folder
+/// stops at its next model / cell / stage, and Blender is terminated.
+std::atomic<bool> g_world_export_cancel{false};
 
 } // namespace
 
 bool world_export_running() { return g_world_export_running.load(); }
+
+void cancel_world_export() { g_world_export_cancel = true; }
+
+bool wait_world_export(int ms) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while (g_world_export_running.load()) {
+        if (std::chrono::steady_clock::now() >= until) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return true;
+}
 
 // "Export World (Map)...": the cell folder, manifest.json and per-cell glTF of
 // the selected map (exportgltf::export_world_folder), then every .glb to .fbx in
@@ -610,6 +624,8 @@ void do_export_world_map(HWND hwnd) {
              fileId);
     SetWindowTextW(g_app->hwnd_status_label, st);
 
+    g_world_export_cancel = false;
+    opts.cancel = &g_world_export_cancel;
     g_world_export_running = true;
     set_export_enabled(g_app->has_loaded_entry);   // greys the menu item while it runs
     std::thread([hwnd, tpl, datPath, fileId, dirUtf8, opts]() {
@@ -657,7 +673,8 @@ void do_export_world_map(HWND hwnd) {
                     // Blender missing or failing leaves the folder valid, as in the CLI.
                     progress("blender --to-fbx");
                     const auto tf = std::chrono::steady_clock::now();
-                    r->fbxOk = castlemist::ripper::convert_world_to_fbx(dirUtf8, r->fbxLog, std::string(), &r->fbxSet);
+                    r->fbxOk = castlemist::ripper::convert_world_to_fbx(dirUtf8, r->fbxLog, std::string(), &r->fbxSet,
+                                                                         &g_world_export_cancel);
                     const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - tf).count();
                     j["fbx"] = {{"ok", r->fbxOk}, {"log", r->fbxLog}, {"fbxSet", r->fbxSet}, {"seconds", s}};
                     if (!r->fbxOk)

@@ -1608,6 +1608,20 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             }
         }
         return 0;
+    case WM_CLOSE:
+        // Closing during Export World would leave a half-written folder and,
+        // before the job object, an orphaned Blender: ask first (review I5).
+        if (world_export_running()) {
+            const int a = MessageBoxW(hwnd,
+                                      L"A world export is still running.\n\nQuit anyway? The export stops and its folder "
+                                      L"is left incomplete (no manifest.json, or no .fbx files if Blender was "
+                                      L"converting).",
+                                      L"castlemist", MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2);
+            if (a != IDYES) return 0;
+            cancel_world_export();
+        }
+        DestroyWindow(hwnd);
+        return 0;
     case WM_DESTROY:
         // The Map window is not owned by this one, so it is not destroyed
         // with it: close it first, so its worker generation is bumped (and its
