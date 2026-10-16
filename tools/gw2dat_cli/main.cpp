@@ -2023,16 +2023,22 @@ void cmd_npc_show(const Args& a) {
     emit(j);
 }
 
-// Export one NPC (--id N) to --out-dir D: body.glb, weapon_<slot>.glb, manifest.json (needs --dat).
+// Export one NPC (--id N) to --out-dir D: body.glb (race-body NPCs dressed from look --look N, default 0), weapon_<slot>.glb, manifest.json (needs --dat).
 void cmd_npc_export(const Args& a) {
     castlemist::npc::Catalogue cat = ensure_npc(a);
     const uint32_t id = static_cast<uint32_t>(to_u64(need(a, "id")));
     need(a, "out-dir");
     const castlemist::npc::NpcRecord* n = cat.find(id);
     if (!n) fail("no npc with id " + std::to_string(id));
+    castlemist::npc::ExportOptions opt;
+    if (has(a, "look")) opt.look = static_cast<size_t>(to_u64(a.at("look")));
+    if (!n->looks.empty() && opt.look >= n->looks.size())
+        fail("npc " + std::to_string(id) + " has " + std::to_string(n->looks.size()) + " look(s); --look " +
+             std::to_string(opt.look) + " is out of range");
     Gw2Dat dat;
     load_dat_file(dat, need(a, "dat"));
-    castlemist::npc::ExportResult r = castlemist::npc::export_npc(dat, *n, std::filesystem::path(utf8_arg("--out-dir")));
+    castlemist::npc::ExportResult r =
+        castlemist::npc::export_npc(dat, *n, std::filesystem::path(utf8_arg("--out-dir")), opt);
     emit({{"ok", r.ok}, {"folder", r.folder.generic_string()}, {"files", r.files}, {"notes", r.notes}});
 }
 

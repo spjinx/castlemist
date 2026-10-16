@@ -1,12 +1,16 @@
 #include "castlemist/npc/export.h"
 
+#include "castlemist/npc/look.h"
 #include "castlemist/npc/tokens.h"
 
 #include "castlemist/exportgltf/gltf_export.h"
 #include "castlemist/extract/entry_extractor.h"
+#include "castlemist/ripper/assemble.h"
+#include "castlemist/ripper/character_export.h"
 
 #include <exception>
 #include <fstream>
+#include <optional>
 
 namespace castlemist::npc {
 
@@ -24,7 +28,8 @@ std::string export_folder_name(const NpcRecord& r) {
 
 nlohmann::json export_manifest(const NpcRecord& r, const std::vector<ClipInfo>& clips,
                                const std::vector<WrittenWeapon>& weapons,
-                               const std::vector<std::string>& files, const std::vector<std::string>& notes) {
+                               const std::vector<std::string>& files, const std::vector<std::string>& notes,
+                               const LookUsed* look) {
     using nlohmann::json;
     json j;
     j["version"] = 1;
@@ -47,6 +52,13 @@ nlohmann::json export_manifest(const NpcRecord& r, const std::vector<ClipInfo>& 
                                 {"skin", w.weapon.skin},
                                 {"model", w.weapon.model},
                                 {"file", w.file}});
+    j["looks"] = r.looks.size();
+    if (look) {
+        j["look_used"] = look->index;
+        j["parts"] = json::array();
+        for (const PartInfo& p : look->parts)
+            j["parts"].push_back({{"name", p.name}, {"status", p.status}, {"reason", p.reason}});
+    }
     j["skills"] = r.skills;
     j["files"] = files;
     j["notes"] = notes;
@@ -64,6 +76,11 @@ std::vector<std::string> base_notes(const NpcRecord& r) {
 }
 
 ExportResult export_npc(Gw2Dat& dat, const NpcRecord& r, const std::filesystem::path& out_dir) {
+    return export_npc(dat, r, out_dir, ExportOptions{});
+}
+
+ExportResult export_npc(Gw2Dat& dat, const NpcRecord& r, const std::filesystem::path& out_dir,
+                        const ExportOptions& options) {
     ExportResult res;
     res.notes = base_notes(r);
     std::vector<ClipInfo> clips;
@@ -100,6 +117,41 @@ ExportResult export_npc(Gw2Dat& dat, const NpcRecord& r, const std::filesystem::
     };
 
     if (r.model != 0) write_model(r.model, "body.glb", &clips);
+
+    // A race-body NPC: dress the Character Ripper's body from the look's composite variant.
+    std::optional<LookUsed> look_used;
+    if (r.model == 0 && !r.looks.empty()) {
+        try {
+            std::optional<composite::Composite> comp = ripper::load_composite(dat);
+            std::string why;
+            std::optional<NpcAssembly> as;
+            if (comp)
+                as = npc_assembly(r, options.look, *comp, &why);
+            else
+                why = "no Composite in the dat";
+            if (!as) {
+                res.notes.push_back("look " + std::to_string(options.look) + ": " + why);
+            } else {
+                // The ripper leaves aquatic pieces off the land body itself (assemble.cpp worn_slots), so none are dropped here.
+                ripper::AssemblyReport rep = ripper::assemble_character(
+                    as->manifest, dat.file_info.file_path, (res.folder / "body.glb").string(), as->options);
+                for (const std::string& n : as->notes) res.notes.push_back(n);
+                if (!rep.ok) {
+                    res.notes.push_back("body.glb: " + rep.error);
+                } else {
+                    // The generic "no body model" note is stale now.
+                    std::erase_if(res.notes, [](const std::string& n) { return n.rfind("no body model", 0) == 0; });
+                    res.files.push_back("body.glb");
+                    LookUsed lu;
+                    lu.index = options.look;
+                    for (const auto& p : rep.parts) lu.parts.push_back({p.name, p.status, p.reason});
+                    look_used = std::move(lu);
+                }
+            }
+        } catch (const std::exception& e) {
+            res.notes.push_back(std::string("body.glb: ") + e.what());
+        }
+    }
     for (const Weapon& w : r.weapons) {
         if (w.model == 0) continue;
         std::string file = "weapon_" + std::to_string(w.slot) + ".glb";
@@ -110,7 +162,7 @@ ExportResult export_npc(Gw2Dat& dat, const NpcRecord& r, const std::filesystem::
     try {
         std::vector<std::string> files = res.files;
         files.push_back("manifest.json");
-        nlohmann::json j = export_manifest(r, clips, weapons, files, res.notes);
+        nlohmann::json j = export_manifest(r, clips, weapons, files, res.notes, look_used ? &*look_used : nullptr);
         std::ofstream out(res.folder / "manifest.json", std::ios::binary);
         out << j.dump(2) << '\n';
         out.close();

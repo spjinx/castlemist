@@ -26,7 +26,7 @@ struct NpcAssembly {
 /// Maps look `look_index` of `npc` through `composite`. nullopt (never a throw) when the look cannot be
 /// resolved at all: no such look record, no race record for its race token, or no variant of that name.
 /// `why`, when non-null, then receives the reason (e.g. "variant xpkurzwar: not in composite").
-/// Anything partial (an unknown component, colours not applied) is a note on a returned result instead.
+/// Anything partial (an unknown component, an unparsable colour) is a note on a returned result instead.
 std::optional<NpcAssembly> npc_assembly(const NpcRecord& npc, size_t look_index,
                                         const composite::Composite& composite, std::string* why = nullptr);
 

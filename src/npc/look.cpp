@@ -135,6 +135,7 @@ std::optional<NpcAssembly> npc_assembly(const NpcRecord& npc, size_t look_index,
             p.slot = slot;
             p.skin_token = token;
             p.skin_name = decode_token(token);
+            p.skin_type = "Armor";  // assemble_character only dresses pieces typed Armor
             p.status = character::PieceStatus::Ok;
             for (size_t d = 0; d < comp_ref.colors.size(); ++d)
                 if (std::optional<character::DyeShift> s = tint(comp_ref.colors[d])) {

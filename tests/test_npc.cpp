@@ -664,6 +664,24 @@ CM_TEST(npc_export, manifest_lists_clips_weapons_and_files) {
     CHECK_EQ(j["notes"][0].get<std::string>(), std::string("n"));
 }
 
+CM_TEST(npc_export, manifest_lists_look_and_parts) {
+    NpcRecord r;
+    r.id = 7;
+    r.race = "humanmale";
+    r.looks = {{"humanmale", 1}, {"humanmale", 2}};
+    nlohmann::json none = export_manifest(r, {}, {}, {}, {});
+    CHECK_EQ(none["looks"].get<int>(), 2);
+    CHECK(!none.contains("parts"));
+    LookUsed used{1, {{"hair", "used", ""}, {"Coat", "hidden", "under armour"}}};
+    nlohmann::json j = export_manifest(r, {}, {}, {"body.glb"}, {}, &used);
+    CHECK_EQ(j["looks"].get<int>(), 2);
+    CHECK_EQ(j["look_used"].get<int>(), 1);
+    CHECK_EQ(j["parts"].size(), size_t(2));
+    CHECK_EQ(j["parts"][0]["name"].get<std::string>(), std::string("hair"));
+    CHECK_EQ(j["parts"][0]["status"].get<std::string>(), std::string("used"));
+    CHECK_EQ(j["parts"][1]["reason"].get<std::string>(), std::string("under armour"));
+}
+
 namespace {
 NpcRecord make_npc(uint32_t id, uint32_t model, const std::string& race, const std::string& codename = "") {
     NpcRecord r;
@@ -758,6 +776,7 @@ CM_TEST(npc_look, maps_a_variant_to_pieces_face_hair_and_physique) {
     CHECK_EQ(a->manifest.pieces.size(), size_t(1));
     CHECK_EQ(a->manifest.pieces[0].slot, std::string("Coat"));
     CHECK_EQ(a->manifest.pieces[0].skin_token, pack_name("coatx"));
+    CHECK_EQ(a->manifest.pieces[0].skin_type, std::string("Armor"));  // the ripper only dresses pieces typed Armor
     CHECK(a->manifest.pieces[0].status == castlemist::character::PieceStatus::Ok);
     CHECK_EQ(a->options.hair, 2);
     CHECK_EQ(a->options.face, 1);
@@ -860,7 +879,7 @@ CM_TEST(npc_look, a_non_armour_component_and_an_out_of_range_skin_style_are_note
 }
 
 CM_TEST(npc_look, colour_mapping_matches_measured_examples) {
-    // The best-measured mapping (not yet proven, see variant_color_shift): neutral bytes are the identity shift,
+    // The measured mapping (see variant_color_shift and the spec's "Colour bytes"): neutral bytes are the identity shift,
     // and a real palette skin colour {7, 1.3125, 350, 0.296875, 1.4765625} round-trips through its bytes.
     using castlemist::composite::VariantColor;
     auto neutral = castlemist::npc::candidate_color_shift(VariantColor{128, 128, 0, 128, 128});
