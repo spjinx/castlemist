@@ -3,6 +3,8 @@
 
 #include "detail/state.h"
 
+#include "detail/game_uniforms.h"
+
 #include "detail/light_calib.h"
 #include "detail/preview_rig.h"
 
@@ -84,9 +86,7 @@ UINT8 game_write_mask(uint32_t passFlags) {
 // shows One/Zero at mask 15, 7 and 8 side by side). Binding mask 15 for everything
 // let a shader that writes no meaningful alpha -- most of them write a StencilId
 // there -- stamp that value over the target's alpha channel.
-ComPtr<ID3D11BlendState> make_opaque_blend_state(uint32_t passFlags) {
-    ComPtr<ID3D11BlendState> out;
-    if (!g_dev) return out;
+D3D11_BLEND_DESC game_opaque_blend_desc(uint32_t passFlags) {
     D3D11_BLEND_DESC bd{};
     bd.RenderTarget[0].BlendEnable = FALSE;
     bd.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
@@ -96,15 +96,20 @@ ComPtr<ID3D11BlendState> make_opaque_blend_state(uint32_t passFlags) {
     bd.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ZERO;
     bd.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
     bd.RenderTarget[0].RenderTargetWriteMask = game_write_mask(passFlags);
+    return bd;
+}
+
+ComPtr<ID3D11BlendState> make_opaque_blend_state(uint32_t passFlags) {
+    ComPtr<ID3D11BlendState> out;
+    if (!g_dev) return out;
+    const D3D11_BLEND_DESC bd = game_opaque_blend_desc(passFlags);
     g_dev->CreateBlendState(&bd, &out);
     return out;
 }
 
-ComPtr<ID3D11BlendState> make_blend_state_from_bgfx(uint64_t st, uint32_t passFlags) {
-    ComPtr<ID3D11BlendState> out;
-    if (!g_dev) return out;
+bool game_blend_desc(uint64_t st, uint32_t passFlags, D3D11_BLEND_DESC& out) {
     uint32_t blend = (uint32_t)((st >> 12) & 0xffff);
-    if (blend == 0) return out;
+    if (blend == 0) return false;
     uint32_t equ = (uint32_t)((st >> 28) & 0x3f);
     uint32_t srcRGB = blend & 0xf, dstRGB = (blend >> 4) & 0xf, srcA = (blend >> 8) & 0xf, dstA = (blend >> 12) & 0xf;
     uint32_t equRGB = equ & 0x7, equA = (equ >> 3) & 0x7;
@@ -118,6 +123,15 @@ ComPtr<ID3D11BlendState> make_blend_state_from_bgfx(uint64_t st, uint32_t passFl
     bd.RenderTarget[0].DestBlendAlpha = bgfx_blend(dstA ? dstA : 1, 1);
     bd.RenderTarget[0].BlendOpAlpha = kBgfxBlendEquation[equA < 5 ? equA : 0];
     bd.RenderTarget[0].RenderTargetWriteMask = game_write_mask(passFlags);
+    out = bd;
+    return true;
+}
+
+ComPtr<ID3D11BlendState> make_blend_state_from_bgfx(uint64_t st, uint32_t passFlags) {
+    ComPtr<ID3D11BlendState> out;
+    if (!g_dev) return out;
+    D3D11_BLEND_DESC bd;
+    if (!game_blend_desc(st, passFlags, bd)) return out;
     g_dev->CreateBlendState(&bd, &out);
     return out;
 }
@@ -193,6 +207,36 @@ UINT game_sem_off(const char* s, UINT idx) {
     return 0;
 }
 
+bool game_input_layout(const std::vector<uint8_t>& vsDXBC, std::vector<std::string>& sem,
+                       std::vector<D3D11_INPUT_ELEMENT_DESC>& il) {
+    sem.clear();
+    il.clear();
+    ComPtr<ID3D11ShaderReflection> refl;
+    if (vsDXBC.empty() || FAILED(D3DReflect(vsDXBC.data(), vsDXBC.size(), IID_ID3D11ShaderReflection,
+                                            reinterpret_cast<void**>(refl.GetAddressOf()))))
+        return false;
+    D3D11_SHADER_DESC sdesc{};
+    refl->GetDesc(&sdesc);
+    sem.resize(sdesc.InputParameters);   // sized once: the descriptions point into it
+    for (UINT i = 0; i < sdesc.InputParameters; i++) {
+        D3D11_SIGNATURE_PARAMETER_DESC pd{};
+        refl->GetInputParameterDesc(i, &pd);
+        sem[i] = pd.SemanticName ? pd.SemanticName : "";
+    }
+    for (UINT i = 0; i < sdesc.InputParameters; i++) {
+        D3D11_SIGNATURE_PARAMETER_DESC pd{};
+        refl->GetInputParameterDesc(i, &pd);
+        D3D11_INPUT_ELEMENT_DESC e{};
+        e.SemanticName = sem[i].c_str();
+        e.SemanticIndex = pd.SemanticIndex;
+        e.Format = (pd.Mask <= 3) ? DXGI_FORMAT_R32G32_FLOAT : DXGI_FORMAT_R32G32B32_FLOAT;
+        e.AlignedByteOffset = game_sem_off(sem[i].c_str(), pd.SemanticIndex);
+        e.InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA;
+        il.push_back(e);
+    }
+    return true;
+}
+
 
 void apply_env_uniforms() {
     auto put = [&](const char* n, std::initializer_list<float> f) { g_game_vals[n] = std::vector<float>(f); };
@@ -232,7 +276,19 @@ void apply_env_uniforms() {
         return;
     }
 
-    // --- Map scene (or preview rig disabled): drive the rig from the env chunk. ---
+    // --- Map scene (or preview rig disabled): drive the rig from the env chunk
+    // (game_map_env_uniforms). ---
+    float sd[3] = {r.sunDir[0], r.sunDir[1], r.sunDir[2]};
+    // Single-model view with the headlight on: the game SH sun follows the camera
+    // too (angle from the "light angle" slider), so a skin in Shader mode stays
+    // lit from the front. Map scenes keep their real env sun.
+    if (g_light_follow && !g_scene_mode) { Vec3 t = headlight_toward(); sd[0] = t.x; sd[1] = t.y; sd[2] = t.z; }
+    game_map_env_uniforms(g_game_vals, r, sd, lit);
+}
+
+// The map-scene rig as the forward materials read it (detail/game_uniforms.h).
+void game_map_env_uniforms(GameVals& vals, const MapEnvRig& r, const float sunToward[3], float lit) {
+    auto put = [&](const char* n, std::initializer_list<float> f) { vals[n] = std::vector<float>(f); };
     // The backlight pair has no MapEnvRig field yet (the mapc `env` chunk does carry
     // backlightColor/backlightIntensity -- see docs/research/gw2-map-lighting.md --
     // we just don't parse them), so write an explicit zero rather than leave the
@@ -240,11 +296,7 @@ void apply_env_uniforms() {
     put("BacklightColor", {0, 0, 0, 0});
     put("BacklightDirection", {0, 0, 1, 0});
 
-    float sd[3] = {r.sunDir[0], r.sunDir[1], r.sunDir[2]};
-    // Single-model view with the headlight on: the game SH sun follows the camera
-    // too (angle from the "light angle" slider), so a skin in Shader mode stays
-    // lit from the front. Map scenes keep their real env sun.
-    if (g_light_follow && !g_scene_mode) { Vec3 t = headlight_toward(); sd[0] = t.x; sd[1] = t.y; sd[2] = t.z; }
+    float sd[3] = {sunToward[0], sunToward[1], sunToward[2]};
     { float l = std::sqrt(sd[0]*sd[0] + sd[1]*sd[1] + sd[2]*sd[2]); if (l > 1e-6f) { sd[0]/=l; sd[1]/=l; sd[2]/=l; } }
     put("shSun", {sd[0], sd[1], sd[2], 0});
     put("shSunData", {sd[0], sd[1], sd[2], 0});
@@ -287,12 +339,9 @@ void apply_env_uniforms() {
     put("SunDirection", {-sd[0], -sd[1], -sd[2], 0}); // travel direction = -toward-light
 }
 
-void setup_game_uniforms() {
-    if (g_game_uniforms_ready) return;
-    auto put = [&](const char* n, std::initializer_list<float> f) { g_game_vals[n] = std::vector<float>(f); };
-    // Overall brightness knob (env GW2_LIGHT, default 1.0).
-    float lit = 1.0f;
-    if (const char* e = std::getenv("GW2_LIGHT")) { double v = std::atof(e); if (v > 0.01) lit = static_cast<float>(v); }
+// The engine uniforms that are neither rig nor camera (detail/game_uniforms.h).
+void game_base_uniforms(GameVals& vals, float lit) {
+    auto put = [&](const char* n, std::initializer_list<float> f) { vals[n] = std::vector<float>(f); };
     put("TexTransform0A", {1, 0, 0, 0}); put("TexTransform0B", {0, 1, 0, 0});
     put("TexTransform1A", {1, 0, 0, 0}); put("TexTransform1B", {0, 1, 0, 0});
     // `LightBuffer` is NOT a scalar -- it is the engine's shared range-compression
@@ -348,6 +397,14 @@ void setup_game_uniforms() {
     // "lit like the game" means for a map's daylight.
     put("LightCount", {0, 0, 0, 0});
     put("LightPointAndSpotData", {0, 0, 0, 0});
+}
+
+void setup_game_uniforms() {
+    if (g_game_uniforms_ready) return;
+    // Overall brightness knob (env GW2_LIGHT, default 1.0).
+    float lit = 1.0f;
+    if (const char* e = std::getenv("GW2_LIGHT")) { double v = std::atof(e); if (v > 0.01) lit = static_cast<float>(v); }
+    game_base_uniforms(g_game_vals, lit);
     apply_env_uniforms();   // sun + SH ambient from the active environment rig
     g_game_uniforms_ready = true;
 }
@@ -379,30 +436,9 @@ bool build_one_game_mat(const GameMaterial& c, const ModelPreview& model, GameMa
     if (FAILED(g_dev->CreatePixelShader(c.psDXBC.data(), c.psDXBC.size(), nullptr, &g.ps))) return false;
 
     // Input layout from the VS input signature (bgfx keeps the ISGN chunk).
-    ComPtr<ID3D11ShaderReflection> refl;
-    if (FAILED(D3DReflect(c.vsDXBC.data(), c.vsDXBC.size(), IID_ID3D11ShaderReflection,
-                          reinterpret_cast<void**>(refl.GetAddressOf()))))
-        return false;
-    D3D11_SHADER_DESC sdesc{};
-    refl->GetDesc(&sdesc);
-    std::vector<std::string> sem(sdesc.InputParameters);
+    std::vector<std::string> sem;
     std::vector<D3D11_INPUT_ELEMENT_DESC> il;
-    for (UINT i = 0; i < sdesc.InputParameters; i++) {
-        D3D11_SIGNATURE_PARAMETER_DESC pd{};
-        refl->GetInputParameterDesc(i, &pd);
-        sem[i] = pd.SemanticName ? pd.SemanticName : "";
-    }
-    for (UINT i = 0; i < sdesc.InputParameters; i++) {
-        D3D11_SIGNATURE_PARAMETER_DESC pd{};
-        refl->GetInputParameterDesc(i, &pd);
-        D3D11_INPUT_ELEMENT_DESC e{};
-        e.SemanticName = sem[i].c_str();
-        e.SemanticIndex = pd.SemanticIndex;
-        e.Format = (pd.Mask <= 3) ? DXGI_FORMAT_R32G32_FLOAT : DXGI_FORMAT_R32G32B32_FLOAT;
-        e.AlignedByteOffset = game_sem_off(sem[i].c_str(), pd.SemanticIndex);
-        e.InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA;
-        il.push_back(e);
-    }
+    if (!game_input_layout(c.vsDXBC, sem, il)) return false;
     if (FAILED(g_dev->CreateInputLayout(il.data(), static_cast<UINT>(il.size()), c.vsDXBC.data(), c.vsDXBC.size(),
                                         &g.layout)))
         return false;
