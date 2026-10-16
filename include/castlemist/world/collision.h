@@ -26,4 +26,10 @@ namespace castlemist::world {
 /// Replaces anything previously in `out.collision`.
 void build_collision(const castlemist::model::Extractor::MapHavok& h, WorldScene& out);
 
+/// @brief Append 9 floats per valid triangle of collision instance @p instance,
+///        transformed by instance.world (map space). Triangles indexing past
+///        their hull's vertices are skipped; an out-of-range instance or hull
+///        appends nothing. The one rule CollisionIndex::build and the exporter share.
+void collision_instance_triangles(const WorldScene& s, size_t instance, std::vector<float>& out);
+
 } // namespace castlemist::world

@@ -177,21 +177,28 @@ std::vector<uint32_t> search_by_base_id(Gw2Dat& data_gw2, uint32_t base_id) {
 }
 
 uint32_t get_by_base_id(Gw2Dat& data_gw2, uint32_t file_id) {
-    for (const auto& entry : data_gw2.mft_file_id_data_list) {
-        if (entry.file_id == file_id) {
-            return entry.base_id;
-        }
+    // mft_file_id_data_list is sorted by file_id (parse_mft_file_id_data), so the
+    // first entry not less than file_id is the first equal one, as a scan found.
+    const auto& list = data_gw2.mft_file_id_data_list;
+    const auto it = std::lower_bound(
+        list.begin(), list.end(), file_id,
+        [](const MftFileIdData& e, uint32_t key) { return e.file_id < key; });
+    if (it != list.end() && it->file_id == file_id) {
+        return it->base_id;
     }
     return 0;
 }
 
 std::vector<uint32_t> get_by_file_id(Gw2Dat& data_gw2, uint32_t base_id) {
-    for (const auto& entry : data_gw2.mft_base_id_data_list) {
-        if (entry.base_id == base_id) {
-            std::vector<uint32_t> file_ids = entry.file_id;
-            std::sort(file_ids.begin(), file_ids.end());
-            return file_ids;
-        }
+    // mft_base_id_data_list is sorted by base_id (parse_mft_file_id_data).
+    const auto& list = data_gw2.mft_base_id_data_list;
+    const auto it = std::lower_bound(
+        list.begin(), list.end(), base_id,
+        [](const MftBaseIdData& e, uint32_t key) { return e.base_id < key; });
+    if (it != list.end() && it->base_id == base_id) {
+        std::vector<uint32_t> file_ids = it->file_id;
+        std::sort(file_ids.begin(), file_ids.end());
+        return file_ids;
     }
     return {};
 }

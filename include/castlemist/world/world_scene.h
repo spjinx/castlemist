@@ -12,6 +12,12 @@
 
 namespace castlemist::world {
 
+/// @brief A chunk's `uvData`, as stored (note §1.5-1.6); not interpreted.
+struct TerrainUvData {
+    float translation[2]{}, xScaleRange[2]{}, yScaleRange[2]{}, scaleSpeed[2]{};
+    float rotation = 0;
+};
+
 /// @brief The textures and blend pages one terrain chunk is painted with
 ///        (docs/research/gw2-world-frame.md §4).
 struct TerrainMaterial {
@@ -36,6 +42,11 @@ struct TerrainMaterial {
     float pickerScale = 0;
     float uvScale = 0;                      ///< ground-texture tiling per chunk; 0 = unknown (UNPROVEN, §4.4)
     uint8_t tiling[3] = {0, 0, 0};          ///< the chunk's `tiling` bytes as stored (meaning UNPROVEN, §4.4)
+    /// texFiles[texIndexArray[j]].fileId by position j; 0 for a page entry or an index past texFileArray.
+    std::vector<uint32_t> texIndexFileIds;
+    uint32_t hiResMaterialFileId = 0;       ///< hiResMaterial.materialFile
+    bool hasUvData = false;                 ///< the chunk has a non-null `uvData`
+    TerrainUvData uvData;                   ///< as stored
 };
 
 /// @brief One heightfield chunk (layout: docs/research/gw2-world-frame.md §3).
@@ -54,6 +65,7 @@ struct TerrainChunk {
 struct Terrain {
     bool present = false;
     int chunksX = 0, chunksY = 0;
+    float swapDistance = 0;                 ///< trn.swapDistance as stored
     std::vector<TerrainChunk> chunks;
 };
 
@@ -65,6 +77,8 @@ struct PropInstance {
     uint32_t model = 0;                     ///< index into WorldScene::models
     float world[16] = {};                   ///< column-major, map space
     float pos[3] = {}, rot[3] = {}; float scale = 1;  ///< as stored, for references
+    uint64_t animSequence = 0;              ///< propAnimArray: the clip's token64 name, as stored
+    uint8_t color[4] = {0, 0, 0, 0};        ///< `color` as stored (meaning UNPROVEN)
     std::string group;                      ///< "propArray" | "propAnimArray" | "propMetaArray" | "propInstanceArray"
 };
 
@@ -106,6 +120,8 @@ struct Water {
 struct Environment {
     castlemist::model::Extractor::MapSky sky;
     castlemist::model::Extractor::MapEnvLight light;
+    /// dataGlobal water presets as stored; light.presetIndex picks one (pairing UNPROVEN).
+    std::vector<castlemist::model::Extractor::MapEnvWater> water;
 };
 
 /// @brief Animated content.

@@ -23,6 +23,7 @@
 /// as the rest of this manual workflow.
 
 #include "internal.h"
+#include "long_path.h"
 
 #include <filesystem>
 #include <fstream>
@@ -143,7 +144,7 @@ std::string write_particle_sidecar(const ModelPreview& model, const std::vector<
     }
 
     std::string jsonPath = glbPath.substr(0, glbPath.find_last_of('.')) + "_particles.json";
-    std::ofstream out(std::filesystem::path(std::u8string(jsonPath.begin(), jsonPath.end())));  // UTF-8
+    std::ofstream out(long_path(std::filesystem::path(std::u8string(jsonPath.begin(), jsonPath.end()))));  // UTF-8
     if (!out) return {};
     out << doc.dump(2);
     if (!out) return {};

@@ -16,6 +16,7 @@
 #define GW2MODEL_HPP
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -147,6 +148,19 @@ struct MatConstant {
     uint32_t name = 0;      // token32 hash of the constant name
     float    value[4] = {0, 0, 0, 0};
 };
+// One `texTransforms` entry of a MODL material (ModelMaterialTexTransformV*),
+// as stored; a field the version lacks stays 0 (V45-V62 have `random` where
+// V63+ have `flags`, and V45-V63 have no scrollFreq..rotate). Static per-UV-set
+// animation: docs/research/gw2-world-materials.md §4 (how it reaches the shader
+// is UNPROVEN).
+struct MatTexTransform {
+    uint32_t flags = 0;
+    uint8_t  uvIndex = 0, columns = 0, rows = 0;
+    uint16_t count = 0;
+    float    fps = 0;
+    float    scroll[2] = {0, 0}, scrollFreq[2] = {0, 0}, scale[2] = {0, 0}, scaleFreq[2] = {0, 0};
+    float    rotate = 0, rotate2 = 0;  // the template names two fields `rotate`: first, second
+};
 struct Material {
     uint32_t index = 0;
     // The material's own token64 -- the key the engine matches against
@@ -161,6 +175,7 @@ struct Material {
     uint32_t sortLayer = 0;     // transparent/sort hint
     std::vector<MatTexture> textures;
     std::vector<MatConstant> constants;
+    std::vector<MatTexTransform> texTransforms;  // texTransforms[], stored order
     // convenience: just the fileIds, file order
     std::vector<uint32_t> textureFileIds() const {
         std::vector<uint32_t> v; for (auto& t : textures) v.push_back(t.fileId); return v;
@@ -1253,12 +1268,15 @@ public:
     // PackMapEnvDataLightV*{ color byte3, intensity float, direction float3 }.
     struct MapEnvLight {
         bool  present = false;
+        // The direction the light travels, map space (up = -Z, so a day sun has
+        // z > 0); measured in the world export's Task 13. Toward the sun is -sunDir.
         float sunDir[3] = {0.45f, 0.80f, 0.40f};
         float sunColor[3] = {1.0f, 0.91f, 0.75f};
         float sunIntensity = 1.0f;
         float fillColor[3] = {0.49f, 0.68f, 0.97f};
         float fillIntensity = 0.3f;
         int   lightCount = 0;
+        int   presetIndex = -1;   // the lighting[] index the rig was read from; -1 unless present
     };
 
     // preset: a specific time-of-day index (0..2), or -1 (default) to AUTO-select
@@ -1314,8 +1332,10 @@ public:
         };
 
         std::vector<L> lights;
+        uint32_t usedPi = 0;
         if (preset >= 0 && (uint32_t)preset < nPresets) {
-            readPreset((uint32_t)preset, lights);
+            usedPi = (uint32_t)preset;
+            readPreset(usedPi, lights);
         } else {
             // Auto: pick the brightest preset (daytime).
             float best = -1; uint32_t bestPi = 0; std::vector<L> tmp;
@@ -1323,6 +1343,7 @@ public:
                 float mx = readPreset(pi, tmp);
                 if (mx > best) { best = mx; bestPi = pi; }
             }
+            usedPi = bestPi;
             readPreset(bestPi, lights);
         }
 
@@ -1346,6 +1367,7 @@ public:
         if (fw > 1e-6f) { for (int k = 0; k < 3; ++k) out.fillColor[k] = fc[k] / fw; out.fillIntensity = fw; }
         else out.fillIntensity = 0;
         out.lightCount = (int)lights.size();
+        out.presetIndex = (int)usedPi;
         out.present = true;
         return out;
     }
@@ -1638,6 +1660,8 @@ public:
         float rot[3] = {0, 0, 0}; // Euler angles (radians)
         float scale = 1.0f;
         float bounds[4] = {0, 0, 0, 0};
+        uint8_t color[4] = {0, 0, 0, 0};  // `color` byte4, as stored (meaning UNPROVEN, world-materials §3)
+        uint64_t animSequence = 0;        // propAnimArray only: the clip's token64 name (world-materials §5)
         // The prp2 array this placement came from: "propArray", "propAnimArray",
         // "propMetaArray" or "propInstanceArray" (a base placement or one of its transforms).
         std::string group;
@@ -1715,6 +1739,11 @@ public:
         };
         std::vector<uint32_t> texFileIds;  ///< materials.texFileArray[].filename (0 kept)
         std::vector<Tex> texFiles;         ///< the same entries in full
+        /// A chunk's `uvData` target (PackMapTerrainChunkUVDataV*), as stored.
+        struct UvData {
+            float translation[2]{}, xScaleRange[2]{}, yScaleRange[2]{}, scaleSpeed[2]{};
+            float rotation = 0;
+        };
         struct Chunk {
             uint32_t materialFileId = 0;          ///< loResMaterial.materialFile
             std::vector<uint32_t> texIndices;     ///< loResMaterial.texIndexArray
@@ -1723,6 +1752,7 @@ public:
             uint8_t tiling[3] = {0, 0, 0};        ///< `tiling`, as stored (meaning UNPROVEN, §4.4)
             int tilingCount = 0;                  ///< bytes of `tiling` this version has (1 or 3)
             bool hasUvData = false;               ///< `uvData` pointer is non-null
+            UvData uv;                            ///< `uvData`'s fields when hasUvData, else 0
         };
         std::vector<Chunk> chunks;  ///< per terrain chunk, chunk order (index = cy * chunksX + cx)
         uint32_t pimgFileId = 0;    ///< materials.pagedImage: the terrain's paged image (PIMG) file
@@ -1807,7 +1837,19 @@ public:
                     c.tilingCount = fj.value("kind", std::string()) == "array" ? std::min(3, fj.value("count", 0)) : 1;
                     for (int k = 0; k < c.tilingCount; ++k) c.tiling[k] = d_[e + o + k];
                 }
-                if (fieldOffset(ct, "uvData", o, fj)) c.hasUvData = follow(e + o) != 0;
+                if (fieldOffset(ct, "uvData", o, fj)) {
+                    // ptr -> PackMapTerrainChunkUVDataV*, read by field name.
+                    const size_t u = follow(e + o);
+                    const std::string ut = sub(fj, "target");
+                    c.hasUvData = u != 0;
+                    if (u && !ut.empty() && u + (uint64_t)typeSize(ut) <= n_) {
+                        rdFloat2(ut, "translation", u, c.uv.translation);
+                        rdFloat2(ut, "xScaleRange", u, c.uv.xScaleRange);
+                        rdFloat2(ut, "yScaleRange", u, c.uv.yScaleRange);
+                        rdFloat2(ut, "scaleSpeed", u, c.uv.scaleSpeed);
+                        c.uv.rotation = rdFloat1(ut, "rotation", u);
+                    }
+                }
                 out.chunks.push_back(std::move(c));
             }
         }
@@ -2146,6 +2188,120 @@ public:
         return total;
     }
 
+    /// @brief One water preset (PackMapEnvDataWaterV*), as stored
+    ///        (docs/research/gw2-world-materials.md §6). A field the version
+    ///        lacks keeps its default; what the units mean is UNPROVEN there.
+    struct MapEnvWater {
+        uint32_t waterFlags = 0;
+        float animAmplitude = 0, animChoppiness = 0, animWind[2]{}, bumpAmount = 0;
+        float bumpAngle[2]{}, bumpScale[2]{}, bumpSpeed[2]{}, bumpTile[2]{};   // ...0 / ...1
+        float patternAngle = 0, patternTile = 0, patternSpeed = 0, patternEdge = 0;
+        uint8_t surfaceShallowColor[4]{}, surfaceDeepColor[4]{}, patternColor[4]{};
+        float surfaceFresnel = 0, distortAmount = 0, depthAttenuation = 0;
+        uint32_t materialFileId = 0;                 // materialFilename
+        std::vector<uint32_t> textureFileIds;        // textureFilenames (0 kept)
+        std::vector<uint32_t> constantTokens;
+        std::vector<std::array<float, 4>> constantValues;
+        float foamSpawn = 0, foamDissolve = 0, foamDepthAttenuation = 0;
+        uint8_t foamColor0[4]{}, foamColor1[4]{};
+        uint32_t bumpTextureFileId = 0, patternTextureFileId = 0;   // older versions' own fields (V29: bumpTexture, patternTexture)
+    };
+
+    /// @brief The `env` chunk's global water presets: env -> dataGlobal (ptr)
+    ///        -> `water`, inline (`array_ptr`) or one pointer per element
+    ///        (`ptr_array_ptr`). Each field by template name. Empty when the
+    ///        chunk, the pointer or the field is missing, or when the stored
+    ///        count would run past the file. Otherwise the result keeps the
+    ///        stored indices (size == the stored count, so it pairs with a
+    ///        lighting presetIndex): a preset that is null or cannot be read is
+    ///        a default MapEnvWater, and one bad textureFilenames entry is 0.
+    std::vector<MapEnvWater> parseMapEnvWater() {
+        std::vector<MapEnvWater> out;
+        std::string root; uint16_t ver = 0;
+        const size_t env = findChunk("env", &root, &ver);
+        if (!env || root.empty()) return out;
+        size_t off; json f;
+        if (!fieldOffset(root, "dataGlobal", off, f) || f.value("kind", std::string()) != "ptr" ||
+            !f.contains("target") || !f["target"].is_object()) return out;
+        const size_t g = follow(env + off);
+        const std::string gt = f["target"].value("struct", std::string());
+        if (!g || gt.empty() || !fieldOffset(gt, "water", off, f)) return out;
+        const std::string kind = f.value("kind", std::string());
+        const bool byPtr = kind == "ptr_array_ptr";
+        if (!byPtr && kind != "array_ptr") return out;
+        const std::string wt = (f.contains("element") && f["element"].is_object())
+                                   ? f["element"].value("struct", std::string()) : std::string();
+        const int ws = typeSize(wt);
+        uint32_t n = 0; const size_t base = arrayAt(g + off, n);
+        if (!base || ws <= 0 || base + (uint64_t)n * (byPtr ? ptr_ : ws) > n_) return out;
+
+        auto byte4 = [&](const char* name, size_t e, uint8_t o4[4]) {
+            size_t a; json fj;
+            if (fOff(wt, name, e, a, fj)) for (int k = 0; k < 4; ++k) o4[k] = rd8(a + k);
+        };
+        auto file = [&](const char* name, size_t e) -> uint32_t {
+            size_t a; json fj;
+            return fOff(wt, name, e, a, fj) ? decodeFilenameAt(a) : 0;
+        };
+        out.reserve(n);
+        for (uint32_t i = 0; i < n; ++i) {
+            const size_t e = byPtr ? follow(base + (size_t)i * ptr_) : base + (size_t)i * ws;
+            MapEnvWater w;
+            if (!e || e + (uint64_t)ws > n_) { out.push_back(std::move(w)); continue; }
+            try {
+                w.waterFlags = rdDword(wt, "waterFlags", e);
+                w.animAmplitude = rdFloat1(wt, "animAmplitude", e);
+                w.animChoppiness = rdFloat1(wt, "animChoppiness", e);
+                rdFloat2(wt, "animWind", e, w.animWind);
+                w.bumpAmount = rdFloat1(wt, "bumpAmount", e);
+                w.bumpAngle[0] = rdFloat1(wt, "bumpAngle0", e); w.bumpAngle[1] = rdFloat1(wt, "bumpAngle1", e);
+                w.bumpScale[0] = rdFloat1(wt, "bumpScale0", e); w.bumpScale[1] = rdFloat1(wt, "bumpScale1", e);
+                w.bumpSpeed[0] = rdFloat1(wt, "bumpSpeed0", e); w.bumpSpeed[1] = rdFloat1(wt, "bumpSpeed1", e);
+                w.bumpTile[0] = rdFloat1(wt, "bumpTile0", e);   w.bumpTile[1] = rdFloat1(wt, "bumpTile1", e);
+                w.patternAngle = rdFloat1(wt, "patternAngle", e);
+                w.patternTile = rdFloat1(wt, "patternTile", e);
+                w.patternSpeed = rdFloat1(wt, "patternSpeed", e);
+                w.patternEdge = rdFloat1(wt, "patternEdge", e);
+                byte4("surfaceShallowColor", e, w.surfaceShallowColor);
+                byte4("surfaceDeepColor", e, w.surfaceDeepColor);
+                byte4("patternColor", e, w.patternColor);
+                w.surfaceFresnel = rdFloat1(wt, "surfaceFresnel", e);
+                w.distortAmount = rdFloat1(wt, "distortAmount", e);
+                w.depthAttenuation = rdFloat1(wt, "depthAttenuation", e);
+                w.materialFileId = file("materialFilename", e);
+                {   // array_ptr of filename: one pointer per entry, null kept as 0
+                    size_t a; json fj;
+                    if (fOff(wt, "textureFilenames", e, a, fj)) {
+                        uint32_t k = 0; const size_t tb = arrayAt(a, k);
+                        if (tb && tb + (uint64_t)k * ptr_ <= n_)
+                            for (uint32_t j = 0; j < k; ++j) {
+                                uint32_t id = 0;
+                                try { id = decodeFilenameAt(tb + (size_t)j * ptr_); } catch (const std::exception&) {}
+                                w.textureFileIds.push_back(id);
+                            }
+                    }
+                }
+                const FieldArray toks = fieldArray(wt, "constantTokens", e);
+                for (uint32_t j = 0; j < toks.n; ++j) w.constantTokens.push_back(rd32(toks.base + (size_t)j * toks.stride));
+                const FieldArray vals = fieldArray(wt, "constantValues", e);
+                for (uint32_t j = 0; j < vals.n; ++j) {
+                    std::array<float, 4> v{};
+                    for (int k = 0; k < 4; ++k) v[k] = rdf(vals.base + (size_t)j * vals.stride + 4 * k);
+                    w.constantValues.push_back(v);
+                }
+                w.foamSpawn = rdFloat1(wt, "foamSpawn", e);
+                w.foamDissolve = rdFloat1(wt, "foamDissolve", e);
+                w.foamDepthAttenuation = rdFloat1(wt, "foamDepthAttenuation", e);
+                byte4("foamColor0", e, w.foamColor0);
+                byte4("foamColor1", e, w.foamColor1);
+                w.bumpTextureFileId = file("bumpTexture", e);
+                w.patternTextureFileId = file("patternTexture", e);
+            } catch (const std::exception&) { w = MapEnvWater{}; }
+            out.push_back(std::move(w));
+        }
+        return out;
+    }
+
     // Map navigation mesh, bounding-box level only: from `nm15` (falling back
     // to `pnvm`, the physics variant, if `nm15` isn't present). Each chunk's
     // `navMeshData`/`coarseGraphData`/`queryMediatorMoppData` payload is an
@@ -2341,6 +2497,9 @@ public:
             if (fieldOffset(objType, "rotation", o, f)) for (int k=0;k<3;++k) p.rot[k] = rdf(e+o+4*k);
             if (fieldOffset(objType, "scale", o, f)) p.scale = rdf(e+o);
             if (fieldOffset(objType, "bounds", o, f)) for (int k=0;k<4;++k) p.bounds[k] = rdf(e+o+4*k);
+            if (fieldOffset(objType, "color", o, f)) for (int k=0;k<4;++k) p.color[k] = rd8(e+o+k);
+            // token64 clip name; only PackMapPropObjAnimSeqV* (propAnimArray) has it.
+            if (fieldOffset(objType, "animSequence", o, f)) p.animSequence = rd64(e+o);
         };
 
         size_t off; json fj;
@@ -3547,7 +3706,54 @@ private:
                     mat.constants.push_back(mc);
                 }
             }
+            // texTransforms[] -- static per-UV-set scroll/flipbook, read by field
+            // name from the element's own version. A count that would run past
+            // the file is garbage: no entries.
+            if (fieldOffset(matType, "texTransforms", off, fj)) {
+                try { readTexTransforms(fj, matPtr + off, mat.texTransforms); }
+                catch (const std::exception&) { mat.texTransforms.clear(); }
+            }
             out.materials.push_back(std::move(mat));
+        }
+    }
+
+    // One material's `texTransforms` array_ptr (field json `fj`, header at `at`)
+    // -> entries. ModelMaterialTexTransformV63+ name two float fields `rotate`;
+    // they are told apart by position, as parseTerrainMaterials does its two
+    // `flags`. V45-V62 store `random` (byte) where V63+ store `flags`, so flags
+    // stays 0 there.
+    void readTexTransforms(const json& fj, size_t at, std::vector<MatTexTransform>& outTT) {
+        const std::string tt = (fj.contains("element") && fj["element"].is_object())
+                                   ? fj["element"].value("struct", std::string()) : std::string();
+        const int ts = typeSize(tt);
+        uint32_t n = 0; size_t base = arrayAt(at, n);
+        if (!base || ts <= 0 || base + (uint64_t)n * ts > n_) return;
+        size_t oRot[2] = {0, 0}; int nRot = 0;
+        {
+            size_t o = 0;
+            for (const auto& f : (*types_)[tt]["fields"]) {
+                if (nRot < 2 && f.value("name", std::string()) == "rotate") oRot[nRot++] = o;
+                o += fieldSize(f);
+            }
+        }
+        outTT.reserve(n);
+        for (uint32_t i = 0; i < n; ++i) {
+            const size_t e = base + (size_t)i * ts;
+            MatTexTransform t;
+            size_t a; json f;
+            t.flags = rdDword(tt, "flags", e);
+            if (fOff(tt, "uvIndex", e, a, f)) t.uvIndex = rd8(a);
+            if (fOff(tt, "columns", e, a, f)) t.columns = rd8(a);
+            if (fOff(tt, "rows", e, a, f))    t.rows = rd8(a);
+            if (fOff(tt, "count", e, a, f))   t.count = rd16(a);
+            t.fps = rdFloat1(tt, "fps", e);
+            rdFloat2(tt, "scroll", e, t.scroll);
+            rdFloat2(tt, "scrollFreq", e, t.scrollFreq);
+            rdFloat2(tt, "scale", e, t.scale);
+            rdFloat2(tt, "scaleFreq", e, t.scaleFreq);
+            if (nRot > 0) t.rotate = rdf(e + oRot[0]);
+            if (nRot > 1) t.rotate2 = rdf(e + oRot[1]);
+            outTT.push_back(t);
         }
     }
 

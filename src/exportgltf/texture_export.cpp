@@ -1,12 +1,20 @@
 /// @file
 /// @brief Decoded RGBA8888 textures -> PNG bytes in memory, embedded straight
 ///        into the .glb (no sibling texture folder -- a glTF binary container
-///        is meant to be one self-contained file).
+///        is meant to be one self-contained file), unless the writer was
+///        given an image folder (GltfExportOptions::imageDirUtf8, used by the
+///        world export's model files): then they are PNG files beside it.
 
 #include "internal.h"
+#include "long_path.h"
 
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <mutex>
 
 // Leave STBI_WRITE_NO_STDIO undefined: merely defining it (regardless of
 // value) compiles out stbi_write_png_to_func too, which this needs.
@@ -86,6 +94,16 @@ std::vector<uint8_t> encode_png(const ModelTextureCPU& tex) {
     return png;
 }
 
+std::vector<uint8_t> encode_png_pixels(int width, int height, int channels, const std::vector<uint8_t>& pixels) {
+    std::vector<uint8_t> png;
+    if (width <= 0 || height <= 0 || channels < 1 || channels > 4 ||
+        pixels.size() < static_cast<size_t>(width) * height * channels)
+        return png;
+    if (!stbi_write_png_to_func(append_to_vector, &png, width, height, channels, pixels.data(), width * channels))
+        png.clear();
+    return png;
+}
+
 TextureSaveResult save_texture_png(const ModelTextureCPU& tex, const std::string& pngPath) {
     TextureSaveResult r;
     if (tex.width <= 0 || tex.height <= 0 ||
@@ -102,14 +120,27 @@ TextureSaveResult save_texture_png(const ModelTextureCPU& tex, const std::string
 }
 
 bool write_model_textures(GltfWriter& w, const std::vector<ModelTextureCPU>& textures,
-                          std::vector<int>& texIndices) {
+                          std::vector<int>& texIndices, const std::string& imageDirUtf8,
+                          const std::string& uriPrefix, SharedImagePool* shared, const std::string& sharedPrefix) {
     texIndices.assign(textures.size(), -1);
+    if (!imageDirUtf8.empty()) w.set_image_output(imageDirUtf8, uriPrefix);
 
     for (size_t i = 0; i < textures.size(); ++i) {
         const ModelTextureCPU& tex = textures[i];
         if (tex.width <= 0 || tex.height <= 0 ||
             tex.rgba.size() < static_cast<size_t>(tex.width) * tex.height * 4) {
             continue; // nothing decoded for this slot; material export leaves the slot unbound
+        }
+
+        if (shared && tex.fileId != 0) {   // the world export's shared pool (ruling W8)
+            std::string err;
+            if (!shared->ensure(tex.fileId, [&tex] { return encode_png(tex); }, &err)) {
+                w.set_image_error(err);
+                continue;
+            }
+            texIndices[i] = w.add_texture_uri(tex.fileId, sharedPrefix + SharedImagePool::file_name(tex.fileId),
+                                              texture_name(tex, i));
+            continue;
         }
 
         std::vector<uint8_t> png;
@@ -119,7 +150,94 @@ bool write_model_textures(GltfWriter& w, const std::vector<ModelTextureCPU>& tex
 
         texIndices[i] = w.add_or_reuse_texture(tex.fileId, png, texture_name(tex, i));
     }
-    return true;
+    return w.image_error().empty();
+}
+
+// ------------------------------------------------------------ SharedImagePool
+
+struct SharedImagePool::Impl {
+    struct Slot { bool done = false, ok = false; std::string error; };
+    std::string dir;
+    mutable std::mutex mu;
+    std::condition_variable cv;
+    std::map<uint32_t, Slot> slots;
+    size_t written = 0;
+};
+
+SharedImagePool::SharedImagePool(std::string dirUtf8) : impl_(std::make_unique<Impl>()) {
+    impl_->dir = std::move(dirUtf8);
+}
+SharedImagePool::~SharedImagePool() = default;
+
+std::string SharedImagePool::file_name(uint32_t fileId) { return std::to_string(fileId) + ".png"; }
+const std::string& SharedImagePool::dir() const { return impl_->dir; }
+size_t SharedImagePool::written() const {
+    std::lock_guard<std::mutex> lk(impl_->mu);
+    return impl_->written;
+}
+
+bool SharedImagePool::ensure(uint32_t fileId, const std::function<std::vector<uint8_t>()>& encodePng,
+                             std::string* error) {
+    namespace fs = std::filesystem;
+    Impl& p = *impl_;
+    {
+        std::unique_lock<std::mutex> lk(p.mu);
+        auto [it, claimed] = p.slots.try_emplace(fileId);
+        if (!claimed) {   // another caller owns it: wait until it is in place (or failed)
+            p.cv.wait(lk, [&] { return it->second.done; });
+            if (!it->second.ok && error) *error = it->second.error;
+            return it->second.ok;
+        }
+    }
+    // This caller claimed fileId: encode and write outside the lock. The guard
+    // publishes the slot however this scope is left -- an exception (say a
+    // bad_alloc building a path) included -- so no waiter blocks forever.
+    std::string err;
+    bool published = false;
+    struct Publish {
+        Impl& p; uint32_t id; const std::string& err; bool& published;
+        ~Publish() {
+            {
+                std::lock_guard<std::mutex> lk(p.mu);
+                Impl::Slot& s = p.slots[id];
+                s.done = true;
+                s.ok = published;
+                s.error = published ? std::string()
+                          : err.empty() ? "Could not write image " + file_name(id) + ": interrupted."
+                                        : err;
+                if (published) ++p.written;
+            }
+            p.cv.notify_all();
+        }
+    } guard{p, fileId, err, published};
+    const fs::path dir = fs::path(std::u8string(p.dir.begin(), p.dir.end()));
+    const fs::path dst = dir / file_name(fileId), tmp = dir / (file_name(fileId) + ".tmp");
+    std::vector<uint8_t> png;
+    try {
+        png = encodePng();
+    } catch (...) {
+        png.clear();
+    }
+    if (png.empty()) {
+        err = "Could not encode image " + file_name(fileId) + ".";
+    } else {
+        std::error_code ec;
+        make_dirs(dir, ec);
+        {
+            std::ofstream out(long_path(tmp), std::ios::binary);
+            if (out) out.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+            out.close();
+            if (!out) err = "Could not write image '" + p.dir + "/" + file_name(fileId) + ".tmp'.";
+        }
+        if (err.empty()) {
+            fs::rename(long_path(tmp), long_path(dst), ec);
+            if (ec) err = "Could not rename image '" + p.dir + "/" + file_name(fileId) + "': " + ec.message();
+        }
+        if (!err.empty()) fs::remove(long_path(tmp), ec);
+    }
+    published = err.empty();
+    if (!published && error) *error = err;
+    return published;   // the guard publishes the slot
 }
 
 } // namespace castlemist::exportgltf

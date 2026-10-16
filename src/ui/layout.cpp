@@ -87,13 +87,10 @@ void layout_children(int client_w, int client_h) {
     bool show_video =
         show_preview && (ek == PreviewKind::Video || ek == PreviewKind::Cinematic) && castlemist::vid::is_open();
     bool show_image = show_preview && (ek == PreviewKind::Image || show_video);
-    bool map_entry = show_preview && !content_mode && ek == PreviewKind::Map &&
-                     g_app->current_entry.map != nullptr && !g_app->current_entry.map->instances.empty();
-    // A loaded map now outlives the entry that loaded it -- previewing a model no
-    // longer tears the scene down -- so the map controls stay available whenever a
-    // scene is live, not only while a map entry happens to be selected. That is
-    // what lets you flip back to the map (and fly it) with a model still loaded.
-    bool show_map = map_entry || (show_preview && !content_mode && castlemist::render::scene_active());
+    // The scene controls follow a live set_scene scene (the headless GW2_SCENE
+    // shot). A map entry previews as text (its world_summary); Tools > Map
+    // Window... is where a map is viewed.
+    bool show_map = show_preview && !content_mode && ek != PreviewKind::Map && castlemist::render::scene_active();
     bool show_model = show_preview && ((ek == PreviewKind::Model && se.model != nullptr) || show_map);
     bool show_audio = show_preview && ek == PreviewKind::Audio;
     // strs gets its own table surface instead of the plain-text control.
@@ -143,11 +140,8 @@ void layout_children(int client_w, int client_h) {
     ShowWindow(g_app->hwnd_mode_full, show_model ? SW_SHOW : SW_HIDE);
     ShowWindow(g_app->hwnd_mode_plain, show_model ? SW_SHOW : SW_HIDE);
     ShowWindow(g_app->hwnd_mode_wire, show_model ? SW_SHOW : SW_HIDE);
-    // "Shader" (real DXBC) mode now applies to the map scene too (lazily builds
-    // the game materials on first use), so show it for any 3D model surface.
+    // "Shader" (real DXBC) mode: shown for any 3D model surface.
     ShowWindow(g_app->hwnd_mode_shader, show_model ? SW_SHOW : SW_HIDE);
-    // "Fly" is a map-only view: it needs a scene to fly through.
-    ShowWindow(g_app->hwnd_mode_fly, show_map ? SW_SHOW : SW_HIDE);
     if (g_app->hwnd_mode_gw2bgfx != nullptr)
         ShowWindow(g_app->hwnd_mode_gw2bgfx, show_model ? SW_SHOW : SW_HIDE);
     ShowWindow(g_app->hwnd_model_reset, show_model ? SW_SHOW : SW_HIDE);
@@ -191,8 +185,8 @@ void layout_children(int client_w, int client_h) {
     ShowWindow(g_app->hwnd_layer_water, show_map ? SW_SHOW : SW_HIDE);
     ShowWindow(g_app->hwnd_layer_navmesh, show_map ? SW_SHOW : SW_HIDE);
     ShowWindow(g_app->hwnd_show_map, show_map ? SW_SHOW : SW_HIDE);
-    // The inset preview belongs to the orbit map view; the fly view has no pick.
-    ShowWindow(g_app->hwnd_map_preview, (show_map && !fly_view_active()) ? SW_SHOW : SW_HIDE);
+    // The inset preview of the prop picked in the scene.
+    ShowWindow(g_app->hwnd_map_preview, show_map ? SW_SHOW : SW_HIDE);
 
     if (tab == MiddleTab::Compressed) {
         MoveWindow(g_app->hwnd_hex_before, middle_x, content_y, middle_w, content_h, TRUE);
@@ -312,7 +306,6 @@ void layout_children(int client_w, int client_h) {
             tb.push_back({g_app->hwnd_mode_plain, kButtonW, kButtonH, 0});
             tb.push_back({g_app->hwnd_mode_wire, kButtonW, kButtonH, 0});
             tb.push_back({g_app->hwnd_mode_shader, kButtonW, kButtonH, 0});
-            if (show_map) tb.push_back({g_app->hwnd_mode_fly, kButtonW, kButtonH, 0});
             if (g_app->hwnd_mode_gw2bgfx != nullptr)
                 tb.push_back({g_app->hwnd_mode_gw2bgfx, 72, kButtonH, 0});
             tb.push_back({g_app->hwnd_model_reset, kButtonW, kButtonH, 0});
@@ -324,8 +317,7 @@ void layout_children(int client_w, int client_h) {
                 tb.push_back({g_app->hwnd_layer_zone, kButtonW, kButtonH, 0});
                 tb.push_back({g_app->hwnd_layer_coll, kButtonW, kButtonH, 0});
                 tb.push_back({g_app->hwnd_layer_navmesh, kButtonW, kButtonH, 0});
-                if (!fly_view_active())
-                    tb.push_back({g_app->hwnd_map_preview, kButtonW, kButtonH, 0});
+                tb.push_back({g_app->hwnd_map_preview, kButtonW, kButtonH, 0});
             } else {
                 tb.push_back({g_app->hwnd_skel_toggle, kButtonW, kButtonH, 0});
                 if (show_anim) {

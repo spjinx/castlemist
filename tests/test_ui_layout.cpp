@@ -34,6 +34,9 @@ const Id kIds[] = {
     {"ID_FILE_LOAD_TEMPLATE", ID_FILE_LOAD_TEMPLATE},
     {"ID_FILE_LOAD_KEYS", ID_FILE_LOAD_KEYS},
     {"ID_FILE_OPEN_INDEX", ID_FILE_OPEN_INDEX},
+    {"ID_FILE_EXPORT_GLTF_MODEL", ID_FILE_EXPORT_GLTF_MODEL},
+    {"ID_FILE_EXPORT_WORLD_MAP", ID_FILE_EXPORT_WORLD_MAP},
+    {"ID_FILE_EXPORT_GLTF_MODEL_ATLAS", ID_FILE_EXPORT_GLTF_MODEL_ATLAS},
     {"ID_TOOLS_DECODE_LINK", ID_TOOLS_DECODE_LINK},
 
     {"ID_LISTVIEW", ID_LISTVIEW},
@@ -126,6 +129,21 @@ const Id kIds[] = {
     {"ID_DS_REFRESH", ID_DS_REFRESH},
     {"ID_DS_CLOSE", ID_DS_CLOSE},
     {"ID_PROGRESS", ID_PROGRESS},
+
+    {"ID_TOOLS_MAP_WINDOW", ID_TOOLS_MAP_WINDOW},
+    {"ID_MW_WALK", ID_MW_WALK},
+    {"ID_MW_FLY", ID_MW_FLY},
+    {"ID_MW_TERRAIN", ID_MW_TERRAIN},
+    {"ID_MW_PROPS", ID_MW_PROPS},
+    {"ID_MW_COLLISION", ID_MW_COLLISION},
+    {"ID_MW_WATER", ID_MW_WATER},
+    {"ID_MW_RESET", ID_MW_RESET},
+    {"ID_MW_WARNINGS", ID_MW_WARNINGS},
+    {"ID_MW_SURFACE", ID_MW_SURFACE},
+    {"ID_MW_STATUS", ID_MW_STATUS},
+    {"ID_MW_WARN_EDIT", ID_MW_WARN_EDIT},
+    {"ID_MW_MATERIALS", ID_MW_MATERIALS},
+    {"ID_MW_MOTION", ID_MW_MOTION},
 };
 
 } // namespace
@@ -142,6 +160,23 @@ CM_TEST(control_ids, are_unique) {
         seen[id.value] = id.name;
     }
     CHECK_EQ(seen.size(), sizeof(kIds) / sizeof(kIds[0]));
+}
+
+// File > Export World (Map)... took over Export glTF (Map)'s id (1017): it
+// must be the only command answering to it, among the menu commands and the
+// export ids that live outside the 1000-range.
+CM_TEST(ui, export_world_menu_id_unique) {
+    CHECK_EQ(ID_FILE_EXPORT_WORLD_MAP, static_cast<UINT_PTR>(1017));
+    size_t hits = 0;
+    for (const Id& id : kIds)
+        if (id.value == ID_FILE_EXPORT_WORLD_MAP) ++hits;
+    const UINT_PTR others[] = {ID_FILE_OPEN_LOOSE, ID_FILE_BUILD_INDEX, ID_VIEW_THEME_DARK, ID_VIEW_THEME_LIGHT,
+                               ID_VIEW_THEME_CUSTOM, ID_VIEW_THEME_ACCENT, ID_TOOLS_CHARACTER,
+                               ID_TOOLS_DOWNLOAD_NAMES, ID_TOOLS_DECODE_TOKEN, ID_TOOLS_DATA_STATUS,
+                               ID_TOOLS_MAP_WINDOW, ID_FILE_EXPORT_VRCHAT_MODEL, ID_FILE_EXPORT_SKYBOX_MAP};
+    for (UINT_PTR v : others)
+        if (v == ID_FILE_EXPORT_WORLD_MAP) ++hits;
+    CHECK_EQ(hits, static_cast<size_t>(1));
 }
 
 // Menu commands and child-control ids share one WM_COMMAND stream, so the two
@@ -162,6 +197,7 @@ CM_TEST(timers, have_distinct_ids) {
     CHECK_NE(TIMER_ANIM, TIMER_AUDIO);
     CHECK_NE(TIMER_ANIM, TIMER_VIDEO);
     CHECK_NE(TIMER_AUDIO, TIMER_VIDEO);
+    CHECK_NE(TIMER_MW_FRAME, TIMER_MW_STATUS);
 }
 
 // The two WM_APP messages carry different payload contracts; sharing a value
@@ -170,6 +206,14 @@ CM_TEST(app_messages, are_distinct_and_above_wm_app) {
     CHECK(WM_APP_EXTRACT_DONE >= WM_APP);
     CHECK(WM_APP_CMAP_DONE >= WM_APP);
     CHECK_NE(WM_APP_EXTRACT_DONE, WM_APP_CMAP_DONE);
+    const UINT mapwin[] = {WM_APP_MAPWIN_WORLD, WM_APP_MAPWIN_MODELS, WM_APP_MAPWIN_COLLISION};
+    for (UINT m : mapwin) {
+        CHECK(m > WM_APP_DATA_STATUS_DONE);   // above every message the main window uses
+        CHECK(m != WM_APP + 10 && m != WM_APP + 12);   // look_dialog's own
+    }
+    CHECK_NE(WM_APP_MAPWIN_WORLD, WM_APP_MAPWIN_MODELS);
+    CHECK_NE(WM_APP_MAPWIN_MODELS, WM_APP_MAPWIN_COLLISION);
+    CHECK_NE(WM_APP_MAPWIN_WORLD, WM_APP_MAPWIN_COLLISION);
 }
 
 CM_TEST(layout_metrics, are_positive_and_self_consistent) {

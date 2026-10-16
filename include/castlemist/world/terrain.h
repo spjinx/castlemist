@@ -70,4 +70,9 @@ float terrain_height_at(const Terrain& t, float x, float y, bool* inside = nullp
 void resolve_terrain_materials(Terrain& t, const castlemist::model::Extractor::MapTerrainMaterials& m, Gw2Dat& dat,
                                const nlohmann::json& tpl, std::vector<std::string>& warnings);
 
+/// @brief Distinct non-zero fileIds, first-seen, per chunk in index order:
+///        textureFileIds[0..3], normalFileIds[0..3], pickerFileId, picker2FileId.
+///        @p chunks (chunk indices) limits it to those chunks; null = all.
+std::vector<uint32_t> terrain_texture_ids(const Terrain& t, const std::vector<size_t>* chunks = nullptr);
+
 } // namespace castlemist::world

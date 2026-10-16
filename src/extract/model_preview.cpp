@@ -61,8 +61,26 @@ void assign_texture_slots(ModelMaterialCPU& mat, const std::vector<MaterialTextu
         mat.extraTextures.push_back({ti, s.uv, s.fileId, s.role});
     }
 }
+void append_decoded_clips(const std::vector<castlemist::model::AnimClip>& clips, ModelPreview& out,
+                          const std::function<castlemist::granny::Anim(const castlemist::model::AnimClip&)>& decode) {
+    for (const auto& c : clips) {
+        out.animationTokens.push_back(c.token);
+        castlemist::granny::Anim clip = decode(c);
+        if (!clip.valid) continue;
+        out.animClips.push_back(std::move(clip));
+        out.animClipBank.push_back(c.bankFileId);
+        out.animClipTokens.push_back(c.token);
+    }
+}
+
 std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& modl_bytes, Gw2Dat& dat,
                                                    const nlohmann::json& tpl, bool want_game) {
+    return build_model_preview(modl_bytes, dat, tpl, ModelLoadOptions{want_game, true});
+}
+
+std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& modl_bytes, Gw2Dat& dat,
+                                                   const nlohmann::json& tpl, const ModelLoadOptions& opts) {
+    const bool want_game = opts.wantGame;
     castlemist::model::Model model;
     try {
         model = castlemist::model::Extractor(modl_bytes, tpl).extract();
@@ -116,7 +134,9 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
         if (it != tex_cache.end()) return it->second;
         ModelTextureCPU tex;
         int idx = -1;
-        if (decode_texture_by_fileid(dat, fileId, tex)) {
+        const bool got = opts.decodeTextures ? decode_texture_by_fileid(dat, fileId, tex)
+                                             : peek_texture_by_fileid(dat, fileId, tex);
+        if (got) {
             idx = static_cast<int>(out->textures.size());
             out->textures.push_back(std::move(tex));
         }
@@ -148,6 +168,16 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
             if (it != materialNameByIndex.end()) mat.materialName = it->second;
         }
         mat.textureFileIds = m.textureFileIds();
+        for (const auto& tt : m.texTransforms) {
+            ModelTexTransformCPU c;
+            c.flags = tt.flags; c.uvIndex = tt.uvIndex; c.columns = tt.columns; c.rows = tt.rows;
+            c.count = tt.count; c.fps = tt.fps; c.rotate = tt.rotate; c.rotate2 = tt.rotate2;
+            for (int k = 0; k < 2; ++k) {
+                c.scroll[k] = tt.scroll[k]; c.scrollFreq[k] = tt.scrollFreq[k];
+                c.scale[k] = tt.scale[k]; c.scaleFreq[k] = tt.scaleFreq[k];
+            }
+            mat.texTransforms.push_back(c);
+        }
         // A texture the material names ONLY as a mask / decal / glow layer is
         // never its base colour, even when it is the biggest one it has --
         // character armor and hair leave the real diffuse slot empty (fileId 0,
@@ -184,7 +214,7 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
         bool flaggedTranslucent = (m.materialFlags & 0x1u) != 0 && (m.sortOrder > 0 || m.sortLayer > 0);
         if (flaggedTranslucent) {
             mat.isEffect = true;
-        } else if (mat.diffuseTex >= 0 && !want_game) {
+        } else if (mat.diffuseTex >= 0 && !want_game && !out->textures[mat.diffuseTex].rgba.empty()) {
             // Pixel guess ONLY on the fast map-scene path (want_game=false), where
             // we won't get the material's real bgfx render state. On the
             // single-model path the authoritative blend word below decides, so we
@@ -415,16 +445,10 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
         return load_modl_bytes_by_fileid(dat, fileId);
     });
 
-    for (const auto& c : model.anim.clips) {
-        out->animationTokens.push_back(c.token);
-        if (!c.rawGranny.empty()) {
-            castlemist::granny::Anim clip = castlemist::granny::parse(c.rawGranny.data(), c.rawGranny.size(), c.ptrSize);
-            if (clip.valid) {
-                out->animClips.push_back(std::move(clip));
-                out->animClipBank.push_back(c.bankFileId);
-            }
-        }
-    }
+    append_decoded_clips(model.anim.clips, *out, [](const castlemist::model::AnimClip& c) {
+        if (c.rawGranny.empty()) return castlemist::granny::Anim{};
+        return castlemist::granny::parse(c.rawGranny.data(), c.rawGranny.size(), c.ptrSize);
+    });
 
     // Particle clouds + effect lights. Resolve each bone token64 to a joint index
     // via the same name->token hash the skeleton uses, so emitters/lights attach
@@ -575,9 +599,13 @@ std::vector<uint8_t> load_modl_bytes_by_fileid(Gw2Dat& dat, uint32_t fileId) {
 
 // Public (entry_extractor.h, global namespace): a model against the open dat.
 std::shared_ptr<ModelPreview> load_model_by_fileid(Gw2Dat& dat, uint32_t file_id, bool want_game) {
+    return load_model_by_fileid(dat, file_id, ModelLoadOptions{want_game, true});
+}
+
+std::shared_ptr<ModelPreview> load_model_by_fileid(Gw2Dat& dat, uint32_t file_id, const ModelLoadOptions& opts) {
     auto tpl = castlemist::tpl::get_or_auto_load();
     if (!tpl) return nullptr;
     std::vector<uint8_t> bytes = castlemist::extract::load_modl_bytes_by_fileid(dat, file_id);
     if (bytes.empty()) return nullptr;
-    return castlemist::extract::build_model_preview(bytes, dat, *tpl, want_game);
+    return castlemist::extract::build_model_preview(bytes, dat, *tpl, opts);
 }

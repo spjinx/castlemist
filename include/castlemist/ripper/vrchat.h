@@ -9,6 +9,8 @@
 // setup note listing the bone chains to give PhysBones. Blender (headless, with
 // tools/blender/castlemist_vrchat.py) turns the .glb into the .fbx Unity takes.
 
+#include <atomic>
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -73,6 +75,30 @@ VrchatModelReport export_vrchat_model(const ModelPreview& model, const std::stri
 
 /// The newest Blender under Program Files\Blender Foundation, or empty.
 std::string find_blender();
+
+/// find_blender's order: true when folder name @p a is a newer Blender than
+/// @p b, comparing the numbers in the names as numbers (review M4: "Blender
+/// 4.10" is newer than "Blender 4.5", which a string compare gets wrong).
+bool blender_folder_newer(const std::string& a, const std::string& b);
+
+/// World export (sub-project 4, Task 11): runs `tools/blender/castlemist_world.py
+/// --to-fbx <dir>` in one headless Blender session (Blender's output in
+/// `<dir>/blender.log`), then exportgltf::set_manifest_fbx, also after a failure
+/// part-way, so the manifest names every .fbx that exists. `blenderExe` empty:
+/// find_blender(). False + `log` on failure or when Blender is missing
+/// ("Blender not found"); `fbxSet`, when given, receives set_manifest_fbx's count.
+/// Blender runs in a kill-on-close job object, so it never outlives castlemist;
+/// `cancel`, when it becomes true, stops it (false, "export cancelled").
+bool convert_world_to_fbx(const std::string& exportDirUtf8, std::string& log, const std::string& blenderExe = {},
+                          size_t* fbxSet = nullptr, const std::atomic<bool>* cancel = nullptr);
+
+/// What to do when a world export has no .fbx files (review I3). Both commands
+/// convert every .glb and record the .fbx files in manifest.json, which is the
+/// only place the Unity importer looks.
+inline constexpr const char* kWorldFbxAdvice =
+    "Unity needs the .fbx files: with Blender 4.1 or newer, run gw2dat_cli world-fbx --dir <folder>, or "
+    "blender -b --factory-startup -P tools/blender/castlemist_world.py -- --to-fbx <folder>; "
+    "either records them in manifest.json";
 
 } // namespace castlemist::ripper
 

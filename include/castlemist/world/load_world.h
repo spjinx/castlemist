@@ -53,6 +53,7 @@ struct EnvSources {
     castlemist::model::Extractor::MapSky sky;
     castlemist::model::Extractor::MapEnvLight light;
     castlemist::model::Extractor::MapEnvCounts counts;
+    std::vector<castlemist::model::Extractor::MapEnvWater> water;   ///< dataGlobal water presets
 };
 
 /// @brief Fill `out.environment` from parsed sources; the rules of

@@ -89,3 +89,25 @@ void build_collision(const castlemist::model::Extractor::MapHavok& h, WorldScene
 }
 
 } // namespace castlemist::world
+
+namespace castlemist::world {
+
+void collision_instance_triangles(const WorldScene& s, size_t instance, std::vector<float>& out) {
+    if (instance >= s.collision.instances.size()) return;
+    const CollisionInstance& inst = s.collision.instances[instance];
+    if (inst.mesh >= s.collision.meshes.size()) return;
+    const CollisionMesh& m = s.collision.meshes[inst.mesh];
+    const size_t nv = m.verts.size() / 3;
+    const float* w = inst.world;
+    for (size_t k = 0; k + 2 < m.indices.size(); k += 3) {
+        if (m.indices[k] >= nv || m.indices[k + 1] >= nv || m.indices[k + 2] >= nv) continue;
+        for (int c = 0; c < 3; ++c) {
+            const float* p = &m.verts[(size_t)m.indices[k + c] * 3];
+            out.push_back(w[0] * p[0] + w[4] * p[1] + w[8] * p[2] + w[12]);
+            out.push_back(w[1] * p[0] + w[5] * p[1] + w[9] * p[2] + w[13]);
+            out.push_back(w[2] * p[0] + w[6] * p[1] + w[10] * p[2] + w[14]);
+        }
+    }
+}
+
+} // namespace castlemist::world

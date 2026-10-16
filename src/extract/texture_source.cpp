@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <fstream>
 #include <span>
 #include <string>
 
@@ -13,6 +14,7 @@
 #include "castlemist/native/gw2_atex.hpp"
 
 #include "castlemist/core/packfile.h"
+#include "castlemist/format/dds.h"
 
 namespace castlemist::extract {
 
@@ -45,17 +47,80 @@ static bool read_mft_atex_bytes(Gw2Dat& dat, size_t i0, std::vector<uint8_t>& by
     }
 }
 
-// Peek an entry's ATEX dimensions + format from the header only (no pixel decode).
-static bool peek_mft_atex(Gw2Dat& dat, size_t i0, int& w, int& h, std::string& fmt) {
+bool parse_atex_header(const uint8_t* data, size_t n, AtexHeader& out) {
+    if (n < 12) return false;
+    uint8_t head[8];
+    std::memcpy(head, data, 8);
+    if (head[0] == 'C') head[0] = 'A';   // CTEX -> ATEX alias
+    static const char* MAG[] = {"ATEX", "ATTX", "ATEC", "ATEP", "ATEU", "ATET"};
+    bool ok = false;
+    for (auto* m : MAG) if (!std::memcmp(head, m, 4)) ok = true;
+    if (!ok) return false;
+    const int fe = castlemist::atex::fourcc_to_enum(head + 4);
+    if (fe < 0) return false;
+    out.fmt = castlemist::atex::format_name(fe);
+    out.width = data[8] | (data[9] << 8);
+    out.height = data[10] | (data[11] << 8);
+    out.firstMipSize = 0;
+    if (n >= 16) std::memcpy(&out.firstMipSize, data + 12, 4);
+    return out.width > 0 && out.height > 0;
+}
+
+int estimate_mip_count(const AtexHeader& h, size_t totalSize) {
+    if (h.firstMipSize >= 8 && static_cast<size_t>(12) + h.firstMipSize + 8 > totalSize) return 1;
+    int n = 1;
+    for (int m = std::max(h.width, h.height); m > 1; m >>= 1) ++n;
+    return n;
+}
+
+// Header of an entry's ATEX without reading or inflating the whole thing: the
+// first 0x10000 raw bytes only, and for compressed entries just the first few
+// output bytes of the bitstream (decompress_method0 stops at output_size). Any
+// failure falls back to the full read, so the answer never differs.
+static bool peek_mft_header(Gw2Dat& dat, size_t i0, AtexHeader& h, size_t* totalSize = nullptr) {
+    if (i0 >= dat.mft_data_list.size()) return false;
+    const MftData& e = dat.mft_data_list[i0];
+    try {
+        if (e.size > 8) {
+            const size_t want = std::min<size_t>(e.size, 0x10000);
+            std::vector<uint8_t> raw(want);
+            std::ifstream file(dat.file_info.file_path, std::ios::binary);
+            if (file.is_open()) {
+                file.seekg(static_cast<std::streamoff>(e.offset));
+                file.read(reinterpret_cast<char*>(raw.data()), static_cast<std::streamsize>(want));
+                if (file.gcount() == static_cast<std::streamsize>(want)) {
+                    std::vector<uint8_t> stripped = castlemist::cmp::strip_crc32(std::span<const uint8_t>(raw));
+                    std::vector<uint8_t> head;
+                    size_t total = 0;
+                    if (e.compression_flag == 0) {
+                        head = std::move(stripped);
+                        total = e.size - (e.size / 0x10000 + 1) * 4;
+                    } else if (stripped.size() >= 8) {
+                        total = stripped[4] | (stripped[5] << 8) | (stripped[6] << 16) | (static_cast<size_t>(stripped[7]) << 24);
+                        head = castlemist::cmp::decompress_method0(std::span<const uint8_t>(stripped).subspan(8),
+                                                                    std::min<size_t>(total, 16));
+                    }
+                    if (parse_atex_header(head.data(), head.size(), h)) {
+                        if (totalSize) *totalSize = total;
+                        return true;
+                    }
+                }
+            }
+        }
+    } catch (const std::exception&) { /* fall through to the full read */ }
     std::vector<uint8_t> bytes;
     if (!read_mft_atex_bytes(dat, i0, bytes)) return false;
-    try {
-        castlemist::atex::Texture t = castlemist::atex::parse(bytes.data(), bytes.size());
-        w = t.width; h = t.height; fmt = t.fmt_name;
-        return w > 0 && h > 0;
-    } catch (const std::exception&) {
-        return false;
-    }
+    if (!parse_atex_header(bytes.data(), bytes.size(), h)) return false;
+    if (totalSize) *totalSize = bytes.size();
+    return true;
+}
+
+// Peek an entry's ATEX dimensions + format from the header only (no pixel decode).
+static bool peek_mft_atex(Gw2Dat& dat, size_t i0, int& w, int& h, std::string& fmt) {
+    AtexHeader hd;
+    if (!peek_mft_header(dat, i0, hd)) return false;
+    w = hd.width; h = hd.height; fmt = hd.fmt;
+    return true;
 }
 
 // Given the entry a fileId resolved to (i0), find the full/reduced member of its
@@ -203,6 +268,22 @@ bool decode_texture_full_res(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out,
     return true;
 }
 
+bool peek_texture_by_fileid(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out) {
+    uint32_t base = get_by_base_id(dat, fileId);
+    if (base == 0 || base - 1 >= dat.mft_data_list.size()) return false;
+    AtexHeader hd;
+    size_t total = 0;
+    if (!peek_mft_header(dat, base - 1, hd, &total)) return false;
+    out.fileId = fileId;
+    out.baseId = base;
+    out.width = hd.width;
+    out.height = hd.height;
+    out.fmt = hd.fmt;
+    out.mipCount = estimate_mip_count(hd, total);
+    out.isNormal = is_normal_format(hd.fmt);
+    return true;
+}
+
 bool decode_texture_by_fileid_res(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out, bool want_full) {
     uint32_t base = get_by_base_id(dat, fileId);
     if (base == 0 || base - 1 >= dat.mft_data_list.size()) {
@@ -212,6 +293,44 @@ bool decode_texture_by_fileid_res(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU&
     if (!decode_mft_atex(dat, i0, out)) return false;
     out.fileId = fileId;
     return true;
+}
+
+void halve_rgba(const std::vector<uint8_t>& in, int w, int h, std::vector<uint8_t>& out, int& ow, int& oh) {
+    if (w <= 0 || h <= 0 || in.size() < static_cast<size_t>(w) * h * 4) {
+        out.assign(4, 0);   // invalid input: one transparent texel, no reads
+        ow = oh = 1;
+        return;
+    }
+    ow = std::max(1, w / 2);
+    oh = std::max(1, h / 2);
+    std::vector<uint8_t> res(static_cast<size_t>(ow) * oh * 4);
+    for (int y = 0; y < oh; ++y) {
+        const int y0 = std::min(2 * y, h - 1), y1 = std::min(2 * y + 1, h - 1);
+        for (int x = 0; x < ow; ++x) {
+            const int x0 = std::min(2 * x, w - 1), x1 = std::min(2 * x + 1, w - 1);
+            const size_t a = (static_cast<size_t>(y0) * w + x0) * 4, b = (static_cast<size_t>(y0) * w + x1) * 4;
+            const size_t c = (static_cast<size_t>(y1) * w + x0) * 4, d = (static_cast<size_t>(y1) * w + x1) * 4;
+            uint8_t* o = &res[(static_cast<size_t>(y) * ow + x) * 4];
+            for (int k = 0; k < 4; ++k)
+                o[k] = static_cast<uint8_t>((in[a + k] + in[b + k] + in[c + k] + in[d + k] + 2) >> 2);
+        }
+    }
+    out = std::move(res);   // after the loop: `out` may alias `in`
+}
+
+std::vector<std::vector<uint8_t>> build_mips(std::vector<uint8_t> level0, int w, int h) {
+    std::vector<std::vector<uint8_t>> mips;
+    if (w <= 0 || h <= 0 || level0.size() < static_cast<size_t>(w) * h * 4) return mips;
+    mips.push_back(std::move(level0));
+    while (w > 4 || h > 4) {
+        std::vector<uint8_t> next;
+        int nw = 0, nh = 0;
+        halve_rgba(mips.back(), w, h, next, nw, nh);
+        mips.push_back(std::move(next));
+        w = nw;
+        h = nh;
+    }
+    return mips;
 }
 
 } // namespace castlemist::extract
@@ -229,4 +348,67 @@ size_t texture_entry(Gw2Dat& dat, uint32_t file_id, bool full) {
     const uint32_t base = get_by_base_id(dat, file_id);
     if (base == 0 || base - 1 >= dat.mft_data_list.size()) return SIZE_MAX;
     return resolve_res_index(dat, base - 1, full);
+}
+
+bool castlemist::extract::decode_dds_bytes(const std::vector<uint8_t>& bytes, size_t i0, ModelTextureCPU& out) {
+    if (bytes.size() < 4 || std::memcmp(bytes.data(), "DDS ", 4) != 0) return false;
+    try {
+        uint32_t w = 0, h = 0;
+        std::vector<uint8_t> rgba;
+        if (!castlemist::dds::decode_rgba8(bytes.data(), bytes.size(), w, h, rgba)) return false;
+        if (w == 0 || h == 0 || rgba.size() < static_cast<size_t>(w) * h * 4) return false;
+        out.width = static_cast<int>(w);
+        out.height = static_cast<int>(h);
+        out.fmt = "DDS";
+        out.mipCount = 1;
+        out.baseId = static_cast<uint32_t>(i0 + 1);   // MFT array index -> baseId
+        out.rgba = std::move(rgba);
+        out.isNormal = false;
+        out.channels = compute_channels(out.rgba, false);
+        out.hasCutout = compute_alpha_cutout(out.rgba);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool decode_texture_capped(Gw2Dat& dat, uint32_t fileId, int maxSize, CappedTexture& out) {
+    out = CappedTexture{};
+    out.fileId = fileId;
+    if (maxSize <= 0) return false;
+    try {
+        const size_t i0 = texture_entry(dat, fileId, /*full=*/false);
+        if (i0 == SIZE_MAX) return false;
+        ModelTextureCPU tex;
+        if (!decode_mft_atex(dat, i0, tex)) {   // sets tex.baseId = i0 + 1
+            // Ruling P9: a plain "DDS " entry (e.g. the water bump 186359).
+            std::vector<uint8_t> bytes;
+            if (!read_mft_atex_bytes(dat, i0, bytes) || !decode_dds_bytes(bytes, i0, tex)) return false;
+        }
+        int w = tex.width, h = tex.height;
+        std::vector<uint8_t> px = std::move(tex.rgba);
+        if (w <= 0 || h <= 0 || px.size() < static_cast<size_t>(w) * h * 4) return false;
+        while (std::max(w, h) > maxSize && (w > 1 || h > 1)) {
+            std::vector<uint8_t> next;
+            int nw = 0, nh = 0;
+            halve_rgba(px, w, h, next, nw, nh);
+            px = std::move(next);
+            w = nw;
+            h = nh;
+        }
+        out.mips = build_mips(std::move(px), w, h);
+        if (out.mips.empty()) return false;
+        out.baseId = tex.baseId;
+        out.width = w;
+        out.height = h;
+        out.isNormal = tex.isNormal;
+        out.hasCutout = !out.isNormal && compute_alpha_cutout(out.mips[0]);
+        out.looksLikeEffect = looks_like_effect(out.mips[0]);
+        return true;
+    } catch (...) {
+        const uint32_t id = out.fileId;
+        out = CappedTexture{};
+        out.fileId = id;
+        return false;
+    }
 }

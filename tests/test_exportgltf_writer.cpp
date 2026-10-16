@@ -481,39 +481,6 @@ CM_TEST(exportgltf, animation_bakes_expected_endpoints) {
     CHECK_NEAR(values[values.size() - 3], 2.0, 1e-3);      // last keyframe's X
 }
 
-CM_TEST(exportgltf, map_export_shares_geometry_across_instances) {
-    MapScene scene;
-    scene.models.push_back(make_static_quad());
-    scene.modelFileIds.push_back(1);
-
-    MapInstance a;
-    a.model = 0; a.pos[0] = 0; a.pos[1] = 0; a.pos[2] = 0; a.rot[2] = 0.0f; a.scale = 1.0f;
-    MapInstance b;
-    b.model = 0; b.pos[0] = 10; b.pos[1] = 5; b.pos[2] = 0; b.rot[2] = 1.2f; b.scale = 2.0f;
-    scene.instances = {a, b};
-
-    fs::path dir = make_temp_dir("map");
-    fs::path glbPath = dir / "area.glb";
-    GltfExportResult result = export_map_gltf(scene, glbPath.string());
-    CHECK(result.ok);
-
-    ParsedGlb g = parse_glb(read_bytes(glbPath));
-    // True node instancing: one mesh shared by two placement nodes, not two
-    // vertex-baked copies -- the point of moving off FBX's decomposition risk.
-    CHECK_EQ(g.doc["meshes"].size(), size_t(1));
-
-    std::vector<std::vector<double>> matrices;
-    for (const json& node : g.doc["nodes"]) {
-        if (node.contains("matrix")) matrices.push_back(node["matrix"].get<std::vector<double>>());
-    }
-    CHECK_EQ(matrices.size(), size_t(2));
-    bool differs = false;
-    for (size_t i = 0; i < 16; ++i) {
-        if (std::fabs(matrices[0][i] - matrices[1][i]) > 1e-6) { differs = true; break; }
-    }
-    CHECK(differs); // different placement -> different instance matrices
-}
-
 CM_TEST(exportgltf, root_rotation_and_scale_are_configurable) {
     ModelPreview model = make_static_quad();
     fs::path dir = make_temp_dir("rootxform");

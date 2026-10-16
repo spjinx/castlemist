@@ -42,6 +42,8 @@ struct SkyInputs {
     std::vector<std::string> decodeWarnings;      ///< "fileId N: not a decodable texture"
     /// parseMapEnv() with the auto (brightest) preset. Only the "day" mode
     /// gets it: no proven link ties the 3 lighting presets to the sky modes.
+    /// sky.json's sun.direction is its sunDir in Unity axes: the direction the
+    /// light travels (a Directional Light's forward), not toward the sun.
     castlemist::model::Extractor::MapEnvLight daySun;
     uint32_t mapFileId = 0;
 };
@@ -50,6 +52,13 @@ struct SkyInputs {
 /// Only safe on the thread that owns @p dat.
 SkyInputs load_sky_inputs(Gw2Dat& dat, const std::vector<uint8_t>& mapBytes,
                           const nlohmann::json& tpl, uint32_t mapFileId);
+
+/// The texture half of load_sky_inputs, for a caller that already holds the
+/// parsed sky (e.g. WorldScene::environment.sky): decodes every fileId
+/// `in.sky` names, and the star file and its atlas, into `in.textures` /
+/// `in.stars`, appending to `in.decodeWarnings`. Nothing when !in.sky.present.
+/// Read-only lookups on @p dat, as load_sky_inputs.
+void load_sky_textures(Gw2Dat& dat, const nlohmann::json& tpl, SkyInputs& in);
 
 struct SkyExportOptions {
     int faceSize = 1024;        ///< baked cube faces, pixels per side
@@ -69,6 +78,11 @@ struct SkyExportReport {
 /// Writes nothing (and leaves an existing folder alone) when there is no sky.
 SkyExportReport write_skybox(const SkyInputs& in, const std::string& parentDir,
                              const std::string& name, const SkyExportOptions& opt = {});
+
+/// Sky mode @p j bakes exactly like mode @p i: the same textures and the
+/// same day/night attribute values (write_skybox writes it as an alias).
+/// False when either index is out of range.
+bool same_sky_mode(const castlemist::model::Extractor::MapSky& s, size_t i, size_t j);
 
 /// Folder name of sky mode @p index: "day", "night", "mode2", ...
 std::string mode_name(size_t index);

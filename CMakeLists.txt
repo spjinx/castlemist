@@ -135,7 +135,7 @@ castlemist_add_layer(sim    DEPS castlemist::extract ext::glm)
 # collision, water, environment) on top of extract's parsers.
 castlemist_add_layer(world DEPS castlemist::extract ext::json)
 
-# exportgltf also sits beside render: it turns the same CPU ModelPreview/MapScene
+# exportgltf also sits beside render: it turns the same CPU ModelPreview
 # payloads into a binary glTF (.glb) -- a precisely specified, Khronos-ratified
 # format, unlike FBX's undocumented binary container. Needs extract's types,
 # stb_image_write.h (from the same ext::stb checkout format/media already use)
@@ -151,7 +151,10 @@ target_compile_definitions(castlemist_exportgltf PRIVATE CASTLEMIST_VERSION_STRI
 castlemist_add_layer(ripper DEPS castlemist::character castlemist::extract castlemist::exportgltf
                                  castlemist::format castlemist::db ext::json ext::stb)
 
-castlemist_add_layer(render DEPS castlemist::extract castlemist::sim
+# render reads exportgltf's material rules (profile_for, alpha_tested,
+# decode_blend) so the map view's prop alpha modes match the glTF export.
+# exportgltf is CPU-only and never depends back on render.
+castlemist_add_layer(render DEPS castlemist::extract castlemist::sim castlemist::world castlemist::exportgltf
                                  d3d11 dxgi d3dcompiler dxguid)
 
 # The "Game 1:1" surface. PRIVATE: nothing above render needs bgfx headers --

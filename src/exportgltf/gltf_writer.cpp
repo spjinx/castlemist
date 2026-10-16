@@ -11,8 +11,14 @@
 ///     raw buffer bytes, zero-padded to a multiple of 4 bytes.
 
 #include "internal.h"
+#include "long_path.h"
 
+#include <cctype>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+
+#include "castlemist/exportgltf/vrchat_export.h"  // safe_file_name
 
 namespace castlemist::exportgltf {
 
@@ -77,6 +83,42 @@ int GltfWriter::add_or_reuse_texture(uint32_t fileId, const std::vector<uint8_t>
     auto found = fileId ? textureByFileId_.find(fileId) : textureByFileId_.end();
     if (found != textureByFileId_.end()) return found->second;
 
+    if (!imageDir_.empty()) {
+        namespace fs = std::filesystem;
+        // The image name (a dat texture's is its fileId) as a file name that
+        // is also a valid glTF uri with no escaping: every byte outside
+        // [A-Za-z0-9._-] becomes '_' (spaces, '#', '%' and non-ASCII would
+        // need percent-encoding, which importers unquote inconsistently).
+        // safe_file_name then trims dots and guards device names. Unique
+        // ignoring case: Windows file names are case-insensitive.
+        std::string raw = !name.empty() ? name : fileId ? std::to_string(fileId) : std::string("image");
+        for (char& c : raw) {
+            const auto u = static_cast<unsigned char>(c);
+            if (!(std::isalnum(u) && u < 0x80) && c != '.' && c != '_' && c != '-') c = '_';
+        }
+        const std::string base = safe_file_name(raw);
+        auto lower = [](std::string s) {
+            for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            return s;
+        };
+        std::string stem = base;
+        for (int n = 2; imageStems_.count(lower(stem)); ++n) stem = base + "_" + std::to_string(n);
+        imageStems_.insert(lower(stem));
+
+        const std::string leaf = stem + ".png";
+        const fs::path dir = fs::path(std::u8string(imageDir_.begin(), imageDir_.end()));
+        std::error_code ec;
+        make_dirs(dir, ec);
+        std::ofstream out(long_path(dir / fs::path(std::u8string(leaf.begin(), leaf.end()))), std::ios::binary);
+        if (out) out.write(reinterpret_cast<const char*>(pngBytes.data()), static_cast<std::streamsize>(pngBytes.size()));
+        out.close();  // flush now, so a failed write shows in the stream state
+        if (!out) {
+            if (imageError_.empty()) imageError_ = "Could not write image '" + imageDir_ + "/" + leaf + "'.";
+            return -1;
+        }
+        return add_texture_uri(fileId, imageUriPrefix_ + leaf, name);
+    }
+
     int bvIndex = add_buffer_view(pngBytes.data(), pngBytes.size(), 0);
     json image{{"bufferView", bvIndex}, {"mimeType", "image/png"}};
     if (!name.empty()) image["name"] = name;
@@ -89,6 +131,27 @@ int GltfWriter::add_or_reuse_texture(uint32_t fileId, const std::vector<uint8_t>
 
     if (fileId) textureByFileId_[fileId] = textureIndex;
     return textureIndex;
+}
+
+int GltfWriter::add_texture_uri(uint32_t fileId, const std::string& uri, const std::string& name) {
+    auto found = fileId ? textureByFileId_.find(fileId) : textureByFileId_.end();
+    if (found != textureByFileId_.end()) return found->second;
+
+    json image{{"uri", uri}, {"mimeType", "image/png"}};
+    if (!name.empty()) image["name"] = name;
+    doc_["images"].push_back(std::move(image));
+    int imageIndex = static_cast<int>(doc_["images"].size()) - 1;
+
+    doc_["textures"].push_back(json{{"source", imageIndex}});
+    int textureIndex = static_cast<int>(doc_["textures"].size()) - 1;
+
+    if (fileId) textureByFileId_[fileId] = textureIndex;
+    return textureIndex;
+}
+
+void GltfWriter::set_image_output(const std::string& dirUtf8, const std::string& uriPrefix) {
+    imageDir_ = dirUtf8;
+    imageUriPrefix_ = uriPrefix;
 }
 
 int GltfWriter::add_node(json node) {
@@ -118,6 +181,13 @@ int GltfWriter::add_skin(json skin) {
 void GltfWriter::add_animation(json animation) { doc_["animations"].push_back(std::move(animation)); }
 
 void GltfWriter::add_scene_root(int nodeIndex) { doc_["scenes"][0]["nodes"].push_back(nodeIndex); }
+
+void GltfWriter::use_extension(const std::string& name) {
+    json& used = doc_["extensionsUsed"];
+    for (const json& e : used)
+        if (e == name) return;
+    used.push_back(name);
+}
 
 std::vector<uint8_t> GltfWriter::finish() {
     doc_["buffers"] = json::array({json{{"byteLength", bin_.size()}}});

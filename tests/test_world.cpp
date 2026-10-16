@@ -308,13 +308,13 @@ CM_TEST(world, terrain_material_index_out_of_range) {
     // §4.1, §4.4: what is kept but UNPROVEN is one aggregated line each.
     auto count = [&](const std::string& prefix) {
         size_t n = 0;
-        for (const auto& w : warnings) n += w.rfind(prefix, 0) == 0 && w.find("UNPROVEN") != std::string::npos;
+        for (const auto& w : warnings) n += w.rfind(prefix, 0) == 0;
         return n;
     };
     CHECK_EQ(count("terrain materials: uvScale UNPROVEN on all 2 chunks"), size_t(1));
     CHECK_EQ(count("terrain materials: tiling bytes kept as stored on 2 chunks"), size_t(1));
     CHECK_EQ(count("terrain materials: materialFileId is loResMaterial on 2 chunks"), size_t(1));
-    CHECK_EQ(count("terrain materials: 1 chunks have a non-null uvData"), size_t(1));
+    CHECK_EQ(count("terrain materials: 1 chunks have a uvData"), size_t(1));
     CHECK_EQ(count("terrain materials: 0 chunk blend pages"), size_t(0));   // no solid pages: no line
     CHECK_EQ(terr.chunks[0].material.pickerScale, 0.0f);                   // no pages: unknown
 }
@@ -608,14 +608,15 @@ CM_TEST(world, environment_names_unattached) {
     CHECK(scene.environment.sky.present);
     CHECK_EQ(scene.environment.sky.starFile, uint32_t(42));
     CHECK_EQ(scene.environment.light.lightCount, 2);
-    CHECK_EQ(scene.warnings.size(), size_t(1));
+    CHECK_EQ(scene.warnings.size(), size_t(2));
+    CHECK_EQ(warnings_starting(scene, "environment: no dataGlobal water presets"), size_t(1));
     CHECK_EQ(warnings_starting(scene, "environment: 2 other dataGlobal lighting presets and 13 per-zone blocks "
                                       "(12 dataLocalArray, 1 dataOverrideArray"),
              size_t(1));
 
     castlemist::world::WorldScene empty;
     castlemist::world::build_environment({}, empty);
-    CHECK_EQ(empty.warnings.size(), size_t(2));
+    CHECK_EQ(empty.warnings.size(), size_t(3));
     CHECK_EQ(warnings_starting(empty, "environment: no sky"), size_t(1));
     CHECK_EQ(warnings_starting(empty, "environment: no light rig"), size_t(1));
 }
@@ -691,4 +692,93 @@ CM_TEST(world, unread_chunk_warnings_skip_consumed_and_dedupe) {
     CHECK_EQ(w.size(), size_t(2));
     CHECK_EQ(w[0], std::string("chunk zon2 v22 not read"));
     CHECK_EQ(w[1], std::string("chunk dcal v10 not read"));
+}
+
+// ---- world-materials additions (raw fields kept as stored) ----
+
+CM_TEST(world, props_keep_anim_sequence_and_color) {
+    auto p = make_prop(5, "propAnimArray");
+    p.animSequence = 463;
+    p.color[0] = 0x4A; p.color[1] = 0x81; p.color[2] = 0x64; p.color[3] = 0x80;
+    castlemist::world::WorldScene scene;
+    castlemist::world::build_props({p}, scene);
+    CHECK_EQ(scene.props.size(), size_t(1));
+    if (scene.props.size() != 1) return;
+    CHECK_EQ(scene.props[0].animSequence, uint64_t(463));
+    CHECK_EQ(int(scene.props[0].color[0]), 0x4A);
+    CHECK_EQ(int(scene.props[0].color[1]), 0x81);
+    CHECK_EQ(int(scene.props[0].color[2]), 0x64);
+    CHECK_EQ(int(scene.props[0].color[3]), 0x80);
+}
+
+CM_TEST(world, terrain_materials_keep_positions_and_uvdata) {
+    castlemist::model::Extractor::MapTerrain t;
+    t.present = true;
+    t.dimX = 2; t.dimY = 2; t.vertsPerChunkSide = 2;
+    t.rect[0] = 0; t.rect[1] = 0; t.rect[2] = 100; t.rect[3] = 100; t.hasRect = true;
+    t.heights.assign(25, 1.0f);
+    std::vector<std::string> warnings;
+    auto terr = castlemist::world::build_terrain(t, warnings);
+    CHECK_EQ(terr.chunks.size(), size_t(1));
+    if (terr.chunks.size() != 1) return;
+
+    castlemist::model::Extractor::MapTerrainMaterials m;
+    m.present = true;
+    const char* names[] = {"color", "colorb", "colorc", "colord", "blend"};
+    for (int k = 0; k < 5; ++k) {
+        castlemist::model::Extractor::MapTerrainMaterials::Tex tx;
+        tx.token = token_of(names[k]);
+        tx.flags = 1;
+        tx.fileId = k < 4 ? 11 + k : 0;
+        tx.layer = k < 4 ? 0xFFFFFFFFu : 0u;
+        m.texFiles.push_back(tx);
+        m.texFileIds.push_back(tx.fileId);
+    }
+    m.chunks.resize(1);
+    m.chunks[0].materialFileId = 7;
+    m.chunks[0].texIndices = {0, 1, 2, 3, 4};
+    m.chunks[0].hiMaterialFileId = 9;
+    m.chunks[0].hasUvData = true;
+    m.chunks[0].uv.translation[1] = 0.2f;
+
+    Gw2Dat dat;
+    warnings.clear();
+    castlemist::world::resolve_terrain_materials(terr, m, dat, nlohmann::json::object(), warnings);
+    const auto& mat = terr.chunks[0].material;
+    CHECK(mat.texIndexFileIds == std::vector<uint32_t>({11, 12, 13, 14, 0}));
+    CHECK_EQ(mat.hiResMaterialFileId, uint32_t(9));
+    CHECK(mat.hasUvData);
+    CHECK(std::fabs(mat.uvData.translation[1] - 0.2f) < 1e-6f);
+    bool noted = false;
+    for (const auto& w : warnings) noted = noted || w.find("note §" "1.5") != std::string::npos;
+    CHECK(noted);
+}
+
+CM_TEST(world, terrain_keeps_swap_distance) {
+    castlemist::model::Extractor::MapTerrain t;
+    t.present = true;
+    t.dimX = 2; t.dimY = 2; t.vertsPerChunkSide = 2;
+    t.rect[0] = 0; t.rect[1] = 0; t.rect[2] = 100; t.rect[3] = 100; t.hasRect = true;
+    t.heights.assign(25, 1.0f);
+    t.swapDistance = 39936;
+    std::vector<std::string> warnings;
+    auto terr = castlemist::world::build_terrain(t, warnings);
+    CHECK(terr.present);
+    CHECK_EQ(terr.swapDistance, 39936.0f);
+}
+
+CM_TEST(world, environment_keeps_water_presets) {
+    castlemist::world::EnvSources in;
+    in.light.present = true;
+    in.light.presetIndex = 1;
+    in.water.resize(3);
+    in.water[0].materialFileId = 187551;
+    castlemist::world::WorldScene scene;
+    castlemist::world::build_environment(in, scene);
+    CHECK_EQ(scene.environment.water.size(), size_t(3));
+    CHECK_EQ(scene.environment.water[0].materialFileId, uint32_t(187551));
+    CHECK_EQ(scene.environment.light.presetIndex, 1);
+    bool noted = false;
+    for (const auto& w : scene.warnings) noted = noted || w.find("note §" "6") != std::string::npos;
+    CHECK(noted);
 }

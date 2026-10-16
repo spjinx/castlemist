@@ -330,16 +330,9 @@ void show_entry_info(HWND panel, const Gw2Dat& data_gw2, uint32_t mft_index, con
     } else if (entry.kind == PreviewKind::Model) {
         append_model_info(text, entry);
     } else if (entry.kind == PreviewKind::Map) {
-        text += L"\r\n--- Map scene ---\r\n";
-        if (entry.map) {
-            wchar_t mb[256];
-            swprintf(mb, 256, L"Placed props: %u\r\nUnique models loaded: %u\r\nInstances rendered: %zu\r\n",
-                     entry.map->totalProps, entry.map->loadedModels, entry.map->instances.size());
-            text += mb;
-            text += L"Drag to orbit, wheel to zoom. (Props only; terrain/water not rendered.)\r\n";
-        } else {
-            text += L"Map detected, but the scene could not be built (load the struct template).\r\n";
-        }
+        text += L"\r\n--- Map ---\r\n";
+        text += L"The preview shows the map's world_summary. Open it with Tools > Map Window...; "
+                L"export it with File > Export World (Map)...\r\n";
     }
 
     text += extra;

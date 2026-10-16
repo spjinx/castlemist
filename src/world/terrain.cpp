@@ -13,6 +13,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <unordered_set>
 #include <string>
 #include <tuple>
 
@@ -113,6 +114,7 @@ Terrain build_terrain(const castlemist::model::Extractor::MapTerrain& t, std::ve
     }
 
     out.present = true;
+    out.swapDistance = t.swapDistance;
     out.chunksX = l.chunksX;
     out.chunksY = l.chunksY;
     out.chunks.reserve((size_t)l.chunksX * l.chunksY);
@@ -293,6 +295,18 @@ void resolve_terrain_materials(Terrain& t, const castlemist::model::Extractor::M
         mat.materialFileId = c.materialFileId;
         for (int k = 0; k < 3; ++k) mat.tiling[k] = c.tiling[k];
         mat.uvScale = 0;   // §4.4: UNPROVEN
+        mat.hiResMaterialFileId = c.hiMaterialFileId;
+        mat.hasUvData = c.hasUvData;
+        if (c.hasUvData) {
+            for (int k = 0; k < 2; ++k) {
+                mat.uvData.translation[k] = c.uv.translation[k];
+                mat.uvData.xScaleRange[k] = c.uv.xScaleRange[k];
+                mat.uvData.yScaleRange[k] = c.uv.yScaleRange[k];
+                mat.uvData.scaleSpeed[k] = c.uv.scaleSpeed[k];
+            }
+            mat.uvData.rotation = c.uv.rotation;
+        }
+        mat.texIndexFileIds.assign(c.texIndices.size(), 0);
         mat.textureFileIds.assign(4, 0);
         mat.normalFileIds.assign(4, 0);
         mat.pickerScale = perPage ? 1.0f / (float)perPage : 0.0f;
@@ -307,6 +321,7 @@ void resolve_terrain_materials(Terrain& t, const castlemist::model::Extractor::M
                 continue;
             }
             const auto& tex = m.texFiles[k];
+            mat.texIndexFileIds[j] = tex.fileId;
             const std::string name = token_name(tex.token);
             if (int s = slot_of(name, "color"); s >= 0) {
                 mat.textureFileIds[(size_t)s] = tex.fileId;
@@ -366,13 +381,42 @@ void resolve_terrain_materials(Terrain& t, const castlemist::model::Extractor::M
                            "picker2Solid as stored, channel order UNPROVEN (note §4.2)");
     if (withUvData)
         warnings.push_back("terrain materials: " + std::to_string(withUvData) +
-                           " chunks have a non-null uvData that is not decoded; what it does is UNPROVEN (note §4.4)");
+                           " chunks have a uvData (kept as stored in TerrainMaterial::uvData; not animated: which ground UV it "
+                           "moves is per-AMAT, and its units are UNPROVEN, note §1.5-1.6)");
     if (droppedCount) {
         std::string names;
         for (const auto& n : dropped) names += (names.empty() ? "" : ", ") + n;
         warnings.push_back("terrain materials: " + std::to_string(droppedCount) +
                            " chunk texture bindings not kept (tokens: " + names + ")");
     }
+}
+
+} // namespace castlemist::world
+
+namespace castlemist::world {
+
+std::vector<uint32_t> terrain_texture_ids(const Terrain& t, const std::vector<size_t>* chunks) {
+    std::vector<uint32_t> out;
+    std::unordered_set<uint32_t> seen;
+    auto take = [&](uint32_t id) {
+        if (id != 0 && seen.insert(id).second) out.push_back(id);
+    };
+    auto take4 = [&](const std::vector<uint32_t>& v) {
+        for (size_t k = 0; k < 4 && k < v.size(); ++k) take(v[k]);
+    };
+    auto chunk = [&](const TerrainChunk& c) {
+        take4(c.material.textureFileIds);
+        take4(c.material.normalFileIds);
+        take(c.material.pickerFileId);
+        take(c.material.picker2FileId);
+    };
+    if (chunks) {
+        for (size_t i : *chunks)
+            if (i < t.chunks.size()) chunk(t.chunks[i]);
+    } else {
+        for (const TerrainChunk& c : t.chunks) chunk(c);
+    }
+    return out;
 }
 
 } // namespace castlemist::world
