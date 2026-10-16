@@ -9,18 +9,29 @@ $schema $id $defs $ref title description type properties required
 additionalProperties items enum const minimum maximum minItems maxItems
 (type may be an array). Any other schema keyword is "ERROR schema: unsupported
 keyword <k>". If jsonschema happens to be importable it is run as a cross-check.
+
+Foliage (world-foliage spec D7): every cells[].foliage.file is read as
+castlemist-foliage-1 records (100 bytes each, little-endian; the layout is in
+the schema's foliage description). Its size must be records x 100, each
+record's model and layer must be in range, the records sorted by (model,
+placement), the bit-0 count equal to colliderTrees, and each record's unity
+TRS must reproduce its m relative to the cell origin within 1e-4. The cells'
+sums must equal counts.foliage.
 """
 import json
 import math
 import os
 import posixpath
 import shutil
+import struct
 import sys
 import tempfile
 
 KEYWORDS = {"$schema", "$id", "$defs", "$ref", "title", "description", "type", "properties", "required",
             "additionalProperties", "items", "enum", "const", "minimum", "maximum", "minItems", "maxItems"}
 TYPES = {"object", "array", "string", "number", "integer", "boolean", "null"}
+FOLIAGE_RECORD = struct.Struct("<IHHI12f3f4f3f")  # castlemist-foliage-1, 100 bytes
+FOLIAGE_GEOMETRY_ONLY_LAYER = 0xFFFF
 
 
 # ---------------------------------------------------------------- schema check
@@ -267,6 +278,8 @@ def semantic(m, root):
                 if (cx, cy) not in owner:
                     errors.append("ERROR cells: chunk (%d, %d) of the terrain region is in no cell" % (cx, cy))
 
+    _check_foliage(m, root, models, cells, errors)
+
     cnt = m.get("counts") or {}
     try:
         if cnt["propsWritten"] + cnt["propsSkipped"] != cnt["props"]:
@@ -277,6 +290,97 @@ def semantic(m, root):
     except (KeyError, TypeError):
         pass
     return errors
+
+
+def read_foliage_records(path):
+    """The castlemist-foliage-1 records of one bin as dicts (model, layer, flags, placement, m, unity, yaw, tilt)."""
+    with open(path, "rb") as f:
+        data = f.read()
+    out = []
+    for at in range(0, len(data) - FOLIAGE_RECORD.size + 1, FOLIAGE_RECORD.size):
+        v = FOLIAGE_RECORD.unpack_from(data, at)
+        m3 = v[4:16]
+        m16 = [m3[0], m3[1], m3[2], 0.0, m3[3], m3[4], m3[5], 0.0, m3[6], m3[7], m3[8], 0.0,
+               m3[9], m3[10], m3[11], 1.0]
+        out.append({"model": v[0], "layer": v[1], "flags": v[2], "placement": v[3], "m": m16,
+                    "unity": {"t": list(v[16:19]), "r": list(v[19:23]), "s": v[23]},
+                    "unityYaw": v[24], "tiltDeg": v[25]})
+    return out
+
+
+def _check_foliage(m, root, models, cells, errors):
+    """cells[].foliage bins against the foliage block and counts.foliage (module docstring)."""
+    fol = m.get("foliage")
+    layers = fol.get("layers") if isinstance(fol, dict) else None
+    if isinstance(fol, dict):
+        for k, fm in enumerate(fol.get("models") or []):
+            mi = fm.get("model")
+            if isinstance(mi, int) and not (0 <= mi < len(models)):
+                errors.append("ERROR foliage.models[%d].model: index out of range: foliage.models[%d].model (%d, models has %d)"
+                              % (k, k, mi, len(models)))
+        for li, layer in enumerate(layers or []):
+            for k, mi in enumerate(layer.get("models") or []):
+                if isinstance(mi, int) and not (0 <= mi < len(models)):
+                    errors.append("ERROR foliage.layers[%d].models[%d]: index out of range: foliage.layers[%d].models[%d] "
+                                  "(%d, models has %d)" % (li, k, li, k, mi, len(models)))
+    rb = FOLIAGE_RECORD.size
+    records = colliders = 0
+    any_cell = False
+    for ci, c in enumerate(cells):
+        f = c.get("foliage")
+        if not isinstance(f, dict):
+            continue
+        any_cell = True
+        p = "cells[%d].foliage" % ci
+        rel = f.get("file")
+        n = f.get("records")
+        if not isinstance(rel, str) or not isinstance(n, int):
+            continue
+        records += n
+        colliders += f.get("colliderTrees", 0) if isinstance(f.get("colliderTrees"), int) else 0
+        path = os.path.join(root, rel)
+        if not os.path.isfile(path):
+            errors.append("ERROR %s.file: missing file: %s" % (p, rel))
+            continue
+        size = os.path.getsize(path)
+        if size != n * rb:
+            errors.append("ERROR %s.file: foliage size: %s (%d bytes, %d records x %d)" % (p, rel, size, n, rb))
+            continue
+        bits = 0
+        prev = None
+        for i, r in enumerate(read_foliage_records(path)):
+            rp = "%s[%d]" % (rel, i)
+            vals = r["m"] + r["unity"]["t"] + r["unity"]["r"] + [r["unity"]["s"], r["unityYaw"], r["tiltDeg"]]
+            if not all(math.isfinite(x) for x in vals):
+                errors.append("ERROR %s: non-finite number" % rp)
+                continue
+            if not r["model"] < len(models):
+                errors.append("ERROR %s.model: index out of range: %s.model (%d, models has %d)"
+                              % (rp, rp, r["model"], len(models)))
+            if (layers is not None and r["layer"] != FOLIAGE_GEOMETRY_ONLY_LAYER
+                    and not r["layer"] < len(layers)):
+                errors.append("ERROR %s.layer: index out of range: %s.layer (%d, foliage.layers has %d)"
+                              % (rp, rp, r["layer"], len(layers)))
+            if (r["flags"] >> 1) & 3 == 3:
+                errors.append("ERROR %s.flags: source 3 is not defined" % rp)
+            if r["flags"] & 1:
+                bits += 1
+            key = (r["model"], r["placement"])
+            if prev is not None and key < prev:
+                errors.append("ERROR %s: records not sorted by (model, placement)" % rp)
+            prev = key
+            _check_unity(r, c.get("origin"), rp, errors)
+        if isinstance(f.get("colliderTrees"), int) and bits != f["colliderTrees"]:
+            errors.append("ERROR %s.colliderTrees: %d declared, %d records with bit 0 in %s"
+                          % (p, f["colliderTrees"], bits, rel))
+    cf = (m.get("counts") or {}).get("foliage")
+    if isinstance(cf, dict):
+        if cf.get("records") != records:
+            errors.append("ERROR counts.foliage.records: %s but cells hold %d records" % (cf.get("records"), records))
+        if cf.get("colliderTrees") != colliders:
+            errors.append("ERROR counts.foliage.colliderTrees: %s but cells hold %d" % (cf.get("colliderTrees"), colliders))
+    elif any_cell:
+        errors.append("ERROR counts.foliage: missing, but cells hold foliage")
 
 
 def _check_unity(inst, origin, p, errors):
@@ -426,6 +530,28 @@ def self_test(export_dir, schema_path):
              lambda d: edit(d, lambda j: j["cells"][0]["instances"][0].__setitem__("model", 9999)))
         case("extra", "unexpected property: map.extra",
              lambda d: edit(d, lambda j: j["map"].__setitem__("extra", 1)))
+
+        # Foliage (world-foliage spec D7), when the export has any.
+        fcell = next((c["foliage"] for c in base["cells"] if isinstance(c.get("foliage"), dict)), None)
+        if isinstance(base.get("foliage"), dict) and fcell is not None:
+            rel = fcell["file"]
+
+            def truncate(d):
+                p = os.path.join(d, rel)
+                with open(p, "rb") as f:
+                    b = f.read()
+                with open(p, "wb") as f:
+                    f.write(b[:-1])
+
+            def bad_model(d):
+                p = os.path.join(d, rel)
+                with open(p, "r+b") as f:
+                    f.write(struct.pack("<I", 9999))
+
+            case("foliage_size", "foliage size: " + rel, truncate)
+            case("foliage_range", "index out of range: %s[0].model" % rel, bad_model)
+            case("foliage_extra", "unexpected property: foliage.extra",
+                 lambda d: edit(d, lambda j: j["foliage"].__setitem__("extra", 1)))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     if failures:

@@ -245,9 +245,9 @@ bool unity_trs(const float mapWorld[16], const float cellOrigin[3], UnityTrs& ou
     return true;
 }
 
-std::vector<ManifestSetting> world_export_settings(const WorldFolderOptions& o) {
+std::vector<ManifestSetting> world_export_settings(const WorldFolderOptions& o, const cw::WorldScene* scene) {
     const std::string kU = "UNPROVEN", kC = "castlemist's choice", kM = "measured";
-    return {
+    std::vector<ManifestSetting> v = {
         {"groundRepeatsPerChunk", o.groundRepeats, kU, "T3D's guess, docs/research/gw2-world-materials.md \xc2\xa7" "1.6"},
         {"srgbColourTextures", o.srgbColour, kC, "the map window's srgbColourTextures (sub-project 3)"},
         {"pickerSolidByteOrder", "as stored", kU, "docs/research/gw2-world-frame.md \xc2\xa7" "4.2"},
@@ -274,6 +274,49 @@ std::vector<ManifestSetting> world_export_settings(const WorldFolderOptions& o) 
         {"unityAxisConversion", "ModelImporter.bakeAxisConversion = true: east +X, north +Z, up +Y", kM,
          "frame probe on Unity 6000.0.42f1 (world export Task 1) and 2022.3.22f1 (Task 12); bake off fails it, on passes"},
     };
+    // World foliage (docs/superpowers/specs/2026-10-16-world-foliage-design.md D11; the
+    // terrain rows come with the unityTerrain block).
+    const std::string F = "docs/superpowers/specs/2026-10-16-world-foliage-design.md ";
+    const cw::ZoneScatterMode mode = scene ? scene->zones.mode : cw::ZoneScatterMode::Colliders;
+    const bool colliders = mode == cw::ZoneScatterMode::Colliders;
+    const char* scatter = mode == cw::ZoneScatterMode::Exact            ? "exact"
+                          : mode == cw::ZoneScatterMode::DensityMatched ? "densityMatched"
+                                                                        : "colliders";
+    // The D5 rule rows: phase 1 places the collider entries only, each at its own stored
+    // transform, so no scatter rule is in force yet (D5 steps 3-4 set them in phase 2).
+    const std::string ruleValue = colliders ? "the collider entry's own transform (no scatter rule in force)"
+                                            : "the D5 rule in force";
+    const std::string ruleStatus = colliders ? kM : kU;
+    const std::string ruleSource = F + (colliders ? "D5; phase 1 places the havk zoneModels entries only"
+                                                  : "D5 steps 3-4");
+    const std::vector<ManifestSetting> foliage = {
+        {"zoneGrid", "48 units, origin parm (x0, y0), rows north, anchor column c - 1", kM, F + "M2"},
+        {"zoneModelSlot", "(flag >> 1) & 7 into modelArray", kM, F + "M3"},
+        {"zoneFlagBit0", "as stored, not used", kU, F + "M4"},
+        {"zoneTreeLink", "anchor \xc2\xb1" "24, then geometry vote", kM,
+         F + "D3 (anchor candidates are type-3 placements, ruling S1)"},
+        {"zoneVisualTransform", "client_world_matrix(translate, rotate, scale)", kU, F + "D4"},
+        {"zoneScatter", scatter, mode == cw::ZoneScatterMode::DensityMatched ? kU : kM, F + "D5"},
+        {"zonePlacementMultiplicity", "1 instance per placement", kU,
+         F + "M2 (measured for type 3; UNPROVEN for types 1-2)"},
+        {"zoneJitter", ruleValue, ruleStatus, ruleSource},
+        {"zoneYaw", ruleValue, ruleStatus, ruleSource},
+        {"zoneScale", ruleValue, ruleStatus, ruleSource},
+        {"zoneTilt", ruleValue, ruleStatus, ruleSource},
+        {"zoneZ", ruleValue, ruleStatus, ruleSource},
+        {"zoneProbability", "applied offline (not re-applied)", kU, F + "D5"},
+        {"zoneTint", "hslRanges / hslOffset not applied", kC, F + "D11"},
+        {"zoneFade", "fadeRange = camera distance, map units", kU, F + "D6"},
+        {"zoneLayerTypeTarget", "1-2 detail, 3 tree", kC,
+         F + "D11, from measured sizes (docs/research/gw2-terrain-to-unity.md \xc2\xa7" "1.3)"},
+        {"foliageWind", "none", kC, F + "D10"},
+        {"foliagePatchUnits", 1536, kC, F + "D11"},
+        {"foliageTileUnits", 1536, kC, F + "D11 (the Map Window's foliage tiles)"},
+        {"foliageThinHash", "fmix32(placement)", kC, F + "D9"},
+        {"lodCullFovDeg", 60, kC, F + "D11; the VRChat FOV is UNPROVEN"},
+    };
+    v.insert(v.end(), foliage.begin(), foliage.end());
+    return v;
 }
 
 json world_light_json(const castlemist::model::Extractor::MapEnvLight& l) {
@@ -342,7 +385,7 @@ json world_manifest_json(const WorldManifestInput& in) {
 
     std::vector<std::string> settingWarnings;
     json settings = json::object();
-    for (const ManifestSetting& st : world_export_settings(o)) {
+    for (const ManifestSetting& st : world_export_settings(o, &s)) {
         assert(first_non_finite(st.value, st.name).empty());   // code constants and the finite options above
         settings[st.name] = {{"value", st.value}, {"status", st.status}, {"source", st.source}};
         if (st.status == "UNPROVEN")
@@ -371,6 +414,9 @@ json world_manifest_json(const WorldManifestInput& in) {
     float lo[2] = {0, 0}, hi[2] = {0, 0};   // the kept cells' extent, for the probe
     bool anyRect = false;
     json cells = json::array();
+    const bool foliageOn = in.foliage.is_object();
+    uint64_t foliageRecords = 0, foliageColliderTrees = 0;
+    std::vector<char> propModel(in.models.size(), 0);   // models[] positions a written cell's prop uses
     for (const ManifestCell& mc : in.cells) {
         if (!mc.cell) continue;
         const cw::Cell& c = *mc.cell;
@@ -407,6 +453,7 @@ json world_manifest_json(const WorldManifestInput& in) {
         for (uint32_t pi : c.props) {
             ++props;
             const auto mp = pi < s.props.size() ? modelPos.find(s.props[pi].model) : modelPos.end();
+            if (mp != modelPos.end()) propModel[mp->second] = 1;
             if (mp == modelPos.end() || !in.models[mp->second].ok) { ++skippedModel; continue; }
             const cw::PropInstance& p = s.props[pi];
             UnityTrs u{};
@@ -419,6 +466,13 @@ json world_manifest_json(const WorldManifestInput& in) {
                                  {"unity", {{"t", vec(u.t, 3)}, {"r", vec(u.r, 4)}, {"s", u.s}}},
                                  {"clip", str_or_null(clip)}});
             ++written;
+        }
+        json foliage = nullptr;
+        if (foliageOn && !mc.foliageFile.empty()) {
+            foliage = {{"file", mc.foliageFile}, {"records", mc.foliageRecords}, {"colliderTrees", mc.colliderTrees},
+                       {"triangles", mc.foliageTriangles}};
+            foliageRecords += mc.foliageRecords;
+            foliageColliderTrees += mc.colliderTrees;
         }
         cells.push_back(
             {{"id", c.id},
@@ -434,9 +488,14 @@ json world_manifest_json(const WorldManifestInput& in) {
              {"colliderTriangles", mc.colliderTriangles},
              {"budget", {{"triangles", c.triangles}, {"textureMB", c.textureMB}, {"split", c.split},
                          {"overBudget", c.overBudget}}},
-             {"instances", instances}});
+             {"instances", instances},
+             {"foliage", foliage}});
     }
     man["cells"] = cells;
+    // World foliage (world-foliage spec "manifest.json additions"): the block as given,
+    // null when a stored layer value is not finite (ruling W6, warned).
+    json foliageBlock = foliageOn ? finite_or_null(in.foliage, "foliage", notes) : json(nullptr);
+    if (foliageBlock.is_object()) man["foliage"] = foliageBlock;
     man["water"] = finite_or_null(water_json(s), "water", notes);
 
     // sky: only the schema's keys (json, default: strings; equirect: string or null).
@@ -510,6 +569,28 @@ json world_manifest_json(const WorldManifestInput& in) {
                      {"animated", given("animated")},
                      {"animatedResolved", given("animatedResolved")},
                      {"clipsFailedDecode", given("clipsFailedDecode")}};
+    if (foliageOn) {
+        const json gf = in.counts.is_object() && in.counts.contains("foliage") && in.counts["foliage"].is_object()
+                            ? in.counts["foliage"] : json::object();
+        auto fgiven = [&](const char* key) -> uint64_t {
+            if (gf.contains(key) && gf[key].is_number_integer() && gf[key].get<int64_t>() >= 0) return gf[key].get<uint64_t>();
+            return 0;
+        };
+        // modelsFoliageOnly: foliage models that no written prop instance uses.
+        uint64_t foliageOnly = 0;
+        if (foliageBlock.is_object())
+            for (const json& fm : foliageBlock["models"]) {
+                const size_t k = fm["model"].get<size_t>();
+                if (k < propModel.size() && !propModel[k]) ++foliageOnly;
+            }
+        man["counts"]["foliage"] = {{"records", foliageRecords},
+                                    {"colliderTrees", foliageColliderTrees},
+                                    {"scatter", fgiven("scatter")},
+                                    {"density", fgiven("density")},
+                                    {"modelsFoliageOnly", foliageOnly},
+                                    {"skipped", fgiven("skipped")},
+                                    {"failedModel", fgiven("failedModel")}};
+    }
 
     std::vector<std::string> warnings = s.warnings;
     warnings.insert(warnings.end(), in.warnings.begin(), in.warnings.end());

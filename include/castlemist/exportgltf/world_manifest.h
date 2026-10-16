@@ -49,6 +49,13 @@ struct UnityTrs { float t[3]; float r[4]; float s; };
 ///        rotation, so a quaternion would silently be wrong.
 bool unity_trs(const float mapWorld[16], const float cellOrigin[3], UnityTrs& out);
 
+/// @brief Which zone instances become foliage records (world-foliage spec D7, CLI
+///        `--foliage off|colliders|all`): none; the Collider-source instances only
+///        (flag bit 0); or every instance scene.zones holds (All = whatever
+///        scene.zones.mode built). Declared here for WorldFolderOptions;
+///        world_foliage.h holds the records.
+enum class FoliageExport : uint8_t { Off, Colliders, All };
+
 /// @brief The world folder export's options (spec "Front end"; pinned values in
 ///        the plan's Global Constraints).
 struct WorldFolderOptions {
@@ -59,6 +66,8 @@ struct WorldFolderOptions {
     bool srgbColour = true;
     float unityScale = 0.0254f;          ///< UNPROVEN, gltf_export.h:57 "GW2 inches" (spec D7)
     bool sky = true, collision = true, overwrite = false;
+    /// Foliage records (world-foliage spec D7). All is also File > Export World (Map)...'s choice.
+    FoliageExport foliage = FoliageExport::All;
     /// When set and it becomes true, export_world_folder stops at the next
     /// model, cell or stage with error "export cancelled" and no manifest.json
     /// (review I5: the GUI sets it when the app is closed during an export).
@@ -71,19 +80,31 @@ struct ManifestSetting { std::string name; nlohmann::json value; std::string sta
 
 /// @brief The spec D3 table, plus texelsPerChunk, waterTexelsPerChunk,
 ///        maxTextureSize, the three cell budgets, unityScale, ambient and the
-///        measured Unity axis setting. The vector has a fixed order; the
+///        measured Unity axis setting, then the world-foliage spec D11 rows that
+///        apply to the export (every `zone*` and `foliage*` row, and
+///        lodCullFovDeg; the terrain rows come with the unityTerrain block).
+///        `zoneScatter` and the D5 rule rows follow @p scene's zones.mode
+///        (Colliders when @p scene is null). The vector has a fixed order; the
 ///        manifest's `settings` object is keyed by name, so its JSON is key-sorted.
-std::vector<ManifestSetting> world_export_settings(const WorldFolderOptions& o);
+std::vector<ManifestSetting> world_export_settings(const WorldFolderOptions& o,
+                                                   const castlemist::world::WorldScene* scene = nullptr);
 
 /// @brief One model folder as the model stage wrote it. `index` is the
-///        scene.models index; empty paths are written as null.
+///        scene.models index; empty paths are written as null. meshes,
+///        materialCount and wind (true / false / null, world_foliage.h
+///        model_wind) feed the manifest's foliage.models (world-foliage spec D7);
+///        they are not written into models[].
 struct ManifestModel { uint32_t index = 0, fileId = 0; bool ok = false; std::string error, folder, glb, materials;
                        uint64_t triangles = 0, textureBytes = 0; std::vector<std::string> clips, darkDecalMaterials;
-                       nlohmann::json uvScroll = nlohmann::json::array(); };
+                       nlohmann::json uvScroll = nlohmann::json::array();
+                       int meshes = 0, materialCount = 0; nlohmann::json wind; };
 
 /// @brief One written cell. Empty albedo / water paths are written as null.
+///        An empty foliageFile writes `foliage: null`; else {file, records,
+///        colliderTrees, triangles} (world-foliage spec "manifest.json additions").
 struct ManifestCell { const castlemist::world::Cell* cell = nullptr; std::string glb, albedo, water; int albedoW = 0, albedoH = 0;
-                      size_t colliderParts = 0, colliderTriangles = 0; };
+                      size_t colliderParts = 0, colliderTriangles = 0;
+                      std::string foliageFile; size_t foliageRecords = 0, colliderTrees = 0; uint64_t foliageTriangles = 0; };
 
 /// @brief Everything world_manifest_json needs. `sky` and `spawn` are null or
 ///        their spec objects; only the schema's keys are copied (sky: json,
@@ -91,12 +112,16 @@ struct ManifestCell { const castlemist::world::Cell* cell = nullptr; std::string
 ///        map_to_unity(map)), and one missing its required keys is written as null;
 ///        `light` null is built from scene->environment.light (world_light_json);
 ///        `counts` supplies chunksUnbaked, animated, animatedResolved and
-///        clipsFailedDecode (missing ones are 0; the rest are computed).
+///        clipsFailedDecode (missing ones are 0; the rest are computed), and
+///        `counts.foliage` supplies scatter, density, skipped and failedModel.
 ///        `warnings` are the export's own, written after the scene's.
+///        `foliage` is foliage_manifest_json's block (world_foliage.h), or null:
+///        then neither `foliage` nor `counts.foliage` is written.
 struct WorldManifestInput {
     const castlemist::world::WorldScene* scene = nullptr; const WorldFolderOptions* opts = nullptr;
     std::vector<ManifestModel> models; std::vector<ManifestCell> cells;
     nlohmann::json sky, light, spawn, counts; std::vector<std::string> warnings;
+    nlohmann::json foliage;
     nlohmann::json textures;   ///< {dir: string, count: integer >= 0} (ruling W8) or null = left out
     std::function<std::string(uint32_t propIndex)> clipOf;   ///< "" = null
 };
@@ -119,6 +144,13 @@ nlohmann::json world_light_json(const castlemist::model::Extractor::MapEnvLight&
 ///   non-uniform or degenerate transform skipped"; those of a failed or missing
 ///   model likewise ("props: <n> placements of failed or missing models skipped").
 /// - counts.props = sum of the cells' props, propsWritten + propsSkipped = props.
+/// - Foliage (world-foliage spec "manifest.json additions"), only when in.foliage
+///   is an object: `foliage` is in.foliage (null-and-left-out, warned, when it
+///   holds a non-finite number); every cell gets `foliage` ({file, records,
+///   colliderTrees, triangles} or null; always null without in.foliage);
+///   counts.foliage.records / colliderTrees are the cells' sums, modelsFoliageOnly
+///   the foliage models no written cell's prop uses, and scatter, density,
+///   skipped, failedModel come from in.counts.foliage.
 /// - warnings: scene->warnings as is, then in.warnings, then one line per
 ///   UNPROVEN setting ("settings: <name> ... UNPROVEN ..."), the flat-water note
 ///   (world_cell.h kFlatWaterNote) when the map has a plane but no preset, and

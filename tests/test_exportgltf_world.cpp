@@ -11,12 +11,14 @@
 #include "castlemist/exportgltf/world_manifest.h"
 #include "castlemist/exportgltf/world_probe.h"
 #include "castlemist/exportgltf/world_folder.h"
+#include "castlemist/exportgltf/world_foliage.h"
 #include "world_export_synthetic.h"
 #include "long_path.h"
 #include "castlemist/world/frame.h"
 #include "castlemist/world/props.h"
 #include "castlemist/world/surface_rules.h"
 #include "castlemist/world/walk.h"
+#include "castlemist/world/zones.h"
 #include "castlemist/extract/model_types.h"
 #include "castlemist/native/granny_anim.hpp"
 
@@ -1163,6 +1165,13 @@ CM_TEST(world_manifest, settings_labelled) {
     CHECK(man["settings"]["ambient"]["status"] == "castlemist's choice");
     CHECK(man["settings"]["texelsPerChunk"]["value"] == 256);
     CHECK(man["settings"]["cellMaxTriangles"]["value"] == 500000);
+    // World foliage D11 rows: the UNPROVEN ones are warned like the rest.
+    CHECK(man["settings"]["zoneVisualTransform"]["status"] == "UNPROVEN");
+    CHECK(man["settings"]["zoneFade"]["status"] == "UNPROVEN");
+    CHECK(has_warning(man, "settings: zoneVisualTransform"));
+    CHECK(has_warning(man, "settings: zoneFade"));
+    CHECK(man["settings"]["lodCullFovDeg"]["value"] == 60);
+    CHECK(man["settings"]["foliageWind"]["value"] == "none");
     // The settings are world_export_settings and follow the options.
     WorldFolderOptions o;
     o.texelsPerChunk = 128;
@@ -1388,7 +1397,7 @@ CM_TEST(world_folder, synthetic_export_complete) {
     check_valid(man, "synthetic export");
     CHECK_EQ(man["counts"]["props"].get<int>(), 4);
     CHECK_EQ(man["counts"]["propsWritten"].get<int>(), 4);
-    CHECK_EQ(man["counts"]["models"].get<int>(), 2);
+    CHECK_EQ(man["counts"]["models"].get<int>(), 3);   // 101, 102 and the zone-only 103
     CHECK_EQ(man["counts"]["cells"].get<int>(), 1);
     CHECK_EQ(man["counts"]["animated"].get<int>(), 1);
     CHECK_EQ(man["counts"]["animatedResolved"].get<int>(), 1);
@@ -1431,7 +1440,7 @@ CM_TEST(world_folder, synthetic_export_complete) {
     CHECK(src.releases.load() >= 1);   // ruling W9
     // The report agrees with the manifest.
     CHECK_EQ(r.cells, size_t(1));
-    CHECK_EQ(r.modelsWritten, size_t(2));
+    CHECK_EQ(r.modelsWritten, size_t(3));
     CHECK_EQ(r.propsWritten, size_t(4));
     CHECK_EQ(r.chunksUnbaked, size_t(4));   // the synthetic chunks have no resolved material
     CHECK(r.bytes.count("geometry") && r.bytes.at("geometry") > 0);
@@ -1456,6 +1465,10 @@ CM_TEST(world_folder, failed_model_counted_and_skipped) {
     CHECK_EQ(r.propsSkipped, size_t(3));
     CHECK_FALSE(fs::exists(dir / "models" / "101" / "101.glb"));
     CHECK(fs::exists(dir / "models" / "102" / "102.glb"));
+    // Its foliage records (the two colliders of 101) are skipped and counted (world-foliage spec D7).
+    CHECK(man["counts"]["foliage"]["failedModel"] == json(2));
+    CHECK(man["counts"]["foliage"]["records"] == json(2));
+    CHECK(has_warning(man, "foliage: 2 placements of failed or missing models skipped"));
 }
 
 CM_TEST(world_folder, manifest_written_last) {
@@ -1714,7 +1727,7 @@ CM_TEST(world_folder, deep_output_folder_past_max_path) {
     CHECK(r.ok);
     if (!r.ok) std::printf("    error: %s\n", r.error.c_str());
     CHECK_EQ(r.modelsFailed, size_t(0));
-    CHECK_EQ(r.modelsWritten, size_t(2));
+    CHECK_EQ(r.modelsWritten, size_t(3));
     for (const std::string& w : r.warnings) CHECK(w.find("could not be written") == std::string::npos);
     size_t longest = 0, files = 0;
     CHECK(walk_files(dir, ec, [&](const fs::path& f, uint64_t) { ++files; longest = std::max(longest, f.native().size() - 4); }));
@@ -1800,4 +1813,334 @@ CM_TEST(world_folder, empty_model_counted_apart) {
     const WorldFolderReport r2 = export_world_folder(s, failing, nullptr, dir2.string(), synthetic_opts());
     CHECK_EQ(r2.modelsFailed, size_t(1));
     CHECK_EQ(r2.modelsEmpty, size_t(0));
+}
+
+// ------------------------------------------------------------ world foliage
+// World-foliage plan Task 7: foliage/<cell>.bin records, the manifest's foliage
+// blocks and wind flags (docs/superpowers/specs/2026-10-16-world-foliage-design.md D7).
+
+namespace {
+
+std::vector<FoliageRecord> read_records(const fs::path& p) {
+    const std::vector<uint8_t> b = file_bytes(p);
+    std::vector<FoliageRecord> out;
+    for (size_t at = 0; at + kFoliageRecordBytes <= b.size(); at += kFoliageRecordBytes)
+        out.push_back(decode_foliage_record(b.data() + at));
+    return out;
+}
+
+/// map_matrix_to_unity rebuilt from r.unity, against r.m relative to @p origin.
+void check_record_unity(const FoliageRecord& r, const float origin[3]) {
+    float local[16] = {};
+    for (int col = 0; col < 4; ++col)
+        for (int row = 0; row < 3; ++row) local[col * 4 + row] = r.m[col * 3 + row];
+    local[15] = 1;
+    for (int k = 0; k < 3; ++k) local[12 + k] -= origin[k];
+    float want[16];
+    cw::map_matrix_to_unity(local, want);
+    const double x = r.unity.r[0], y = r.unity.r[1], z = r.unity.r[2], w = r.unity.r[3];
+    const double R[3][3] = {{1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)},
+                            {2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)},
+                            {2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)}};
+    for (int c = 0; c < 3; ++c)
+        for (int rr = 0; rr < 3; ++rr) CHECK_NEAR(r.unity.s * R[rr][c], want[c * 4 + rr], 1e-4);
+    for (int rr = 0; rr < 3; ++rr) CHECK_NEAR(r.unity.t[rr], want[12 + rr], 1e-4);
+}
+
+fs::path out_dir(const char* label) { return fs::temp_directory_path() / (std::string("cm_world_export_") + label); }
+
+json export_synthetic(const cw::WorldScene& s, const char* label, const WorldFolderOptions& o,
+                      WorldFolderReport* rep = nullptr) {
+    tw::SyntheticModelSource src;
+    const fs::path dir = fresh_dir(label);
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), o);
+    CHECK(r.ok);
+    if (!r.ok) std::printf("    error: %s\n", r.error.c_str());
+    if (rep) *rep = r;
+    return read_json(dir / "manifest.json");
+}
+
+} // namespace
+
+CM_TEST(world_foliage, record_roundtrip) {
+    FoliageRecord r;
+    r.model = 0x01020304; r.layer = 0x0506; r.flags = 0x0708; r.placement = 0x090A0B0C;
+    for (int k = 0; k < 12; ++k) r.m[k] = 1.5f + float(k);
+    r.unity.t[0] = -1; r.unity.t[1] = -2; r.unity.t[2] = -3;
+    r.unity.r[0] = 0.1f; r.unity.r[1] = 0.2f; r.unity.r[2] = 0.3f; r.unity.r[3] = 0.9f;
+    r.unity.s = 2.5f; r.unityYaw = -0.75f; r.tiltDeg = 12.25f;
+    uint8_t b[kFoliageRecordBytes + 4];
+    std::memset(b, 0xEE, sizeof b);
+    encode_foliage_record(r, b);
+    CHECK_EQ(int(b[kFoliageRecordBytes]), 0xEE);   // exactly 100 bytes written
+    CHECK_EQ(int(b[0]), 0x04);                      // model at 0, little-endian
+    CHECK_EQ(int(b[3]), 0x01);
+    CHECK_EQ(int(b[4]), 0x06);                      // layer at 4
+    CHECK_EQ(int(b[6]), 0x08);                      // flags at 6
+    CHECK_EQ(int(b[8]), 0x0C);                      // placement at 8
+    float f;
+    std::memcpy(&f, b + 12, 4); CHECK_EQ(f, 1.5f);     // m at 12
+    std::memcpy(&f, b + 56, 4); CHECK_EQ(f, 12.5f);    // m[11]
+    std::memcpy(&f, b + 60, 4); CHECK_EQ(f, -1.0f);    // unity.t at 60
+    std::memcpy(&f, b + 72, 4); CHECK_EQ(f, 0.1f);     // unity.r at 72
+    std::memcpy(&f, b + 88, 4); CHECK_EQ(f, 2.5f);     // unity.s at 88
+    std::memcpy(&f, b + 92, 4); CHECK_EQ(f, -0.75f);   // unityYaw at 92
+    std::memcpy(&f, b + 96, 4); CHECK_EQ(f, 12.25f);   // tiltDeg at 96
+    const FoliageRecord d = decode_foliage_record(b);
+    CHECK_EQ(d.model, r.model); CHECK_EQ(d.layer, r.layer); CHECK_EQ(d.flags, r.flags);
+    CHECK_EQ(d.placement, r.placement);
+    for (int k = 0; k < 12; ++k) CHECK_EQ(d.m[k], r.m[k]);
+    for (int k = 0; k < 3; ++k) CHECK_EQ(d.unity.t[k], r.unity.t[k]);
+    for (int k = 0; k < 4; ++k) CHECK_EQ(d.unity.r[k], r.unity.r[k]);
+    CHECK_EQ(d.unity.s, r.unity.s); CHECK_EQ(d.unityYaw, r.unityYaw); CHECK_EQ(d.tiltDeg, r.tiltDeg);
+    CHECK_EQ(kFoliageRecordBytes, size_t(100));
+}
+
+CM_TEST(world_foliage, synthetic_records) {
+    const cw::WorldScene s = tw::synthetic_world();
+    CHECK(cw::fmix32(1) < 0x80000000u);   // the fixture's density-0.5 pair
+    CHECK(cw::fmix32(3) >= 0x80000000u);
+    const json man = export_synthetic(s, "foliage_records", synthetic_opts());
+    const fs::path bin = out_dir("foliage_records") / "foliage" / "c0_0_2x2.bin";
+    CHECK(fs::exists(bin));
+    CHECK_EQ(fs::exists(bin) ? fs::file_size(bin) : 0, uintmax_t(400));
+    const std::vector<FoliageRecord> rs = read_records(bin);
+    CHECK_EQ(rs.size(), size_t(4));
+    if (rs.size() != 4) return;
+    // Sorted by (model, placement): both model-101 records first, the geometry-only one last of them.
+    CHECK(man["models"][0]["fileId"] == json(101));
+    CHECK(man["models"][2]["fileId"] == json(103));
+    CHECK_EQ(rs[0].model, 0u); CHECK_EQ(rs[1].model, 0u); CHECK_EQ(rs[2].model, 2u); CHECK_EQ(rs[3].model, 2u);
+    CHECK_EQ(rs[0].placement, 0u); CHECK_EQ(int(rs[0].layer), 0);
+    CHECK_EQ(int(rs[1].layer), 0xFFFF); CHECK_EQ(rs[1].placement, 0xFFFFFFFFu);
+    CHECK_EQ(rs[2].placement, 1u); CHECK_EQ(rs[3].placement, 3u);
+    CHECK_EQ(int(rs[2].layer), 1); CHECK_EQ(int(rs[3].layer), 1);
+    for (int k = 0; k < 2; ++k) {
+        CHECK((rs[k].flags & 1) != 0);                 // a collider
+        CHECK_EQ((rs[k].flags >> 1) & 3, 0);           // source collider
+    }
+    for (int k = 2; k < 4; ++k) {
+        CHECK((rs[k].flags & 1) == 0);
+        CHECK_EQ((rs[k].flags >> 1) & 3, 2);           // source density
+    }
+    for (const FoliageRecord& r : rs) CHECK((r.flags & kFoliageFlagOutsideTerrain) == 0);
+    // m is the instance's world, absolute (the fixture's instances are in record order).
+    const auto& zi = s.zones.instances;
+    for (size_t k = 0; k < 4; ++k)
+        for (int col = 0; col < 4; ++col)
+            for (int row = 0; row < 3; ++row) CHECK_EQ(rs[k].m[col * 3 + row], zi[k].world[col * 4 + row]);
+    // unity rebuilds m relative to the cell origin.
+    float origin[3];
+    for (size_t k = 0; k < 3; ++k) origin[k] = man["cells"][0]["origin"][k].get<float>();
+    for (const FoliageRecord& r : rs) check_record_unity(r, origin);
+    // tiltDeg: yaw-only instances are upright; placement 3 leans 10 degrees.
+    CHECK_NEAR(rs[0].tiltDeg, 0.0, 1e-3);
+    CHECK_NEAR(rs[3].tiltDeg, 10.0, 1e-3);
+    // unityYaw: the collider tree turns atan2(0.6, 0.8) about map up; the sign is UNPROVEN (terrainTreeYawSign).
+    CHECK_NEAR(std::fabs(rs[0].unityYaw), std::atan2(0.6, 0.8), 1e-4);
+}
+
+CM_TEST(world_foliage, manifest_blocks) {
+    const cw::WorldScene s = tw::synthetic_world();
+    WorldFolderReport rep;
+    const json man = export_synthetic(s, "foliage_blocks", synthetic_opts(), &rep);
+    check_valid(man, "foliage blocks");
+    const json schema = read_schema();
+    check_keys_deep(schema, schema, man, "manifest");
+    CHECK(man.contains("foliage"));
+    if (!man.contains("foliage")) return;
+    const json& f = man["foliage"];
+    CHECK(f["scatter"] == json("colliders"));
+    CHECK(f["recordLayout"] == json("castlemist-foliage-1"));
+    CHECK(f["recordBytes"] == json(100));
+    CHECK_EQ(f["layers"].size(), size_t(2));
+    CHECK(f["layers"][0]["target"] == json("tree"));
+    CHECK(f["layers"][1]["target"] == json("detail"));
+    CHECK(f["layers"][0]["models"] == json({0}));
+    CHECK(f["layers"][1]["models"] == json({2}));
+    CHECK(f["layers"][1]["material"] == json(184994));
+    CHECK(f["layers"][0]["material"].is_null());
+    std::vector<int> fm;
+    for (const json& m : f["models"]) fm.push_back(man["models"][m["model"].get<size_t>()]["fileId"].get<int>());
+    CHECK(fm == std::vector<int>({101, 103}));
+    CHECK(f["models"][0]["zoneTypes"] == json({3}));
+    CHECK(f["models"][0]["wind"].is_null());          // static_cube: no traced game material
+    CHECK(f["models"][0]["terrainDetail"] == json(false));
+    CHECK(f["models"][1]["zoneTypes"] == json({1}));
+    CHECK(f["models"][1]["wind"] == json(true));      // static_grass names VegPara
+    CHECK(f["models"][1]["terrainDetail"] == json(true));
+    CHECK_NEAR(f["models"][1]["fadeFar"].get<double>(), 3000.0, 1e-6);
+    CHECK(f["colliders"]["entries"] == json(2));
+    CHECK(f["colliders"]["linkedByAnchor"] == json(1));
+    CHECK(f["colliders"]["linkedByGeometry"] == json(1));
+    const json& c = man["cells"][0]["foliage"];
+    CHECK(c["file"] == json("foliage/c0_0_2x2.bin"));
+    CHECK(c["records"] == json(4));
+    CHECK(c["colliderTrees"] == json(2));
+    CHECK(c["triangles"] == json(48));               // 4 records of 12-triangle cubes
+    const json& n = man["counts"]["foliage"];
+    CHECK(n["records"] == json(4));
+    CHECK(n["colliderTrees"] == json(2));
+    CHECK(n["modelsFoliageOnly"] == json(1));
+    CHECK(n["density"] == json(2));
+    CHECK(n["scatter"] == json(0));
+    CHECK(n["skipped"] == json(0));
+    CHECK(n["failedModel"] == json(0));
+    CHECK(man["models"][2]["folder"] == json("models/103"));
+    CHECK(fs::exists(out_dir("foliage_blocks") / "models" / "103" / "103.glb"));
+    CHECK(rep.foliage == n);
+    CHECK(report_json(rep)["counts"]["foliage"] == n);
+    CHECK(rep.bytes.count("foliage") && rep.bytes.at("foliage") == 400);
+    CHECK(rep.bytes.at("prop-textures") > 0);   // textures/42.png (folder_bytes' top folder, fixed here)
+    CHECK(rep.bytes.at("terrain") > 0);         // cells/*.png
+    // The settings carry the D11 rows.
+    for (const char* k : {"zoneGrid", "zoneModelSlot", "zoneScatter", "foliageWind", "foliageThinHash", "lodCullFovDeg"})
+        CHECK(man["settings"].contains(k));
+    CHECK(man["settings"]["zoneScatter"]["value"] == json("colliders"));
+}
+
+CM_TEST(world_foliage, mode_filters) {
+    const cw::WorldScene s = tw::synthetic_world();
+    WorldFolderOptions o = synthetic_opts();
+    o.foliage = FoliageExport::Colliders;
+    const json man = export_synthetic(s, "foliage_colliders", o);
+    check_valid(man, "foliage colliders");
+    const std::vector<FoliageRecord> rs = read_records(out_dir("foliage_colliders") / "foliage" / "c0_0_2x2.bin");
+    CHECK_EQ(rs.size(), size_t(2));
+    for (const FoliageRecord& r : rs) CHECK((r.flags & 1) != 0);
+    CHECK(man["counts"]["foliage"]["records"] == json(2));
+    // 103 is zone-only and has no collider: not a needed model.
+    for (const json& m : man["models"]) CHECK(m["fileId"] != json(103));
+    o.foliage = FoliageExport::Off;
+    const json off = export_synthetic(s, "foliage_off", o);
+    check_valid(off, "foliage off");
+    CHECK_FALSE(fs::exists(out_dir("foliage_off") / "foliage"));
+    CHECK(off["cells"][0].contains("foliage"));
+    CHECK(off["cells"][0]["foliage"].is_null());
+    CHECK_FALSE(off.contains("foliage"));
+    CHECK_FALSE(off["counts"].contains("foliage"));
+    CHECK_EQ(off["models"].size(), size_t(2));
+}
+
+CM_TEST(world_foliage, wind_flag) {
+    ModelPreview p = tw::static_cube();
+    CHECK(model_wind(p).is_null());                  // no game materials: not traced
+    GameMaterial g;
+    g.ok = true;
+    GameShaderUniform u;
+    u.name = "Wind";
+    g.vsUniforms.push_back(u);
+    p.gameMaterials.push_back(g);
+    CHECK(model_wind(p) == json(false));             // traced, no VegPara
+    GameMaterial bad = g;
+    bad.ok = false;
+    bad.vsUniforms[0].name = "VegPara";
+    p.gameMaterials.push_back(bad);
+    CHECK(model_wind(p) == json(false));             // a failed trace does not count
+    GameShaderUniform veg;
+    veg.name = "VegPara";
+    p.gameMaterials[0].vsUniforms.push_back(veg);
+    CHECK(model_wind(p) == json(true));
+    ModelPreview none = tw::static_cube();
+    none.gameMaterials.push_back(bad);
+    CHECK(model_wind(none).is_null());               // only failed traces: null
+}
+
+CM_TEST(world_foliage, bad_transform_skipped) {
+    cw::WorldScene s = tw::synthetic_world();
+    cw::ZoneInstance zero = s.zones.instances[0];
+    for (int k : {0, 1, 2, 4, 5, 6, 8, 9, 10}) zero.world[k] = 0;   // scale 0
+    zero.world[12] = -14000; zero.world[13] = 38500;
+    zero.collider = 2;
+    cw::ZoneInstance nan = s.zones.instances[0];
+    nan.world[0] = std::numeric_limits<float>::quiet_NaN();
+    nan.world[12] = -14200; nan.world[13] = 38600;
+    nan.collider = 3;
+    s.zones.instances.push_back(zero);
+    s.zones.instances.push_back(nan);
+    const json man = export_synthetic(s, "foliage_bad", synthetic_opts());
+    check_valid(man, "foliage bad transform");
+    CHECK(man["counts"]["foliage"]["skipped"] == json(2));
+    CHECK(man["counts"]["foliage"]["records"] == json(4));
+    size_t lines = 0;
+    for (const json& w : man["warnings"])
+        if (w.get<std::string>() == "foliage: 2 placements with a degenerate transform skipped") ++lines;
+    CHECK_EQ(lines, size_t(1));
+    CHECK_EQ(read_records(out_dir("foliage_bad") / "foliage" / "c0_0_2x2.bin").size(), size_t(4));
+    CHECK_EQ(man["cells"][0]["colliderParts"].get<int>(), 1);   // the hulls stay in the cell
+    CHECK(man["cells"][0]["colliderTriangles"].get<int>() >= 1);
+}
+
+CM_TEST(world_foliage, region_filters_records) {
+    const cw::WorldScene s = tw::synthetic_world();
+    WorldFolderOptions o = synthetic_opts();
+    o.budget.maxChunks = 1;   // 1 x 1 cells, so the region keeps one chunk of the 2 x 2 map
+    o.region.cx0 = 0; o.region.cy0 = 0; o.region.cx1 = 0; o.region.cy1 = 0;
+    const json man = export_synthetic(s, "foliage_region", o);
+    check_valid(man, "foliage region");
+    CHECK_EQ(man["cells"].size(), size_t(1));
+    CHECK(man["cells"][0]["id"] == json("c0_0_1x1"));
+    const std::vector<FoliageRecord> rs = read_records(out_dir("foliage_region") / "foliage" / "c0_0_1x1.bin");
+    CHECK_EQ(rs.size(), size_t(1));   // only the collider tree lies in chunk (0, 0)
+    if (!rs.empty()) CHECK_EQ(rs[0].placement, 0u);
+    for (const FoliageRecord& r : rs) {
+        int cx, cy;
+        cw::chunk_of_point(s.terrain, r.m[9], r.m[10], cx, cy);
+        CHECK(cx == 0 && cy == 0);
+    }
+    // Only the kept cells' zone models are exported: 103 lies outside, so it is not listed.
+    for (const json& m : man["models"]) CHECK(m["fileId"] != json(103));
+    CHECK(man["counts"]["foliage"]["records"] == json(1));
+    CHECK(has_warning(man, "foliage: 3 zone instances outside the region left out"));
+    CHECK_FALSE(fs::exists(out_dir("foliage_region") / "foliage" / "c1_0_1x1.bin"));
+}
+
+CM_TEST(world_foliage, outside_terrain_clamped_bit4) {
+    cw::WorldScene s = tw::synthetic_world();
+    cw::ZoneInstance far = s.zones.instances[0];
+    far.world[12] = -20000;   // west of the map (x0 = -15360)
+    far.placement = 2;
+    far.collider = 3;
+    s.zones.instances.push_back(far);
+    CHECK_FALSE(cw::point_in_chunk_grid(s.terrain, -20000, 39000));
+    CHECK(cw::point_in_chunk_grid(s.terrain, -14500, 39000));
+    WorldFolderOptions o = synthetic_opts();
+    o.budget.maxChunks = 1;
+    const json man = export_synthetic(s, "foliage_outside", o);
+    check_valid(man, "foliage outside");
+    const json* cell = nullptr;
+    for (const json& c : man["cells"]) if (c["id"] == json("c0_0_1x1")) cell = &c;
+    CHECK(cell != nullptr);
+    if (!cell) return;
+    CHECK_EQ((*cell)["chunks"][0].get<int>(), 0);
+    const std::vector<FoliageRecord> rs = read_records(out_dir("foliage_outside") / "foliage" / "c0_0_1x1.bin");
+    CHECK_EQ(rs.size(), size_t(2));
+    size_t outside = 0;
+    for (const FoliageRecord& r : rs) {
+        if (!(r.flags & kFoliageFlagOutsideTerrain)) continue;
+        ++outside;
+        CHECK_EQ(r.m[9], -20000.f);
+        CHECK_EQ(r.placement, 2u);
+    }
+    CHECK_EQ(outside, size_t(1));
+}
+
+// A failed record write stops the export and leaves no manifest.json (spec "Error handling").
+CM_TEST(world_foliage, failed_write_leaves_no_manifest) {
+    const cw::WorldScene s = tw::synthetic_world();
+    const fs::path dir = fresh_dir("foliage_write_fails");
+    struct Blocking : tw::SyntheticModelSource {
+        fs::path block;
+        std::shared_ptr<ModelPreview> load(uint32_t index, uint32_t fileId) override {
+            std::error_code ec;   // the model stage runs before the cells: a folder where the .bin goes
+            fs::create_directories(block, ec);
+            return tw::SyntheticModelSource::load(index, fileId);
+        }
+    } src;
+    src.block = dir / "foliage" / "c0_0_2x2.bin";
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts(1));
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("cannot write") != std::string::npos);
+    CHECK(r.error.find("c0_0_2x2.bin") != std::string::npos);
+    CHECK_FALSE(fs::exists(dir / "manifest.json"));
 }

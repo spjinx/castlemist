@@ -110,10 +110,10 @@ class Export(unittest.TestCase):
     def test_valid_and_plan(self):
         lines, ok = self.run_copy(plan=True)
         self.assertTrue(ok, lines)
-        self.assertTrue(any(l.startswith("PLAN materials=4 ") for l in lines))
+        self.assertTrue(any(l.startswith("PLAN materials=5 ") for l in lines), lines)
 
     def test_model_index_out_of_range_in_plan(self):
-        lines, ok = self.run_copy(edit=lambda j: j["cells"][0]["instances"][1].__setitem__("model", 2), plan=True)
+        lines, ok = self.run_copy(edit=lambda j: j["cells"][0]["instances"][1].__setitem__("model", 9), plan=True)
         self.assertFalse(ok)
         self.assertTrue(any("index out of range: cells[0].instances[1].model" in l for l in lines), lines)
 
@@ -164,6 +164,72 @@ class Export(unittest.TestCase):
         self.assertTrue(any("propsWritten + propsSkipped" in l for l in lines), lines)
         lines, ok = self.run_copy(edit=lambda j: j["cells"][0].__setitem__("chunks", [0, 0, 0, 1]))
         self.assertTrue(any("is in no cell" in l for l in lines), lines)
+
+    # ------------------------------------------------ foliage (world-foliage spec D7)
+    BIN = "foliage/c0_0_2x2.bin"
+
+    @classmethod
+    def patch_bin(cls, offset, fmt, value, record=0):
+        def prep(dst):
+            p = os.path.join(dst, cls.BIN)
+            with open(p, "r+b") as f:
+                f.seek(record * 100 + offset)
+                f.write(vm.struct.pack(fmt, value))
+        return prep
+
+    def test_foliage_records_valid(self):
+        lines, ok = self.run_copy()
+        self.assertTrue(ok, lines)
+        recs = vm.read_foliage_records(os.path.join(EXPORT, self.BIN))
+        self.assertEqual(len(recs), 4)
+        self.assertEqual([r["flags"] & 1 for r in recs], [1, 1, 0, 0])
+        self.assertEqual(recs[1]["layer"], 0xFFFF)
+        self.assertEqual(recs[1]["placement"], 0xFFFFFFFF)
+
+    def test_foliage_size(self):
+        def grow(dst):
+            p = os.path.join(dst, self.BIN)
+            with open(p, "rb") as f:
+                b = f.read()
+            with open(p, "wb") as f:
+                f.write(b + b"\0")
+        lines, ok = self.run_copy(prep=grow)
+        self.assertFalse(ok)
+        self.assertTrue(any("foliage size: " + self.BIN in l for l in lines), lines)
+
+    def test_foliage_missing_bin(self):
+        lines, ok = self.run_copy(remove=self.BIN)
+        self.assertFalse(ok)
+        self.assertTrue(any("missing file: " + self.BIN in l for l in lines), lines)
+
+    def test_foliage_model_and_layer_range(self):
+        lines, ok = self.run_copy(prep=self.patch_bin(0, "<I", 9999))
+        self.assertTrue(any("index out of range: %s[0].model" % self.BIN in l for l in lines), lines)
+        lines, ok = self.run_copy(prep=self.patch_bin(4, "<H", 7, record=2))
+        self.assertTrue(any("index out of range: %s[2].layer" % self.BIN in l for l in lines), lines)
+        # 0xFFFF is the geometry-only layer, not out of range.
+        lines, ok = self.run_copy(prep=self.patch_bin(4, "<H", 0xFFFF, record=0))
+        self.assertTrue(ok, lines)
+
+    def test_foliage_unity_mismatch(self):
+        lines, ok = self.run_copy(prep=self.patch_bin(60, "<f", 12345.0, record=3))
+        self.assertTrue(any("%s[3].unity: unity transform mismatch" % self.BIN in l for l in lines), lines)
+
+    def test_foliage_sorted_and_counts(self):
+        lines, ok = self.run_copy(prep=self.patch_bin(8, "<I", 7, record=2))   # placement 7 before 3
+        self.assertTrue(any("not sorted" in l for l in lines), lines)
+        lines, ok = self.run_copy(edit=lambda j: j["counts"]["foliage"].__setitem__("records", 5))
+        self.assertTrue(any("counts.foliage.records" in l for l in lines), lines)
+        lines, ok = self.run_copy(edit=lambda j: j["cells"][0]["foliage"].__setitem__("colliderTrees", 1))
+        self.assertTrue(any("colliderTrees: 1 declared, 2 records with bit 0" in l for l in lines), lines)
+
+    def test_foliage_extra_property(self):
+        lines, ok = self.run_copy(edit=lambda j: j["foliage"].__setitem__("extra", 1))
+        self.assertTrue(any("unexpected property: foliage.extra" in l for l in lines), lines)
+        lines, ok = self.run_copy(edit=lambda j: j["cells"][0]["foliage"].__setitem__("extra", 1))
+        self.assertTrue(any("unexpected property: cells[0].foliage.extra" in l for l in lines), lines)
+        lines, ok = self.run_copy(edit=lambda j: j["counts"]["foliage"].__setitem__("extra", 1))
+        self.assertTrue(any("unexpected property: counts.foliage.extra" in l for l in lines), lines)
 
     def test_non_finite_rejected(self):
         d = tempfile.mkdtemp(prefix="cm_vm_")

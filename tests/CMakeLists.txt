@@ -221,7 +221,7 @@ if (_cm_blender_ok)
              COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${_cm_world_py}"
                      -- --to-fbx "${CMAKE_BINARY_DIR}/world_fixture")
     set_tests_properties(blender_to_fbx_manifest PROPERTIES
-        PASS_REGULAR_EXPRESSION "TO_FBX_MANIFEST fbxSet=4")
+        PASS_REGULAR_EXPRESSION "TO_FBX_MANIFEST fbxSet=5")   # probe, cell, models 101, 102, 103
     set_tests_properties(blender_world_import blender_world_import_scaled blender_world_import_extras
                          blender_to_fbx_manifest PROPERTIES
         FIXTURES_REQUIRED world_fixture
@@ -237,7 +237,7 @@ if (_cm_blender_ok)
                  COMMAND gw2dat_cli world-fbx --dir "${CMAKE_BINARY_DIR}/world_fixture")
         set_tests_properties(blender_world_to_fbx PROPERTIES
             FIXTURES_REQUIRED world_fixture FIXTURES_SETUP world_fbx
-            PASS_REGULAR_EXPRESSION "\"fbxSet\":4,"
+            PASS_REGULAR_EXPRESSION "\"fbxSet\":5,"
             TIMEOUT 600)
         add_test(NAME blender_world_fbx_clip
                  COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${_cm_check_fbx}"
@@ -281,7 +281,7 @@ if (CASTLEMIST_PYTHON)
         PROPERTIES FIXTURES_REQUIRED world_fixture RESOURCE_LOCK world_fixture TIMEOUT 120)
     set_tests_properties(world_manifest_validate PROPERTIES PASS_REGULAR_EXPRESSION "^OK")
     set_tests_properties(world_manifest_plan PROPERTIES PASS_REGULAR_EXPRESSION
-        "PLAN materials=4 prefabs=2 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0")
+        "PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0")
     set_tests_properties(world_manifest_selftest PROPERTIES PASS_REGULAR_EXPRESSION "SELFTEST OK")
 endif()
 

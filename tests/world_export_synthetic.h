@@ -11,6 +11,16 @@
 /// come from SyntheticModelSource, header-only textures as a dat load gives
 /// them, decoded by texture().
 ///
+/// Zones (world-foliage spec D2, "Testing" exportgltf): one type-3 layer whose
+/// models are {101} and one type-1 layer whose models are {103} (model 103:
+/// static grass, one mesh, one material, a traced game material naming
+/// VegPara); a collider tree of 101 (Collider, placement 0, collider 0) in
+/// chunk (0, 0); a geometry-only collider of 101 (layer = placement =
+/// UINT32_MAX, collider 1) in chunk (1, 0); two grass instances of 103
+/// (Density, placements 1 and 3) in chunks (0, 1) and (1, 1). fmix32(1) < 2^31
+/// and fmix32(3) >= 2^31, so density 0.5 keeps exactly one of them. Model 101
+/// is shared with the props, and 103 is zone-only.
+///
 /// static_cube() and skinned_cube() are adapted from make_static_quad /
 /// make_skinned_quad of tests/test_exportgltf_writer.cpp.
 #pragma once
@@ -22,6 +32,7 @@
 #include "castlemist/world/world_scene.h"
 
 #include <algorithm>
+#include <cmath>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -224,6 +235,21 @@ inline ModelPreview skinned_probe() {
     return mp;
 }
 
+/// @brief static_cube as zone grass: material 58249, and one traced game
+///        material whose vertex stage names VegPara (a wind-capable AMAT).
+inline ModelPreview static_grass() {
+    ModelPreview mp = static_cube();
+    mp.materials[0].materialFile = 58249;
+    GameMaterial g;
+    g.index = 0;
+    g.ok = true;
+    GameShaderUniform u;
+    u.name = "VegPara";
+    g.vsUniforms.push_back(u);
+    mp.gameMaterials.push_back(g);
+    return mp;
+}
+
 /// @brief A uniform scale @p s about z, then a translation, column-major.
 inline void syn_place(float out[16], float x, float y, float z, float s, float yawCos = 1, float yawSin = 0) {
     std::fill(out, out + 16, 0.f);
@@ -256,7 +282,7 @@ inline castlemist::world::WorldScene synthetic_world() {
             s.terrain.chunks.push_back(c);
         }
 
-    s.models = {cw::PropModel{101}, cw::PropModel{102}};
+    s.models = {cw::PropModel{101}, cw::PropModel{102}, cw::PropModel{103}};
     const float pts[4][2] = {{-14000, 38000}, {-11000, 38500}, {-13000, 35000}, {-10000, 34500}};
     for (int k = 0; k < 4; ++k) {
         cw::PropInstance p;
@@ -287,10 +313,62 @@ inline castlemist::world::WorldScene synthetic_world() {
     w.surfaceDeepColor[0] = 255;
     s.environment.water.push_back(w);
     s.environment.light.presetIndex = 0;
+
+    // Zones: two layers, four placements, four instances (see the file comment).
+    cw::ZoneScatter& z = s.zones;
+    z.present = true;
+    z.mode = cw::ZoneScatterMode::Colliders;
+    cw::ZoneLayer trees;
+    trees.defToken = 17382; trees.indexInDef = 0; trees.type = 3; trees.width = 4; trees.height = 6;
+    trees.radiusGround = 2; trees.fadeRange[0] = 7400; trees.fadeRange[1] = 7500;
+    trees.scaleRange[0] = 0.5f; trees.scaleRange[1] = 1.5f; trees.rotRange[2][1] = 360; trees.layerFlags = 142;
+    trees.models.push_back(cw::ZoneLayerModel{101, 0});
+    cw::ZoneLayer grass;
+    grass.defToken = 17382; grass.indexInDef = 1; grass.type = 1; grass.width = 1; grass.height = 1;
+    grass.fadeRange[0] = 2900; grass.fadeRange[1] = 3000; grass.scaleRange[0] = 0.8f; grass.scaleRange[1] = 1.2f;
+    grass.materialFileId = 184994;
+    grass.models.push_back(cw::ZoneLayerModel{103, 2});
+    z.layers = {trees, grass};
+    cw::Zone zone;
+    zone.defToken = 17382; zone.placementCount = 4;
+    z.zones.push_back(zone);
+    for (uint32_t k = 0; k < 4; ++k) {
+        cw::ZonePlacement pl;
+        pl.zone = 0; pl.layer = k == 0 ? 0 : 1; pl.c = int32_t(10 + k); pl.r = 5;
+        pl.flag = uint8_t(((k == 0 ? 1 : 2) << 4) | 1);
+        pl.collider = k == 0 ? 0 : UINT32_MAX;
+        z.placements.push_back(pl);
+    }
+    auto zone_instance = [](uint32_t model, uint32_t layer, uint32_t placement, uint32_t collider,
+                            cw::ZoneSource src, float x, float y, float sc, float c, float sn) {
+        cw::ZoneInstance i;
+        i.model = model; i.layer = layer; i.placement = placement; i.collider = collider; i.source = src;
+        syn_place(i.world, x, y, -15.f, sc, c, sn);
+        return i;
+    };
+    z.instances = {
+        zone_instance(0, 0, 0, 0, cw::ZoneSource::Collider, -14500, 39000, 1.2f, 0.8f, 0.6f),       // chunk (0, 0)
+        zone_instance(0, UINT32_MAX, UINT32_MAX, 1, cw::ZoneSource::Collider, -11500, 37500, 0.9f, 0, 1),   // (1, 0)
+        zone_instance(2, 1, 1, UINT32_MAX, cw::ZoneSource::Density, -13500, 36000, 0.8f, 1, 0),      // (0, 1)
+        zone_instance(2, 1, 3, UINT32_MAX, cw::ZoneSource::Density, -10500, 35500, 1.1f, -0.6f, 0.8f),   // (1, 1)
+    };
+    // The grass at placement 3 leans 10 degrees about map +X (a tilted instance).
+    {
+        const float a = 10.0f * 3.14159265f / 180.0f, ca = std::cos(a), sa = std::sin(a);
+        float* w = z.instances[3].world;
+        float rx[16] = {1, 0, 0, 0, 0, ca, sa, 0, 0, -sa, ca, 0, 0, 0, 0, 1};
+        float out[16] = {};
+        for (int col = 0; col < 4; ++col)
+            for (int row = 0; row < 4; ++row)
+                for (int k = 0; k < 4; ++k) out[col * 4 + row] += w[k * 4 + row] * rx[col * 4 + k];
+        std::copy(out, out + 16, w);
+    }
+    z.zonePlacementsLinked = 1; z.collidersLinkedByGeometry = 1; z.collidersUnlinked = 0;
+    z.colliderEntries = 2; z.colliderGeometries = 1;
     return s;
 }
 
-/// @brief ModelSource over static_cube (101) and skinned_cube (102). Every
+/// @brief ModelSource over static_cube (101), skinned_cube (102) and static_grass (103). Every
 ///        texture is a 2 x 2 mid-grey RGBA8 with mips down to 1 x 1.
 class SyntheticModelSource : public castlemist::exportgltf::ModelSource {
 public:
@@ -303,6 +381,7 @@ public:
         if (static_cast<int>(index) == failIndex) return nullptr;
         if (fileId == 101) return std::make_shared<ModelPreview>(static_cube());
         if (fileId == 102) return std::make_shared<ModelPreview>(skinned_cube());
+        if (fileId == 103) return std::make_shared<ModelPreview>(static_grass());
         return nullptr;
     }
     std::shared_ptr<const CappedTexture> texture(uint32_t fileId, int maxSize) override {

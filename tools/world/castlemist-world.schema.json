@@ -58,7 +58,7 @@
       }
     },
     "settings": {
-      "description": "Spec D3 'UNPROVEN settings that travel' plus the export's own settings; each UNPROVEN one is also a line in warnings.",
+      "description": "Spec D3 'UNPROVEN settings that travel' plus the export's own settings; each UNPROVEN one is also a line in warnings. The zone* / foliage* rows and lodCullFovDeg are the world-foliage spec's D11 rows (optional).",
       "type": "object",
       "additionalProperties": false,
       "required": ["groundRepeatsPerChunk", "srgbColourTextures", "pickerSolidByteOrder", "waterPresetPairing",
@@ -86,7 +86,28 @@
         "cellMaxTriangles": { "$ref": "#/$defs/setting" },
         "cellMaxTextureMB": { "$ref": "#/$defs/setting" },
         "ambient": { "$ref": "#/$defs/setting" },
-        "unityAxisConversion": { "$ref": "#/$defs/setting" }
+        "unityAxisConversion": { "$ref": "#/$defs/setting" },
+        "zoneGrid": { "$ref": "#/$defs/setting" },
+        "zoneModelSlot": { "$ref": "#/$defs/setting" },
+        "zoneFlagBit0": { "$ref": "#/$defs/setting" },
+        "zoneTreeLink": { "$ref": "#/$defs/setting" },
+        "zoneVisualTransform": { "$ref": "#/$defs/setting" },
+        "zoneScatter": { "$ref": "#/$defs/setting" },
+        "zonePlacementMultiplicity": { "$ref": "#/$defs/setting" },
+        "zoneJitter": { "$ref": "#/$defs/setting" },
+        "zoneYaw": { "$ref": "#/$defs/setting" },
+        "zoneScale": { "$ref": "#/$defs/setting" },
+        "zoneTilt": { "$ref": "#/$defs/setting" },
+        "zoneZ": { "$ref": "#/$defs/setting" },
+        "zoneProbability": { "$ref": "#/$defs/setting" },
+        "zoneTint": { "$ref": "#/$defs/setting" },
+        "zoneFade": { "$ref": "#/$defs/setting" },
+        "zoneLayerTypeTarget": { "$ref": "#/$defs/setting" },
+        "foliageWind": { "$ref": "#/$defs/setting" },
+        "foliagePatchUnits": { "$ref": "#/$defs/setting" },
+        "foliageTileUnits": { "$ref": "#/$defs/setting" },
+        "foliageThinHash": { "$ref": "#/$defs/setting" },
+        "lodCullFovDeg": { "$ref": "#/$defs/setting" }
       }
     },
     "terrain": {
@@ -139,6 +160,35 @@
       "properties": {
         "dir": { "type": "string" },
         "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "foliage": {
+      "description": "Optional (world-foliage spec D7, 'manifest.json additions'). Zone scatter foliage. Each cell's records are in cells[].foliage.file, layout castlemist-foliage-1: recordBytes (100) bytes per record, little-endian, no padding, sorted by (model, placement): offset 0 u32 model (index into models[]); 4 u16 layer (index into foliage.layers[], 0xFFFF for a collider linked by geometry only); 6 u16 flags (bit 0 has a collider; bits 1-2 source: 0 collider, 1 scatter, 2 density; bit 3 Unity Terrain tree; bit 4 outside the terrain, bucketed by clamping as props are); 8 u32 placement (index into the map's zone placements, 0xFFFFFFFF for a geometry-only collider; the thinning key fmix32(placement)); 12 f32[12] m (map-space 3 x 4, column-major, absolute: columns 0-2 the 3 x 3, column 3 the translation); 60 f32[3] unity.t (local to the cell node, map units, before unityScale); 72 f32[4] unity.r (quaternion x, y, z, w); 88 f32 unity.s (uniform scale); 92 f32 unityYaw (radians about Unity +Y, sign UNPROVEN: terrainTreeYawSign); 96 f32 tiltDeg (degrees between the instance's up and map up).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scatter", "recordLayout", "recordBytes", "layers", "models", "colliders"],
+      "properties": {
+        "scatter": { "description": "The zoneScatter rule the instances came from (spec D5).", "enum": ["colliders", "exact", "densityMatched"] },
+        "recordLayout": { "const": "castlemist-foliage-1" },
+        "recordBytes": { "const": 100 },
+        "layers": { "type": "array", "items": { "$ref": "#/$defs/foliageLayer" } },
+        "models": { "type": "array", "items": { "$ref": "#/$defs/foliageModel" } },
+        "colliders": {
+          "description": "The havk zoneModels entries and their link (spec D3).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["entries", "linkedByAnchor", "linkedByGeometry", "unlinked", "geometries", "propCrossChecks",
+                       "propDisagreements"],
+          "properties": {
+            "entries": { "$ref": "#/$defs/count" },
+            "linkedByAnchor": { "$ref": "#/$defs/count" },
+            "linkedByGeometry": { "$ref": "#/$defs/count" },
+            "unlinked": { "$ref": "#/$defs/count" },
+            "geometries": { "$ref": "#/$defs/count" },
+            "propCrossChecks": { "$ref": "#/$defs/count" },
+            "propDisagreements": { "$ref": "#/$defs/count" }
+          }
+        }
       }
     },
     "light": {
@@ -221,7 +271,24 @@
         "chunksUnbaked": { "$ref": "#/$defs/count" },
         "animated": { "$ref": "#/$defs/count" },
         "animatedResolved": { "$ref": "#/$defs/count" },
-        "clipsFailedDecode": { "$ref": "#/$defs/count" }
+        "clipsFailedDecode": { "$ref": "#/$defs/count" },
+        "foliage": {
+          "description": "Optional, with the foliage block. records and colliderTrees are the cells' sums; modelsFoliageOnly the foliage models no written prop uses; skipped the instances with a degenerate transform; failedModel the records of failed or missing models.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["records", "colliderTrees", "scatter", "density", "modelsFoliageOnly", "skipped", "failedModel"],
+          "properties": {
+            "records": { "$ref": "#/$defs/count" },
+            "colliderTrees": { "$ref": "#/$defs/count" },
+            "scatter": { "$ref": "#/$defs/count" },
+            "density": { "$ref": "#/$defs/count" },
+            "modelsFoliageOnly": { "$ref": "#/$defs/count" },
+            "skipped": { "$ref": "#/$defs/count" },
+            "failedModel": { "$ref": "#/$defs/count" },
+            "terrainTrees": { "$ref": "#/$defs/count" },
+            "detailRecords": { "$ref": "#/$defs/count" }
+          }
+        }
       }
     },
     "warnings": { "type": "array", "items": { "type": "string" } }
@@ -326,7 +393,55 @@
             "overBudget": { "type": "boolean" }
           }
         },
-        "instances": { "type": "array", "items": { "$ref": "#/$defs/instance" } }
+        "instances": { "type": "array", "items": { "$ref": "#/$defs/instance" } },
+        "foliage": {
+          "description": "Optional. The cell's foliage records (castlemist-foliage-1, see the top-level foliage block), or null when it has none.",
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["file", "records", "colliderTrees", "triangles"],
+          "properties": {
+            "file": { "description": "foliage/<cellId>.bin; its size is records x foliage.recordBytes.", "type": "string" },
+            "records": { "$ref": "#/$defs/count" },
+            "colliderTrees": { "description": "Records with flag bit 0.", "$ref": "#/$defs/count" },
+            "triangles": { "description": "LOD0 triangles of the records' models; not in budget.triangles.", "$ref": "#/$defs/count" }
+          }
+        }
+      }
+    },
+    "foliageLayer": {
+      "description": "One zone layer (layerDefArray entry), in scene order; records name it by position.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "zoneDef", "layer", "type", "width", "height", "radiusGround", "fadeRange", "scaleRange",
+                   "rotRange", "layerFlags", "material", "target", "models"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "zoneDef": { "type": "integer", "minimum": 0 },
+        "layer": { "description": "0-based index in its zone def.", "type": "integer", "minimum": 0 },
+        "type": { "type": "integer", "minimum": 0 },
+        "width": { "type": "integer", "minimum": 0 },
+        "height": { "type": "integer", "minimum": 0 },
+        "radiusGround": { "type": "integer", "minimum": 0 },
+        "fadeRange": { "description": "As stored; camera distance in map units is UNPROVEN (zoneFade).", "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+        "scaleRange": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+        "rotRange": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }, "minItems": 3, "maxItems": 3 },
+        "layerFlags": { "type": "integer", "minimum": 0 },
+        "material": { "type": ["integer", "null"], "minimum": 0 },
+        "target": { "description": "zoneLayerTypeTarget: types 1-2 detail, 3 tree; null for any other type.", "enum": ["tree", "detail", null] },
+        "models": { "description": "models[] positions by modelArray slot; null for a slot not exported.", "type": "array", "items": { "type": ["integer", "null"], "minimum": 0 } }
+      }
+    },
+    "foliageModel": {
+      "description": "A model with foliage records.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "zoneTypes", "fadeFar", "wind", "terrainDetail"],
+      "properties": {
+        "model": { "description": "Position in models[].", "type": "integer", "minimum": 0 },
+        "zoneTypes": { "description": "The types of the layers that name it.", "type": "array", "items": { "type": "integer", "minimum": 0 } },
+        "fadeFar": { "description": "The largest fadeRange[1] of those layers; null when none names it.", "type": ["number", "null"] },
+        "wind": { "description": "A traced material's VS uniforms name VegPara (true), traced without it (false), not traced (null). Recorded, not acted on (foliageWind).", "type": ["boolean", "null"] },
+        "terrainDetail": { "description": "Eligible as a Unity detail: ok, one mesh, one material, a layer of type 1 or 2.", "type": "boolean" }
       }
     },
     "instance": {

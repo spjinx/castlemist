@@ -5,7 +5,8 @@
 ///
 /// Order of work (spec "Order of work" 1-8; Blender --to-fbx is the caller's step 9):
 ///  1. the cells the region keeps (a first partition without stats), so the
-///     needed models are known;
+///     needed models are known: their props' models and the models of the zone
+///     instances in them that opts.foliage keeps (world-foliage spec D7);
 ///  2. the model stage: each needed model loaded through ModelSource, its
 ///     textures filled from ModelSource::texture at the cap, written as a
 ///     VRChat folder models/<fileId>/ (root map_to_gltf_root(1)), measured
@@ -16,7 +17,9 @@
 ///     cache is then released (ruling W9);
 ///  3. partition_cells with those measurements;
 ///  4. the kept cells' terrain textures, on the pool;
-///  5. each cell baked (albedo, water) and written (cells/<id>.glb), on the pool;
+///  5. each cell baked (albedo, water) and written (cells/<id>.glb), with its
+///     foliage records (foliage/<id>.bin, world_foliage.h; only when it has any
+///     and opts.foliage is not Off), on the pool;
 ///  6. write_skybox into sky/;
 ///  7. probe.glb and the spawn (a ray down through CollisionIndex);
 ///  8. manifest.json, written last (manifest.json.tmp, then renamed).
@@ -67,8 +70,9 @@ struct WorldFolderReport {
     /// Of modelsFailed, the models with no drawable meshes: empty, not broken
     /// (review M2). They stay `status: failed` in the manifest.
     size_t modelsEmpty = 0;
+    nlohmann::json foliage;                   ///< the manifest's counts.foliage, or null (no foliage written)
     std::map<std::string, double> seconds;    ///< world-cells, models, terrain-textures, cells, sky, manifest
-    std::map<std::string, uint64_t> bytes;    ///< prop-textures, terrain, geometry, sky
+    std::map<std::string, uint64_t> bytes;    ///< prop-textures, terrain, geometry, sky, foliage
     std::vector<std::string> warnings;        ///< the manifest's warnings
 };
 
