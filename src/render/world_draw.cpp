@@ -22,6 +22,7 @@ struct InstGPU {
     float r0[4], r1[4], r2[4], tint[4];
 };
 static_assert(sizeof(InstGPU) == 64, "the instance input layout hardcodes a 64-byte stride");
+static_assert(sizeof(InstGPU) == sizeof(FoliageInstGPU), "bind_streams strides both streams alike");
 
 /// Drawn in pass 2 (blended, depth writes off).
 bool is_pass2(WorldAlpha a) {
@@ -40,6 +41,15 @@ struct SkinCB {
     uint32_t base, count, _pad[2];
 };
 static_assert(sizeof(SkinCB) == kSkinCBBytes, "the owner creates SkinCB's buffer with kSkinCBBytes");
+
+/// The props' LOD rule: by the sphere's screen size (radius / distance).
+int screen_lod(float radiusW, float d2, const MeshGPU& m) {
+    const int maxLod = static_cast<int>(m.lodRanges.size()) - 1;
+    if (maxLod <= 0) return 0;
+    const float sr = radiusW / std::sqrt(std::max(d2, 1e-4f));   // ~ tan(angular radius)
+    const int lod = (sr > 0.20f) ? 0 : (sr > 0.06f ? 1 : (sr > 0.02f ? 2 : 3));
+    return std::min(lod, maxLod);
+}
 
 } // namespace
 
@@ -146,13 +156,7 @@ int InstancedBatch::cull_into(const std::vector<InstCPU>& insts, const std::vect
             out = planes[p][0] * in.centerW[0] + planes[p][1] * in.centerW[1] + planes[p][2] * in.centerW[2] +
                       planes[p][3] < -in.radiusW;
         if (out) continue;
-        const int maxLod = static_cast<int>(m.lodRanges.size()) - 1;
-        int lod = 0;
-        if (maxLod > 0) {
-            const float sr = in.radiusW / std::sqrt(std::max(d2, 1e-4f));   // ~ tan(angular radius)
-            lod = (sr > 0.20f) ? 0 : (sr > 0.06f ? 1 : (sr > 0.02f ? 2 : 3));
-            lod = std::min(lod, maxLod);
-        }
+        const int lod = screen_lod(in.radiusW, d2, m);
         int* slot;
         if (which == CullSkin::Skinned) {   // (mesh, clip, LOD)
             const uint64_t key = (static_cast<uint64_t>(in.mesh) << 34) |
@@ -164,13 +168,13 @@ int InstancedBatch::cull_into(const std::vector<InstCPU>& insts, const std::vect
         }
         if (*slot < 0) {
             *slot = static_cast<int>(buckets_.size());
-            Bucket nb{&m, lod, tint, alpha, {}, d2};
+            Bucket nb{&m, lod, tint, alpha, {}, {}, d2};
             nb.meshIndex = in.mesh;
             nb.clip = which == CullSkin::Skinned ? in.clip : -1;
             buckets_.push_back(std::move(nb));
         }
         Bucket& bk = buckets_[static_cast<size_t>(*slot)];
-        bk.insts.push_back(&in);
+        bk.worlds.push_back(&in.world);
         bk.nearD2 = std::min(bk.nearD2, d2);
         ++visible;
     }
@@ -202,7 +206,7 @@ void InstancedBatch::set_palettes(const std::vector<uint32_t>& base, const std::
 bool InstancedBatch::upload(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
     first_.clear();
     uint32_t total = 0;
-    for (const Bucket& b : buckets_) total += static_cast<uint32_t>(b.insts.size());
+    for (const Bucket& b : buckets_) total += static_cast<uint32_t>(b.worlds.size());
     if (total == 0 || !ensure_capacity(dev, total)) return false;
     D3D11_MAPPED_SUBRESOURCE ms;
     if (FAILED(ctx->Map(instVB_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return false;
@@ -211,10 +215,10 @@ bool InstancedBatch::upload(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
     uint32_t off = 0;
     for (size_t b = 0; b < buckets_.size(); ++b) {
         first_[b] = off;
-        for (const InstCPU* in : buckets_[b].insts) {
+        for (const Mat4* w : buckets_[b].worlds) {
             // Column c of the row-vector W (W[r][c] = m[r*4+c]), so that
             // world_c = dot((p,1), column c) -- the fly view's pack_inst.
-            const float* m = in->world.m;
+            const float* m = w->m;
             InstGPU& o = dst[off++];
             float* cols[3] = {o.r0, o.r1, o.r2};
             for (int c = 0; c < 3; ++c)
@@ -247,6 +251,11 @@ void InstancedBatch::bind_streams(ID3D11DeviceContext* ctx, size_t b, ID3D11Buff
 
 int InstancedBatch::draw(ID3D11Device* dev, ID3D11DeviceContext* ctx, const InstPipeline& pl, size_t& tris) {
     if (!upload(dev, ctx)) return 0;
+    return draw_uploaded(ctx, pl, tris);
+}
+
+int InstancedBatch::draw_uploaded(ID3D11DeviceContext* ctx, const InstPipeline& pl, size_t& tris) {
+    if (buckets_.empty() || first_.size() != buckets_.size()) return 0;   // upload() failed or did not run
     ctx->IASetInputLayout(pl.il);
     ctx->VSSetShader(pl.vs, nullptr, 0);
     ctx->PSSetShader(pl.ps, nullptr, 0);
@@ -263,9 +272,9 @@ int InstancedBatch::draw(ID3D11Device* dev, ID3D11DeviceContext* ctx, const Inst
             blending = true;
         }
         bind_streams(ctx, b);
-        ctx->DrawIndexedInstanced(range.second, static_cast<UINT>(bk.insts.size()), range.first, 0, 0);
+        ctx->DrawIndexedInstanced(range.second, static_cast<UINT>(bk.worlds.size()), range.first, 0, 0);
         ++draws;
-        tris += static_cast<size_t>(range.second / 3) * bk.insts.size();
+        tris += static_cast<size_t>(range.second / 3) * bk.worlds.size();
     }
     if (blending) {
         ctx->OMSetBlendState(nullptr, nullptr, 0xffffffff);
@@ -298,9 +307,9 @@ int InstancedBatch::draw_materials(ID3D11DeviceContext* ctx, const PropMatPipeli
     };
     int draws = 0;
     auto issue = [&](const Bucket& bk, uint32_t first, uint32_t count) {
-        ctx->DrawIndexedInstanced(count, static_cast<UINT>(bk.insts.size()), first, 0, 0);
+        ctx->DrawIndexedInstanced(count, static_cast<UINT>(bk.worlds.size()), first, 0, 0);
         ++draws;
-        tris += static_cast<size_t>(count / 3) * bk.insts.size();
+        tris += static_cast<size_t>(count / 3) * bk.worlds.size();
     };
     bool boundMat = false;
     auto use_mat = [&] {
@@ -420,6 +429,69 @@ int InstancedBatch::draw_materials(ID3D11DeviceContext* ctx, const PropMatPipeli
         ctx->PSSetShaderResources(0, 1, &none);
     }
     return draws;
+}
+
+int FoliageBatch::cull_into(const std::vector<FoliageVisible>& vis, const FoliageGrid& g,
+                            const std::vector<Mat4>& worlds, const std::vector<uint32_t>& meshOf,
+                            const std::vector<MeshGPU>& meshes, const WorldCamera& cam) {
+    bucketOf_.assign(meshes.size() * 4, -1);
+    int n = 0;
+    for (const FoliageVisible& v : vis) {
+        const uint32_t i = v.instance;
+        if (i >= worlds.size() || i >= meshOf.size() || static_cast<size_t>(i) * 4 + 3 >= g.sphere.size()) continue;
+        const uint32_t mi = meshOf[i];
+        if (mi >= meshes.size() || !meshes[mi].ok) continue;
+        const MeshGPU& m = meshes[mi];
+        const float* sp = &g.sphere[static_cast<size_t>(i) * 4];
+        const float dx = sp[0] - cam.pos[0], dy = sp[1] - cam.pos[1], dz = sp[2] - cam.pos[2];
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        const int lod = screen_lod(sp[3], d2, m);
+        int& slot = bucketOf_[static_cast<size_t>(mi) * 4 + static_cast<size_t>(lod)];
+        if (slot < 0) {
+            slot = static_cast<int>(buckets_.size());
+            Bucket nb{&m, lod, nullptr, 1.0f, {}, {}, d2};
+            nb.meshIndex = mi;
+            buckets_.push_back(std::move(nb));
+        }
+        Bucket& bk = buckets_[static_cast<size_t>(slot)];
+        bk.worlds.push_back(&worlds[i]);
+        bk.fade.push_back(v.fade);
+        bk.nearD2 = std::min(bk.nearD2, d2);
+        ++n;
+    }
+    return n;
+}
+
+bool FoliageBatch::upload(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
+    first_.clear();
+    uint32_t total = 0;
+    for (const Bucket& b : buckets_) total += static_cast<uint32_t>(b.worlds.size());
+    if (total == 0 || !ensure_capacity(dev, total)) return false;
+    D3D11_MAPPED_SUBRESOURCE ms;
+    if (FAILED(ctx->Map(instVB_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return false;
+    auto* dst = static_cast<FoliageInstGPU*>(ms.pData);
+    first_.assign(buckets_.size(), 0);
+    uint32_t off = 0;
+    for (size_t b = 0; b < buckets_.size(); ++b) {
+        first_[b] = off;
+        const Bucket& bk = buckets_[b];
+        for (size_t k = 0; k < bk.worlds.size(); ++k) {
+            const float* m = bk.worlds[k]->m;   // columns of the row-vector W, as InstancedBatch::upload
+            FoliageInstGPU& o = dst[off++];
+            float* cols[3] = {o.r0, o.r1, o.r2};
+            for (int c = 0; c < 3; ++c)
+                for (int r = 0; r < 4; ++r) cols[c][r] = m[r * 4 + c];
+            o.fade = k < bk.fade.size() ? bk.fade[k] : 1.0f;
+            o._pad[0] = o._pad[1] = o._pad[2] = 0;
+        }
+    }
+    ctx->Unmap(instVB_.Get(), 0);
+    return true;
+}
+
+int FoliageBatch::draw(ID3D11Device* dev, ID3D11DeviceContext* ctx, const InstPipeline& pl, size_t& tris) {
+    if (!upload(dev, ctx)) return 0;
+    return draw_uploaded(ctx, pl, tris);
 }
 
 } // namespace castlemist::render

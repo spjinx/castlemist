@@ -1147,3 +1147,73 @@ CM_TEST(world_view, water_preset_used_when_in_range) {
     CHECK(f.save_screenshot(pg2.c_str()));
     CHECK(read_file(pg) == read_file(pg2));
 }
+
+namespace {
+
+/// cube_scene's split_cube as a zone Collider instance instead of a prop: one
+/// type-3 layer with fadeRange [n, f].
+castlemist::world::WorldScene zone_cube_scene(float n, float f) {
+    castlemist::world::WorldScene s;
+    s.models.push_back({4321});
+    castlemist::world::ZoneLayer L;
+    L.type = 3;
+    L.fadeRange[0] = n; L.fadeRange[1] = f;
+    s.zones.present = true;
+    s.zones.layers.push_back(L);
+    castlemist::world::ZoneInstance z;
+    z.model = 0;
+    z.layer = 0;
+    z.world[0] = z.world[5] = z.world[10] = z.world[15] = 1;
+    z.world[14] = -500;
+    s.zones.instances.push_back(z);
+    return s;
+}
+
+} // namespace
+
+// Spec D6 "Draw": textured foliage takes the material pass per sub-range,
+// and the screen door drops about half its pixels at fade 0.5.
+CM_TEST(world_materials, textured_foliage_draws_and_dithers) {
+    HWND wnd = hidden_window(160, 120);
+    if (!wnd) SKIP("no window");
+    struct Closer { HWND h; ~Closer() { if (h) DestroyWindow(h); } } closer{wnd};
+    WorldView v;
+    if (!v.create(wnd)) SKIP("no D3D11 device (hardware or WARP)");
+    const WorldCamera cam = cube_camera();
+    const float d = std::sqrt(300.0f * 300.0f + 120.0f * 120.0f + 120.0f * 120.0f);   // camera to the cube centre
+    v.set_world(zone_cube_scene(d + 1000, d + 2000));
+    v.add_models({{0u, split_cube()}});
+    v.add_textures(cube_textures());
+    v.render(cam);
+    CHECK_EQ(v.stats().foliageVisible, 1);
+    CHECK_EQ(v.stats().foliageDraws, 2);   // one bucket, two textured sub-ranges
+    CHECK_EQ(v.stats().materialsUntextured, 0);
+    const std::string full = temp_path("cm_wm_foliage_full.bmp");
+    CHECK(v.save_screenshot(full.c_str()));
+
+    // fade 0.5: the range [d - 500, d + 500].
+    v.set_world(zone_cube_scene(d - 500, d + 500));
+    v.add_models({{0u, split_cube()}});
+    v.add_textures(cube_textures());
+    v.render(cam);
+    CHECK_EQ(v.stats().foliageVisible, 1);
+    const std::string half = temp_path("cm_wm_foliage_half.bmp");
+    CHECK(v.save_screenshot(half.c_str()));
+
+    // The same cube as a prop draws byte-identical pixels (the foliage PS is kPropMat's).
+    v.set_world(cube_scene());
+    v.add_models({{0u, split_cube()}});
+    v.add_textures(cube_textures());
+    v.render(cam);
+    CHECK_EQ(v.stats().foliageVisible, 0);
+    const std::string prop = temp_path("cm_wm_foliage_prop.bmp");
+    CHECK(v.save_screenshot(prop.c_str()));
+
+    const std::vector<uint8_t> bf = read_file(full), bh = read_file(half);
+    const long nf = non_clear(bf), nh = non_clear(bh);
+    std::printf("      textured foliage: %ld px, half faded %ld px\n", nf, nh);
+    CHECK(nf > 500);
+    CHECK(bf == read_file(prop));
+    CHECK(nh > nf * 3 / 10);
+    CHECK(nh < nf * 7 / 10);
+}

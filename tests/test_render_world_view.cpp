@@ -3,6 +3,7 @@
 
 #include "test_framework.h"
 
+#include "castlemist/render/world_foliage_grid.h"
 #include "castlemist/render/world_prep.h"
 
 #include "world_camera.h"
@@ -803,4 +804,419 @@ CM_TEST(world_view, env_sun_travel_direction_lights_the_ground) {
     std::printf("      sun travelling down: luma %.1f; travelling up: %.1f\n", luma[0], luma[1]);
     CHECK(luma[0] > 0 && luma[1] > 0);
     CHECK(luma[0] > luma[1] + 10.0);
+}
+
+// ---- Foliage grid (spec D6), pure ----------------------------------------
+
+namespace {
+
+/// Bounds (0, 0, 6144, 6144), one type-3 layer with fadeRange [n, f], one
+/// model; add instances with add_zone.
+castlemist::world::WorldScene foliage_scene(float n = 100, float f = 200) {
+    castlemist::world::WorldScene s;
+    s.hasBounds = true;
+    s.bounds[0] = 0; s.bounds[1] = 0; s.bounds[2] = 6144; s.bounds[3] = 6144;
+    s.models.push_back({4321});
+    castlemist::world::ZoneLayer L;
+    L.type = 3;
+    L.fadeRange[0] = n; L.fadeRange[1] = f;
+    s.zones.present = true;
+    s.zones.layers.push_back(L);
+    return s;
+}
+
+/// A zone instance at (x, y, z) on layer 0, model 0, uniform scale.
+void add_zone(castlemist::world::WorldScene& s, float x, float y, float z,
+              castlemist::world::ZoneSource src = castlemist::world::ZoneSource::Collider, float scale = 1) {
+    castlemist::world::ZoneInstance zi;
+    zi.model = 0;
+    zi.layer = 0;
+    zi.source = src;
+    zi.world[0] = zi.world[5] = zi.world[10] = scale;
+    zi.world[15] = 1;
+    zi.world[12] = x; zi.world[13] = y; zi.world[14] = z;
+    s.zones.instances.push_back(zi);
+}
+
+/// Planes that keep everything (n = 0, d = 1).
+void all_planes(float p[6][4]) {
+    for (int k = 0; k < 6; ++k) { p[k][0] = p[k][1] = p[k][2] = 0; p[k][3] = 1; }
+}
+
+/// Sets every instance's sphere at its translation with radius r.
+void spheres_at_translation(FoliageGrid& g, const castlemist::world::WorldScene& s, float r) {
+    for (uint32_t i = 0; i < s.zones.instances.size(); ++i)
+        foliage_set_sphere(g, i, s.zones.instances[i].world + 12, r);
+}
+
+} // namespace
+
+CM_TEST(foliage_grid, fade_ends) {
+    CHECK_EQ(foliage_fade(50, 100, 200), 1.0f);
+    CHECK_NEAR(foliage_fade(150, 100, 200), 0.5f, 1e-6f);
+    CHECK_EQ(foliage_fade(200, 100, 200), 0.0f);
+    CHECK_EQ(foliage_fade(250, 100, 200), 0.0f);
+    // n >= f: a step at f.
+    CHECK_EQ(foliage_fade(199, 300, 200), 1.0f);
+    CHECK_EQ(foliage_fade(200, 300, 200), 0.0f);
+}
+
+CM_TEST(foliage_grid, bayer_matrix) {
+    CHECK_EQ(bayer4x4(0, 0), 0.5f / 16);
+    CHECK_EQ(bayer4x4(1, 0), 8.5f / 16);
+    std::vector<float> seen;
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 4; ++x) {
+            const float v = bayer4x4(x, y);
+            CHECK(v > 0.0f);
+            CHECK(v < 1.0f);
+            for (float o : seen) CHECK(o != v);
+            seen.push_back(v);
+        }
+    CHECK_EQ(seen.size(), size_t(16));
+    CHECK_EQ(bayer4x4(4, 4), bayer4x4(0, 0));
+}
+
+CM_TEST(foliage_grid, instances_in_tiles) {
+    auto s = foliage_scene();
+    add_zone(s, 10, 10, 0);
+    add_zone(s, 1600, 10, 0);
+    const FoliageGrid g = build_foliage_grid(s);
+    CHECK_EQ(g.tilesX, 4);
+    CHECK_EQ(g.tilesY, 4);
+    CHECK_EQ(g.tiles.size(), size_t(16));
+    CHECK_EQ(g.tileOf.size(), size_t(2));
+    CHECK_EQ(g.tileOf[0], 0u);
+    CHECK_EQ(g.tileOf[1], 1u);
+    CHECK_EQ(g.tiles[0].instances.size(), size_t(1));
+    CHECK_EQ(g.tiles[1].instances.size(), size_t(1));
+    const float distanceScale = 1;
+    CHECK_EQ(g.tiles[0].farMax * distanceScale, 200.0f);
+    CHECK_EQ(g.tiles[1].farMax * distanceScale, 200.0f);
+    CHECK_EQ(g.fadeNear[0], 100.0f);
+    CHECK_EQ(g.fadeFar[1], 200.0f);
+    CHECK_EQ(g.sphere.size(), size_t(8));
+    CHECK(g.sphere[3] < 0.0f);
+    CHECK_FALSE(g.tiles[0].hasAabb);
+    CHECK_EQ(g.collider[0], 1);
+}
+
+CM_TEST(foliage_grid, unresolved_layer_takes_largest_type3_fade) {
+    auto s = foliage_scene();
+    castlemist::world::ZoneLayer big;
+    big.type = 3;
+    big.fadeRange[0] = 900; big.fadeRange[1] = 4000;
+    castlemist::world::ZoneLayer grass;   // farther, but not type 3
+    grass.type = 1;
+    grass.fadeRange[0] = 9000; grass.fadeRange[1] = 9500;
+    s.zones.layers.push_back(big);
+    s.zones.layers.push_back(grass);
+    add_zone(s, 10, 10, 0);
+    s.zones.instances[0].layer = UINT32_MAX;   // a collider linked by geometry only
+    const FoliageGrid g = build_foliage_grid(s);
+    CHECK_EQ(g.fadeNear[0], 900.0f);
+    CHECK_EQ(g.fadeFar[0], 4000.0f);
+    CHECK_EQ(g.tiles[0].farMax, 4000.0f);
+}
+
+CM_TEST(foliage_grid, aabb_from_spheres) {
+    auto s = foliage_scene();
+    add_zone(s, 10, 10, -5);
+    FoliageGrid g = build_foliage_grid(s);
+    const float c[3] = {10, 10, -5};
+    foliage_set_sphere(g, 0, c, 3);
+    const FoliageTile& t = g.tiles[0];
+    CHECK(t.hasAabb);
+    CHECK_EQ(t.aabbMin[0], 7.0f); CHECK_EQ(t.aabbMin[1], 7.0f); CHECK_EQ(t.aabbMin[2], -8.0f);
+    CHECK_EQ(t.aabbMax[0], 13.0f); CHECK_EQ(t.aabbMax[1], 13.0f); CHECK_EQ(t.aabbMax[2], -2.0f);
+    CHECK_EQ(g.sphere[3], 3.0f);
+}
+
+CM_TEST(foliage_grid, far_tile_culled) {
+    auto s = foliage_scene();
+    add_zone(s, 10, 10, 0);
+    FoliageGrid g = build_foliage_grid(s);
+    spheres_at_translation(g, s, 3);
+    float planes[6][4];
+    all_planes(planes);
+    std::vector<FoliageVisible> out;
+    FoliageCullStats st;
+    const float away[3] = {10, 5010, 0};
+    foliage_cull(g, away, planes, 1, false, kFoliageMaxVisible, out, st);
+    CHECK(out.empty());
+    CHECK_EQ(st.tiles, 0);
+    const float inside[3] = {10, 50, 0};   // in tile 0, 40 units from the instance
+    foliage_cull(g, inside, planes, 1, false, kFoliageMaxVisible, out, st);
+    CHECK_EQ(out.size(), size_t(1));
+    if (!out.empty()) {
+        CHECK_EQ(out[0].instance, 0u);
+        CHECK_EQ(out[0].fade, 1.0f);
+    }
+    CHECK_EQ(st.tiles, 1);
+    // A frustum plane with the tile behind it culls the tile too.
+    planes[0][0] = 1; planes[0][3] = -1000;   // keeps x >= 1000 only
+    foliage_cull(g, inside, planes, 1, false, kFoliageMaxVisible, out, st);
+    CHECK(out.empty());
+    CHECK_EQ(st.tiles, 0);
+    // The distance scale stretches the range: 150 units away, fade 0.5 at scale 1, 1 at scale 2.
+    all_planes(planes);
+    const float mid[3] = {10, 160, 0};
+    foliage_cull(g, mid, planes, 1, false, kFoliageMaxVisible, out, st);
+    CHECK_EQ(out.size(), size_t(1));
+    if (!out.empty()) CHECK_NEAR(out[0].fade, 0.5f, 1e-5f);
+    foliage_cull(g, mid, planes, 2, false, kFoliageMaxVisible, out, st);
+    CHECK_EQ(out.size(), size_t(1));
+    if (!out.empty()) CHECK_EQ(out[0].fade, 1.0f);
+}
+
+CM_TEST(foliage_grid, cap_keeps_nearest) {
+    auto s = foliage_scene(100000, 200000);
+    for (int t = 2; t >= 0; --t)   // farthest tile first, so index order is not distance order
+        for (int j = 0; j < 10; ++j) add_zone(s, 100.0f + 1536.0f * t + j, 100, 0);
+    FoliageGrid g = build_foliage_grid(s);
+    spheres_at_translation(g, s, 1);
+    float planes[6][4];
+    all_planes(planes);
+    std::vector<FoliageVisible> out;
+    FoliageCullStats st;
+    const float cam[3] = {0, 100, 0};
+    foliage_cull(g, cam, planes, 1, false, 15, out, st);
+    CHECK_EQ(out.size(), size_t(15));
+    CHECK_EQ(st.capped, 15);
+    CHECK_EQ(st.tiles, 3);
+    int nearest = 0, next = 0;
+    for (const FoliageVisible& v : out) {
+        if (v.instance >= 20) ++nearest;     // tile 0: instances 20..29
+        else if (v.instance >= 10) ++next;   // tile 1: instances 10..19
+    }
+    CHECK_EQ(nearest, 10);
+    CHECK_EQ(next, 5);
+}
+
+CM_TEST(foliage_grid, colliders_only) {
+    auto s = foliage_scene();
+    add_zone(s, 10, 10, 0, castlemist::world::ZoneSource::Collider);
+    add_zone(s, 20, 10, 0, castlemist::world::ZoneSource::Density);
+    FoliageGrid g = build_foliage_grid(s);
+    CHECK_EQ(g.collider[0], 1);
+    CHECK_EQ(g.collider[1], 0);
+    spheres_at_translation(g, s, 3);
+    float planes[6][4];
+    all_planes(planes);
+    std::vector<FoliageVisible> out;
+    FoliageCullStats st;
+    const float cam[3] = {15, 30, 0};
+    foliage_cull(g, cam, planes, 1, true, kFoliageMaxVisible, out, st);
+    CHECK_EQ(out.size(), size_t(1));
+    if (!out.empty()) CHECK_EQ(out[0].instance, 0u);
+    foliage_cull(g, cam, planes, 1, false, kFoliageMaxVisible, out, st);
+    CHECK_EQ(out.size(), size_t(2));
+}
+
+CM_TEST(foliage_grid, tile_without_spheres_skipped) {
+    auto s = foliage_scene(100000, 200000);
+    add_zone(s, 1530, 10, 0);   // tile 0: never gets a sphere
+    add_zone(s, 1540, 10, 0);   // tile 1
+    FoliageGrid g = build_foliage_grid(s);
+    const float c[3] = {1540, 10, 0};
+    foliage_set_sphere(g, 1, c, 3);
+    float planes[6][4];
+    all_planes(planes);
+    std::vector<FoliageVisible> out;
+    FoliageCullStats st;
+    const float cam[3] = {1536, 10, 0};
+    foliage_cull(g, cam, planes, 1, false, kFoliageMaxVisible, out, st);
+    CHECK_EQ(st.tiles, 1);
+    CHECK_EQ(out.size(), size_t(1));
+    if (!out.empty()) CHECK_EQ(out[0].instance, 1u);
+}
+
+CM_TEST(foliage_grid, unloaded_instance_not_visible) {
+    auto s = foliage_scene();
+    add_zone(s, 10, 10, 0);
+    add_zone(s, 20, 10, 0);
+    FoliageGrid g = build_foliage_grid(s);
+    const float c[3] = {20, 10, 0};
+    foliage_set_sphere(g, 1, c, 3);
+    CHECK(g.sphere[3] < 0.0f);
+    float planes[6][4];
+    all_planes(planes);
+    std::vector<FoliageVisible> out;
+    FoliageCullStats st;
+    const float cam[3] = {15, 30, 0};
+    foliage_cull(g, cam, planes, 1, false, kFoliageMaxVisible, out, st);
+    CHECK_EQ(out.size(), size_t(1));
+    if (!out.empty()) CHECK_EQ(out[0].instance, 1u);
+}
+
+CM_TEST(foliage_grid, set_sphere_out_of_range_ignored) {
+    auto s = foliage_scene();
+    add_zone(s, 10, 10, 0);
+    FoliageGrid g = build_foliage_grid(s);
+    const std::vector<float> before = g.sphere;
+    const float c[3] = {10, 10, 0};
+    foliage_set_sphere(g, 999, c, 3);
+    CHECK(g.sphere == before);
+    for (const FoliageTile& t : g.tiles) CHECK_FALSE(t.hasAabb);
+}
+
+// ---- Foliage in WorldView (spec D6) ---------------------------------------
+
+namespace {
+
+/// foliage_scene with a wide fade, model 0 shared by one prop (west) and
+/// two zone instances 300 and 600 units east of it: a Collider, then a Density.
+castlemist::world::WorldScene foliage_view_scene() {
+    auto s = foliage_scene(50000, 60000);
+    castlemist::world::PropInstance p;
+    p.model = 0;
+    p.world[0] = p.world[5] = p.world[10] = p.world[15] = 1;
+    p.world[12] = 3000; p.world[13] = 3000; p.world[14] = -500;
+    s.props.push_back(p);
+    add_zone(s, 3300, 3000, -500, castlemist::world::ZoneSource::Collider);
+    add_zone(s, 3600, 3000, -500, castlemist::world::ZoneSource::Density);
+    s.zones.collidersUnlinked = 2;
+    return s;
+}
+
+/// Looking north at the row from 1500 units south of it, level.
+WorldCamera foliage_camera() {
+    WorldCamera c;
+    c.pos[0] = 3300; c.pos[1] = 1500; c.pos[2] = -500;
+    c.fwd[0] = 0; c.fwd[1] = 1; c.fwd[2] = 0;
+    return c;
+}
+
+} // namespace
+
+CM_TEST(world_view, foliage_draws_zone_instances) {
+    HWND wnd = hidden_window(320, 240);
+    if (!wnd) SKIP("no window");
+    struct Closer { HWND h; ~Closer() { DestroyWindow(h); } } closer{wnd};
+    WorldView v;
+    if (!v.create(wnd)) SKIP("no D3D11 device (hardware or WARP)");
+    CHECK(v.layer(WorldLayer::Foliage));   // on after create()
+
+    const auto s = foliage_view_scene();
+    v.set_world(s, std::make_unique<FoliageGrid>(build_foliage_grid(s)));
+    CHECK_EQ(v.stats().foliageInstances, 2);
+    CHECK_EQ(v.stats().foliagePlaced, 0);
+    CHECK_EQ(v.stats().zoneTrees, 1);
+    CHECK_EQ(v.stats().zoneUnlinked, 2);
+    v.set_layer(WorldLayer::Props, false);   // the prop shares the model; keep it out of the pixels
+    v.set_layer(WorldLayer::Water, false);
+    const WorldCamera cam = foliage_camera();
+    v.render(cam);
+    CHECK_EQ(v.stats().foliageVisible, 0);   // no model yet
+    CHECK_EQ(v.stats().foliageTiles, 0);
+
+    auto cube = std::make_shared<const ModelPreview>(cube_model());
+    v.add_models({{0u, cube}});
+    CHECK_EQ(v.stats().modelsLoaded, 1);     // one MeshGPU for the prop and the zone instances
+    CHECK_EQ(v.stats().foliagePlaced, 2);
+
+    v.render(cam);
+    CHECK_EQ(v.stats().foliageVisible, 1);   // Colliders after create()
+    CHECK(v.stats().foliageDraws > 0);
+    CHECK(v.stats().foliageTiles >= 1);
+    CHECK_EQ(v.stats().foliageCapped, 0);
+    CHECK_EQ(v.stats().shaderFoliage, 0);
+    CHECK(v.stats().foliageCullMs >= 0.0f);
+    CHECK(v.stats().visible >= 1);
+
+    char tmp[MAX_PATH] = {};
+    GetTempPathA(MAX_PATH, tmp);
+    const std::string onPath = std::string(tmp) + "cm_world_view_foliage_on.bmp";
+    const std::string offPath = std::string(tmp) + "cm_world_view_foliage_off.bmp";
+    CHECK(v.save_screenshot(onPath.c_str()));
+
+    v.set_foliage_show(FoliageShow::All);
+    v.render(cam);
+    CHECK_EQ(v.stats().foliageVisible, 2);
+
+    v.set_shading(WorldShading::Geometry);
+    v.render(cam);
+    CHECK_EQ(v.stats().foliageVisible, 2);
+    CHECK(v.stats().foliageDraws > 0);
+    v.set_shading(WorldShading::Shader);
+    v.render(cam);
+    CHECK_EQ(v.stats().foliageVisible, 2);
+    CHECK_EQ(v.stats().shaderFoliage, 2);    // drawn in the Materials look
+    v.set_shading(WorldShading::Materials);
+
+    // The distance scale shrinks the fade range: 0.01 x [50000, 60000] ends at 600 units.
+    v.set_foliage_distance_scale(0.01f);
+    v.render(cam);
+    CHECK_EQ(v.stats().foliageVisible, 0);
+    // Half faded: the collider 1500 units away with [50000, 60000] x 1500/55000
+    // = [1363.6, 1636.4] has fade 0.5, so the screen door drops about half its pixels.
+    v.set_foliage_show(FoliageShow::Colliders);
+    v.set_foliage_distance_scale(1500.0f / 55000.0f);
+    v.render(cam);
+    CHECK_EQ(v.stats().foliageVisible, 1);
+    const std::string halfPath = std::string(tmp) + "cm_world_view_foliage_half.bmp";
+    CHECK(v.save_screenshot(halfPath.c_str()));
+    v.set_foliage_distance_scale(1);
+
+    v.set_layer(WorldLayer::Foliage, false);
+    v.render(cam);
+    CHECK_EQ(v.stats().foliageVisible, 0);
+    CHECK_EQ(v.stats().foliageDraws, 0);
+    CHECK_EQ(v.stats().draws, 0);
+    CHECK(v.save_screenshot(offPath.c_str()));
+    v.set_layer(WorldLayer::Foliage, true);
+
+    const long on = count_not_clear(onPath), half = count_not_clear(halfPath), off = count_not_clear(offPath);
+    std::printf("      foliage on %ld px, half faded %ld px, off %ld px not the clear colour\n", on, half, off);
+    CHECK(on > 80);
+    CHECK(half > on * 3 / 10);
+    CHECK(half < on * 7 / 10);
+    CHECK_EQ(off, 0L);
+
+    // pick() still returns props only.
+    v.set_layer(WorldLayer::Props, true);
+    WorldCamera down;
+    down.pos[0] = 3300; down.pos[1] = 3000; down.pos[2] = -2000;
+    down.fwd[0] = 0; down.fwd[1] = 0; down.fwd[2] = 1;
+    down.up[0] = 1; down.up[1] = 0; down.up[2] = 0;
+    CHECK_EQ(v.pick(160, 120, down), -1);
+
+    // focus_zone_tree: the Collider instance nearest the camera, from 4x its
+    // radius, with the Collision layer on and its screen rect.
+    WorldCamera f = cam;
+    int rect[4] = {0, 0, 0, 0};
+    CHECK(v.focus_zone_tree(f, rect));
+    CHECK(v.layer(WorldLayer::Collision));
+    const float r = std::sqrt(3.0f) * 50.0f;   // cube_model's sphere
+    CHECK_NEAR(f.pos[0], 3300.0f, 1.0f);
+    CHECK_NEAR(f.pos[1], 3000.0f - 4.0f * r, 2.0f);
+    CHECK_NEAR(f.pos[2], -500.0f, 1.0f);
+    CHECK(rect[2] > rect[0]);
+    CHECK(rect[3] > rect[1]);
+    CHECK(rect[0] <= 160 && rect[2] >= 160);
+    CHECK(rect[1] <= 120 && rect[3] >= 120);
+}
+
+CM_TEST(world_view, foliage_grid_built_when_not_given) {
+    HWND wnd = hidden_window(320, 240);
+    if (!wnd) SKIP("no window");
+    struct Closer { HWND h; ~Closer() { DestroyWindow(h); } } closer{wnd};
+    WorldView v;
+    if (!v.create(wnd)) SKIP("no D3D11 device (hardware or WARP)");
+    WorldCamera f = foliage_camera();
+    int rect[4] = {0, 0, 0, 0};
+    CHECK_FALSE(v.focus_zone_tree(f, rect));   // no world
+    const auto s = foliage_view_scene();
+    v.set_world(s);
+    CHECK_EQ(v.stats().foliageInstances, 2);
+    CHECK_FALSE(v.focus_zone_tree(f, rect));   // no model yet
+    v.add_models({{0u, std::make_shared<const ModelPreview>(cube_model())}});
+    v.set_layer(WorldLayer::Props, false);
+    v.render(foliage_camera());
+    CHECK_EQ(v.stats().foliageVisible, 1);
+    // A grid for another scene is replaced by one for this scene.
+    auto other = foliage_scene();
+    add_zone(other, 10, 10, 0);
+    v.set_world(s, std::make_unique<FoliageGrid>(build_foliage_grid(other)));
+    CHECK_EQ(v.stats().foliageInstances, 2);
 }

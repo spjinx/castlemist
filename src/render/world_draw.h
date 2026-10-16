@@ -10,6 +10,7 @@
 /// @warning Not a public header -- internal to `src/render/`.
 #pragma once
 
+#include "castlemist/render/world_foliage_grid.h"
 #include "castlemist/render/world_view.h"
 #include "castlemist/world/world_scene.h"
 
@@ -158,6 +159,9 @@ public:
     /// DrawIndexedInstanced per bucket; translucent buckets switch to alpha
     /// blending without depth writes. Adds to @p tris; returns draw calls.
     int draw(ID3D11Device* dev, ID3D11DeviceContext* ctx, const InstPipeline& pl, size_t& tris);
+    /// draw()'s second half: the DrawIndexedInstanced per bucket over what
+    /// upload() wrote (nothing when it did not run or failed).
+    int draw_uploaded(ID3D11DeviceContext* ctx, const InstPipeline& pl, size_t& tris);
     /// Writes every bucketed instance in one Map (draw() calls it; the
     /// material pass calls it once before its two passes). False when there
     /// is nothing to draw or the buffer could not be written.
@@ -175,13 +179,14 @@ public:
     int draw_materials(ID3D11DeviceContext* ctx, const PropMatPipeline& pl, int pass, size_t& tris,
                        int& untextured);
 
-private:
+protected:
     struct Bucket {
         const MeshGPU* mesh;
         int lod;
-        const float* tint;
+        const float* tint;   ///< props: the AO look's albedo; null for foliage
         float alpha;
-        std::vector<const InstCPU*> insts;
+        std::vector<const Mat4*> worlds;   ///< each instance's row-vector world
+        std::vector<float> fade;           ///< FoliageBatch only: per instance, aligned with worlds
         float nearD2;   ///< squared distance of the nearest instance's centre
         int clip = -1;               ///< skinned buckets: the clip; -1 static
         uint32_t meshIndex = 0;
@@ -193,12 +198,45 @@ private:
     /// stream (slot 2) and its SkinCB.
     void bind_streams(ID3D11DeviceContext* ctx, size_t b, ID3D11Buffer* cbSkin = nullptr) const;
 
+    /// The instance stream's stride (InstGPU and FoliageInstGPU are both 64 bytes).
+    static constexpr UINT kInstStride = 64;
+
     std::vector<Bucket> buckets_;   ///< rebuilt every frame
     std::vector<uint32_t> first_;   ///< per bucket: its first instance in instVB_ (upload())
     std::vector<int> bucketOf_;
     std::unordered_map<uint64_t, int> skinBucketOf_;   ///< (mesh, clip, LOD) -> bucket, CullSkin::Skinned
     Microsoft::WRL::ComPtr<ID3D11Buffer> instVB_;
     uint32_t instCap_ = 0;
+};
+
+/// The foliage pass's instance stream entry (spec D6): the three world
+/// columns of the row-vector world matrix, then the fade (x; yzw unused).
+struct FoliageInstGPU {
+    float r0[4], r1[4], r2[4];
+    float fade, _pad[3];
+};
+static_assert(sizeof(FoliageInstGPU) == 64, "the foliage input layout hardcodes a 64-byte stride");
+
+/// The zone instances' draw (spec D6 "Draw"): InstancedBatch's buckets by
+/// (mesh, LOD), its upload-once / draw-per-bucket pattern and its material
+/// pass (draw_materials: cutout and blend as the props' alpha modes), over
+/// its own 64-byte stream (FoliageInstGPU) that carries a fade instead of a
+/// tint. The pixel shaders discard where fade < bayer4x4(pixel).
+class FoliageBatch : public InstancedBatch {
+public:
+    /// Buckets the survivors of foliage_cull by (mesh, LOD), the LOD by
+    /// screen size as the props' rule. @p worlds and @p meshOf are per zone
+    /// instance (the view's CPU copy); @p centre and radius come from the
+    /// grid's spheres. An instance whose mesh is not uploaded is skipped.
+    /// Returns how many were bucketed.
+    int cull_into(const std::vector<FoliageVisible>& vis, const FoliageGrid& g, const std::vector<Mat4>& worlds,
+                  const std::vector<uint32_t>& meshOf, const std::vector<MeshGPU>& meshes, const WorldCamera& cam);
+    /// Writes every bucketed instance (FoliageInstGPU) in one Map. False with
+    /// nothing to draw or on failure.
+    bool upload(ID3D11Device* dev, ID3D11DeviceContext* ctx);
+    /// Geometry shading: upload() then one DrawIndexedInstanced per bucket
+    /// with @p pl (the foliage AO pipeline). Adds to @p tris; returns draws.
+    int draw(ID3D11Device* dev, ID3D11DeviceContext* ctx, const InstPipeline& pl, size_t& tris);
 };
 
 } // namespace castlemist::render
