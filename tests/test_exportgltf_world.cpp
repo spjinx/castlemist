@@ -54,7 +54,7 @@ using nlohmann::json;
 fs::path fresh_dir(const char* label) {
     fs::path dir = fs::temp_directory_path() / (std::string("cm_world_export_") + label);
     std::error_code ec;
-    fs::remove_all(dir, ec);
+    remove_tree(dir, ec);   // libstdc++'s remove_all spins on paths past MAX_PATH
     fs::create_directories(dir, ec);
     return dir;
 }
@@ -1571,7 +1571,7 @@ CM_TEST(world_folder, overwrite_removes_manifest_first) {
     // Without a manifest the folder is no longer a previous export: refused.
     if (!fs::exists(dir / "manifest.json")) CHECK(r.error.find("not empty") != std::string::npos);
     std::error_code ec;
-    fs::remove_all(dir, ec);
+    remove_tree(dir, ec);
     fs::create_directories(dir, ec);
     const WorldFolderReport r2 = export_world_folder(s, src, nullptr, dir.string(), o);
     CHECK(r2.ok);

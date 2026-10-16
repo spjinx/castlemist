@@ -95,6 +95,8 @@ castlemist_add_test(dat
 set_tests_properties(dat PROPERTIES TIMEOUT 600)
 # world_export_dat.spirit_vale runs tools/world/validate_manifest.py from the source tree.
 target_compile_definitions(cm_test_dat PRIVATE CM_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+# long_path.h's remove_tree: the Spirit Vale export now holds paths past MAX_PATH.
+target_include_directories(cm_test_dat PRIVATE "${PROJECT_SOURCE_DIR}/src/exportgltf")
 
 castlemist_add_test(world
     SOURCES test_world.cpp test_world_walk.cpp test_world_stream.cpp test_world_materials.cpp test_world_cells.cpp test_world_bake.cpp

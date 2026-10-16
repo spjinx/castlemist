@@ -224,7 +224,7 @@ SkyExportReport write_skybox(const SkyInputs& in, const std::string& parentDir, 
     const fs::path folder = fs::path(parentDir) / name;
     rep.folder = folder.string();
     std::error_code ec;
-    fs::remove_all(folder, ec);   // overwrite: nothing stale survives
+    remove_tree(folder, ec);   // overwrite: nothing stale survives (remove_all spins past MAX_PATH)
     if (ec) {
         rep.error = "cannot clear " + rep.folder + ": " + ec.message();
         return rep;

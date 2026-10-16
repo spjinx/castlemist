@@ -27,6 +27,7 @@
 #include "castlemist/world/dat_read.h"
 #include "castlemist/world/load_world.h"
 #include "castlemist/world/walk.h"
+#include "long_path.h"
 
 #include <algorithm>
 #include <chrono>
@@ -93,7 +94,9 @@ bool ensure_template() {
 fs::path fresh_dir(const std::string& label) {
     const fs::path d = fs::temp_directory_path() / ("cm_world_export_dat_" + label);
     std::error_code ec;
-    fs::remove_all(d, ec);
+    // remove_tree, not fs::remove_all: libstdc++'s remove_all spins forever on a
+    // tree holding paths past MAX_PATH, which the export now writes (review I4).
+    eg::remove_tree(d, ec);
     fs::create_directories(d, ec);
     return d;
 }
@@ -370,7 +373,7 @@ CM_TEST(world_export_dat, spirit_vale_smoke) {
     CHECK(src != nullptr);
     if (!src) return;
     std::error_code ec;
-    fs::remove_all(fs::path(out), ec);
+    eg::remove_tree(fs::path(out), ec);
     eg::WorldFolderOptions o;
     const eg::WorldFolderReport r = eg::export_world_folder(scene, *src, &sky, out, o);
     const double tAll = secs();
@@ -509,7 +512,7 @@ CM_TEST(world_export_dat, spirit_vale) {
         std::printf("    python not on PATH: validate_manifest.py not run\n");
     }
     std::error_code ec;
-    fs::remove_all(dir, ec);
+    eg::remove_tree(dir, ec);
 }
 
 namespace {
@@ -650,6 +653,6 @@ CM_TEST(world_export_dat, measure) {
         std::printf("      sun: present %d preset %d stored (%.3f, %.3f, %.3f); unityForward %s\n", int(L.present),
                     L.presetIndex, L.sunDir[0], L.sunDir[1], L.sunDir[2],
                     man["light"].is_object() ? man["light"]["sun"]["unityForward"].dump().c_str() : "null");
-        fs::remove_all(dir, ec);
+        eg::remove_tree(dir, ec);
     }
 }
