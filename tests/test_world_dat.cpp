@@ -1390,3 +1390,166 @@ CM_TEST(world_dat, havk_prop_tokens_read) {
     CHECK(tokens > 0);
     CHECK(matched > 0);
 }
+
+// ---- zones: phase-1 acceptance (world foliage spec D1, D3, M1-M3) ----
+
+namespace {
+
+/// Share of `a`'s volume that lies inside `b` (0 when `a` is flat).
+double containment(const Box& a, const Box& b) {
+    double inter = 1, va = 1;
+    for (int k = 0; k < 3; ++k) {
+        inter *= std::max(0.0, (double)std::min(a.hi[k], b.hi[k]) - std::max(a.lo[k], b.lo[k]));
+        va *= a.extent(k);
+    }
+    return va > 0 ? inter / va : 0;
+}
+
+struct ZoneAccept {
+    uint32_t colliders, anchor, geometry, geometries, crossChecks;
+    size_t byType[3];
+};
+const std::map<uint32_t, ZoneAccept> kZoneAccept = {
+    {192711, {4381, 4378, 3, 45, 37, {167169, 39649, 10296}}},
+    {191000, {88, 88, 0, 7, 4, {29768, 1669, 1011}}},
+    {1151420, {284, 284, 0, 1, 0, {7358, 0, 284}}},
+};
+
+} // namespace
+
+CM_TEST(world_dat, zones_phase1_acceptance) {
+    Gw2Dat& dat = shared_dat();
+    if (!ensure_template()) SKIP("no struct template");
+    for (uint32_t id : kTestMaps) {
+        const ZoneAccept& want = kZoneAccept.at(id);
+        castlemist::world::WorldScene w = castlemist::world::load_world(dat, id, *castlemist::tpl::get());
+        const auto& z = w.zones;
+        CHECK(z.present);
+        size_t byType[3] = {0, 0, 0};
+        for (const auto& p : z.placements)
+            if (p.layer != UINT32_MAX) {
+                const int t = z.layers[p.layer].type;
+                if (t >= 1 && t <= 3) ++byType[t - 1];
+            }
+        std::printf("    map %u: placements by type %zu %zu %zu; colliders %u, anchor %u, geometry %u, unlinked %u, "
+                    "geometries %u, crossChecks %u, disagreements %u\n",
+                    id, byType[0], byType[1], byType[2], z.colliderEntries, z.zonePlacementsLinked,
+                    z.collidersLinkedByGeometry, z.collidersUnlinked, z.colliderGeometries, z.propCrossChecks,
+                    z.propDisagreements);
+        for (int t = 0; t < 3; ++t) CHECK_EQ(byType[t], want.byType[t]);
+        CHECK_EQ(z.colliderEntries, want.colliders);
+        CHECK_EQ(z.zonePlacementsLinked, want.anchor);
+        CHECK_EQ(z.collidersLinkedByGeometry, want.geometry);
+        CHECK_EQ(z.collidersUnlinked, 0u);
+        CHECK_EQ(z.colliderGeometries, want.geometries);
+        CHECK_EQ(z.propCrossChecks, want.crossChecks);
+        CHECK_EQ(z.propDisagreements, 0u);
+        CHECK_EQ(z.placementsUnresolved, 0u);
+
+        // Every geometry maps to exactly one fileId; anchor links sit within a cell of their anchor.
+        std::map<uint32_t, std::set<uint32_t>> fileOfGeometry;
+        {
+            std::vector<uint8_t> bytes = packfile_by_file_id(id);
+            castlemist::model::Extractor ex(bytes, *castlemist::tpl::get());
+            const auto h = ex.parseHavok();
+            std::vector<uint32_t> geomOf;
+            for (const auto& p : h.placements)
+                if (p.group == "zone") geomOf.push_back(p.geometryIndex);
+            for (const auto& inst : z.instances)
+                if (inst.collider < geomOf.size())
+                    fileOfGeometry[geomOf[inst.collider]].insert(w.models.at(inst.model).fileId);
+        }
+        CHECK_EQ(fileOfGeometry.size(), size_t(want.geometries));
+        for (const auto& [g, files] : fileOfGeometry) CHECK_EQ(files.size(), size_t(1));
+
+        size_t far = 0;
+        for (const auto& inst : z.instances) {
+            if (inst.placement == UINT32_MAX) continue;
+            const auto& pl = z.placements[inst.placement];
+            float a[2];
+            castlemist::world::zone_anchor(w.bounds[0], w.bounds[1], pl.c, pl.r, a);
+            // translation of a column-major world matrix is elements 12..14
+            if (std::fabs(inst.world[12] - a[0]) > 24.01f || std::fabs(inst.world[13] - a[1]) > 24.01f) ++far;
+        }
+        CHECK_EQ(far, size_t(0));
+        for (const std::string& s : w.warnings) CHECK(s.rfind("chunk zon2", 0) != 0);
+    }
+}
+
+CM_TEST(world_dat, zones_every_collider_has_a_tree) {
+    Gw2Dat& dat = shared_dat();
+    if (!ensure_template()) SKIP("no struct template");
+    for (uint32_t id : kTestMaps) {
+        castlemist::world::WorldScene w = castlemist::world::load_world(dat, id, *castlemist::tpl::get());
+        std::map<uint32_t, uint32_t> instOfCollider;   // collider -> instance count
+        for (const auto& i : w.zones.instances) ++instOfCollider[i.collider];
+        std::set<uint32_t> models;
+        size_t zoneColliders = 0, missing = 0;
+        for (const auto& ci : w.collision.instances) {
+            if (ci.group != "zone") continue;
+            ++zoneColliders;
+            if (!instOfCollider.count(ci.placement)) ++missing;
+        }
+        for (const auto& i : w.zones.instances) models.insert(i.model);
+        size_t noMesh = 0;
+        for (uint32_t m : models) {
+            auto mp = load_model_by_fileid(dat, w.models.at(m).fileId, ModelLoadOptions{false, false});
+            bool ok = false;
+            if (mp)
+                for (const auto& mesh : mp->meshes) ok = ok || (!mesh.indices.empty() && !mesh.vertices.empty());
+            noMesh += !ok;
+        }
+        std::printf("    map %u: %zu zone colliders, %zu without a tree, %zu models, %zu without a mesh\n", id,
+                    zoneColliders, missing, models.size(), noMesh);
+        CHECK(zoneColliders > 0);
+        CHECK_EQ(missing, size_t(0));
+        CHECK_EQ(noMesh, size_t(0));
+    }
+}
+
+CM_TEST(world_dat, zones_hull_in_model) {
+    Gw2Dat& dat = shared_dat();
+    if (!ensure_template()) SKIP("no struct template");
+    std::vector<double> shares;
+    for (uint32_t id : kTestMaps) {
+        castlemist::world::WorldScene w = castlemist::world::load_world(dat, id, *castlemist::tpl::get());
+        std::vector<uint8_t> bytes = packfile_by_file_id(id);
+        castlemist::model::Extractor ex(bytes, *castlemist::tpl::get());
+        const auto h = ex.parseHavok();
+        std::vector<uint32_t> geomOf;
+        for (const auto& p : h.placements)
+            if (p.group == "zone") geomOf.push_back(p.geometryIndex);
+        std::map<uint32_t, uint32_t> modelOfGeometry;
+        for (const auto& i : w.zones.instances)
+            if (i.collider < geomOf.size()) modelOfGeometry.emplace(geomOf[i.collider], i.model);
+        for (const auto& [g, m] : modelOfGeometry) {
+            if (g >= h.geometryAnimations.size() || h.geometryAnimations[g].empty()) continue;
+            const uint32_t anim = h.geometryAnimations[g].back();
+            if (anim >= h.animationCollisions.size()) continue;
+            Box hull;
+            for (uint32_t ci : h.animationCollisions[anim])
+                if (ci < h.hulls.size())
+                    for (size_t v = 0; v + 2 < h.hulls[ci].verts.size(); v += 3) {
+                        const float* s = &h.hulls[ci].verts[v];
+                        const float p[3] = {s[0] * 32.0f, s[1] * 32.0f, s[2] * -32.0f};
+                        hull.add(p);
+                    }
+            auto mp = load_model_by_fileid(dat, w.models.at(m).fileId, ModelLoadOptions{false, false});
+            Box vis;
+            if (mp)
+                for (const auto& mesh : mp->meshes)
+                    for (const auto& v : mesh.vertices) {
+                        const float p[3] = {v.px, v.py, v.pz};
+                        vis.add(p);
+                    }
+            if (hull.empty() || vis.empty()) { std::printf("    map %u geometry %u: no hull or model box\n", id, g); continue; }
+            const double c = containment(hull, vis);
+            std::printf("    map %u geometry %u (fileId %u): hull inside model box %.3f\n", id, g,
+                        w.models.at(m).fileId, c);
+            shares.push_back(c);
+        }
+    }
+    CHECK(!shares.empty());
+    CHECK(median(shares) >= 0.95);
+    CHECK(*std::min_element(shares.begin(), shares.end()) >= 0.8);
+}
