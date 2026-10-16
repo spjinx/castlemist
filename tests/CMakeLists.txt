@@ -91,8 +91,10 @@ castlemist_add_test(extract
 # absent, so it is safe to leave enabled; GW2_TEST_DAT overrides the location.
 castlemist_add_test(dat
     SOURCES test_extract_dat.cpp test_exportgltf_world_dat.cpp
-    DEPS    castlemist::extract castlemist::exportgltf castlemist::world ext::json)
+    DEPS    castlemist::extract castlemist::exportgltf castlemist::world ext::json ext::stb)
 set_tests_properties(dat PROPERTIES TIMEOUT 600)
+# world_export_dat.spirit_vale runs tools/world/validate_manifest.py from the source tree.
+target_compile_definitions(cm_test_dat PRIVATE CM_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 
 castlemist_add_test(world
     SOURCES test_world.cpp test_world_walk.cpp test_world_stream.cpp test_world_materials.cpp test_world_cells.cpp test_world_bake.cpp
