@@ -592,8 +592,8 @@ void do_export_world_map(HWND hwnd) {
     const size_t slash = full.find_last_of(L"\\/");
     std::wstring parent = slash == std::wstring::npos ? L"." : full.substr(0, slash);
     std::wstring stem = slash == std::wstring::npos ? full : full.substr(slash + 1);
-    const size_t dot = stem.find_last_of(L'.');
-    if (dot != std::wstring::npos && dot > 0) stem.resize(dot);
+    // The name is the folder name as typed: a dot is part of it ("map.v2"), not
+    // an extension to drop (review M7).
     if (stem.empty()) stem = L"world";
     const std::wstring dirW = parent + L"\\" + stem;
 
