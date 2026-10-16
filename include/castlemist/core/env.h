@@ -29,6 +29,8 @@ namespace castlemist::core {
 /// | `GW2_MAPWIN_SHADING=geometry` | with MAPWIN, shade in the sub-project 2 look (default: materials) |
 /// | `GW2_MAPWIN_TIME=<s>`    | with MAPWIN, freeze the material clock at that time (0 is honoured) |
 /// | `GW2_MAPWIN_FOCUS=animated` | with MAPWIN, frame the nearest playing animated placement instead of the whole map |
+/// | `GW2_MAPWIN_FOLIAGE=off\|colliders\|all` | with MAPWIN, the Foliage layer off, or on with that sub-mode (default: on, colliders) |
+/// | `GW2_MAPWIN_FOCUS=zonetree` | with MAPWIN, frame the Collider instance nearest the camera's start point from 4x its radius, with the Collision layer on, and report its screen rectangle as `treeRect` |
 /// | `GW2_SCENEGAME=1`        | force game-shader materials on the loaded scene |
 /// | `GW2_AUDIOTEST=<mftIdx>` | probe/play an audio entry, log `audiotest.txt` |
 /// | `GW2_VIDEOTEST=<mftIdx>` | open a Bink entry and dump frame info |

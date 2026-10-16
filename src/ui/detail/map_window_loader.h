@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "castlemist/native/gw2dat.h"
+#include "castlemist/render/world_foliage_grid.h"
 #include "castlemist/render/world_prep.h"
 #include "castlemist/world/stream.h"
 #include "castlemist/world/walk.h"
@@ -113,8 +114,12 @@ struct MapWinWorldMsg {
     uint64_t gen = 0;
     std::shared_ptr<const castlemist::world::WorldScene> scene;   ///< null on error
     std::string error;
-    double seconds = 0;   ///< dat open + load_world
+    double seconds = 0;   ///< dat open + load_world + the foliage grid
     std::shared_ptr<Gw2Dat> dat;   ///< the parsed dat the world came from, for the model pool (read-only)
+    /// The scene's FoliageGrid (build_foliage_grid), built on the worker so
+    /// WorldView::set_world only takes it over (spec D6); null on error.
+    std::unique_ptr<castlemist::render::FoliageGrid> foliage;
+    double foliageSeconds = 0;   ///< the grid build alone
 };
 
 /// @brief WM_APP_MAPWIN_COLLISION: the walk index of the scene.

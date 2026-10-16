@@ -84,7 +84,21 @@ struct MapWinHeadless {
     /// the Shader pass at other scales); <= 0 / < 0 keeps the default.
     float shaderRange = 0;
     int shaderMax = -1;
+    /// GW2_MAPWIN_FOLIAGE=off|colliders|all (mapwin_foliage_from_text):
+    /// -1 unset (the window's default: on, Colliders), 0 off, 1 Colliders, 2 All.
+    int foliage = -1;
+    /// GW2_MAPWIN_FOCUS=zonetree: frame the placed Collider instance nearest
+    /// the start camera (WorldView::focus_zone_tree), Collision on, and log
+    /// its screen rect as `treeRect`.
+    bool focusZoneTree = false;
 };
+
+/// @brief GW2_MAPWIN_FOLIAGE's value (any case): "off" -> 0, "colliders" -> 1,
+///        "all" -> 2; anything else -> -1 (unset).
+int mapwin_foliage_from_text(const std::string& text);
+
+/// @brief Status-line text: L"fol %d/%d" (foliageVisible / foliagePlaced).
+std::wstring mapwin_foliage_status(const castlemist::render::WorldViewStats& st);
 
 /// @brief GW2_MAPWIN_SHADING's value: "geometry" -> Geometry, "shader" ->
 ///        Shader (any case); anything else -> Materials.

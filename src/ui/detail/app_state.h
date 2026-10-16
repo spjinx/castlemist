@@ -323,6 +323,10 @@ constexpr UINT_PTR ID_MW_MATERIALS = 2221;
 constexpr UINT_PTR ID_MW_MOTION = 2222;
 constexpr UINT_PTR ID_MW_SHADER = 2223;
 constexpr UINT_PTR ID_MW_SKY = 2224;
+/// The Foliage toggle (a split button) and its menu's sub-modes (spec D6).
+constexpr UINT_PTR ID_MW_FOLIAGE = 2225;
+constexpr UINT_PTR ID_MW_FOLIAGE_COLLIDERS = 2226;
+constexpr UINT_PTR ID_MW_FOLIAGE_ALL = 2227;
 /// Map window timers (on the map window, not the main one): the 16 ms frame
 /// pump and the ~4 Hz status line.
 constexpr UINT_PTR TIMER_MW_FRAME = 6;

@@ -800,6 +800,9 @@ int run(HINSTANCE hInstance, int cmd_show) {
         }
         h.focusAnimated = castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "animated";
         h.focusProps = castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "props";
+        h.focusZoneTree = castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "zonetree";
+        // GW2_MAPWIN_FOLIAGE=off|colliders|all: the Foliage layer (on, Colliders otherwise).
+        h.foliage = castlemist::ui::mapwin_foliage_from_text(castlemist::core::env::text("GW2_MAPWIN_FOLIAGE"));
         if (castlemist::core::env::is_set("GW2_MAPWIN_SHADER_RANGE"))
             h.shaderRange = castlemist::core::env::real("GW2_MAPWIN_SHADER_RANGE", 0.0f, -1.0f);
         if (castlemist::core::env::is_set("GW2_MAPWIN_SHADER_MAX"))

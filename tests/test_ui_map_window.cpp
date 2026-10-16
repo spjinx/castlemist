@@ -225,6 +225,23 @@ CM_TEST(map_window, shader_status_text) {
           L"shader 412 inst (39 to Materials: 12 pending, 20 no shader, 6 animated, 1 over cap)");
 }
 
+CM_TEST(map_window, foliage_from_text) {
+    CHECK_EQ(mapwin_foliage_from_text(""), -1);
+    CHECK_EQ(mapwin_foliage_from_text("bogus"), -1);
+    CHECK_EQ(mapwin_foliage_from_text("off"), 0);
+    CHECK_EQ(mapwin_foliage_from_text("OFF"), 0);
+    CHECK_EQ(mapwin_foliage_from_text("colliders"), 1);
+    CHECK_EQ(mapwin_foliage_from_text("Colliders"), 1);
+    CHECK_EQ(mapwin_foliage_from_text("all"), 2);
+}
+
+CM_TEST(map_window, foliage_status_text) {
+    castlemist::render::WorldViewStats st;
+    st.foliageVisible = 312;
+    st.foliagePlaced = 4381;
+    CHECK(mapwin_foliage_status(st) == L"fol 312/4381");
+}
+
 CM_TEST(map_window, sky_button_cycles) {
     using castlemist::render::WorldSkyTime;
     CHECK(mapwin_next_sky(WorldSkyTime::Day) == WorldSkyTime::Night);
