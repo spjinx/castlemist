@@ -223,6 +223,19 @@ CM_TEST(composite, live_sylvari_female_body_and_head) {
     CHECK_EQ(int(sf->file_data.at(sf->faces[0]).type), 5);
 }
 
+CM_TEST(composite, a_bad_variants_array_leaves_the_rest_of_the_composite_intact) {
+    CompositeBuilder c = one_race();
+    size_t race = 2048;  // one_race() allocates the race first
+    c.arr(race + 200, 2, 1u << 20);  // variants pointer far past the buffer
+    auto comp = parse_composite(c.b);
+    CHECK(comp.has_value());
+    const CompositeRace* r = comp->race("SylvariFemale");
+    CHECK(r != nullptr);
+    CHECK_EQ(r->skeleton_file, 31210u);
+    CHECK(r->file_data.find(kWardenToken) != r->file_data.end());
+    CHECK(r->variants.empty());
+}
+
 CM_TEST(composite, parses_race_variants) {
     CompositeBuilder c = one_race();
     size_t race = 2048;  // one_race() allocates the race first

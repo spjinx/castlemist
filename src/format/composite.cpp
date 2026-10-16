@@ -229,9 +229,19 @@ std::optional<Composite> parse_composite(std::span<const uint8_t> d) {
             race.file_data.emplace(f.token, f);
         }
         race.variant_ref_race = r.u64(q + kRaceVariantRefRace);
-        auto [nvar, pvar] = r.arr(q + kRaceVariants, kVariantSize);
-        race.variants.reserve(nvar);
-        for (uint32_t k = 0; k < nvar && r.ok; ++k) race.variants.push_back(read_variant(r, pvar + k * kVariantSize));
+        // Additive: a malformed variants table leaves `variants` empty and never fails the parse.
+        {
+            auto [nvar, pvar] = r.arr(q + kRaceVariants, kVariantSize);
+            if (r.ok) {
+                race.variants.reserve(nvar);
+                for (uint32_t k = 0; k < nvar && r.ok; ++k)
+                    race.variants.push_back(read_variant(r, pvar + k * kVariantSize));
+            }
+            if (!r.ok) {
+                race.variants.clear();
+                r.ok = true;  // everything before this point was read successfully
+            }
+        }
         c.races.push_back(std::move(race));
     }
     if (!r.ok) return std::nullopt;
