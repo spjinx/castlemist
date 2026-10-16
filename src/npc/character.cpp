@@ -41,10 +41,12 @@ CharacterFields read_character(const PackSet& set, size_t pack_index, const Obje
 
     for (uint32_t off = 0; obj.end - obj.begin >= 8 && off <= obj.end - obj.begin - 8; off += 8) {
         std::string t = decode_token(pack.u64(obj, off));
-        if (is_race(t)) {
-            f.race = std::move(t);
-            break;
+        if (!is_race(t)) continue;
+        if (off + 16 <= obj.end - obj.begin) {
+            uint64_t look = pack.u64(obj, off + 8);
+            if (look != 0) f.looks.emplace_back(t, look);
         }
+        if (f.race.empty()) f.race = std::move(t);
     }
 
     std::string m = decode_token(pack.u64(obj, 88));

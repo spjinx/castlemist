@@ -342,6 +342,7 @@ CM_TEST(npc_catalogue, round_trips_through_json) {
     r.minipet = 321; r.name = "Mini Foo";
     r.weapons = {{200, 1, 2, 3}};
     r.skills = {5, 6};
+    r.looks = {{"humanfemale", 18446744073709551615ull}, {"charrmale", 42}};
     c.npcs.push_back(r);
     c.warnings.push_back("w");
     auto path = std::filesystem::temp_directory_path() / "cm_npc_catalogue_rt.json";
@@ -362,6 +363,13 @@ CM_TEST(npc_catalogue, round_trips_through_json) {
         CHECK_EQ(g.weapons.size(), size_t(1));
         CHECK_EQ(g.weapons[0].model, 3u);
         CHECK_EQ(g.skills.size(), size_t(2));
+        CHECK_EQ(g.looks.size(), size_t(2));
+        if (g.looks.size() == 2) {
+            CHECK_EQ(g.looks[0].race, std::string("humanfemale"));
+            CHECK(g.looks[0].look_token == 18446744073709551615ull);
+            CHECK_EQ(g.looks[1].race, std::string("charrmale"));
+            CHECK(g.looks[1].look_token == 42ull);
+        }
         CHECK_EQ(l->warnings.size(), size_t(1));
     }
     std::filesystem::remove(path);
@@ -371,6 +379,8 @@ CM_TEST(npc_catalogue, load_rejects_wrong_version) {
     auto path = std::filesystem::temp_directory_path() / "cm_npc_catalogue_bad.json";
     { std::ofstream(path) << R"({"version":1,"warnings":[],"npcs":[]})"; }
     CHECK(!load(path).has_value());
+    { std::ofstream(path) << R"({"version":2,"warnings":[],"npcs":[]})"; }
+    CHECK(!load(path).has_value());
     { std::ofstream(path) << "not json"; }
     CHECK(!load(path).has_value());
     std::filesystem::remove(path);
@@ -379,11 +389,11 @@ CM_TEST(npc_catalogue, load_rejects_wrong_version) {
 
 CM_TEST(npc_catalogue, load_rejects_a_cache_without_npcs) {
     auto path = std::filesystem::temp_directory_path() / "cm_npc_catalogue_nonpcs.json";
-    { std::ofstream(path) << R"({"version":2,"warnings":[]})"; }
+    { std::ofstream(path) << R"({"version":3,"warnings":[]})"; }
     CHECK(!load(path).has_value());
-    { std::ofstream(path) << R"({"version":2,"warnings":[],"npcs":{}})"; }
+    { std::ofstream(path) << R"({"version":3,"warnings":[],"npcs":{}})"; }
     CHECK(!load(path).has_value());
-    { std::ofstream(path) << R"({"version":2,"warnings":[],"npcs":[]})"; }
+    { std::ofstream(path) << R"({"version":3,"warnings":[],"npcs":[]})"; }
     CHECK(load(path).has_value());
     std::filesystem::remove(path);
 }
@@ -575,6 +585,27 @@ CM_TEST(npc_character, reads_weapons_skills_race_and_modifier) {
     CHECK_EQ(f.skills[0], 5491u);
     CHECK_EQ(f.race, std::string("humanfemale"));
     CHECK_EQ(f.modifier, std::string("undead"));
+}
+
+CM_TEST(npc_character, reads_look_records) {
+    PackSet set;
+    set.packs.push_back(make_char_pack(
+        {{9, 0, 4242}},
+        {},
+        {{632, pack_token("humanfemale")}, {640, pack_token("banditf")}, {648, 5},
+         {664, pack_token("humanmale")}, {672, pack_token("xpkurzwar")},
+         {696, pack_token("charrmale")}},  // next u64 is zero: not a look
+        {}));
+    set.finish();
+    CharacterFields f = read_character(set, 0, *set.packs[0].object_at(0));
+    CHECK_EQ(f.race, std::string("humanfemale"));
+    CHECK_EQ(f.looks.size(), size_t(2));
+    if (f.looks.size() == 2) {
+        CHECK_EQ(f.looks[0].first, std::string("humanfemale"));
+        CHECK(f.looks[0].second == pack_token("banditf"));
+        CHECK_EQ(f.looks[1].first, std::string("humanmale"));
+        CHECK(f.looks[1].second == pack_token("xpkurzwar"));
+    }
 }
 
 CM_TEST(npc_character, drops_a_slot_ref_whose_target_has_the_wrong_type) {

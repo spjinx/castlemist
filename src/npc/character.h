@@ -21,6 +21,7 @@ struct CharacterFields {
     std::string codename, race, modifier;                  ///< Content slug; race token; "undead"/"ghost"/"".
     std::vector<std::pair<uint32_t, uint32_t>> weapons;    ///< {slot field, item dataId}, slot order.
     std::vector<uint32_t> skills;                          ///< Skill dataIds, field order.
+    std::vector<std::pair<std::string, uint64_t>> looks;   ///< {race token, non-zero look token}, field order.
 };
 
 /// @brief Extracts weapons (item type 35 with u32 @+44 == 24), skills (type 64), race, modifier and codename.

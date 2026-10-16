@@ -23,6 +23,12 @@ struct Weapon {
     uint32_t slot = 0, item = 0, skin = 0, model = 0;
 };
 
+/// A look record of a character: the race token it names and the packed look-preset name (decode with decode_token).
+struct NpcLook {
+    std::string race;
+    uint64_t look_token = 0;
+};
+
 /// One character (cntc type 67) of the datastore.
 struct NpcRecord {
     uint32_t id = 0;                  ///< Object dataId.
@@ -32,6 +38,7 @@ struct NpcRecord {
     std::string race, modifier;       ///< Race token; "undead"/"ghost"/"".
     std::vector<Weapon> weapons;
     std::vector<uint32_t> skills;     ///< Skill dataIds.
+    std::vector<NpcLook> looks;       ///< Look records, field order, duplicates kept.
     uint32_t minipet = 0;             ///< dataId of a minipet (type 48) referencing this character; lowest if several; 0 if none.
     std::string name;                 ///< Display name from the public API; empty until fetched.
 };
@@ -68,10 +75,10 @@ std::vector<uint32_t> minipet_ids(const Catalogue&);
 /// Sets `name` on every NPC whose `minipet` is a key of `minipet_names`; returns how many were set.
 size_t apply_names(Catalogue&, const std::map<uint32_t, std::string>& minipet_names);
 
-/// Writes the catalogue as JSON ("version": 2). False on I/O failure.
+/// Writes the catalogue as JSON ("version": 3). False on I/O failure.
 bool save(const Catalogue&, const std::filesystem::path&);
 
-/// Reads a catalogue; nullopt for a missing file, bad JSON or any "version" other than 2. Never throws.
+/// Reads a catalogue; nullopt for a missing file, bad JSON or any "version" other than 3. Never throws.
 std::optional<Catalogue> load(const std::filesystem::path&);
 
 }  // namespace castlemist::npc

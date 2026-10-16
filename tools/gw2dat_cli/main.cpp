@@ -1942,8 +1942,12 @@ json npc_json(const castlemist::npc::NpcRecord& n) {
     json weapons = json::array();
     for (const auto& w : n.weapons)
         weapons.push_back({{"slot", w.slot}, {"item", w.item}, {"skin", w.skin}, {"model", w.model}});
+    json looks = json::array();
+    for (const auto& l : n.looks)
+        looks.push_back({{"race", l.race}, {"look", castlemist::npc::decode_token(l.look_token)},
+                         {"token", std::to_string(l.look_token)}});
     return {{"id", n.id}, {"codename", n.codename}, {"model", n.model}, {"sound_script", n.sound_script}, {"race", n.race},
-            {"modifier", n.modifier}, {"weapons", weapons}, {"skills", n.skills}, {"minipet", n.minipet},
+            {"modifier", n.modifier}, {"weapons", weapons}, {"skills", n.skills}, {"looks", looks}, {"minipet", n.minipet},
             {"name", n.name}};
 }
 

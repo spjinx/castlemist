@@ -109,6 +109,7 @@ Catalogue build_catalogue(const std::vector<cmap::PackBytes>& packs, const Conta
             r.race = std::move(f.race);
             r.modifier = std::move(f.modifier);
             r.skills = std::move(f.skills);
+            for (auto& [race, token] : f.looks) r.looks.push_back({std::move(race), token});
             const std::vector<uint32_t>& files = cmap::resolve_all(kCharacterType, f.id);
             r.model = first_in_container(files, container_of, "MODL");
             r.sound_script = first_in_container(files, container_of, "AMSP");
@@ -204,6 +205,9 @@ bool save(const Catalogue& c, const std::filesystem::path& path) {
         json weapons = json::array();
         for (const Weapon& w : n.weapons)
             weapons.push_back({{"slot", w.slot}, {"item", w.item}, {"skin", w.skin}, {"model", w.model}});
+        json looks = json::array();
+        for (const NpcLook& l : n.looks)
+            looks.push_back({{"race", l.race}, {"look_token", std::to_string(l.look_token)}});
         npcs.push_back({{"id", n.id},
                         {"codename", n.codename},
                         {"model", n.model},
@@ -212,10 +216,11 @@ bool save(const Catalogue& c, const std::filesystem::path& path) {
                         {"modifier", n.modifier},
                         {"weapons", weapons},
                         {"skills", n.skills},
+                        {"looks", looks},
                         {"minipet", n.minipet},
                         {"name", n.name}});
     }
-    json doc = {{"version", 2}, {"warnings", c.warnings}, {"npcs", npcs}};
+    json doc = {{"version", 3}, {"warnings", c.warnings}, {"npcs", npcs}};
     try {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         if (!out) return false;
@@ -233,7 +238,7 @@ std::optional<Catalogue> load(const std::filesystem::path& path) {
         if (!in) return std::nullopt;
         json doc = json::parse(in, nullptr, false);
         if (doc.is_discarded() || !doc.is_object()) return std::nullopt;
-        if (!doc.contains("version") || doc["version"] != 2) return std::nullopt;
+        if (!doc.contains("version") || doc["version"] != 3) return std::nullopt;
         Catalogue c;
         if (doc.contains("warnings")) c.warnings = doc["warnings"].get<std::vector<std::string>>();
         if (!doc.contains("npcs") || !doc["npcs"].is_array()) return std::nullopt;
@@ -250,6 +255,8 @@ std::optional<Catalogue> load(const std::filesystem::path& path) {
                     n.weapons.push_back({w.at("slot").get<uint32_t>(), w.at("item").get<uint32_t>(),
                                          w.at("skin").get<uint32_t>(), w.at("model").get<uint32_t>()});
                 n.skills = j.at("skills").get<std::vector<uint32_t>>();
+                for (const json& l : j.at("looks"))
+                    n.looks.push_back({l.at("race").get<std::string>(), std::stoull(l.at("look_token").get<std::string>())});
                 n.minipet = j.at("minipet").get<uint32_t>();
                 n.name = j.at("name").get<std::string>();
                 c.npcs.push_back(std::move(n));
