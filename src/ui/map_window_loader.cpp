@@ -12,8 +12,10 @@
 
 #include "castlemist/extract/entry_extractor.h"
 #include "castlemist/extract/model_types.h"
+#include "castlemist/exportgltf/sky_export.h"
 #include "castlemist/format/struct_template.h"
 #include "castlemist/native/gw2dat.h"
+#include "castlemist/render/world_sky.h"
 #include "castlemist/world/anim.h"
 #include "castlemist/world/load_world.h"
 
@@ -77,6 +79,8 @@ void mapwin_free_payload(UINT msg, LPARAM lparam) {
     case WM_APP_MAPWIN_COLLISION: delete reinterpret_cast<MapWinCollisionMsg*>(lparam); break;
     case WM_APP_MAPWIN_MODELS: delete reinterpret_cast<MapWinModelsMsg*>(lparam); break;
     case WM_APP_MAPWIN_TEXTURES: delete reinterpret_cast<MapWinTexturesMsg*>(lparam); break;
+    case WM_APP_MAPWIN_SKY: delete reinterpret_cast<MapWinSkyMsg*>(lparam); break;
+    case WM_APP_MAPWIN_SHADER: delete reinterpret_cast<MapWinShaderMsg*>(lparam); break;
     default: break;
     }
 }
@@ -188,6 +192,109 @@ void mapwin_start_terrain_textures(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Da
             }
         }
     }).detach();
+}
+
+void mapwin_start_sky(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat,
+                      std::shared_ptr<const castlemist::world::WorldScene> scene, uint32_t mapFileId) {
+    std::thread([wnd, gen, dat = std::move(dat), scene = std::move(scene), mapFileId]() {
+        MapWinLiveThread live;
+        try {
+            auto r = std::make_unique<MapWinSkyMsg>();
+            r->gen = gen;
+            const auto t0 = Clock::now();
+            try {
+                auto tpl = castlemist::tpl::get_or_auto_load();
+                if (!tpl) throw std::runtime_error("no struct template");
+                if (!scene || !dat) throw std::runtime_error("no scene");
+                castlemist::exportgltf::sky::SkyInputs in;
+                in.sky = scene->environment.sky;
+                in.mapFileId = mapFileId;
+                if (cancelled(gen)) return;
+                castlemist::exportgltf::sky::load_sky_textures(*dat, *tpl, in);
+                if (cancelled(gen)) return;
+                r->warnings = in.decodeWarnings;
+                r->modes = castlemist::render::bake_world_sky(in, kMapWinSkyWidth, r->warnings);
+            } catch (const std::exception& e) {
+                r->warnings.push_back(std::string("sky: not baked: ") + e.what());
+            }
+            r->seconds = seconds_since(t0);
+            post(wnd, WM_APP_MAPWIN_SKY, gen, std::move(r));
+        } catch (...) {
+        }
+    }).detach();
+}
+
+int mapwin_shader_pool_size(unsigned hw) { return std::max(1, (static_cast<int>(hw) - 1) / 2); }
+
+int mapwin_start_shader_models(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat,
+                               std::shared_ptr<MapWinModelQueue> queue, std::shared_ptr<MapWinTextureClaims> claims) {
+    // As mapwin_start_models, but each model is traced for its game shaders
+    // (wantGame) and only what WorldView::add_game_materials reads is kept:
+    // the window's model pool already delivered the geometry.
+    const int workers = mapwin_shader_pool_size(std::thread::hardware_concurrency());
+    for (int w = 0; w < workers; ++w) {
+        std::thread([wnd, gen, dat, queue, claims]() {
+            MapWinLiveThread live;
+            try {
+                const castlemist::world::WorldScene& scene = *queue->scene;
+                auto batch = std::make_unique<MapWinShaderMsg>();
+                batch->gen = gen;
+                size_t texBytes = 0;
+                auto lastPost = Clock::now();
+                uint32_t mi = 0;
+                while (!cancelled(gen) && queue->queue.pop(mi)) {
+                    castlemist::render::WorldGameLoad out;
+                    out.model = mi;
+                    if (mi < scene.models.size()) {
+                        try {
+                            std::shared_ptr<ModelPreview> m = load_model_by_fileid(
+                                *dat, scene.models[mi].fileId,
+                                ModelLoadOptions{/*wantGame=*/true, /*decodeTextures=*/false});
+                            if (m) {
+                                auto slim = std::make_shared<ModelPreview>();
+                                slim->gameMaterials = std::move(m->gameMaterials);
+                                slim->textures = std::move(m->textures);
+                                for (const GameMaterial& gm : slim->gameMaterials)
+                                    for (const GameSamplerCPU& smp : gm.samplers) {
+                                        if (smp.global != 0 || smp.gameTex < 0 ||
+                                            static_cast<size_t>(smp.gameTex) >= slim->textures.size())
+                                            continue;
+                                        const uint32_t id = slim->textures[static_cast<size_t>(smp.gameTex)].fileId;
+                                        if (!claims || !claims->claim(id)) continue;
+                                        auto t = decode_for_cache(*dat, id);
+                                        texBytes += t->bytes();
+                                        batch->textures.push_back(std::move(t));
+                                    }
+                                out.game = std::move(slim);
+                            }
+                        } catch (...) {
+                            out.game.reset();   // counted as failed
+                        }
+                    }
+                    batch->batch.push_back(std::move(out));
+                    if (batch->batch.size() >= kBatch || texBytes >= kMapWinBatchTextureBytes ||
+                        Clock::now() - lastPost >= kInterval) {
+                        post(wnd, WM_APP_MAPWIN_SHADER, gen, std::move(batch));
+                        batch = std::make_unique<MapWinShaderMsg>();
+                        batch->gen = gen;
+                        texBytes = 0;
+                        lastPost = Clock::now();
+                    }
+                }
+                batch->workerDone = true;
+                post(wnd, WM_APP_MAPWIN_SHADER, gen, std::move(batch));
+            } catch (...) {
+                try {
+                    auto done = std::make_unique<MapWinShaderMsg>();
+                    done->gen = gen;
+                    done->workerDone = true;
+                    post(wnd, WM_APP_MAPWIN_SHADER, gen, std::move(done));
+                } catch (...) {
+                }
+            }
+        }).detach();
+    }
+    return workers;
 }
 
 int mapwin_start_models(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat, std::shared_ptr<MapWinModelQueue> queue,

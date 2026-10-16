@@ -145,6 +145,49 @@ struct MapWinTexturesMsg {
     bool done = false;
 };
 
+/// @brief WM_APP_MAPWIN_SKY: the baked sky modes (bake_world_sky) and every
+///        warning of the bake and its texture decode.
+struct MapWinSkyMsg {
+    uint64_t gen = 0;
+    std::vector<castlemist::render::WorldSkyImage> modes;
+    std::vector<std::string> warnings;
+    double seconds = 0;   ///< texture decode + bake
+};
+
+/// @brief WM_APP_MAPWIN_SHADER: up to 32 models' traced game materials
+///        (WorldGameLoad) plus the textures their shaders sample that this
+///        worker claimed and decoded. `workerDone` on a worker's last post.
+struct MapWinShaderMsg {
+    uint64_t gen = 0;
+    std::vector<castlemist::render::WorldGameLoad> batch;
+    std::vector<std::shared_ptr<const CappedTexture>> textures;
+    bool workerDone = false;
+};
+
+/// @brief Equirect width of the Map window's sky (height = width / 2).
+inline constexpr int kMapWinSkyWidth = 2048;
+
+/// @brief Starts the sky thread: decodes the textures of
+///        `scene->environment.sky` (load_sky_textures) and bakes modes 0 and
+///        1 at kMapWinSkyWidth (bake_world_sky); posts one WM_APP_MAPWIN_SKY.
+void mapwin_start_sky(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat,
+                      std::shared_ptr<const castlemist::world::WorldScene> scene, uint32_t mapFileId);
+
+/// @brief Shader pool workers for @p hw hardware threads: max(1, (hw - 1) / 2),
+///        so it shares the cores with a model pool still loading.
+int mapwin_shader_pool_size(unsigned hw);
+
+/// @brief Starts the shader pool: mapwin_shader_pool_size workers pop models
+///        from @p queue (nearest the camera first), load each again with the
+///        game shaders traced and header-only textures
+///        (ModelLoadOptions{wantGame, !decodeTextures}), keep only its
+///        `gameMaterials` and `textures`, decode every material texture those
+///        shaders sample that they claim() from @p claims, and post
+///        WM_APP_MAPWIN_SHADER batches as the model pool does.
+/// @return the number of workers started (each posts workerDone once).
+int mapwin_start_shader_models(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat,
+                               std::shared_ptr<MapWinModelQueue> queue, std::shared_ptr<MapWinTextureClaims> claims);
+
 /// @brief Opens a Gw2Dat on @p datPath and runs load_world on @p mapFileId
 ///        with the struct template; posts WM_APP_MAPWIN_WORLD.
 void mapwin_start_world(HWND wnd, uint64_t gen, std::string datPath, uint32_t mapFileId);

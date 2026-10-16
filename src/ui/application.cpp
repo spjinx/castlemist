@@ -19,6 +19,7 @@
 #include "castlemist/core/env.h"
 #include "castlemist/core/text.h"
 #include "castlemist/render/gw2bgfx_view.h"
+#include "castlemist/render/world_sky.h"
 #include "castlemist/ui/application.h"
 
 #include <algorithm>
@@ -784,12 +785,24 @@ int run(HINSTANCE hInstance, int cmd_show) {
         h.statsPath = dump_path("mapwin.txt");
         h.quitWindow = hwnd;
         h.geometry = castlemist::ui::mapwin_shading_is_geometry(castlemist::core::env::text("GW2_MAPWIN_SHADING"));
+        h.shader = castlemist::ui::mapwin_shading_from_text(castlemist::core::env::text("GW2_MAPWIN_SHADING")) ==
+                   castlemist::render::WorldShading::Shader;
+        // GW2_MAPWIN_SKY=day|night|off: the sky's time of day (Day otherwise).
+        castlemist::render::parse_world_sky_time(castlemist::core::env::text("GW2_MAPWIN_SKY"), h.sky);
         // Minimum below 0 so that GW2_MAPWIN_TIME=0 is honoured (real() ignores values <= minimum).
         if (castlemist::core::env::is_set("GW2_MAPWIN_TIME")) {
             h.fixedTime = true;
             h.time = std::max(0.0f, castlemist::core::env::real("GW2_MAPWIN_TIME", 0.0f, -1e9f));
         }
         h.focusAnimated = castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "animated";
+        h.focusProps = castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "props";
+        if (castlemist::core::env::is_set("GW2_MAPWIN_SHADER_RANGE"))
+            h.shaderRange = castlemist::core::env::real("GW2_MAPWIN_SHADER_RANGE", 0.0f, -1.0f);
+        if (castlemist::core::env::is_set("GW2_MAPWIN_SHADER_MAX"))
+            h.shaderMax = static_cast<int>(castlemist::core::env::real("GW2_MAPWIN_SHADER_MAX", -1.0f, -2.0f));
+        // GW2_MAPWIN_BENCH=<frames>: frames timed after the shot (default 30, 0 = none).
+        if (castlemist::core::env::is_set("GW2_MAPWIN_BENCH"))
+            h.benchFrames = static_cast<int>(std::max(0.0f, castlemist::core::env::real("GW2_MAPWIN_BENCH", 30.0f, -1.0f)));
         try {
             if (!g_app->dat_loaded) {
                 const char* dat_env = std::getenv("GW2_DAT");

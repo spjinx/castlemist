@@ -321,6 +321,8 @@ constexpr int ID_MW_STATUS = 2219;
 constexpr int ID_MW_WARN_EDIT = 2220;
 constexpr UINT_PTR ID_MW_MATERIALS = 2221;
 constexpr UINT_PTR ID_MW_MOTION = 2222;
+constexpr UINT_PTR ID_MW_SHADER = 2223;
+constexpr UINT_PTR ID_MW_SKY = 2224;
 /// Map window timers (on the map window, not the main one): the 16 ms frame
 /// pump and the ~4 Hz status line.
 constexpr UINT_PTR TIMER_MW_FRAME = 6;
@@ -369,6 +371,8 @@ constexpr UINT WM_APP_MAPWIN_WORLD = WM_APP + 20;
 constexpr UINT WM_APP_MAPWIN_MODELS = WM_APP + 21;
 constexpr UINT WM_APP_MAPWIN_COLLISION = WM_APP + 22;
 constexpr UINT WM_APP_MAPWIN_TEXTURES = WM_APP + 23;
+constexpr UINT WM_APP_MAPWIN_SKY = WM_APP + 24;
+constexpr UINT WM_APP_MAPWIN_SHADER = WM_APP + 25;
 
 enum class MiddleTab { Compressed = 0, Decompressed = 1, Structure = 2, Preview = 3 };
 

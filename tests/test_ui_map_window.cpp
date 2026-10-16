@@ -201,6 +201,37 @@ CM_TEST(map_window, shading_text) {
     CHECK(!mapwin_shading_is_geometry("foo"));
 }
 
+CM_TEST(map_window, shading_from_text) {
+    using castlemist::render::WorldShading;
+    CHECK(mapwin_shading_from_text("shader") == WorldShading::Shader);
+    CHECK(mapwin_shading_from_text("Shader") == WorldShading::Shader);
+    CHECK(mapwin_shading_from_text("GEOMETRY") == WorldShading::Geometry);
+    CHECK(mapwin_shading_from_text("materials") == WorldShading::Materials);
+    CHECK(mapwin_shading_from_text("") == WorldShading::Materials);
+    CHECK(mapwin_shading_from_text("shaders") == WorldShading::Materials);
+}
+
+CM_TEST(map_window, shader_status_text) {
+    using castlemist::render::WorldShading;
+    castlemist::render::WorldViewStats st;
+    st.shaderInstances = 412;
+    CHECK(mapwin_shader_status(WorldShading::Materials, st).empty());
+    CHECK(mapwin_shader_status(WorldShading::Shader, st) == L"shader 412 inst");
+    st.shaderPending = 12;
+    st.shaderNoShader = 20;
+    st.shaderAnimated = 6;
+    st.shaderCapped = 1;
+    CHECK(mapwin_shader_status(WorldShading::Shader, st) ==
+          L"shader 412 inst (39 to Materials: 12 pending, 20 no shader, 6 animated, 1 over cap)");
+}
+
+CM_TEST(map_window, sky_button_cycles) {
+    using castlemist::render::WorldSkyTime;
+    CHECK(mapwin_next_sky(WorldSkyTime::Day) == WorldSkyTime::Night);
+    CHECK(mapwin_next_sky(WorldSkyTime::Night) == WorldSkyTime::Off);
+    CHECK(mapwin_next_sky(WorldSkyTime::Off) == WorldSkyTime::Day);
+}
+
 CM_TEST(map_window, material_status_text) {
     castlemist::render::WorldViewStats st;
     st.textures = 12;

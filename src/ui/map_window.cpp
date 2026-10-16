@@ -28,6 +28,7 @@
 #include "castlemist/core/env.h"
 #include "castlemist/extract/model_types.h"
 #include "castlemist/render/world_view.h"
+#include "castlemist/render/world_sky.h"
 #include "castlemist/world/stream.h"
 #include "castlemist/world/walk.h"
 
@@ -199,7 +200,7 @@ const wchar_t* kSurfaceClass = L"Gw2MapWindowSurface";
 struct MapWin {
     HWND wnd = nullptr, surface = nullptr, status = nullptr, warnEdit = nullptr;
     HWND bWalk = nullptr, bFly = nullptr, bTerrain = nullptr, bProps = nullptr, bColl = nullptr, bWater = nullptr, bMaterials = nullptr, bMotion = nullptr,
-         bReset = nullptr, bWarn = nullptr;
+         bReset = nullptr, bWarn = nullptr, bShader = nullptr, bSky = nullptr;
     uint64_t gen = 0;
     uint32_t mapFileId = 0;
     std::string datPath;
@@ -223,6 +224,29 @@ struct MapWin {
     std::shared_ptr<MapWinTextureClaims> claims;
     bool terrainTexStarted = false, terrainTexDone = false;
     bool collDone = false;   ///< the collision build came back (index or error)
+    /// The parsed dat the world came from (shared with the pools): the sky
+    /// thread and the shader pool, which may start later, read it too.
+    std::shared_ptr<Gw2Dat> dat;
+    // Sky: baked once per map on its thread (mapwin_start_sky), kept to
+    // re-upload after a lost device.
+    castlemist::render::WorldSkyTime skyTime = castlemist::render::WorldSkyTime::Day;
+    std::vector<castlemist::render::WorldSkyImage> sky;
+    std::vector<std::string> skyWarnings;
+    bool skyStarted = false, skyDone = false;
+    double skySeconds = 0;
+    float skyUploadMs = 0;
+    // Shader shading: the pool that traces game materials starts the first
+    // time Shader is selected; what it delivered is kept for a lost device.
+    std::shared_ptr<MapWinModelQueue> shaderQueue;
+    float shaderReorderPos[3] = {0, 0, 0};
+    int shaderWorkers = 0, shaderWorkersDone = 0;
+    bool shaderStarted = false;
+    size_t shaderArrived = 0;
+    std::vector<castlemist::render::WorldGameLoad> gameLoads;
+    /// UI-thread ms of each shader batch (add_textures + add_game_materials).
+    std::vector<float> shaderAddMs;
+    /// The slowest render() (CPU, WorldViewStats::ms) since the window opened.
+    float renderMsMax = 0;
 
     FlyState fly;
     float fovY = 1.15f, farDist = 40000;
@@ -357,15 +381,40 @@ void refresh_warnings(MapWin& m) {
     for (const std::string& w : m.scene->warnings) warn += widen(w) + L"\r\n";
     if (m.viewOk)
         for (const std::string& w : m.view.warnings()) warn += widen(w) + L"\r\n";
+    for (const std::string& w : m.skyWarnings) warn += widen(w) + L"\r\n";
     if (warn.empty()) warn = L"(no warnings)";
     SetWindowTextW(m.warnEdit, warn.c_str());
 }
 
+/// Starts the shader pool once (Shader selected, a scene and its dat in hand).
+void start_shader_pool(MapWin& m) {
+    if (m.shaderStarted || !m.scene || !m.dat || m.scene->models.empty()) return;
+    m.shaderStarted = true;
+    m.shaderQueue = std::make_shared<MapWinModelQueue>(m.scene, m.fly.pos);
+    for (int k = 0; k < 3; ++k) m.shaderReorderPos[k] = m.fly.pos[k];
+    m.shaderWorkers = mapwin_start_shader_models(m.wnd, m.gen, m.dat, m.shaderQueue, m.claims);
+}
+
+void sync_sky_button(MapWin& m) {
+    std::wstring t = L"Sky: ";
+    switch (m.skyTime) {
+    case castlemist::render::WorldSkyTime::Day: t += L"Day"; break;
+    case castlemist::render::WorldSkyTime::Night: t += L"Night"; break;
+    default: t += L"Off"; break;
+    }
+    SetWindowTextW(m.bSky, t.c_str());
+}
+
 void apply_shading_buttons(MapWin& m) {
     auto on = [](HWND b) { return SendMessageW(b, BM_GETCHECK, 0, 0) == BST_CHECKED; };
-    m.view.set_shading(on(m.bMaterials) ? castlemist::render::WorldShading::Materials
-                                        : castlemist::render::WorldShading::Geometry);
+    using castlemist::render::WorldShading;
+    const WorldShading s = on(m.bShader) ? WorldShading::Shader
+                           : on(m.bMaterials) ? WorldShading::Materials : WorldShading::Geometry;
+    m.view.set_shading(s);
+    if (s == WorldShading::Shader) start_shader_pool(m);
     m.view.set_motion(on(m.bMotion));
+    m.view.set_sky_time(m.skyTime);
+    sync_sky_button(m);
     refresh_warnings(m);
     m.dirty = true;
 }
@@ -400,7 +449,9 @@ void recover_device(MapWin& m) {
     if (m.scene) {
         m.view.set_world(*m.scene);
         if (!m.models.empty()) m.view.add_models(m.models);
+        if (!m.gameLoads.empty()) m.view.add_game_materials(m.gameLoads);
     }
+    if (!m.sky.empty()) m.view.set_sky(m.sky);
     apply_layer_buttons(m);
     apply_shading_buttons(m);
     if (m.headless && m.headless->fixedTime) m.view.set_time(m.headless->time);
@@ -416,6 +467,7 @@ void render_now(MapWin& m) {
     if (m.view.device_lost()) recover_device(m);
     if (!m.viewOk || m.view.device_lost()) return;
     m.view.render(camera(m));
+    m.renderMsMax = std::max(m.renderMsMax, m.view.stats().ms);
     m.dirty = false;
 }
 
@@ -431,6 +483,14 @@ void update_status(MapWin& m) {
             s += buf;
         }
         s += L"  |  " + mapwin_material_status(st);
+        const std::wstring sh = mapwin_shader_status(m.view.shading(), st);
+        if (!sh.empty()) s += L"  |  " + sh;
+        if (m.view.shading() != castlemist::render::WorldShading::Geometry && m.skyTime != castlemist::render::WorldSkyTime::Off) {
+            if (!m.skyDone) s += L"  |  sky baking...";
+            else if (st.skyMode < 0) s += L"  |  no sky";
+            else if ((m.skyTime == castlemist::render::WorldSkyTime::Night) != (st.skyMode == 1))
+                s += st.skyMode == 0 ? L"  |  sky: day (no night sky)" : L"  |  sky: night (no day sky)";
+        }
         swprintf(buf, 512, L"  |  vis %d  draws %d  %d ktri  %.1f ms", st.visible, st.draws, st.ktris, st.ms);
         s += buf;
     }
@@ -449,6 +509,11 @@ void headless_capture(MapWin& m) {
     const double elapsed = std::chrono::duration<double>(Clock::now() - m.opened).count();
     bool shot = false;
     int animRect[4] = {-1, -1, -1, -1};
+    int shaderLeft = 0;
+    float shaderPrepMs = 0;
+    castlemist::render::WorldViewBench bench;
+    int warmFrames = 0;
+    float warmWorstMs = 0, warmBuildMax = 0, warmSeconds = 0;
     if (m.viewOk && m.scene) {
         MoveWindow(m.surface, 0, kToolbarH, kSurfaceW, kSurfaceH, FALSE);
         m.view.resize(kSurfaceW, kSurfaceH);
@@ -457,35 +522,79 @@ void headless_capture(MapWin& m) {
         float hint = 0;
         castlemist::render::WorldCamera cam = m.view.frame_all(&hint);
         if (m.headless->focusAnimated) m.view.focus_animated(cam);
+        if (m.headless->focusProps) m.view.focus_props(cam);
         set_camera(m, cam);
         if (m.headless->fixedTime) m.view.set_time(m.headless->time);
+        // Shader: everything in range is built before the shot (no budget),
+        // timed apart from the interactive per-frame budget.
+        if (m.view.shading() == castlemist::render::WorldShading::Shader) {
+            // First as the window does it: presented frames, each building
+            // within render()'s budget, until nothing in view waits (at most
+            // 600 frames). The worst frame is the UI-thread stall.
+            const auto w0 = Clock::now();
+            for (; warmFrames < 600; ++warmFrames) {
+                render_now(m);
+                const auto ws = m.view.stats();
+                warmWorstMs = std::max(warmWorstMs, ws.ms + ws.shaderBuildMs);
+                warmBuildMax = std::max(warmBuildMax, ws.shaderBuildMs);
+                if (ws.shaderPending == 0) break;
+            }
+            warmSeconds = std::chrono::duration<float>(Clock::now() - w0).count();
+            // Then whatever is in range but out of view, with no budget.
+            const auto p0 = Clock::now();
+            shaderLeft = m.view.prepare_shader(camera(m), 0);
+            shaderPrepMs = std::chrono::duration<float, std::milli>(Clock::now() - p0).count();
+        }
         render_now(m);
         shot = m.view.save_screenshot(m.headless->shotPath.c_str());
         int r[4];
         if (m.view.animated_screen_rect(camera(m), r))
             for (int k = 0; k < 4; ++k) animRect[k] = r[k];
+        if (m.headless->benchFrames > 0) m.view.bench(camera(m), m.headless->benchFrames, bench);
     }
     const auto st = m.view.stats();
     std::vector<float> add = m.addMs;
     std::sort(add.begin(), add.end());
     const float addMax = add.empty() ? 0.0f : add.back();
     const float addMedian = add.empty() ? 0.0f : add[add.size() / 2];
-    char line[2048];
+    std::vector<float> sadd = m.shaderAddMs;
+    std::sort(sadd.begin(), sadd.end());
+    const float saddMax = sadd.empty() ? 0.0f : sadd.back();
+    const float saddMedian = sadd.empty() ? 0.0f : sadd[sadd.size() / 2];
+    const char* shadingName = m.view.shading() == castlemist::render::WorldShading::Geometry ? "geometry"
+                              : m.view.shading() == castlemist::render::WorldShading::Shader ? "shader" : "materials";
+    char extra[1536];
+    std::snprintf(extra, sizeof extra,
+                  "sky=%s skyMode=%d skyModes=%zu sky_s=%.2f sky_upload_ms=%.2f "
+                  "shaderInstances=%d shaderDraws=%d shaderPending=%d shaderNoShader=%d shaderAnimated=%d "
+                  "shaderCapped=%d shaderModels=%d shaderModelsFailed=%d shaderPrograms=%d shaderLightStandIns=%d "
+                  "shaderLeft=%d shader_prep_ms=%.1f shader_build_ms_max=%.2f shader_batches=%zu "
+                  "shader_add_ms_median=%.2f shader_add_ms_max=%.2f render_ms_max=%.2f bench_frames=%d "
+                  "bench_cpu_ms=%.2f/%.2f bench_gpu_ms=%.2f/%.2f bench_wall_ms=%.2f/%.2f "
+                  "warm_frames=%d warm_s=%.2f warm_frame_ms_max=%.2f warm_build_ms_max=%.2f cam=%.0f,%.0f,%.0f adapter=\"%s\" ",
+                  castlemist::render::world_sky_time_name(m.skyTime), st.skyMode, m.sky.size(), m.skySeconds,
+                  m.skyUploadMs, st.shaderInstances, st.shaderDraws, st.shaderPending, st.shaderNoShader,
+                  st.shaderAnimated, st.shaderCapped, st.shaderModels, st.shaderModelsFailed, st.shaderPrograms,
+                  st.shaderLightStandIns, shaderLeft, shaderPrepMs, st.shaderBuildMsMax, sadd.size(), saddMedian, saddMax,
+                  m.renderMsMax, m.headless->benchFrames, bench.cpuMedian, bench.cpuMax, bench.gpuMedian,
+                  bench.gpuMax, bench.wallMedian, bench.wallMax, warmFrames, warmSeconds, warmWorstMs, warmBuildMax, m.fly.pos[0], m.fly.pos[1], m.fly.pos[2],
+                  m.viewOk ? m.view.adapter().c_str() : "");
+    char line[4096];
     std::snprintf(line, sizeof line,
                   "map=%u ok=%d models=%zu loaded=%d failed=%d props=%zu visible=%d draws=%d ktris=%d ms=%.2f "
                   "chunks=%d collisionTris=%zu warnings=%zu world_s=%.2f collision_s=%.2f models_s=%.2f total_s=%.2f "
                   "add_batches=%zu add_ms_median=%.2f add_ms_max=%.2f "
                   "shading=%s time=%.2f textures=%d textureMB=%.1f texturesFailed=%d animated=%d unresolvedClips=%d clipsFailedDecode=%d "
                   "chunksUntextured=%d materialsUntextured=%d waterPreset=%d animRect=%d,%d,%d,%d "
-                  "shot=%d timeout=%d error=\"%s\"\n",
+                  "%sshot=%d timeout=%d error=\"%s\"\n",
                   m.mapFileId, (m.scene && m.viewOk) ? 1 : 0, models_total(m), st.modelsLoaded, st.modelsFailed,
                   m.scene ? m.scene->props.size() : size_t(0), st.visible, st.draws, st.ktris, st.ms, st.chunks,
                   m.coll ? m.coll->triangle_count() : size_t(0), m.scene ? m.scene->warnings.size() : size_t(0),
                   m.worldSeconds, m.collSeconds, m.modelsSeconds, elapsed, add.size(), addMedian, addMax,
-                  m.view.shading() == castlemist::render::WorldShading::Geometry ? "geometry" : "materials",
+                  shadingName,
                   m.view.time(), st.textures, st.textureMB, st.texturesFailed, st.animated, st.unresolvedClips, st.clipsFailedDecode,
                   st.chunksUntextured, st.materialsUntextured, st.waterPreset ? 1 : 0, animRect[0], animRect[1],
-                  animRect[2], animRect[3], shot ? 1 : 0,
+                  animRect[2], animRect[3], extra, shot ? 1 : 0,
                   elapsed >= kHeadlessTimeout ? 1 : 0, m.error.c_str());
     if (std::ofstream f(m.headless->statsPath, std::ios::binary); f) f << line;
     if (m.headless->quitWindow) PostMessageW(m.headless->quitWindow, WM_CLOSE, 0, 0);
@@ -498,7 +607,13 @@ void maybe_capture(MapWin& m) {
     const bool modelsDone = m.scene && (m.modelsArrived >= models_total(m) ||
                                         (m.workers > 0 && m.workersDone >= m.workers));
     const bool texturesDone = !m.terrainTexStarted || m.terrainTexDone;
-    if (failed || (modelsDone && m.collDone && texturesDone) || elapsed >= kHeadlessTimeout) headless_capture(m);
+    const bool skyDone = !m.skyStarted || m.skyDone;
+    // Shader: the traced game materials too (every worker done, or all models in).
+    const bool shaderDone = !m.headless->shader || !m.scene || m.scene->models.empty() ||
+                            (m.shaderStarted && (m.shaderArrived >= models_total(m) ||
+                                                 (m.shaderWorkers > 0 && m.shaderWorkersDone >= m.shaderWorkers)));
+    if (failed || (modelsDone && m.collDone && texturesDone && skyDone && shaderDone) || elapsed >= kHeadlessTimeout)
+        headless_capture(m);
 }
 
 void on_world(MapWin& m, std::unique_ptr<MapWinWorldMsg> r) {
@@ -526,7 +641,10 @@ void on_world(MapWin& m, std::unique_ptr<MapWinWorldMsg> r) {
     // Textures: the terrain thread starts first so it claims the terrain's;
     // each model worker then decodes the diffuse textures nobody claimed yet.
     m.claims = std::make_shared<MapWinTextureClaims>();
+    m.dat = r->dat;
     if (r->dat) {
+        mapwin_start_sky(m.wnd, m.gen, r->dat, m.scene, m.mapFileId);
+        m.skyStarted = true;
         std::shared_ptr<Gw2Dat> dat = r->dat;   // copied: the model pool takes r->dat below
         mapwin_start_terrain_textures(m.wnd, m.gen, std::move(dat), m.scene, m.claims);
         m.terrainTexStarted = true;
@@ -537,6 +655,7 @@ void on_world(MapWin& m, std::unique_ptr<MapWinWorldMsg> r) {
         m.lastReorder = Clock::now();
         m.workers = mapwin_start_models(m.wnd, m.gen, std::move(r->dat), m.queue, m.claims);
     }
+    if (m.viewOk && m.view.shading() == castlemist::render::WorldShading::Shader) start_shader_pool(m);
     m.dirty = true;
     update_status(m);
     maybe_capture(m);
@@ -571,6 +690,37 @@ void on_textures(MapWin& m, std::unique_ptr<MapWinTexturesMsg> r) {
         m.dirty = true;
     }
     if (r->done) m.terrainTexDone = true;
+    maybe_capture(m);
+}
+
+void on_sky(MapWin& m, std::unique_ptr<MapWinSkyMsg> r) {
+    m.skyDone = true;
+    m.skySeconds = r->seconds;
+    m.skyWarnings = std::move(r->warnings);
+    m.sky = std::move(r->modes);
+    if (m.viewOk) {
+        const auto t0 = Clock::now();
+        m.view.set_sky(m.sky);
+        m.skyUploadMs = std::chrono::duration<float, std::milli>(Clock::now() - t0).count();
+    }
+    refresh_warnings(m);
+    m.dirty = true;
+    maybe_capture(m);
+}
+
+void on_shader(MapWin& m, std::unique_ptr<MapWinShaderMsg> r) {
+    if (!r->batch.empty() || !r->textures.empty()) {
+        if (m.viewOk) {
+            const auto t0 = Clock::now();
+            m.view.add_textures(r->textures);
+            m.view.add_game_materials(r->batch);
+            m.shaderAddMs.push_back(std::chrono::duration<float, std::milli>(Clock::now() - t0).count());
+        }
+        m.shaderArrived += r->batch.size();
+        for (auto& g : r->batch) m.gameLoads.push_back(std::move(g));
+        m.dirty = true;
+    }
+    if (r->workerDone) ++m.shaderWorkersDone;
     maybe_capture(m);
 }
 
@@ -639,8 +789,25 @@ void tick(MapWin& m) {
                 for (int k = 0; k < 3; ++k) m.reorderPos[k] = m.fly.pos[k];
             }
         }
+        if (m.shaderQueue) {   // the shader pool follows the camera the same way
+            const float sx = m.fly.pos[0] - m.shaderReorderPos[0], sy = m.fly.pos[1] - m.shaderReorderPos[1],
+                        sz = m.fly.pos[2] - m.shaderReorderPos[2];
+            if (sx * sx + sy * sy + sz * sz > kReorderDistance * kReorderDistance) {
+                if (m.shaderQueue->queue.remaining() == 0) {
+                    m.shaderQueue.reset();
+                } else {
+                    m.shaderQueue->queue.reorder(m.fly.pos);
+                    for (int k = 0; k < 3; ++k) m.shaderReorderPos[k] = m.fly.pos[k];
+                }
+            }
+        }
         m.lastReorder = now;
     }
+    // Shader: game materials still to build in range keep the frames coming
+    // (render() builds a few per frame within its budget).
+    if (m.viewOk && m.view.shading() == castlemist::render::WorldShading::Shader &&
+        m.view.stats().shaderPending > 0)
+        m.dirty = true;
     // The material clock. A fixed headless time was set once at open and never
     // changes, so nothing to do; otherwise it runs while Motion is on.
     if (m.viewOk && !(m.headless && m.headless->fixedTime)) {
@@ -761,11 +928,12 @@ void destroy_state(HWND hwnd) {
     }
     mapwin_next_generation();   // stop every worker of this window; late posts are dropped
     // Payloads already queued for this window would be discarded with it,
-    // unfreed: take them out now. (Range: WORLD..TEXTURES, all four.)
+    // unfreed: take them out now. (Range: WORLD..SHADER, all six.)
     static_assert(WM_APP_MAPWIN_MODELS > WM_APP_MAPWIN_WORLD && WM_APP_MAPWIN_COLLISION > WM_APP_MAPWIN_MODELS &&
-                  WM_APP_MAPWIN_TEXTURES == WM_APP_MAPWIN_COLLISION + 1);
+                  WM_APP_MAPWIN_TEXTURES == WM_APP_MAPWIN_COLLISION + 1 &&
+                  WM_APP_MAPWIN_SKY == WM_APP_MAPWIN_TEXTURES + 1 && WM_APP_MAPWIN_SHADER == WM_APP_MAPWIN_SKY + 1);
     MSG q;
-    while (PeekMessageW(&q, hwnd, WM_APP_MAPWIN_WORLD, WM_APP_MAPWIN_TEXTURES, PM_REMOVE))
+    while (PeekMessageW(&q, hwnd, WM_APP_MAPWIN_WORLD, WM_APP_MAPWIN_SHADER, PM_REMOVE))
         mapwin_free_payload(q.message, q.lParam);
     KillTimer(hwnd, TIMER_MW_FRAME);
     KillTimer(hwnd, TIMER_MW_STATUS);
@@ -796,6 +964,12 @@ LRESULT CALLBACK MapWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     case WM_APP_MAPWIN_TEXTURES:
         if (auto r = take<MapWinTexturesMsg>(lparam, m)) on_textures(*m, std::move(r));
         return 0;
+    case WM_APP_MAPWIN_SKY:
+        if (auto r = take<MapWinSkyMsg>(lparam, m)) on_sky(*m, std::move(r));
+        return 0;
+    case WM_APP_MAPWIN_SHADER:
+        if (auto r = take<MapWinShaderMsg>(lparam, m)) on_shader(*m, std::move(r));
+        return 0;
     case WM_SIZE:
         if (wparam == SIZE_MINIMIZED) return 0;   // keep the surface (and swap chain) at its size
         if (m) layout(*m);
@@ -823,7 +997,12 @@ LRESULT CALLBACK MapWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         case ID_MW_COLLISION:
         case ID_MW_WATER: apply_layer_buttons(*m); break;
         case ID_MW_MATERIALS:
+        case ID_MW_SHADER:
         case ID_MW_MOTION: apply_shading_buttons(*m); break;
+        case ID_MW_SKY:
+            m->skyTime = mapwin_next_sky(m->skyTime);
+            apply_shading_buttons(*m);
+            break;
         case ID_MW_RESET: frame_map(*m); break;
         case ID_MW_WARNINGS: layout(*m); break;   // the panel never keeps focus
         default: return DefWindowProcW(hwnd, msg, wparam, lparam);
@@ -870,6 +1049,33 @@ bool mapwin_shading_is_geometry(const std::string& text) {
     for (size_t i = 0; i < 8; ++i)
         if (std::tolower(static_cast<unsigned char>(text[i])) != kWord[i]) return false;
     return true;
+}
+
+castlemist::render::WorldShading mapwin_shading_from_text(const std::string& text) {
+    std::string t;
+    for (char c : text) t.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    if (t == "geometry") return castlemist::render::WorldShading::Geometry;
+    if (t == "shader") return castlemist::render::WorldShading::Shader;
+    return castlemist::render::WorldShading::Materials;
+}
+
+std::wstring mapwin_shader_status(castlemist::render::WorldShading shading, const castlemist::render::WorldViewStats& st) {
+    if (shading != castlemist::render::WorldShading::Shader) return {};
+    wchar_t buf[192];
+    swprintf(buf, 192, L"shader %d inst", st.shaderInstances);
+    std::wstring s = buf;
+    const int back = st.shaderPending + st.shaderNoShader + st.shaderAnimated + st.shaderCapped;
+    if (back > 0) {
+        swprintf(buf, 192, L" (%d to Materials: %d pending, %d no shader, %d animated, %d over cap)", back,
+                 st.shaderPending, st.shaderNoShader, st.shaderAnimated, st.shaderCapped);
+        s += buf;
+    }
+    return s;
+}
+
+castlemist::render::WorldSkyTime mapwin_next_sky(castlemist::render::WorldSkyTime t) {
+    using castlemist::render::WorldSkyTime;
+    return t == WorldSkyTime::Day ? WorldSkyTime::Night : t == WorldSkyTime::Night ? WorldSkyTime::Off : WorldSkyTime::Day;
 }
 
 double mapwin_clock_step(double clock, float dt, bool motionOn) {
@@ -940,7 +1146,9 @@ void open_map_window(HWND owner, uint32_t mapFileId, const MapWinHeadless* headl
     m->bColl = mk(L"BUTTON", L"Collision", BS_AUTOCHECKBOX, next(75), y, 75, h, ID_MW_COLLISION);
     m->bWater = mk(L"BUTTON", L"Water", BS_AUTOCHECKBOX, next(60), y, 60, h, ID_MW_WATER);
     m->bMaterials = mk(L"BUTTON", L"Materials", BS_AUTOCHECKBOX | BS_PUSHLIKE, next(75), y, 75, h, ID_MW_MATERIALS);
+    m->bShader = mk(L"BUTTON", L"Shader", BS_AUTOCHECKBOX | BS_PUSHLIKE, next(65), y, 65, h, ID_MW_SHADER);
     m->bMotion = mk(L"BUTTON", L"Motion", BS_AUTOCHECKBOX | BS_PUSHLIKE, next(65), y, 65, h, ID_MW_MOTION);
+    m->bSky = mk(L"BUTTON", L"Sky: Day", BS_PUSHBUTTON, next(75), y, 75, h, ID_MW_SKY);
     x += 12;
     m->bReset = mk(L"BUTTON", L"Reset", BS_PUSHBUTTON, next(70), y, 70, h, ID_MW_RESET);
     m->bWarn = mk(L"BUTTON", L"Warnings", BS_AUTOCHECKBOX | BS_PUSHLIKE, next(80), y, 80, h, ID_MW_WARNINGS);
@@ -954,6 +1162,8 @@ void open_map_window(HWND owner, uint32_t mapFileId, const MapWinHeadless* headl
     for (HWND b : {m->bTerrain, m->bProps, m->bWater, m->bMaterials, m->bMotion})
         SendMessageW(b, BM_SETCHECK, BST_CHECKED, 0);
     if (m->headless && m->headless->geometry) SendMessageW(m->bMaterials, BM_SETCHECK, BST_UNCHECKED, 0);
+    if (m->headless && m->headless->shader) SendMessageW(m->bShader, BM_SETCHECK, BST_CHECKED, 0);
+    if (m->headless) m->skyTime = m->headless->sky;
 
     m->surface = CreateWindowExW(0, kSurfaceClass, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, kToolbarH, kSurfaceW,
                                  kSurfaceH, m->wnd, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_MW_SURFACE)),
@@ -982,6 +1192,12 @@ void open_map_window(HWND owner, uint32_t mapFileId, const MapWinHeadless* headl
     apply_layer_buttons(*m);
     apply_shading_buttons(*m);
     if (m->headless && m->headless->fixedTime) m->view.set_time(m->headless->time);
+    if (m->headless && (m->headless->shaderRange > 0 || m->headless->shaderMax >= 0)) {
+        castlemist::render::WorldMaterialSettings ms = m->view.material_settings();
+        if (m->headless->shaderRange > 0) ms.shaderRange = m->headless->shaderRange;
+        if (m->headless->shaderMax >= 0) ms.shaderMaxInstances = m->headless->shaderMax;
+        m->view.set_material_settings(ms);
+    }
 
     ShowWindow(m->wnd, SW_SHOW);
     SetFocus(m->surface);

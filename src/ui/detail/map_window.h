@@ -18,6 +18,7 @@
 #include <string>
 
 #include "castlemist/render/world_view.h"
+#include "castlemist/render/world_prep.h"
 
 namespace castlemist::ui {
 
@@ -67,10 +68,35 @@ struct MapWinHeadless {
     std::string statsPath;
     HWND quitWindow = nullptr;
     bool geometry = false;        ///< GW2_MAPWIN_SHADING=geometry
+    bool shader = false;          ///< GW2_MAPWIN_SHADING=shader (waits for the shader pool too)
+    /// GW2_MAPWIN_SKY=day|night|off: the sky's time of day (Day when unset).
+    castlemist::render::WorldSkyTime sky = castlemist::render::WorldSkyTime::Day;
     bool fixedTime = false;       ///< GW2_MAPWIN_TIME set: the clock stays at `time`
     double time = 0;
     bool focusAnimated = false;   ///< GW2_MAPWIN_FOCUS=animated: frame the nearest playing placement
+    /// GW2_MAPWIN_FOCUS=props: a low camera over the densest cluster of props,
+    /// looking at the horizon (WorldView::focus_props).
+    bool focusProps = false;
+    /// Frames timed after the shot (WorldView::bench), for the stats line.
+    int benchFrames = 30;
+    /// GW2_MAPWIN_SHADER_RANGE / GW2_MAPWIN_SHADER_MAX: override
+    /// WorldMaterialSettings::shaderRange / shaderMaxInstances (measuring
+    /// the Shader pass at other scales); <= 0 / < 0 keeps the default.
+    float shaderRange = 0;
+    int shaderMax = -1;
 };
+
+/// @brief GW2_MAPWIN_SHADING's value: "geometry" -> Geometry, "shader" ->
+///        Shader (any case); anything else -> Materials.
+castlemist::render::WorldShading mapwin_shading_from_text(const std::string& text);
+
+/// @brief Status-line text for Shader shading: L"shader %d inst" and, when
+///        any fell back, L" (%d to Materials: %d pending, %d no shader, %d
+///        animated, %d over cap)"; empty unless @p shading is Shader.
+std::wstring mapwin_shader_status(castlemist::render::WorldShading shading, const castlemist::render::WorldViewStats& st);
+
+/// @brief The Sky button's next time of day: Day -> Night -> Off -> Day.
+castlemist::render::WorldSkyTime mapwin_next_sky(castlemist::render::WorldSkyTime t);
 
 /// @brief "geometry" (any case) -> true; anything else -> false (materials).
 bool mapwin_shading_is_geometry(const std::string& text);
