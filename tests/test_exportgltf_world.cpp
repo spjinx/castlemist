@@ -1487,6 +1487,11 @@ CM_TEST(world_folder, refuses_nonempty_dir) {
     CHECK(r.error.find("not empty") != std::string::npos);
     WorldFolderOptions o = synthetic_opts();
     o.overwrite = true;
+    r = export_world_folder(s, src, nullptr, dir.string(), o);   // "{}" is not a world export (I6)
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("not a castlemist world export") != std::string::npos);
+    CHECK(fs::exists(dir / "old.txt"));
+    { std::ofstream(dir / "manifest.json") << R"({"format": "castlemist-world", "version": 1})"; }
     r = export_world_folder(s, src, nullptr, dir.string(), o);
     CHECK(r.ok);
     CHECK_FALSE(fs::exists(dir / "old.txt"));
@@ -1546,7 +1551,7 @@ CM_TEST(world_folder, overwrite_removes_manifest_first) {
     const cw::WorldScene s = tw::synthetic_world();
     tw::SyntheticModelSource src;
     const fs::path dir = fresh_dir("folder_overwrite_order");
-    { std::ofstream(dir / "manifest.json") << "{\"old\": true}"; }
+    { std::ofstream(dir / "manifest.json") << R"({"format": "castlemist-world", "old": true})"; }
     { std::ofstream(dir / "a_locked.bin") << "x"; }
     WorldFolderOptions o = synthetic_opts();
     o.overwrite = true;
@@ -1655,4 +1660,40 @@ CM_TEST(world_folder, unaligned_region_validates) {
     CHECK_FALSE(bad.ok);
     CHECK(bad.error.find("keeps no cells") != std::string::npos);
     CHECK_FALSE(fs::exists(out / "cells"));
+}
+
+// Review I6: --overwrite (and the GUI's "Replace?") clear a folder only when its
+// manifest.json is a castlemist world export; any other manifest.json is kept.
+CM_TEST(world_folder, overwrite_needs_world_manifest) {
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource src;
+    WorldFolderOptions o = synthetic_opts();
+    o.overwrite = true;
+    const char* foreign[] = {R"({"dependencies": {"com.unity.ugui": "1.0.0"}})",   // a Unity Packages/ manifest
+                             R"({"format": "something-else"})",
+                             R"(["castlemist-world"])",
+                             "not json {"};
+    for (const char* text : foreign) {
+        const fs::path dir = fresh_dir("folder_foreign_manifest");
+        { std::ofstream(dir / "manifest.json") << text; }
+        { std::ofstream(dir / "keep.txt") << "x"; }
+        CHECK_FALSE(is_world_export_folder(dir.string()));
+        const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), o);
+        CHECK_FALSE(r.ok);
+        CHECK(r.error.find("not a castlemist world export") != std::string::npos);
+        CHECK(fs::exists(dir / "keep.txt"));
+        CHECK(fs::exists(dir / "manifest.json"));
+    }
+    // No manifest at all: refused too, and says why.
+    const fs::path bare = fresh_dir("folder_no_manifest");
+    { std::ofstream(bare / "keep.txt") << "x"; }
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, bare.string(), o);
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("no manifest.json") != std::string::npos);
+    CHECK(fs::exists(bare / "keep.txt"));
+    // A real previous export is recognised and replaced.
+    const fs::path prev = fresh_dir("folder_previous_export");
+    CHECK(export_world_folder(s, src, nullptr, prev.string(), synthetic_opts()).ok);
+    CHECK(is_world_export_folder(prev.string()));
+    CHECK(export_world_folder(s, src, nullptr, prev.string(), o).ok);
 }

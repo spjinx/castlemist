@@ -586,13 +586,20 @@ void do_export_world_map(HWND hwnd) {
     eg::WorldFolderOptions opts;
     {
         // export_world_folder replaces only a folder that holds a previous
-        // export (manifest.json); ask before it does.
+        // export (a manifest.json of format castlemist-world); ask before it
+        // does, and refuse any other folder that has a manifest.json (review I6).
         std::error_code ec;
-        if (std::filesystem::is_regular_file(std::filesystem::path(dirW) / L"manifest.json", ec)) {
+        if (eg::is_world_export_folder(wide_to_utf8(dirW))) {
             const std::wstring q = L"The folder\n" + dirW +
                                    L"\nholds a previous world export. Replace it (its contents are removed)?";
             if (MessageBoxW(hwnd, q.c_str(), L"Export World", MB_ICONQUESTION | MB_YESNO) != IDYES) return;
             opts.overwrite = true;
+        } else if (std::filesystem::exists(std::filesystem::path(dirW) / L"manifest.json", ec)) {
+            const std::wstring m = L"The folder\n" + dirW +
+                                   L"\nhas a manifest.json that is not a castlemist world export, so it is not "
+                                   L"replaced. Choose an empty or new folder.";
+            MessageBoxW(hwnd, m.c_str(), L"Export World", MB_ICONWARNING);
+            return;
         }
     }
 

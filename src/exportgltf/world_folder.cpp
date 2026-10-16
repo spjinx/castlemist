@@ -279,8 +279,12 @@ bool prepare_dir(const fs::path& d, const std::string& dirUtf8, bool overwrite, 
         const bool empty = fs::directory_iterator(d, ec) == fs::directory_iterator();
         if (ec) { error = "cannot read output folder " + dirUtf8 + ": " + ec.message(); return false; }
         if (!empty) {
-            if (!(overwrite && fs::is_regular_file(d / "manifest.json", ec))) {
-                error = "output folder not empty: " + dirUtf8;
+            if (!overwrite) { error = "output folder not empty: " + dirUtf8; return false; }
+            if (!is_world_export_folder(dirUtf8)) {
+                error = "output folder not empty: " + dirUtf8 +
+                        (fs::exists(d / "manifest.json", ec)
+                             ? " (its manifest.json is not a castlemist world export, so it is not replaced)"
+                             : " (no manifest.json: not a previous world export, so it is not replaced)");
                 return false;
             }
             // manifest.json first: an interrupted clear never leaves a manifest
@@ -605,6 +609,16 @@ WorldFolderReport export_world_folder(const cw::WorldScene& scene, ModelSource& 
     rep.dir = dirUtf8;
     rep.error = error;
     return rep;
+}
+
+bool is_world_export_folder(const std::string& dirUtf8) {
+    std::error_code ec;
+    const fs::path p = u8path(dirUtf8) / "manifest.json";
+    if (!fs::is_regular_file(p, ec)) return false;
+    std::ifstream in(p, std::ios::binary);
+    if (!in) return false;
+    const json j = json::parse(in, nullptr, false);
+    return !j.is_discarded() && j.is_object() && j.contains("format") && j["format"] == "castlemist-world";
 }
 
 json report_json(const WorldFolderReport& r) {

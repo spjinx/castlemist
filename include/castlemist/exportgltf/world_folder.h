@@ -71,9 +71,10 @@ struct WorldFolderReport {
 
 /// @brief Writes the world export folder @p dirUtf8 (see the file comment).
 ///
-/// - Output folder: absent or empty, the export goes ahead; holding
-///   manifest.json with opts.overwrite set, its contents are removed first;
-///   anything else is `error = "output folder not empty: <dir>"`.
+/// - Output folder: absent or empty, the export goes ahead; a previous world
+///   export (is_world_export_folder) with opts.overwrite set has its contents
+///   removed first; anything else is `error = "output folder not empty: <dir>"`
+///   (with the reason when manifest.json is there but is not a world export).
 /// - @p sky may be null (no sky); so may opts.sky be false. write_skybox's
 ///   "no sky" (or any failure of its own) gives `sky: null` and a warning.
 /// - opts.threads workers (0 = hardware_concurrency) share @p src; results are
@@ -82,6 +83,12 @@ struct WorldFolderReport {
 WorldFolderReport export_world_folder(const castlemist::world::WorldScene& scene, ModelSource& src,
                                       const sky::SkyInputs* sky, const std::string& dirUtf8,
                                       const WorldFolderOptions& opts);
+
+/// @brief True when @p dirUtf8/manifest.json parses as a JSON object whose
+///        "format" is "castlemist-world" (the Unity postprocessor's test). Only
+///        such a folder may be cleared by an overwrite (review I6): manifest.json
+///        is a common name, and the clear removes everything.
+bool is_world_export_folder(const std::string& dirUtf8);
 
 /// @brief The report as JSON (for the CLI and export.log).
 nlohmann::json report_json(const WorldFolderReport& r);
