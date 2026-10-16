@@ -40,7 +40,7 @@ removes it before anything is measured, instanced or exported:
     Measured by --check-skinned-probe on the .glb and on its .fbx.
 
 FBX axis settings (Task 1 frame probe, measured 2026-10-15 with Blender 4.5 and
-Unity 6000.0.42f1): the VRChat script's model mode, axis_forward='-Z',
+Unity 6000.0.42f1; the same on 2022.3.22f1, Task 12): the VRChat script's model mode, axis_forward='-Z',
 axis_up='Y'. Unity honours the axis system the FBX declares, so axis_forward
 '-Z' and 'Z' import to the same world result there. What decides Unity's
 result is ModelImporter.bakeAxisConversion: off, east and north come out as

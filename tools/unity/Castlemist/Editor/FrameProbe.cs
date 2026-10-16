@@ -16,8 +16,9 @@
 // It also fails a bar whose triangles (Unity: clockwise front faces) or
 // vertex normals point into the box, and reports negScale=1 when any
 // transform under the root has a negative determinant.
-// If the check fails, the fix goes into castlemist_world.py's FBX axis
-// settings, never into this importer.
+// If the check fails, castlemist_world.py's FBX axis settings cannot fix it
+// (measured, Task 1): the importer sets ModelImporter.bakeAxisConversion
+// (BakeAxisConversion below), which this probe proves on Unity 6 and 2022.3.
 
 using System.Collections.Generic;
 using System.Globalization;

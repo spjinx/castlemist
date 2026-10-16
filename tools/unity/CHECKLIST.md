@@ -4,7 +4,7 @@ The checks for `tools/unity/Castlemist/Editor/` (spec
 `docs/superpowers/specs/2026-10-15-world-export-design.md`, D6 and Testing,
 "Manual checklists, Unity"). CI cannot compile or run the C#. Items 1 to 3 can
 be run in batchmode. The rest need the editor, in a VRChat Unity 2022.3 project
-with Poiyomi Toon 10, importing the Spirit Vale export (1151420).
+with Poiyomi Toon 10, importing the Spirit Vale export (1151420; 66 cells at the default budget of 500 000 triangles a cell).
 
 ## Setup
 
@@ -87,7 +87,8 @@ with Poiyomi Toon 10, importing the Spirit Vale export (1151420).
 | 2026-10-15 | 2022.3.22f1 batchmode | fixture | 2 | PASS: no `error CS` or `warning CS` from Assets/Castlemist |
 | 2026-10-15 | 2022.3.22f1 batchmode | fixture | 3 | PASS: `PROBE east=(1.000,0.000,0.000) north=(0.000,0.000,1.000) up=(0.000,1.000,0.000) negScale=0 OK`; skinned probe OK (rest, start, end) |
 | 2026-10-15 | 2022.3.22f1 batchmode, Poiyomi Pro 9.0.α18 copied in (not 10) | fixture | 1-3, 9 (properties only) | PASS: shader found; preset, MOCHIE_PBR and multipliers set; the same PLAN line; probe OK |
-| 2026-10-15 | 2022.3.22f1 batchmode, no Poiyomi | Spirit Vale (after `world-fbx`) | 1-3 | PASS: `PLAN materials=1027 prefabs=380 controllers=37 cells=36 instances=2354 colliders=25 terrainColliders=36 water=0 lights=1 skybox=1`, equal to the dry run; probe OK; 36 cells centred; 2354 instance matrices within 2.7e-5 of `m`. First import 75 s in the importer (234 s wall, with Unity's import of 7 300 files); re-import 29 s |
-| 2026-10-15 | 2022.3.22f1 batchmode, Poiyomi Pro 9.0.α18 | Spirit Vale | 1-3 | PASS: the same PLAN line; probe OK; importer 59 s |
+| 2026-10-15 | 2022.3.22f1 batchmode, no Poiyomi | Spirit Vale, 36-cell export (before the 500 000 budget; the 66-cell export has not been imported) | 1-3 | PASS: `PLAN materials=1027 prefabs=380 controllers=37 cells=36 instances=2354 colliders=25 terrainColliders=36 water=0 lights=1 skybox=1`, equal to the dry run; probe OK; 36 cells centred; 2354 instance matrices within 2.7e-5 of `m`. First import 75 s in the importer (234 s wall, with Unity's import of 7 300 files); re-import 29 s |
+| 2026-10-15 | 2022.3.22f1 batchmode, Poiyomi Pro 9.0.α18 | Spirit Vale, 36-cell export | 1-3 | PASS: the same PLAN line; probe OK; importer 59 s |
 | 2026-10-15 | 6000.0.42f1 batchmode | fixture | 1-3 | PASS: the same PLAN line; probe OK; skinned probe OK |
-| — | VRChat 2022.3 + Poiyomi 10, editor | Spirit Vale | 4-11 | not tried |
+| 2026-10-15 | dry run | Spirit Vale, 66-cell export (budget 500 000) | 1 | `python tools/world/validate_manifest.py <dir> --plan` prints `PLAN materials=1057 prefabs=380 controllers=37 cells=66 instances=2354 colliders=52 terrainColliders=66 water=0 lights=1 skybox=1`; the Unity importer was not run on it |
+| — | VRChat 2022.3 + Poiyomi 10, editor | Spirit Vale | 4-11 | not tried (no editor session; items 4 to 11 need one). Poiyomi 10 is not on this machine; only Pro 9.0.α18 was tried |

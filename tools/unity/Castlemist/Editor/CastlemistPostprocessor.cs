@@ -16,7 +16,7 @@
 //
 // Models (spec D6; world export Task 1): every .fbx under a castlemist world
 // folder gets ModelImporter.bakeAxisConversion = FrameProbe.BakeAxisConversion
-// (measured: east +X, north +Z, up +Y, no mirror, on Unity 6000.0.42f1).
+// (measured: east +X, north +Z, up +Y, no mirror, on Unity 6000.0.42f1 and 2022.3.22f1).
 // Cells and the probe import no materials (the importer assigns its own);
 // the probe is readable so FrameProbe can check its winding.
 // There is no auto-build trigger for worlds (spec D6 "Entry").

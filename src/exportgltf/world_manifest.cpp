@@ -267,11 +267,11 @@ std::vector<ManifestSetting> world_export_settings(const WorldFolderOptions& o) 
         {"maxTextureSize", o.maxTextureSize, kC, "the map window's texture cap (sub-project 3); spec Performance"},
         {"cellMaxChunks", o.budget.maxChunks, kC, "spec D1 (or 1/pickerScale)"},
         {"cellMaxTriangles", o.budget.maxTriangles, kC,
-         "spec D1 budget rule: Queensdale p90 block rounded up to 250 000 (world export Task 13); VRChat states no per-area limit"},
+         "spec D1 budget rule: Queensdale p90 block rounded up to 500 000 (world export Task 13); VRChat states no per-area limit"},
         {"cellMaxTextureMB", o.budget.maxTextureMB, kC, "spec D1; VRChat states no per-area limit"},
         {"ambient", "fillColor * min(fillIntensity, 1)", kC, "spec D5 (raw intensities, flat ambient)"},
         {"unityAxisConversion", "ModelImporter.bakeAxisConversion = true: east +X, north +Z, up +Y", kM,
-         "frame probe on Unity 6000.0.42f1 (world export Task 1); Unity 2022.3 not run"},
+         "frame probe on Unity 6000.0.42f1 (world export Task 1) and 2022.3.22f1 (Task 12); bake off fails it, on passes"},
     };
 }
 

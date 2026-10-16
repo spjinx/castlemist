@@ -33,7 +33,7 @@ One executable per layer, so a failure names the layer immediately and a
 | `media` | Audio/video probe and reject paths |
 | `ui` | Control-id uniqueness, timer and message ids, theme brush caching; `map_window`: fly-camera and walk-delta maths, key map, model-pool size |
 | `world` | `world_walk`: `CollisionIndex` raycasts and the `Walker` (settle, wall slide, step-up, ledge fall, jump, fall safety, ceiling, swept fall); `world_stream`: `model_load_order`, `rank_models`, `ModelQueue` (re-sorting around a new camera, never repeating a taken model) and `chunk_normals` |
-| `dat` | End-to-end extraction against a real `Gw2.dat` |
+| `dat` | End-to-end extraction against a real `Gw2.dat`, and the Spirit Vale world export (see "World export") |
 
 ### The framework
 
@@ -184,6 +184,44 @@ by this capture and the unit tests, not driven by hand.
 
 Lighting and tone-mapping knobs (`GW2_LIGHT`, `GW2_POSTEXP`, `GW2_POSTGAMMA`,
 `GW2_AUTOEXP`, ...) are for eyeballing a change, not for assertions.
+
+## World export
+
+`gw2dat_cli world-export --out-dir <dir>` writes a map as a cell folder
+(`manifest.json`, `cells/*.glb`, `models/`, `textures/`, `sky/`), then, when
+Blender is found, one `.fbx` per `.glb` (`--no-fbx` skips that step; `world-fbx
+--dir <dir>` runs it alone). Spec:
+`docs/superpowers/specs/2026-10-15-world-export-design.md`, with its
+amendments at the end.
+
+```bash
+ctest --preset debug -L blender                 # the Blender ctests (4.1 or newer)
+ctest --preset debug -R "world_manifest|world_fixture"   # the Python ones, and the fixture
+python tools/world/test_validate_manifest.py    # the validator's own tests
+python tools/world/validate_manifest.py <dir> --plan   # schema, files, and the Unity dry-run PLAN line
+```
+
+- **Blender ctests** (`blender_probe_*`, `blender_skinned_probe_*`,
+  `blender_world_import*`, `blender_world_to_fbx`, `blender_world_fbx_*`) run
+  `tools/blender/castlemist_world.py` headless on the synthetic fixture that
+  `cm_world_export_fixture` writes. They are skipped when CMake finds no Blender
+  4.1 or newer (`$BLENDER`, PATH, then `C:/Program Files/Blender Foundation`).
+- **Python ctests** (`world_manifest_validate`, `world_manifest_plan`,
+  `world_manifest_selftest`, `world_manifest_unit`) need Python 3. The C++
+  fixture test is `cm_test_exportgltf` (`world_*`).
+- **Dat test** (`cm_test_dat world_export_dat.`): exports Spirit Vale (1151420)
+  and checks it against the `WorldScene` (about 65 s, 1.7 GB, removed after).
+  It needs `GW2_TEST_DAT` and `GW2_TEST_TEMPLATE`, and the game must be closed:
+  a running Gw2-64.exe locks the dat. `world_export_dat.measure` prints the
+  three-map measurements and runs only with `CM_WORLD_EXPORT_MEASURE=1` (about
+  10 GB, 5 minutes).
+- **Manual checklists.** Unity: `tools/unity/CHECKLIST.md` (items 1 to 3 run in
+  batchmode; items 4 to 11 need the editor in a VRChat 2022.3 project with
+  Poiyomi 10). Blender: `castlemist_world.py --import <dir> --verify
+  [--save x.blend]`, then a Cycles render at the spawn and the timeline. The
+  results, with dates, are in the spec's amendments.
+- Keep the output folder path short: Windows image paths over 260 characters
+  fail to write.
 
 ## Adding a test
 

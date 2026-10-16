@@ -865,3 +865,121 @@ throws and never yields a silently empty export.
   `MapInstance`, `map_fly.cpp` / `detail/map_fly.h` / `flycam.cpp` (`RenderMode::MapFly`, the fly camera: `WorldView`
   does not use it), `map_export.cpp` (`export_map_gltf`) and their tests. Kept: `set_scene` / `SceneInstance`, `MapEnvRig`
   / `set_environment_rig`, `mesh_bake`. A map entry previews its `world_summary` text and points to Tools ▸ Map Window….
+
+- **D1, cell budget (Task 13).** `cellMaxTriangles` is 500 000, not the table's 1 000 000. The budget rule gave it:
+  on Queensdale 0 of 35 blocks split at 1 000 000, so the default is Queensdale's p90 block (496 740 triangles) rounded
+  up to 500 000. At 500 000, Queensdale splits 3 of 35 blocks (44 cells) and has no cell over budget. Lion's Arch
+  splits 12 of 15 (93 cells, one 1 x 1 cell over budget) and Spirit Vale 8 of 21 (66 cells, one 1 x 1 cell over budget).
+  Spirit Vale was 36 cells at 1 000 000, so its `--plan` line changed (see "Spirit Vale PLAN" below).
+- **D5, sun direction (Task 13).** The stored `sunDir` is the direction the light travels, not the direction toward the
+  sun as `map_types.h:37` and this section say. Every day preset measured has z > 0 in map space, where up is -Z
+  (Queensdale (0.809, 0, 0.588), Lion's Arch (0.747, 0, 0.664), Spirit Vale (0.707, 0, 0.707)); read as "toward the
+  sun", all three suns would be below the horizon. The manifest's `unityForward` and `blenderDirection` follow the
+  stored vector (`map_to_unity(sunDir)`, `map_to_blender(sunDir)`), and `toSun = -sunDir`. Spirit Vale's
+  `unityForward` is (0.707, -0.707, 0), so the light shines down. Not changed, and left to the final review: the
+  `MapEnvRig` comment (`map_types.h`) and the world view's `dot(N, sunDir)` still treat the stored vector as
+  toward-sun, and `sky.json`'s `sun.direction` (`sky_export.cpp` `sun_json`) is the stored vector, converted by
+  `gw2_to_unity` and otherwise unchanged, and still called toward-sun.
+- **Axis conversion (Task 1, Task 12).** D6 says a failing frame probe is fixed "in the FBX axis settings of
+  `castlemist_world.py`, never in the importer". The measurement says otherwise. On Blender 4.5 the glb lands on
+  `map_to_blender` (east +X, north +Y, up +Z). Unity turns the FBX 180 degrees about Y (east -X, north -Z) unless
+  `ModelImporter.bakeAxisConversion = true`; with it, east +X, north +Z, up +Y, no negative-scale transform and the
+  winding right. `axis_forward` '-Z' and 'Z' give the same Unity result. The FBX settings stay the VRChat script's
+  (`axis_forward='-Z'`, `axis_up='Y'`, `FBX_SCALE_ALL`), and the importer sets `bakeAxisConversion = true`
+  (`FrameProbe.BakeAxisConversion`; the postprocessor sets it on first import, and the importer re-imports any `.fbx`
+  that has the wrong value). Proven on Unity 6000.0.42f1 (Task 1) and on 2022.3.22f1, the user's editor (Task 12):
+  bake on passes on both, bake off fails on both ("east,north"). In Task 14 the manifest's
+  `settings.unityAxisConversion` source text and the code comments that said "never into this importer" or "2022.3
+  not run" were corrected. On the Blender side (Task 1), `transform_apply` in 4.5 does not flip the winding, so
+  `--to-fbx` also flips the normals of a mesh whose world determinant was negative.
+- **Armature models (Task 11).** Blender 4.5's glTF importer plays a rig under a det -1 root mirrored: the rig stays
+  mirrored with the faces inward, and the clip moves and turns the wrong way (skinned probe: east 150 -> 50 instead of
+  150 -> 250). The script imports a root-matrix-free copy of a skinned glb, then rebuilds the rig at identity (rest
+  bones, keyframes and the skinned mesh conjugated by the reflection). The glb and FBX round-trips then have
+  `negScale=0`, outward faces and the right clip motion. In Unity 2022.3.22f1 the skinned probe imports un-mirrored
+  with its clip moving the right way (it also passes with bake off, so it does not prove the bake setting).
+- **Model loading, `wantGame = true` (Task 8).** The spec's "Model loading" paragraph says `wantGame = false` if
+  `materials.json` is byte-equal. It is not: 18 entries differ (blend, preset, cull, emission). The dat source
+  therefore defaults to `wantGame = true`, which costs 2.2 s on Spirit Vale (model stage 26.7 s against 24.5 s,
+  about 9 %). The map window's `wantGame = false` path has no render state, so its blend modes come from pixel
+  guesses.
+- **RGB albedo (Task 8).** The terrain albedo PNG is written as RGB (the spec's "Output folder" format) through the
+  new `encode_png_pixels(w, h, channels, pixels)`, because `encode_png` only takes RGBA `ModelTextureCPU`.
+- **Images, textures and the model folders (Task 5, Task 8).** A model's glb references its images by URI
+  (`Images/<fileId>.png`), not embedded. Images the exporter generates (baked emissive, `_metalRough`, baked diffuse)
+  have no dat fileId, are named by image name, and are sanitised to `[A-Za-z0-9._-]` on the URI path. Task 5 decided
+  that the spec's "point to the folder's `Textures/` PNGs" means the glb's own raw images, from which the Poiyomi maps
+  in `Textures/` are built. Task 8 (W8) then moved dat textures to a shared `textures/<fileId>.png` pool, written once,
+  with relative URIs from the model glbs; generated images stay per model. Spirit Vale went from 2.14 to 1.66 GB; the
+  pool is 1154 files, 246 MB. The per-material Poiyomi maps in `models/*/Textures/` are about 959 MB, often a diffuse
+  copy; content-hash pooling is later work.
+- **Instance positions (Task 7, W7).** Instance positions are in map units relative to the cell origin; the importer
+  applies `unityScale` on the map root. `instance.model` is an index into the manifest's `models[]`, not the scene's
+  models.
+- **Animated instances are not static (Task 12).** The Unity importer clears the static flags on animated instances
+  (a moving object must not be static), and on water. D6's "static on props" holds for the other props.
+- **Terrain diagonal (Task 13).** The cell terrain quads are split along `CollisionIndex`'s diagonal (NW-SE,
+  p00-p11), not NE-SW as first written: with NE-SW only 24 of 32 downward rays agreed with the scene's
+  `CollisionIndex`, with NW-SE all 32 do. castlemist's own world view (`world_view.cpp` `grid_indices`) still draws
+  NE-SW, so the window shows a slightly different surface from the one it walks on and exports. Which diagonal the
+  game uses is unproven.
+- **Poiyomi (Task 12).** Poiyomi 10 is untested: none exists on this machine. Poiyomi Pro 9.0.alpha18 was copied
+  read-only from `C:/UnityProjects/2019WorldUDON-Migrated/Assets/_PoiyomiShaders` into a scratch project, and the
+  importer built Poiyomi materials from it (shader found; `_Mode`, queue, `RenderType`, `_MochieBRDF`, `MOCHIE_PBR`
+  and the multipliers set). The preset table follows the research note for 10; the property names for 10 are
+  unchecked.
+- **FBX time (Task 11, Task 12).** The fixture's 4 glbs convert in 0.8 s (about 0.2 s a file). Spirit Vale: 417 `.fbx`
+  in 116 s (`world-fbx`). The 30-minute batching rule was not triggered and is not implemented: one Blender session,
+  a 4 h limit.
+- **Batchmode (Task 12).** The importer ran in batchmode on Unity 2022.3.22f1 and 6000.0.42f1 with 0 errors and no
+  `error CS` or `warning CS`. The fixture's `PLAN` equals the dry run (with and without Poiyomi, both editors).
+  Spirit Vale (the 36-cell export, 2022.3.22f1, with Poiyomi 9 and without): `PLAN` equals the dry run; the importer
+  took 59 s with Poiyomi, 75 s on a first import without it and 29 s on a re-import; 36 cells centred; 2354 instance
+  matrices within 2.7e-5 of `m`. It was not re-run on Task 13's 66-cell export.
+- **Measurements (Task 13).** Three maps at `cellMaxTriangles` 500 000. The measure test is gated by
+  `CM_WORLD_EXPORT_MEASURE=1` (about 10 GB, 5 minutes).
+
+  | | Queensdale 192711 | Lion's Arch 191000 | Spirit Vale 1151420 |
+  |---|---|---|---|
+  | cells | 44 | 93 | 66 |
+  | chunks | 532 | 228 | 250 |
+  | models (failed) | 2181 (35) | 1699 (52) | 392 (12) |
+  | props (skipped) | 11 687 (195) | 18 572 (263) | 2425 (71) |
+  | animated (resolved) | 280 (269) | 443 (294) | 116 (106) |
+  | blocks split | 3 of 35 | 12 of 15 | 8 of 21 |
+  | block triangles, min / median / p90 / max | 68 178 / 243 442 / 496 740 / 926 814 | 293 288 / 929 914 / 2 990 140 / 3 085 850 | 4096 / 32 768 / 1 608 220 / 2 136 910 |
+  | block texture MB, median / p90 / max | 71.0 / 120.0 / 147.6 | 246.5 / 516.6 / 584.9 | 3.06 / 232.1 / 312.0 |
+  | folder | 3.78 GB | 4.28 GB | 1.66 GB |
+  | prop textures (report) | 3151 MB | 3600 MB | 1336 MB |
+  | export seconds | 98.9 | 100.4 | 52.1 |
+  | models with a primitive that has no material | 27 | 32 | 10 |
+
+  Prop textures are 3.2 GB on Queensdale and 3.6 GB on Lion's Arch, far above the spec's estimate of 0.3 to 0.8 GB;
+  the per-material Poiyomi maps dominate. 12 to 52 models fail per map ("no drawable meshes"), and every model listed
+  without instances is a failed one. On Windows an image path over MAX_PATH (260) fails to write (3 Spirit Vale models
+  under a long `TMP`); there is no `\\?\` support.
+- **Spirit Vale PLAN (Task 14).** Re-exported at the 500 000 budget with
+  `gw2dat_cli world-export --out-dir <dir> --no-fbx` (67 s); `validate_manifest.py <dir> --plan` passes and prints
+  `PLAN materials=1057 prefabs=380 controllers=37 cells=66 instances=2354 colliders=52 terrainColliders=66 water=0 lights=1 skybox=1`.
+  Task 12's line (`materials=1027 ... cells=36 ... colliders=25 terrainColliders=36`) is from the 1 000 000 budget.
+- **Blender manual checklist (Task 14, 2026-10-15, Blender 4.5.3 headless, the 66-cell Spirit Vale export).**
+  - Tried, `castlemist_world.py --import <dir> --verify`: 380 models, 66 cells and 2354 collection-instance empties
+    (413 to 450 s), 66 terrain images, collider collections hidden, frame probe `negScale=0 OK` (east +X, north +Y,
+    up +Z; extents 300 : 200 : 100). `--verify` reports FAIL, `MATRIX_MAX_ERR 0.000368` against its 1e-4 limit: the
+    placements differ from the manifest's Unity TRS by more than 1e-4 on this map. The fixture passes, and Unity's
+    matrices were within 2.7e-5. Not investigated.
+  - Tried, Cycles at the spawn (16 samples, 480 x 270, CPU, no denoise): the spawn equals the frame probe's position
+    (0, 1536, 6020.8), and a camera 70 above it is inside the probe and sees only sky. A camera behind and above the
+    spawn shows the terrain and props with the probe bars at the spawn, but dark (the sun does not reach the area at
+    this sample count). An overview from above shows the terrain, props and probe in place. The renders are in the
+    session scratchpad and are not committed.
+  - Tried, the timeline (frames 1 to 250, 24 fps): 37 animated armatures, every F-curve (13 390) has a Cycles
+    modifier, and bone poses changed on 9 of the 37 at frames 8, 16, 41, 100 and 250. The other 28 did not differ
+    from frame 1 at those frames; not investigated.
+  - Not tried: a person watching the timeline play, the materials in a shaded viewport, a lit render of the spawn
+    area, and water (Spirit Vale has none).
+- **Unity manual checklist (Task 12, 2026-10-15).** Done: items 1 to 3 in batchmode on both editors; the results are
+  in `tools/unity/CHECKLIST.md`. Not tried: items 4 to 11 (terrain against props, animated props in Play mode,
+  colliders, water, sky and sun, the Poiyomi look, draw calls and import time in the Frame Debugger, a VRChat build).
+  No VRChat 2022.3 project with Poiyomi 10 was used, and the user's projects in `C:/UnityProjects` were not opened.
+- **Task 15 (done).** See the D8 note above.

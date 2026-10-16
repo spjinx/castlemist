@@ -195,6 +195,17 @@ map_to_blender(x, y, z) = ( x,  y, -z )   // Blender: RH, +Z up, +Y = north
   Blender. In Blender, the det −1 handedness change is carried by `C_b` on
   the vertices and does not appear in the matrices. Translations convert like
   positions.
+- **Probe.** The conversions are measured, not only derived: `write_frame_probe`
+  (`include/castlemist/exportgltf/world_probe.h`) writes three bars along east,
+  north and up, and `castlemist_world.py --check-probe` (Blender 4.5) and
+  `Castlemist.BatchEntry.CheckProbe` (Unity 6000.0.42f1 and 2022.3.22f1) read
+  them back. Blender lands on `map_to_blender`. Unity needs
+  `ModelImporter.bakeAxisConversion = true` to land on `map_to_unity`; with it
+  off the FBX imports turned 180° about Y. See the spec's amendments
+  ("Axis conversion") and `tools/unity/CHECKLIST.md`.
+- **`Images/`.** A world model's glb references its images by URI, not embedded.
+  Dat textures live in the shared `textures/<fileId>.png` pool; images the
+  exporter generates stay in the model's own `Images/` folder.
 
 ---
 
