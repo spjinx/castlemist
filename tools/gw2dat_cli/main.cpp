@@ -2350,8 +2350,18 @@ void cmd_composite_types(const Args& a) {
         }
         return out;
     };
+    json variants = json::array();
+    for (size_t i = 0; i < r->variants.size() && i < 3; ++i) {
+        const auto& v = r->variants[i];
+        json comps = json::array();
+        for (const auto& c : v.components) comps.push_back(c.token);
+        variants.push_back({{"token", v.token}, {"name", castlemist::npc::decode_token(v.token)},
+                            {"components", comps}, {"boneScaleIndex", v.bone_scale_index},
+                            {"skinStyle", v.skin_style}});
+    }
     emit({{"ok", true}, {"types", types}, {"skin_styles", styles}, {"physiques", presets_json(r->body_bone_scales)},
-          {"face_presets", presets_json(r->face_bone_scales)}});
+          {"face_presets", presets_json(r->face_bone_scales)}, {"variants", r->variants.size()},
+          {"variant_samples", variants}});
 }
 
 // What a race can look like: face / hair style counts and its skin and hair

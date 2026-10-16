@@ -20,6 +20,10 @@ constexpr size_t kRaceFaces = 92;
 constexpr size_t kRaceHairStyles = 120;
 constexpr size_t kRaceSkinPatterns = 148;  // 48-byte records: 6 filerefs
 constexpr size_t kRaceSkinStyles = 176;  // {chest, feet, hands, legs} u64 each
+constexpr size_t kRaceVariantRefRace = 192;  // u64 (after the u32 type at 188)
+constexpr size_t kRaceVariants = 200;
+constexpr size_t kVariantSize = 57;           // packed: u64, u32, array, 5 colours, 2 x u32
+constexpr size_t kVariantComponentSize = 28;  // packed: u64 token, 4 colours
 constexpr size_t kFileDataSize = 103;
 constexpr size_t kRaceBodyBoneScales = 36;
 constexpr size_t kRaceFaceBoneScales = 80;
@@ -81,6 +85,32 @@ struct Reader {
         return cschema::decode_fileref_pair(d, p);
     }
 };
+
+VariantColor read_color(Reader& r, size_t p) {
+    return {r.u8(p), r.u8(p + 1), r.u8(p + 2), r.u8(p + 3), r.u8(p + 4)};
+}
+
+CompositeVariant read_variant(Reader& r, size_t p) {
+    CompositeVariant v;
+    v.token = r.u64(p);
+    v.bone_scale_index = r.u32(p + 8);
+    auto [nc, pc] = r.arr(p + 12, kVariantComponentSize);
+    for (uint32_t k = 0; k < nc && r.ok; ++k) {
+        const size_t e = pc + kVariantComponentSize * k;
+        VariantComponent comp;
+        comp.token = r.u64(e);
+        for (size_t m = 0; m < 4; ++m) comp.colors[m] = read_color(r, e + 8 + 5 * m);
+        v.components.push_back(comp);
+    }
+    v.eye = read_color(r, p + 24);
+    v.hair = read_color(r, p + 29);
+    v.hair2 = read_color(r, p + 34);
+    v.pattern = read_color(r, p + 39);
+    v.skin = read_color(r, p + 44);
+    v.skin_index = r.u32(p + 49);
+    v.skin_style = r.u32(p + 53);
+    return v;
+}
 
 CompositeFileData read_file_data(Reader& r, size_t p) {
     CompositeFileData f;
@@ -198,6 +228,10 @@ std::optional<Composite> parse_composite(std::span<const uint8_t> d) {
             CompositeFileData f = read_file_data(r, pfd + k * kFileDataSize);
             race.file_data.emplace(f.token, f);
         }
+        race.variant_ref_race = r.u64(q + kRaceVariantRefRace);
+        auto [nvar, pvar] = r.arr(q + kRaceVariants, kVariantSize);
+        race.variants.reserve(nvar);
+        for (uint32_t k = 0; k < nvar && r.ok; ++k) race.variants.push_back(read_variant(r, pvar + k * kVariantSize));
         c.races.push_back(std::move(race));
     }
     if (!r.ok) return std::nullopt;
