@@ -1,6 +1,6 @@
 /// @file
 /// @brief load_world: a map packfile into one WorldScene -- terrain, terrain
-///        materials, props, collision, water and environment, each a section
+///        materials, props, collision, zones, water and environment, each a section
 ///        whose failure is a warning, with the water and environment steps
 ///        (docs/research/gw2-world-frame.md §6), the error policy and the
 ///        summary the CLI prints.
@@ -12,6 +12,7 @@
 #include "castlemist/world/dat_read.h"
 #include "castlemist/world/props.h"
 #include "castlemist/world/terrain.h"
+#include "castlemist/world/zones.h"
 
 #include <algorithm>
 #include <exception>
@@ -187,9 +188,9 @@ void run_section(std::vector<std::string>& warnings, const char* name, const std
 std::vector<std::string> unread_chunk_warnings(const std::vector<std::pair<std::string, uint16_t>>& chunks) {
     // The chunks the sections read, by the findChunk calls of their readers: parm and trn
     // (parseTerrain, parseTerrainMaterials), prp2 (parseMapProps), havk (parseHavok,
-    // parseHavokWater), watr, shor, rive (parseWater, parseShore, parseRivers) and env
-    // (parseMapSky, parseMapEnv, countEnv, countEnvWaterPresets).
-    static const std::set<std::string> kRead = {"parm", "trn", "prp2", "havk", "watr", "shor", "rive", "env"};
+    // parseHavokWater), watr, shor, rive (parseWater, parseShore, parseRivers), env
+    // (parseMapSky, parseMapEnv, countEnv, countEnvWaterPresets) and zon2 (parseZon2).
+    static const std::set<std::string> kRead = {"parm", "trn", "prp2", "havk", "watr", "shor", "rive", "env", "zon2"};
     std::vector<std::string> out;
     std::set<std::string> seen;
     for (const auto& [fourcc, ver] : chunks) {
@@ -267,18 +268,22 @@ WorldScene load_world(Gw2Dat& dat, uint32_t mapFileId, const nlohmann::json& tpl
         if (!w.terrain.present) return;
         resolve_terrain_materials(w.terrain, ex->parseTerrainMaterials(), dat, tpl, w.warnings);
     });
+    // The props and havk placements are kept for the zones section's link (zones.h).
+    std::vector<Ex::MapProp> props;
+    Ex::MapHavok havok;
     // A chunk that is present but whose reader returns nothing (no template root for its
     // version) is named, not counted as read.
     section("props", [&] {
-        const auto props = ex->parseMapProps();
+        props = ex->parseMapProps();
         if (has("prp2") && props.empty()) w.warnings.push_back("props: prp2 chunk present but no props were read");
         build_props(props, w);
     });
     section("collision", [&] {
-        const auto havok = ex->parseHavok();
+        havok = ex->parseHavok();
         if (has("havk") && !havok.present) w.warnings.push_back("collision: havk chunk present but not read");
         build_collision(havok, w);
     });
+    section("zones", [&] { build_zones(ex->parseZon2(), havok, props, w); });
     section("water", [&] { attach_water(*ex, w); });
     section("environment", [&] { attach_environment(*ex, w); });
 
@@ -306,6 +311,26 @@ nlohmann::json world_summary(const WorldScene& w) {
     j["props"] = w.props.size();
     j["animatedProps"] = w.motion.animatedProps.size();
     j["collision"] = {{"meshes", w.collision.meshes.size()}, {"instances", w.collision.instances.size()}};
+    {
+        const ZoneScatter& z = w.zones;
+        size_t byType[3] = {0, 0, 0};
+        for (const ZonePlacement& p : z.placements)
+            if (p.layer < z.layers.size() && z.layers[p.layer].type >= 1 && z.layers[p.layer].type <= 3)
+                ++byType[z.layers[p.layer].type - 1];
+        const char* scatter = z.mode == ZoneScatterMode::Exact            ? "exact"
+                              : z.mode == ZoneScatterMode::DensityMatched ? "densityMatched"
+                                                                          : "colliders";
+        j["zones"] = {{"present", z.present},
+                      {"placementsByType", json::array({byType[0], byType[1], byType[2]})},
+                      {"colliders",
+                       {{"entries", z.colliderEntries},
+                        {"anchor", z.zonePlacementsLinked},
+                        {"geometry", z.collidersLinkedByGeometry},
+                        {"unlinked", z.collidersUnlinked}}},
+                      {"propCrossChecks", z.propCrossChecks},
+                      {"propDisagreements", z.propDisagreements},
+                      {"scatter", scatter}};
+    }
     j["water"] = {{"plane", w.water.hasPlane},
                   {"planeZ", w.water.hasPlane ? json(w.water.planeZ) : json(nullptr)},
                   {"surfaces", w.water.surfaces.size()},

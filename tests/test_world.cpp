@@ -689,9 +689,8 @@ CM_TEST(world, unread_chunk_warnings_skip_consumed_and_dedupe) {
         {"parm", 1}, {"trn", 2}, {"prp2", 3}, {"havk", 4}, {"env", 5}, {"watr", 1}, {"shor", 1}, {"rive", 1},
         {"zon2", 22}, {"zon2", 22}, {"dcal", 10}};
     const auto w = castlemist::world::unread_chunk_warnings(chunks);
-    CHECK_EQ(w.size(), size_t(2));
-    CHECK_EQ(w[0], std::string("chunk zon2 v22 not read"));
-    CHECK_EQ(w[1], std::string("chunk dcal v10 not read"));
+    CHECK_EQ(w.size(), size_t(1));   // zon2 is read by the zones section (zones.h)
+    CHECK_EQ(w[0], std::string("chunk dcal v10 not read"));
 }
 
 // ---- world-materials additions (raw fields kept as stored) ----

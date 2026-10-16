@@ -12,8 +12,8 @@
 
 namespace castlemist::world {
 
-/// @brief Model indices ordered nearest-first by the closest instance to @p cam
-///        (map space). Ties go to the lower index; models with no instance
+/// @brief Model indices ordered nearest-first by the closest prop or zone
+///        instance (WorldScene::zones) to @p cam (map space). Ties go to the lower index; models with no instance
 ///        come last, in index order.
 std::vector<uint32_t> model_load_order(const WorldScene& s, const float cam[3]);
 

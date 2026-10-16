@@ -1,10 +1,11 @@
 /// @file
 /// @brief WorldScene: one renderer-free description of a GW2 map (terrain,
-///        props, collision, water, environment), in map space.
+///        props, collision, water, environment, zone scatter), in map space.
 /// @ingroup world
 #pragma once
 
 #include "castlemist/native/gw2model.hpp"
+#include "castlemist/world/zones.h"
 
 #include <cstdint>
 #include <string>
@@ -138,6 +139,7 @@ struct WorldScene {
     Water water;
     Environment environment;
     Motion motion;
+    ZoneScatter zones;                      ///< zon2 scatter and the zone collider trees (zones.h)
     std::vector<std::string> warnings;
 };
 

@@ -100,6 +100,7 @@ target_include_directories(cm_test_dat PRIVATE "${PROJECT_SOURCE_DIR}/src/export
 
 castlemist_add_test(world
     SOURCES test_world.cpp test_world_walk.cpp test_world_stream.cpp test_world_materials.cpp test_world_cells.cpp test_world_bake.cpp
+            test_world_zones.cpp
     DEPS    castlemist::world)
 
 # World-layer tests against a real Gw2.dat; skip when it is absent.

@@ -406,6 +406,10 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
         for (const cw::Cell& c : first.cells)
             for (uint32_t pi : c.props)
                 if (pi < scene.props.size() && scene.props[pi].model < use.size()) use[scene.props[pi].model] = 1;
+        // Zone-only models are used too (world-foliage spec D2). Until the foliage
+        // records exist (plan Task 7, per kept cell) every zone instance's model counts.
+        for (const auto& zi : scene.zones.instances)
+            if (zi.model < use.size()) use[zi.model] = 1;
         for (uint32_t i = 0; i < use.size(); ++i) if (use[i]) needed.push_back(i);
     }
     if (!prepare_dir(dir, dirUtf8, opts.overwrite, rep.error)) return rep;

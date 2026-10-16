@@ -1049,7 +1049,8 @@ CM_TEST(world_dat, load_world_three_maps) {
         for (const std::string& s : w.warnings) {
             bool prefixed = false;
             for (const char* p : {"terrain: ", "terrain materials: ", "props: ", "collision: ", "water: ", "watr: ",
-                                  "havk: ", "rive: ", "shor: ", "env: ", "environment: ", "chunk ", "units: "})
+                                  "havk: ", "rive: ", "shor: ", "env: ", "environment: ", "zone: ", "zones: ", "chunk ",
+                                  "units: "})
                 prefixed = prefixed || s.rfind(p, 0) == 0;
             if (!prefixed) std::printf("    map %u unprefixed warning: %s\n", id, s.c_str());
             CHECK(prefixed);
@@ -1060,11 +1061,11 @@ CM_TEST(world_dat, load_world_three_maps) {
         for (const std::string& s : w.warnings)
             if (s.rfind("chunk ", 0) == 0) {
                 ++unread;
-                for (const char* read : {"trn", "parm", "prp2", "havk", "env", "watr", "shor", "rive"})
+                for (const char* read : {"trn", "parm", "prp2", "havk", "env", "watr", "shor", "rive", "zon2"})
                     CHECK(s.rfind(std::string("chunk ") + read + " ", 0) != 0);
             }
         CHECK(unread > 0);
-        CHECK(warning_starting(w, "chunk zon2 v") != nullptr);
+        CHECK(warning_starting(w, "chunk zon2 v") == nullptr);   // read by the zones section
         const std::string* u = warning_starting(w, "units: ");
         CHECK(u != nullptr);
         if (u) CHECK(u->find("UNPROVEN") != std::string::npos);
