@@ -326,7 +326,11 @@ int run(HINSTANCE hInstance, int cmd_show) {
         // -- the subtitle search needs the CINP list.
         {
             std::string ierr;
-            bool iok = castlemist::db::open(L"dumps/index/gw2_index.db", ierr);
+            bool iok = false;
+            for (const std::wstring& cand : index_db_candidates())
+                if (GetFileAttributesW(cand.c_str()) != INVALID_FILE_ATTRIBUTES &&
+                    (iok = castlemist::db::open(cand, ierr)))
+                    break;
             log("index db open=%d (%s)\n", (int)iok, ierr.c_str());
         }
         {

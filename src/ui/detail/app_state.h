@@ -893,6 +893,8 @@ BakeSelectResult show_bake_select_dialog(HWND owner, const ModelPreview& model);
 // ---- index_ui.cpp -- opening a gw2index SQLite and wiring its filters
 void finish_open_index(HWND hwnd, bool silent);
 void do_open_index(HWND hwnd);
+/// Exe-relative places the gw2index database may live, best first.
+std::vector<std::wstring> index_db_candidates();
 void try_autoload_index(HWND hwnd);
 
 // ---- window_proc.cpp -- the menu and the three window procedures
