@@ -393,7 +393,7 @@ json world_manifest_json(const WorldManifestInput& in) {
         }
         if (o.collision) collisionInstances += c.collision.size();
         json water = nullptr;
-        const bool flat = mc.water.empty() && s.water.hasPlane && !hasPreset && build_cell_water(s, c).vertices() > 0;
+        const bool flat = mc.water.empty() && s.water.hasPlane && !hasPreset && build_cell_water(s, c, o.waterTexelsPerChunk).vertices() > 0;
         if ((!mc.water.empty() || flat) && !planeZOk) {
             if (!waterZWarned) notes.push_back("manifest: non-finite number at water.z; cell water written as null");
             waterZWarned = true;

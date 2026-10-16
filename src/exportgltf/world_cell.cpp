@@ -131,11 +131,11 @@ CellMesh build_cell_terrain(const cw::Terrain& t, const cw::Cell& c, std::vector
     return m;
 }
 
-CellMesh build_cell_water(const cw::WorldScene& s, const cw::Cell& c) {
+CellMesh build_cell_water(const cw::WorldScene& s, const cw::Cell& c, int waterTexelsPerChunk) {
     CellMesh m;
     const int n = cell_samples(s.terrain, c);
     if (n < 2 || !s.water.hasPlane) return m;
-    if (!cw::water_below_plane(s, c.rect, c.w * kWaterTexelsPerChunk, c.h * kWaterTexelsPerChunk)) return m;
+    if (!cw::water_below_plane(s, c.rect, c.w * waterTexelsPerChunk, c.h * waterTexelsPerChunk)) return m;
     const int seg = n - 1;
     const int W = c.w * seg + 1, H = c.h * seg + 1;
     const double dx = (double(c.rect[2]) - c.rect[0]) / (W - 1), dy = (double(c.rect[3]) - c.rect[1]) / (H - 1);

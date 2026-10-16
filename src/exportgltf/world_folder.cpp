@@ -219,7 +219,7 @@ void export_one_cell(const cw::WorldScene& s, const cw::Cell& c, const cw::Textu
                      const std::unordered_map<int64_t, size_t>& chunkAt, const fs::path& dir,
                      const WorldFolderOptions& opts, Fatal& fatal, CellOut& out) {
     const CellMesh terrain = build_cell_terrain(s.terrain, c, &out.warnings);
-    const CellMesh water = build_cell_water(s, c);
+    const CellMesh water = build_cell_water(s, c, opts.waterTexelsPerChunk);
     const std::vector<CellMesh> colliders = opts.collision ? build_cell_colliders(s, c) : std::vector<CellMesh>{};
     if (terrain.vertices() == 0 && water.vertices() == 0 && colliders.empty() && c.props.empty()) return;
 

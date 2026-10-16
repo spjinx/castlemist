@@ -227,3 +227,29 @@ CM_TEST(bake, water_below_plane_without_preset) {
     CHECK_FALSE(bake_cell_water(w, rect, 2, 2, false, out));   // the bake still needs a preset
     CHECK_FALSE(water_below_plane(water_scene(-5.0f), rect, 2, 2));
 }
+
+// Review M5: the chunk under a texel is the one at (cx, cy), not the entry at
+// cy * chunksX + cx of the chunk list (a sparse or reordered list broke it).
+CM_TEST(bake, water_finds_chunk_by_grid_position) {
+    WorldScene w = water_scene(5.0f);
+    w.terrain.chunks.clear();
+    w.terrain.chunksX = 2; w.terrain.chunksY = 2;
+    // Listed in reverse; only chunk (1, 0) (north-east) lies below the plane.
+    for (int k = 3; k >= 0; --k) {
+        TerrainChunk c = chunk();
+        c.cx = k % 2; c.cy = k / 2;
+        c.rect[0] = 100.f * c.cx; c.rect[2] = c.rect[0] + 100.f;
+        c.rect[3] = 200.f - 100.f * c.cy; c.rect[1] = c.rect[3] - 100.f;
+        c.heights.assign(4, (c.cx == 1 && c.cy == 0) ? 5.0f : -5.0f);
+        w.terrain.chunks.push_back(c);
+    }
+    const float ne[4] = {100, 100, 200, 200}, sw[4] = {0, 0, 100, 100}, nw[4] = {0, 100, 100, 200};
+    CHECK(water_below_plane(w, ne, 2, 2));
+    CHECK_FALSE(water_below_plane(w, sw, 2, 2));
+    CHECK_FALSE(water_below_plane(w, nw, 2, 2));
+    // A chunk missing from the list is off the terrain there, never another chunk.
+    w.terrain.chunks.erase(std::remove_if(w.terrain.chunks.begin(), w.terrain.chunks.end(),
+                                          [](const TerrainChunk& c) { return c.cx == 1 && c.cy == 0; }),
+                           w.terrain.chunks.end());
+    CHECK_FALSE(water_below_plane(w, ne, 2, 2));
+}

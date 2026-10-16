@@ -3,6 +3,8 @@
 #include "castlemist/world/cells.h"
 #include "castlemist/world/surface_rules.h"
 
+#include "chunk_grid.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -24,15 +26,18 @@ BlendTexel solid_texel(const uint8_t b[4]) {
     return t;
 }
 
-/// Bilinear terrain height at map (x, y); found = false off the terrain.
-float terrain_z(const Terrain& t, float x, float y, bool& found) {
+/// Bilinear terrain height at map (x, y); found = false off the terrain. @p g is
+/// detail::make_grid(t), built once per pass (review M5: it was rebuilt, with an
+/// allocation, for every texel, and the chunk was taken from a dense row-major
+/// index; now it is the chunk at (cx, cy) or none).
+float terrain_z(const Terrain& t, const detail::Grid& g, float x, float y, bool& found) {
     found = false;
-    if (!t.present || t.chunks.empty() || t.chunksX <= 0 || t.chunksY <= 0) return 0;
+    if (!t.present || t.chunks.empty() || g.nx <= 0 || g.ny <= 0) return 0;
     int cx, cy;
-    chunk_of_point(t, x, y, cx, cy);
-    const size_t idx = static_cast<size_t>(cy) * t.chunksX + cx;
-    if (idx >= t.chunks.size()) return 0;
-    const TerrainChunk& c = t.chunks[idx];
+    detail::point_chunk(g, x, y, cx, cy);
+    const TerrainChunk* cp = g.get(cx, cy);
+    if (!cp) return 0;
+    const TerrainChunk& c = *cp;
     const int n = c.samples;
     if (n < 2 || c.heights.size() < static_cast<size_t>(n) * n) return 0;
     const float w = c.rect[2] - c.rect[0], h = c.rect[3] - c.rect[1];
@@ -148,12 +153,13 @@ bool water_has_preset(const WorldScene& s) {
 bool water_below_plane(const WorldScene& s, const float rect[4], int texelsW, int texelsH) {
     if (texelsW <= 0 || texelsH <= 0) return false;
     const float planeZ = s.water.planeZ;
+    const detail::Grid g = detail::make_grid(s.terrain);
     for (int j = 0; j < texelsH; ++j)
         for (int i = 0; i < texelsW; ++i) {
             const float x = rect[0] + (i + 0.5f) / texelsW * (rect[2] - rect[0]);
             const float y = rect[3] - (j + 0.5f) / texelsH * (rect[3] - rect[1]);
             bool found;
-            const float z = terrain_z(s.terrain, x, y, found);
+            const float z = terrain_z(s.terrain, g, x, y, found);
             if (found && z > planeZ) return true;
         }
     return false;
@@ -170,6 +176,7 @@ bool bake_cell_water(const WorldScene& s, const float rect[4], int texelsW, int 
     if (srgbColour)
         for (int k = 0; k < 3; ++k) { sh[k] = srgb_to_linear(sh[k]); dp[k] = srgb_to_linear(dp[k]); }
     const float planeZ = s.water.planeZ;
+    const detail::Grid g = detail::make_grid(s.terrain);
 
     std::vector<uint8_t> out(static_cast<size_t>(texelsW) * texelsH * 4);
     for (int j = 0; j < texelsH; ++j)
@@ -177,7 +184,7 @@ bool bake_cell_water(const WorldScene& s, const float rect[4], int texelsW, int 
             const float x = rect[0] + (i + 0.5f) / texelsW * (rect[2] - rect[0]);
             const float y = rect[3] - (j + 0.5f) / texelsH * (rect[3] - rect[1]);
             bool found;
-            const float z = terrain_z(s.terrain, x, y, found);
+            const float z = terrain_z(s.terrain, g, x, y, found);
             const float tz = found ? z : planeZ;
             const float mix = water_depth_mix(tz, planeZ, preset.depthAttenuation);
             uint8_t* o = &out[(static_cast<size_t>(j) * texelsW + i) * 4];

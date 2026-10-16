@@ -52,9 +52,12 @@ CellMesh build_cell_terrain(const castlemist::world::Terrain& t, const castlemis
 /// @brief The cell rect's full sample grid at z = planeZ (cell-local), normals
 ///        up, uv as the terrain. Empty without a plane, when the cell has no
 ///        chunks (c_all: a known limit), or when !world::water_below_plane at
-///        kWaterTexelsPerChunk (the bake's own rule). A missing env preset does not
-///        empty it (spec D3 "No preset"): write_cell_gltf then gives it the flat colour.
-CellMesh build_cell_water(const castlemist::world::WorldScene& s, const castlemist::world::Cell& c);
+///        @p waterTexelsPerChunk, the bake's own grid (pass the export's
+///        WorldFolderOptions::waterTexelsPerChunk, so the mesh and the bake agree;
+///        review M5). A missing env preset does not empty it (spec D3 "No
+///        preset"): write_cell_gltf then gives it the flat colour.
+CellMesh build_cell_water(const castlemist::world::WorldScene& s, const castlemist::world::Cell& c,
+                          int waterTexelsPerChunk = kWaterTexelsPerChunk);
 
 /// @brief The cell's collision instances' triangles (world::collision_instance_triangles),
 ///        cell-local, unwelded (3 vertices per triangle, no normals or uvs), split
