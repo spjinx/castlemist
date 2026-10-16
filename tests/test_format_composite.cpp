@@ -236,6 +236,13 @@ CM_TEST(composite, a_bad_variants_array_leaves_the_rest_of_the_composite_intact)
     CHECK(r->variants.empty());
 }
 
+CM_TEST(composite, a_bad_file_data_table_still_fails_the_composite) {
+    CompositeBuilder c = one_race();
+    size_t race = 2048;  // one_race() allocates the race first
+    c.arr(race + 104, 1, 1u << 20);  // fileData pointer far past the buffer
+    CHECK(!parse_composite(c.b).has_value());
+}
+
 CM_TEST(composite, parses_race_variants) {
     CompositeBuilder c = one_race();
     size_t race = 2048;  // one_race() allocates the race first

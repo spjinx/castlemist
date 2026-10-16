@@ -228,9 +228,11 @@ std::optional<Composite> parse_composite(std::span<const uint8_t> d) {
             CompositeFileData f = read_file_data(r, pfd + k * kFileDataSize);
             race.file_data.emplace(f.token, f);
         }
-        race.variant_ref_race = r.u64(q + kRaceVariantRefRace);
-        // Additive: a malformed variants table leaves `variants` empty and never fails the parse.
-        {
+        // Additive: a malformed variants table leaves `variants` empty and never fails the
+        // parse, but it must not hide a failure from the reads above.
+        const bool ok_before_variants = r.ok;
+        if (ok_before_variants) {
+            race.variant_ref_race = r.u64(q + kRaceVariantRefRace);
             auto [nvar, pvar] = r.arr(q + kRaceVariants, kVariantSize);
             if (r.ok) {
                 race.variants.reserve(nvar);
@@ -238,8 +240,9 @@ std::optional<Composite> parse_composite(std::span<const uint8_t> d) {
                     race.variants.push_back(read_variant(r, pvar + k * kVariantSize));
             }
             if (!r.ok) {
+                race.variant_ref_race = 0;
                 race.variants.clear();
-                r.ok = true;  // everything before this point was read successfully
+                r.ok = true;  // only the variants read failed
             }
         }
         c.races.push_back(std::move(race));
