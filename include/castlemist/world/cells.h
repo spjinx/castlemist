@@ -47,6 +47,11 @@ struct CellPlan {
     std::vector<Cell> cells;
     int blockChunks = 4;
     size_t propsOutsideRegion = 0;   ///< props + collision instances in cells the region dropped
+    /// The region actually kept: the requested one snapped outward to whole
+    /// blocks of blockChunks and clamped to the chunk grid, so the kept cells
+    /// tile it exactly (the manifest's terrain.region). whole() for the whole
+    /// map; the request itself when it keeps nothing (outside the grid).
+    ChunkRegion region;
     std::vector<std::string> warnings;
 };
 
@@ -58,6 +63,8 @@ int cell_block_chunks(const Terrain& t, int maxChunks);
 ///        each clamped to the grid.
 void chunk_of_point(const Terrain& t, float x, float y, int& cx, int& cy);
 
+/// @brief The map's cells. A non-whole @p r keeps every cell of each block it
+///        overlaps (CellPlan::region); a cell is never cut by the region.
 CellPlan partition_cells(const WorldScene& s, const CellStats& st, const CellBudget& b,
                          const ChunkRegion& r = {});
 

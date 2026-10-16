@@ -1626,3 +1626,33 @@ CM_TEST(world_folder, set_manifest_fbx) {
     CHECK_EQ(set_manifest_fbx(none.string()), size_t(0));
     CHECK_FALSE(fs::exists(none / "manifest.json"));
 }
+
+// Review I1: an unaligned --region writes the region it actually kept (snapped
+// to whole blocks), so the shipped validator accepts the folder.
+CM_TEST(world_folder, unaligned_region_validates) {
+    const cw::WorldScene s = tw::synthetic_world();   // 2 x 2 chunks, one 4-chunk block
+    tw::SyntheticModelSource src;
+    const fs::path dir = fresh_dir("folder_region");
+    WorldFolderOptions o = synthetic_opts();
+    o.region.cx0 = 1; o.region.cy0 = 1; o.region.cx1 = 1; o.region.cy1 = 1;
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), o);
+    CHECK(r.ok);
+    const json man = read_json(dir / "manifest.json");
+    check_valid(man, "unaligned region");
+    CHECK(man["terrain"]["region"] == json({0, 0, 1, 1}));
+    CHECK_EQ(man["counts"]["chunks"].get<int>(), 4);
+    if (std::system("python --version >NUL 2>&1") == 0) {
+        const std::string cmd = std::string("python -I \"") + CM_SOURCE_DIR + "/tools/world/validate_manifest.py\" \"" +
+                                dir.string() + "\"";
+        CHECK_EQ(std::system(cmd.c_str()), 0);
+    } else {
+        std::printf("    python not on PATH: validate_manifest.py not run\n");
+    }
+    // A region outside the grid keeps nothing: refused, and the folder is not touched.
+    const fs::path out = fresh_dir("folder_region_outside");
+    o.region.cx0 = 5; o.region.cy0 = 5; o.region.cx1 = 6; o.region.cy1 = 6;
+    const WorldFolderReport bad = export_world_folder(s, src, nullptr, out.string(), o);
+    CHECK_FALSE(bad.ok);
+    CHECK(bad.error.find("keeps no cells") != std::string::npos);
+    CHECK_FALSE(fs::exists(out / "cells"));
+}

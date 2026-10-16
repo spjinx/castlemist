@@ -2463,6 +2463,8 @@ void cmd_world_export_folder(const Args& a) {
             }
             if (pos != r.size()) throw std::invalid_argument(r);
         } catch (const std::exception&) { fail("--region must be four integers: cx0,cy0,cx1,cy1"); }
+        if (v[0] < 0 || v[1] < 0 || v[2] < v[0] || v[3] < v[1])
+            fail("--region needs 0 <= cx0 <= cx1 and 0 <= cy0 <= cy1 (inclusive chunk coordinates)");
         opts.region.cx0 = v[0]; opts.region.cy0 = v[1]; opts.region.cx1 = v[2]; opts.region.cy1 = v[3];
     }
     opts.budget.maxChunks = intFlag("cell-max-chunks", opts.budget.maxChunks);

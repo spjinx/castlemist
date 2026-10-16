@@ -364,22 +364,31 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
         return rep;
     }
     const fs::path dir = u8path(dirUtf8);
-    if (!prepare_dir(dir, dirUtf8, opts.overwrite, rep.error)) return rep;
     const unsigned threads = opts.threads > 0 ? static_cast<unsigned>(opts.threads)
                                               : std::max(1u, std::thread::hardware_concurrency());
     std::vector<std::string> warnings;
     Fatal fatal;
 
     // 1. The cells the region keeps, without stats (no splits): their props name the needed models.
+    //    A region that keeps nothing is refused before the folder is touched.
     std::vector<uint32_t> needed;
     {
         const cw::CellPlan first = cw::partition_cells(scene, cw::CellStats{}, opts.budget, opts.region);
+        if (!opts.region.whole() && first.cells.empty()) {
+            const cw::ChunkRegion& g = opts.region;
+            rep.error = "region " + std::to_string(g.cx0) + "," + std::to_string(g.cy0) + "," + std::to_string(g.cx1) +
+                        "," + std::to_string(g.cy1) + " keeps no cells (the terrain is " +
+                        std::to_string(scene.terrain.chunksX) + " x " + std::to_string(scene.terrain.chunksY) +
+                        " chunks)";
+            return rep;
+        }
         std::vector<char> use(scene.models.size(), 0);
         for (const cw::Cell& c : first.cells)
             for (uint32_t pi : c.props)
                 if (pi < scene.props.size() && scene.props[pi].model < use.size()) use[scene.props[pi].model] = 1;
         for (uint32_t i = 0; i < use.size(); ++i) if (use[i]) needed.push_back(i);
     }
+    if (!prepare_dir(dir, dirUtf8, opts.overwrite, rep.error)) return rep;
     lap("world-cells");
 
     // 2. The model stage; dat textures go once into the shared pool (W8).
@@ -526,7 +535,9 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
 
     WorldManifestInput in;
     in.scene = &scene;
-    in.opts = &opts;
+    WorldFolderOptions manOpts = opts;
+    manOpts.region = plan.region;   // what was written: the request snapped to whole blocks
+    in.opts = &manOpts;
     for (const ModelOut& o : mouts) in.models.push_back(o.mm);
     in.cells = mcells;
     in.sky = skyJson;

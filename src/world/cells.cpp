@@ -203,16 +203,27 @@ CellPlan partition_cells(const WorldScene& s, const CellStats& st, const CellBud
         for (int bx = 0; bx < g.nx; bx += B)
             emit(c, bx, by, std::min(B, g.nx - bx), std::min(B, g.ny - by), false);
 
-    // A cell is kept when it overlaps the region.
+    // The region snaps outward to whole blocks and is clamped to the grid, so
+    // the kept cells (each inside one block) tile plan.region exactly.
+    ChunkRegion k = r;
+    bool none = false;
+    if (!r.whole()) {
+        auto lo = [B](int v) { return v < 0 ? 0 : v / B * B; };
+        auto hi = [B](int v, int n) { return std::min(v < 0 ? -1 : (v / B + 1) * B - 1, n - 1); };
+        k.cx0 = lo(r.cx0); k.cy0 = lo(r.cy0); k.cx1 = hi(r.cx1, g.nx); k.cy1 = hi(r.cy1, g.ny);
+        none = r.cy1 < r.cy0 || k.cx0 > k.cx1 || k.cy0 > k.cy1;
+        if (none) k = r;   // outside the grid (or inverted): nothing is kept
+    }
     for (auto& cell : c.out) {
-        const bool keep = r.whole() || (cell.cx0 <= r.cx1 && cell.cx0 + cell.w - 1 >= r.cx0 &&
-                                        cell.cy0 <= r.cy1 && cell.cy0 + cell.h - 1 >= r.cy0);
+        const bool keep = r.whole() || (!none && k.cx0 <= cell.cx0 && cell.cx0 + cell.w - 1 <= k.cx1 &&
+                                        k.cy0 <= cell.cy0 && cell.cy0 + cell.h - 1 <= k.cy1);
         if (keep) plan.cells.push_back(std::move(cell));
         else plan.propsOutsideRegion += cell.props.size() + cell.collision.size();
     }
     std::sort(plan.cells.begin(), plan.cells.end(), [](const Cell& a, const Cell& d) {
         return a.cy0 != d.cy0 ? a.cy0 < d.cy0 : a.cx0 < d.cx0;
     });
+    plan.region = k;
     for (auto& w : c.warnings) plan.warnings.push_back(std::move(w));
     return plan;
 }

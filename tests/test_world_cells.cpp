@@ -196,3 +196,39 @@ CM_TEST(cells, no_terrain_one_cell) {
     CHECK(std::find(p.warnings.begin(), p.warnings.end(),
                        "cells: no terrain; one cell c_all holds every placement") != p.warnings.end());
 }
+
+// Review I1: the region snaps outward to whole blocks, so the kept cells tile
+// plan.region exactly (the manifest's terrain.region) even after splits.
+CM_TEST(cells, region_snaps_to_blocks) {
+    auto s = grid(10, 25);
+    s.models.resize(1);
+    add_prop(s, 0, 0); add_prop(s, 3, 3);
+    CellStats st; st.modelTriangles = {600000};
+    CellBudget b; b.maxTriangles = 1'000'000;   // block c0_0 splits into quadrants
+    ChunkRegion r; r.cx0 = 1; r.cy0 = 1; r.cx1 = 2; r.cy1 = 2;
+    auto p = partition_cells(s, st, b, r);
+    CHECK_EQ(p.region.cx0, 0); CHECK_EQ(p.region.cy0, 0);
+    CHECK_EQ(p.region.cx1, 3); CHECK_EQ(p.region.cy1, 3);
+    CHECK_EQ(p.cells.size(), size_t(4));   // every quadrant of the block, not only the one overlapping
+    int area = 0;
+    for (const auto& c : p.cells) {
+        area += c.w * c.h;
+        CHECK(c.cx0 >= p.region.cx0 && c.cx0 + c.w - 1 <= p.region.cx1);
+        CHECK(c.cy0 >= p.region.cy0 && c.cy0 + c.h - 1 <= p.region.cy1);
+    }
+    CHECK_EQ(area, 16);
+    // Clamped to the grid; spanning two block columns.
+    r.cx0 = 3; r.cy0 = 23; r.cx1 = 40; r.cy1 = 40;
+    p = partition_cells(s, {}, {}, r);
+    CHECK_EQ(p.region.cx0, 0); CHECK_EQ(p.region.cy0, 20);
+    CHECK_EQ(p.region.cx1, 9); CHECK_EQ(p.region.cy1, 24);
+    CHECK_EQ(p.cells.size(), size_t(6));
+    // Whole map: the region stays whole.
+    p = partition_cells(s, {}, {});
+    CHECK(p.region.whole());
+    // Outside the grid: nothing kept, and the region says so (empty, not whole).
+    r.cx0 = 12; r.cy0 = 0; r.cx1 = 14; r.cy1 = 3;
+    p = partition_cells(s, {}, {}, r);
+    CHECK(p.cells.empty());
+    CHECK_FALSE(p.region.whole());
+}
