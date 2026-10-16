@@ -106,7 +106,6 @@ The dispatcher plus one file per format family, sharing `src/extract/internal.h`
 | `texture_source.cpp` | reading model textures, full/reduced pair resolution |
 | `game_shader.cpp` | the game's own bgfx (DXBC) material shaders |
 | `model_preview.cpp` | MODL → `ModelPreview` |
-| `map_scene.cpp` | mapc/area → props, terrain, collision, zones |
 | `pimg_atlas.cpp` | paged-image atlases composited into one preview |
 | `audio_bank.cpp` | AMSP sound scripts → playable clips |
 | `content_store.cpp` | the cntc `PackContent` datastore |
@@ -141,7 +140,7 @@ the layer, declared next to the comments that explain it.
 | `world_materials.cpp/.h` | the material pass: `TextureCache` (one GPU texture per fileId), prop alpha modes and exact blend factors, UV scroll, the material clock, animated-prop poses, water maths, and `material_setting_warnings` |
 | `world_view_shaders.h` | the textured HLSL: terrain blend (`kTerrainMat`), props (`kPropMat`, skinned and static), water |
 | `world_camera.cpp/.h` | `WorldCamera` -> view/projection matrices and the pixel-to-ray maths |
-| `detail/mesh_bake.h` | the AO baker, vertex flattener and frustum planes, shared by the fly view and `WorldView` |
+| `detail/mesh_bake.h` | the AO baker, vertex flattener and frustum planes used by `WorldView` |
 | `detail/light_calib.h` | the measured light calibration (sun colour and ambient DC), shared by the Shader-mode material rig in `game_material.cpp` and `WorldView`'s textured shaders |
 
 `detail/math.h` is row-major with a **row-vector** convention (`v * M`), matching

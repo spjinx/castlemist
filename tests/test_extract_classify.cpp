@@ -75,11 +75,3 @@ CM_TEST(extract_api, missing_dat_paths_fail_without_throwing) {
     CHECK(load_video_by_fileid("no_such.dat", 0).empty());
     CHECK(load_video_by_fileid("no_such.dat", 42).empty());
 }
-
-CM_TEST(extract_api, map_helpers_reject_input_they_cannot_use) {
-    std::vector<uint8_t> not_a_map{'n', 'o', 'p', 'e'};
-    CHECK(build_map_zone_layer(not_a_map, "") == nullptr);
-
-    MapScene empty;
-    CHECK_FALSE(augment_map_scene_game(empty, ""));
-}

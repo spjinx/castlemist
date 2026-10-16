@@ -8,18 +8,27 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cstdio>
 #include <cwchar>
 #include <commdlg.h>
+#include <filesystem>
 #include <fstream>
+#include <memory>
+#include <optional>
 #include <thread>
 
 #include "castlemist/db/index_builder.h"
 #include "castlemist/exportgltf/gltf_export.h"
 #include "castlemist/exportgltf/sky_export.h"
+#include "castlemist/exportgltf/world_dat_source.h"
+#include "castlemist/exportgltf/world_folder.h"
 #include "castlemist/format/struct_template.h"
 #include "castlemist/format/strs_keys.h"
 #include "castlemist/render/gw2bgfx_view.h"
 #include "castlemist/ripper/vrchat.h"
+#include "castlemist/world/dat_read.h"
+#include "castlemist/world/load_world.h"
 
 namespace castlemist::ui {
 
@@ -495,23 +504,213 @@ void do_export_gltf_model_atlas(HWND hwnd) {
     }).detach();
 }
 
-void do_export_gltf_map(HWND hwnd) {
+namespace {
+
+/// What the Export World (Map) thread hands back as WM_APP_GLTF_EXPORT_DONE's
+/// lparam (0 there is a model glTF export, see g_gltf_export_result). Owned by
+/// the receiver; deleted by the thread when the post fails.
+struct WorldExportMsg {
+    castlemist::exportgltf::WorldFolderReport rep;  ///< export_world_folder's report
+    std::string error;          ///< a failure around export_world_folder (dat, world)
+    std::string dir;            ///< the folder asked for (UTF-8)
+    bool fbxOk = false;
+    std::string fbxLog;         ///< convert_world_to_fbx's log ("Blender not found" when skipped)
+    size_t fbxSet = 0;
+    uint32_t fileId = 0;
+    double seconds = 0;
+};
+
+/// Only one world export at a time (it reads the whole map, then runs Blender).
+std::atomic<bool> g_world_export_running{false};
+
+} // namespace
+
+bool world_export_running() { return g_world_export_running.load(); }
+
+// "Export World (Map)...": the cell folder, manifest.json and per-cell glTF of
+// the selected map (exportgltf::export_world_folder), then every .glb to .fbx in
+// one Blender session (ripper::convert_world_to_fbx) -- the CLI's
+// `world-export --out-dir` steps. The thread opens its own Gw2Dat
+// (g_app->data_gw2 belongs to the UI thread), as the Map Window's loader does.
+void do_export_world_map(HWND hwnd) {
+    namespace eg = castlemist::exportgltf;
     if (!g_app->has_loaded_entry || g_app->current_entry.kind != PreviewKind::Map ||
-        !g_app->current_entry.map) {
+        g_app->current_entry.decompressed.empty()) {
         MessageBoxW(hwnd, L"Select a map entry first.", L"castlemist", MB_ICONINFORMATION);
         return;
     }
-    std::wstring path;
-    if (!prompt_gltf_save_path(hwnd, path)) return;
+    if (g_world_export_running.load()) {
+        MessageBoxW(hwnd, L"A world export is already running; wait for it to finish.", L"castlemist",
+                    MB_ICONINFORMATION);
+        return;
+    }
+    auto tpl = castlemist::tpl::get_or_auto_load();
+    if (!tpl) {
+        MessageBoxW(hwnd, L"Load the struct template first (File > Load Struct JSON...).", L"castlemist",
+                    MB_ICONINFORMATION);
+        return;
+    }
+    uint32_t fileId = 0;
+    {
+        const std::vector<uint32_t> fids = get_by_file_id(g_app->data_gw2, g_app->current_mft_index + 1);
+        if (!fids.empty()) fileId = fids.front();
+    }
+    const std::string datPath = g_app->data_gw2.file_info.file_path;
+    if (fileId == 0 || datPath.empty()) {
+        MessageBoxW(hwnd, L"This map entry has no file id in an open .dat, so it cannot be exported.",
+                    L"castlemist", MB_ICONINFORMATION);
+        return;
+    }
 
-    std::shared_ptr<MapScene> scene = g_app->current_entry.map;
-    std::string glbPath = wide_to_utf8(path);
-    SetWindowTextW(g_app->hwnd_status_label, L"Exporting glTF (map)... this can take a while for a large area.");
+    wchar_t path[MAX_PATH] = L"";
+    swprintf(path, MAX_PATH, L"map_%u", fileId);
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwnd;
+    ofn.lpstrTitle = L"Export World - the file name becomes the folder name";
+    ofn.lpstrFilter = L"World export folder\0*.*\0";
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOTESTFILECREATE;
+    if (!GetSaveFileNameW(&ofn)) return;
 
-    std::thread([hwnd, scene, glbPath]() {
-        g_gltf_export_result = castlemist::exportgltf::export_map_gltf(*scene, glbPath);
-        PostMessageW(hwnd, WM_APP_GLTF_EXPORT_DONE, 0, 0);
+    std::wstring full = path;
+    const size_t slash = full.find_last_of(L"\\/");
+    std::wstring parent = slash == std::wstring::npos ? L"." : full.substr(0, slash);
+    std::wstring stem = slash == std::wstring::npos ? full : full.substr(slash + 1);
+    const size_t dot = stem.find_last_of(L'.');
+    if (dot != std::wstring::npos && dot > 0) stem.resize(dot);
+    if (stem.empty()) stem = L"world";
+    const std::wstring dirW = parent + L"\\" + stem;
+
+    eg::WorldFolderOptions opts;
+    {
+        // export_world_folder replaces only a folder that holds a previous
+        // export (manifest.json); ask before it does.
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(std::filesystem::path(dirW) / L"manifest.json", ec)) {
+            const std::wstring q = L"The folder\n" + dirW +
+                                   L"\nholds a previous world export. Replace it (its contents are removed)?";
+            if (MessageBoxW(hwnd, q.c_str(), L"Export World", MB_ICONQUESTION | MB_YESNO) != IDYES) return;
+            opts.overwrite = true;
+        }
+    }
+
+    const std::string dirUtf8 = wide_to_utf8(dirW);
+    wchar_t st[200];
+    swprintf(st, 200,
+             L"Exporting world (map %u): cells, models, terrain, sky, then FBX in Blender... a large map takes minutes.",
+             fileId);
+    SetWindowTextW(g_app->hwnd_status_label, st);
+
+    g_world_export_running = true;
+    set_export_enabled(g_app->has_loaded_entry);   // greys the menu item while it runs
+    std::thread([hwnd, tpl, datPath, fileId, dirUtf8, opts]() {
+        // Nothing may reach std::terminate from a detached worker.
+        WorldExportMsg* result = nullptr;
+        try {
+            auto r = std::make_unique<WorldExportMsg>();
+            r->fileId = fileId;
+            r->dir = dirUtf8;
+            const auto t0 = std::chrono::steady_clock::now();
+            auto secs = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
+            std::string logText;
+            auto progress = [&](const std::string& m) {
+                char buf[32];
+                std::snprintf(buf, sizeof buf, "[%7.1fs] ", secs());
+                logText += buf + m + "\n";
+            };
+            try {
+                auto dat = std::make_unique<Gw2Dat>();
+                progress("loading dat");
+                load_dat_file(*dat, datPath);
+                progress("loading world " + std::to_string(fileId));
+                const castlemist::world::WorldScene scene = castlemist::world::load_world(*dat, fileId, *tpl);
+                progress("world: " + std::to_string(scene.models.size()) + " models, " +
+                         std::to_string(scene.props.size()) + " props");
+                std::optional<eg::sky::SkyInputs> skyIn;
+                if (opts.sky) {
+                    try {
+                        auto bytes = castlemist::world::read_file_bytes(*dat, fileId);
+                        if (bytes) skyIn = eg::sky::load_sky_inputs(*dat, *bytes, *tpl, fileId);
+                    } catch (const std::exception& ex) {
+                        progress(std::string("sky inputs unavailable: ") + ex.what());
+                    }
+                }
+                {
+                    auto src = eg::make_dat_model_source(*dat);
+                    progress("exporting to " + dirUtf8);
+                    r->rep = eg::export_world_folder(scene, *src, skyIn ? &*skyIn : nullptr, dirUtf8, opts);
+                }
+                progress(r->rep.ok ? "export finished: " + std::to_string(r->rep.cells) + " cells, " +
+                                         std::to_string(r->rep.modelsWritten) + " models"
+                                   : "export FAILED: " + r->rep.error);
+                if (r->rep.ok) {
+                    nlohmann::json j = eg::report_json(r->rep);
+                    // Blender missing or failing leaves the folder valid, as in the CLI.
+                    progress("blender --to-fbx");
+                    const auto tf = std::chrono::steady_clock::now();
+                    r->fbxOk = castlemist::ripper::convert_world_to_fbx(dirUtf8, r->fbxLog, std::string(), &r->fbxSet);
+                    const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - tf).count();
+                    j["fbx"] = {{"ok", r->fbxOk}, {"log", r->fbxLog}, {"fbxSet", r->fbxSet}, {"seconds", s}};
+                    if (!r->fbxOk)
+                        j["fbx"]["note"] = "Unity needs tools/blender/castlemist_world.py --to-fbx to be run on this folder";
+                    progress(r->fbxOk ? "fbx finished: " + std::to_string(r->fbxSet) + " files"
+                                      : "fbx FAILED: " + r->fbxLog);
+                    // After the manifest on purpose: the manifest is the last file the export writes.
+                    std::ofstream lf(std::filesystem::path(std::u8string(dirUtf8.begin(), dirUtf8.end())) / "export.log",
+                                     std::ios::binary);
+                    if (lf) lf << logText << j.dump(2) << "\n";
+                }
+            } catch (const std::exception& e) {
+                r->error = e.what();
+            } catch (...) {
+                r->error = "unknown error";
+            }
+            r->seconds = secs();
+            result = r.release();
+        } catch (...) {
+            result = nullptr;
+        }
+        g_world_export_running = false;
+        if (result && !PostMessageW(hwnd, WM_APP_GLTF_EXPORT_DONE, 0, reinterpret_cast<LPARAM>(result)))
+            delete result;
     }).detach();
+}
+
+void on_world_export_done(HWND hwnd, LPARAM lparam) {
+    std::unique_ptr<WorldExportMsg> owned(reinterpret_cast<WorldExportMsg*>(lparam));
+    const WorldExportMsg& r = *owned;
+    set_export_enabled(g_app->has_loaded_entry);   // the menu item is usable again
+    if (!r.error.empty() || !r.rep.ok) {
+        SetWindowTextW(g_app->hwnd_status_label, L"World export failed.");
+        const std::string why = !r.error.empty() ? r.error : r.rep.error;
+        const std::string msg = "Map " + std::to_string(r.fileId) + ", folder:\n" + r.dir + "\n\n" + why;
+        MessageBoxW(hwnd, utf8_to_wide(msg).c_str(), L"World export failed", MB_ICONERROR);
+        return;
+    }
+    SetWindowTextW(g_app->hwnd_status_label, L"World export finished.");
+    const castlemist::exportgltf::WorldFolderReport& e = r.rep;
+    char took[64];
+    std::snprintf(took, sizeof took, "%.1f s", r.seconds);
+    std::string msg = "Wrote the folder:\n" + e.dir + "\n\nManifest: " + e.manifest +
+                      "\nCells: " + std::to_string(e.cells) +
+                      ", models: " + std::to_string(e.modelsWritten) + " (failed " + std::to_string(e.modelsFailed) +
+                      "), props: " + std::to_string(e.propsWritten) + " (skipped " + std::to_string(e.propsSkipped) +
+                      "), unbaked chunks: " + std::to_string(e.chunksUnbaked) +
+                      ", warnings: " + std::to_string(e.warnings.size());
+    if (!e.warnings.empty()) msg += " (see manifest.json)";
+    msg += "\n\n";
+    if (r.fbxOk) {
+        msg += "FBX: " + std::to_string(r.fbxSet) + " .fbx recorded in the manifest.\n" + r.fbxLog;
+    } else {
+        msg += (r.fbxLog == "Blender not found" ? std::string("FBX skipped: Blender not found.")
+                                                : "FBX failed: " + r.fbxLog) +
+               "\nThe folder is still valid; Unity needs tools/blender/castlemist_world.py --to-fbx to be run on it.";
+    }
+    msg += "\n\nTook " + std::string(took) + ". export.log in the folder has the full report.";
+    const bool clean = e.warnings.empty() && e.modelsFailed == 0 && r.fbxOk;
+    MessageBoxW(hwnd, utf8_to_wide(msg).c_str(), L"World export finished", clean ? MB_ICONINFORMATION : MB_ICONWARNING);
 }
 
 void on_gltf_export_done(HWND hwnd) {

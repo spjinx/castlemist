@@ -1,5 +1,5 @@
 /// @file
-/// @brief HLSL for WorldView (adapted from shaders::kMapFly in detail/shaders.h).
+/// @brief HLSL for WorldView (adapted from the main window's old mesh-only map view shader).
 ///
 /// @warning Not a public header -- internal to `src/render/`.
 

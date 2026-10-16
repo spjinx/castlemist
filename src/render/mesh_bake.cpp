@@ -1,6 +1,6 @@
 /// @file
-/// @brief AO bake, submesh flattener and frustum planes shared by the fly view
-///        and WorldView (moved verbatim from map_fly.cpp). See detail/mesh_bake.h.
+/// @brief AO bake, submesh flattener and frustum planes used by WorldView
+///        (first written for the main window's old mesh-only map view). See detail/mesh_bake.h.
 
 #include "detail/mesh_bake.h"
 

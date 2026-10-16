@@ -857,3 +857,11 @@ throws and never yields a silently empty export.
 - Zone models.
 - VRChat scene-descriptor setup and upload.
 - Poiyomi locking.
+
+## Amendments (2026-10-15, after implementation)
+
+- **D8 done (Task 15).** File ▸ Export World (Map)… replaced Export glTF (Map)… on the same menu id, and the old path is
+  removed: `map_scene.cpp` (`build_map_scene`, `build_map_zone_layer`, `augment_map_scene_game`), `MapScene` /
+  `MapInstance`, `map_fly.cpp` / `detail/map_fly.h` / `flycam.cpp` (`RenderMode::MapFly`, the fly camera: `WorldView`
+  does not use it), `map_export.cpp` (`export_map_gltf`) and their tests. Kept: `set_scene` / `SceneInstance`, `MapEnvRig`
+  / `set_environment_rig`, `mesh_bake`. A map entry previews its `world_summary` text and points to Tools ▸ Map Window….

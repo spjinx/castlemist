@@ -135,7 +135,7 @@ castlemist_add_layer(sim    DEPS castlemist::extract ext::glm)
 # collision, water, environment) on top of extract's parsers.
 castlemist_add_layer(world DEPS castlemist::extract ext::json)
 
-# exportgltf also sits beside render: it turns the same CPU ModelPreview/MapScene
+# exportgltf also sits beside render: it turns the same CPU ModelPreview
 # payloads into a binary glTF (.glb) -- a precisely specified, Khronos-ratified
 # format, unlike FBX's undocumented binary container. Needs extract's types,
 # stb_image_write.h (from the same ext::stb checkout format/media already use)

@@ -192,8 +192,8 @@ void mapwin_start_terrain_textures(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Da
 
 int mapwin_start_models(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat, std::shared_ptr<MapWinModelQueue> queue,
                         std::shared_ptr<MapWinTextureClaims> claims) {
-    // One parsed dat for every worker, as build_map_scene does
-    // (src/extract/map_scene.cpp, "Load the unique models IN PARALLEL"):
+    // One parsed dat for every worker (read-only lookups), the unique models
+    // loaded in parallel:
     // load_dat_file closes the dat's own stream, read_entry_bytes opens a
     // file handle per read, and the lookups load_model_by_fileid makes
     // (get_by_base_id, get_by_file_id, the texture pair resolution) only read

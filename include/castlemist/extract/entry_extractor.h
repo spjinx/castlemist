@@ -24,7 +24,7 @@ enum class PreviewKind {
     None,      ///< Unrecognized binary -- hex view only.
     Image,     ///< ATEX family / DDS / PNG / JPEG / BMP / WebP.
     Model,     ///< MODL packfile; ExtractedEntry::model may be null without a struct template.
-    Map,       ///< mapc/area packfile with placed props -> ExtractedEntry::map.
+    Map,       ///< mapc/area packfile with placed props (prp2); classified only, read with world::load_world.
     Text,      ///< Printable text (html/css/js/xml/...) -> ExtractedEntry::text_preview.
     Strs,      ///< `strs` string table -> the string table view.
     Audio,     ///< ASND / ABNK / AMSP / raw audio -> ExtractedEntry::audio_clips.
@@ -72,9 +72,6 @@ struct ExtractedEntry {
 
     /// @brief Filled for PreviewKind::Model; null if no struct template was loaded.
     std::shared_ptr<ModelPreview> model;
-
-    /// @brief Filled for PreviewKind::Map (a mapc/area packfile with a `prp2` chunk).
-    std::shared_ptr<MapScene> map;
 
     /// @brief Filled for PreviewKind::Audio: one entry per embedded sound.
     std::vector<AudioClipCPU> audio_clips;
@@ -249,29 +246,6 @@ struct ModelLoadOptions {
 std::shared_ptr<ModelPreview> load_model_by_fileid(Gw2Dat& dat, uint32_t file_id, const ModelLoadOptions& opts);
 bool texture_full_res();              ///< Current preference.
 /// @}
-
-/// @brief Lazily build the zone-model layer of an already-decompressed map packfile.
-///
-/// Parses `zon2` and loads the zone definition models in parallel. Instances are
-/// tagged layer 3 (zone). Safe to call from a worker thread.
-///
-/// @param map_bytes The map's decompressed packfile bytes.
-/// @param dat_path  Path to the .dat the models live in.
-/// @return null when the map has no zone models.
-std::shared_ptr<MapScene> build_map_zone_layer(const std::vector<uint8_t>& map_bytes,
-                                               const std::string& dat_path);
-
-/// @brief Lazily extract the real game (bgfx DXBC) shaders for a built map scene, in place.
-///
-/// Re-reads each unique model's MODL bytes by fileId and rebuilds it with game
-/// shaders. Only touches models whose `gameMaterials` are still empty and whose
-/// fileId is known. Kept out of the initial map load so map loading stays fast;
-/// the UI calls it the first time "Shader" mode is selected on a map.
-///
-/// @param scene    Scene to augment; MapScene::gameMaterialsLoaded is set on success.
-/// @param dat_path Path to the .dat (a private handle is opened).
-/// @return true when at least one model gained game shaders.
-bool augment_map_scene_game(MapScene& scene, const std::string& dat_path);
 
 /// @brief Find the cinematic script that drives a Bink movie and pull its subtitles.
 ///

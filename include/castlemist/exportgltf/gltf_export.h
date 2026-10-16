@@ -1,5 +1,5 @@
 /// @file
-/// @brief Public API: ModelPreview / MapScene -> binary glTF (.glb) on disk.
+/// @brief Public API: ModelPreview -> binary glTF (.glb) on disk.
 /// @ingroup exportgltf
 
 #pragma once
@@ -137,23 +137,6 @@ struct GltfExportResult {
 /// @param glbPath Destination .glb path, UTF-8.
 GltfExportResult export_model_gltf(const ModelPreview& model, const std::string& glbPath,
                                    const GltfExportOptions& opts = {});
-
-/// @brief Export a whole map's placed props to one glTF scene.
-///
-/// Every `MapInstance` already loaded into `scene` is written world-
-/// transformed, sharing one glTF mesh per unique model across all of its
-/// (unskinned) instances via ordinary node instancing -- glTF nodes may
-/// carry an arbitrary 4x4 matrix, so GW2's own
-/// `Scale * RotZ * RotX * RotY * Translate` placement is written directly
-/// with no decomposition needed. Textures are deduped by fileId across every
-/// unique model in the scene. Does not include the raw heightmap terrain
-/// surface -- only placed props (whatever layers the caller already loaded
-/// into `scene.instances`).
-///
-/// @param scene   A built map scene (::build_map_scene / ::build_map_zone_layer).
-/// @param glbPath Destination .glb path, UTF-8.
-GltfExportResult export_map_gltf(const MapScene& scene, const std::string& glbPath,
-                                 const GltfExportOptions& opts = {});
 
 /// @brief Result of one standalone texture save.
 struct TextureSaveResult {

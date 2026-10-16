@@ -516,9 +516,8 @@ struct ModelPreview {
 
     /// @brief Real game shaders per material, for the "Shader" render mode.
     ///
-    /// Empty unless the entry was extracted for single-model preview; the map
-    /// scene path skips extraction to stay fast and fills this in lazily via
-    /// ::augment_map_scene_game. Indexed by GameMaterial::index.
+    /// Empty unless the model was extracted with game shaders (single-model
+    /// preview). Indexed by GameMaterial::index.
     std::vector<GameMaterial> gameMaterials;
 
     std::vector<ParticleCloudCPU> clouds;        ///< Baked emitter groups (`cloudData`).

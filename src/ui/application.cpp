@@ -569,6 +569,10 @@ int run(HINSTANCE hInstance, int cmd_show) {
             uint32_t idx = static_cast<uint32_t>(atoi(al));
             ExtractedEntry e = extract_entry(g_app->data_gw2, idx);
             bool isMap = (e.kind == PreviewKind::Map);
+            if (isMap) {   // as the extract thread does for a clicked map entry
+                const std::vector<uint32_t> fids = get_by_file_id(g_app->data_gw2, idx + 1);
+                e.text_preview = map_preview_text(g_app->data_gw2.file_info.file_path, fids.empty() ? 0 : fids.front());
+            }
             apply_extracted_entry(idx, std::move(e));
             castlemist::render::on_resize(1000, 800);
             if (const char* li = std::getenv("GW2_LIGHTINT")) castlemist::render::set_light_intensity((float)atof(li));
@@ -581,22 +585,8 @@ int run(HINSTANCE hInstance, int cmd_show) {
                 float z = (float)atof(zm); if (z > 0.01f) castlemist::render::zoom(z);
             }
             if (isMap) {
-                castlemist::render::save_screenshot(dump_path("shot_map.bmp").c_str());
-                castlemist::render::set_layer_visible(castlemist::render::LAYER_COLLISION, true);
-                castlemist::render::save_screenshot(dump_path("shot_map_coll.bmp").c_str());
-                castlemist::render::set_layer_visible(castlemist::render::LAYER_COLLISION, false);
-                auto zl = build_map_zone_layer(g_app->current_entry.decompressed, g_app->data_gw2.file_info.file_path);
-                if (zl && !zl->instances.empty()) {
-                    std::vector<castlemist::render::SceneInstance> zi;
-                    for (const MapInstance& mi : zl->instances) {
-                        castlemist::render::SceneInstance si; si.model = mi.model;
-                        for (int k = 0; k < 3; ++k) { si.pos[k] = mi.pos[k]; si.rot[k] = mi.rot[k]; }
-                        si.scale = mi.scale; si.layer = mi.layer; zi.push_back(si);
-                    }
-                    castlemist::render::add_scene_models(zl->models, zi);
-                }
-                castlemist::render::set_layer_visible(castlemist::render::LAYER_ZONE, true);
-                castlemist::render::save_screenshot(dump_path("shot_map_zone.bmp").c_str());
+                // A map entry previews as text (world_summary); the Map Window
+                // (GW2_MAPWIN) is the map's headless shot.
             } else {
                 castlemist::render::set_show_skeleton(false); // isolate the MESH
                 castlemist::render::set_animation(-1);
