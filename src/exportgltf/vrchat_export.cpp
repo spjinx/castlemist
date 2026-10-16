@@ -5,6 +5,7 @@
 #include "castlemist/exportgltf/vrchat_export.h"
 
 #include "internal.h"
+#include "long_path.h"
 
 #include "castlemist/exportgltf/vrchat_maps.h"
 
@@ -63,10 +64,11 @@ json opt_json(const std::optional<float>& v) { return v ? json(*v) : json(); }
 json rgb_json(const std::array<float, 3>& c) { return {c[0], c[1], c[2]}; }
 
 bool write_file(const fs::path& p, const std::vector<uint8_t>& bytes) {
-    std::ofstream out(p, std::ios::binary);
+    std::ofstream out(long_path(p), std::ios::binary);
     if (!out) return false;
     out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-    return static_cast<bool>(out);
+    out.close();   // the final flush can fail: check after it
+    return !out.fail();
 }
 
 /// Writes one material's maps under `Textures/` and builds their JSON.
@@ -157,7 +159,7 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
 
     const fs::path folder = u8path(folderUtf8);
     std::error_code ec;
-    fs::create_directories(folder / "Textures", ec);
+    make_dirs(folder / "Textures", ec);
     if (ec) {
         r.error = "Could not create '" + utf8(folder / "Textures") + "': " + ec.message();
         return r;

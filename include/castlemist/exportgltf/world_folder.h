@@ -75,6 +75,9 @@ struct WorldFolderReport {
 ///   export (is_world_export_folder) with opts.overwrite set has its contents
 ///   removed first; anything else is `error = "output folder not empty: <dir>"`
 ///   (with the reason when manifest.json is there but is not a world export).
+/// - Paths past MAX_PATH (a deep folder: relative paths reach about 125
+///   characters) are written through extended-length paths (src/exportgltf/
+///   long_path.h), so nothing is dropped for its path length (review I4).
 /// - @p sky may be null (no sky); so may opts.sky be false. write_skybox's
 ///   "no sky" (or any failure of its own) gives `sky: null` and a warning.
 /// - opts.threads workers (0 = hardware_concurrency) share @p src; results are

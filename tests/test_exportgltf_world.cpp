@@ -12,6 +12,7 @@
 #include "castlemist/exportgltf/world_probe.h"
 #include "castlemist/exportgltf/world_folder.h"
 #include "world_export_synthetic.h"
+#include "long_path.h"
 #include "castlemist/world/frame.h"
 #include "castlemist/world/props.h"
 #include "castlemist/world/surface_rules.h"
@@ -1696,4 +1697,77 @@ CM_TEST(world_folder, overwrite_needs_world_manifest) {
     CHECK(export_world_folder(s, src, nullptr, prev.string(), synthetic_opts()).ok);
     CHECK(is_world_export_folder(prev.string()));
     CHECK(export_world_folder(s, src, nullptr, prev.string(), o).ok);
+}
+
+// Review I4: an output folder deep enough that the export's files pass MAX_PATH
+// (260) is written in full through extended-length paths, and an overwrite of
+// it clears it; nothing is dropped.
+CM_TEST(world_folder, deep_output_folder_past_max_path) {
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource src;
+    const fs::path top = fs::temp_directory_path() / "cm_world_export_folder_deep";
+    std::error_code ec;
+    CHECK(remove_tree(top, ec));   // a deep tree left by an earlier run (fresh_dir's remove_all cannot)
+    fs::path dir = top;
+    for (int i = 0; dir.native().size() < 230; ++i) dir /= "deep_folder_level_" + std::to_string(i);
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts());
+    CHECK(r.ok);
+    if (!r.ok) std::printf("    error: %s\n", r.error.c_str());
+    CHECK_EQ(r.modelsFailed, size_t(0));
+    CHECK_EQ(r.modelsWritten, size_t(2));
+    for (const std::string& w : r.warnings) CHECK(w.find("could not be written") == std::string::npos);
+    size_t longest = 0, files = 0;
+    CHECK(walk_files(dir, ec, [&](const fs::path& f, uint64_t) { ++files; longest = std::max(longest, f.native().size() - 4); }));
+    std::fprintf(stderr, "    %zu files, longest path %zu characters\n", files, longest);
+    CHECK(longest > 260);
+    CHECK(r.bytes.at("geometry") > 0);
+    for (const char* f : {"manifest.json", "probe.glb", "cells/c0_0_2x2.glb", "models/101/101.glb", "models/101/materials.json"})
+        CHECK(fs::exists(long_path(dir / f)));
+    std::ifstream in(long_path(dir / "manifest.json"), std::ios::binary);
+    const json man = json::parse(in, nullptr, false);
+    in.close();
+    check_valid(man, "deep folder");
+    CHECK(is_world_export_folder(dir.string()));
+    // set_manifest_fbx reaches the deep folder too.
+    { std::ofstream(long_path(dir / "models" / "101" / "101.fbx"), std::ios::binary); }
+    CHECK_EQ(set_manifest_fbx(dir.string()), size_t(1));
+    // Overwrite clears the deep tree (children past MAX_PATH) and writes it again.
+    WorldFolderOptions o = synthetic_opts();
+    o.overwrite = true;
+    const WorldFolderReport r2 = export_world_folder(s, src, nullptr, dir.string(), o);
+    CHECK(r2.ok);
+    if (!r2.ok) std::fprintf(stderr, "    overwrite error: %s\n", r2.error.c_str());
+    CHECK_FALSE(fs::exists(long_path(dir / "models" / "101" / "101.fbx")));
+    CHECK(remove_tree(top, ec));
+    CHECK_FALSE(fs::exists(top));
+}
+
+// Review I5: WorldFolderOptions::cancel stops the export between models and
+// cells (the GUI sets it when the app is closed); a cancelled export is an
+// error and leaves no manifest.json.
+CM_TEST(world_folder, cancel_stops_without_manifest) {
+    const cw::WorldScene s = tw::synthetic_world();
+    std::atomic<bool> cancel{false};
+    struct Cancelling : tw::SyntheticModelSource {
+        std::atomic<bool>* flag = nullptr;
+        std::shared_ptr<ModelPreview> load(uint32_t index, uint32_t fileId) override {
+            *flag = true;   // the user closes the app while the first model loads
+            return tw::SyntheticModelSource::load(index, fileId);
+        }
+    } src;
+    src.flag = &cancel;
+    const fs::path dir = fresh_dir("folder_cancel");
+    WorldFolderOptions o = synthetic_opts(1);
+    o.cancel = &cancel;
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), o);
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("cancelled") != std::string::npos);
+    CHECK_EQ(src.loads.load(), 1);   // nothing after the flag
+    CHECK_FALSE(fs::exists(dir / "manifest.json"));
+    CHECK_FALSE(fs::exists(dir / "cells" / "c0_0_2x2.glb"));
+    // Not set: the same export runs to the end.
+    cancel = false;
+    tw::SyntheticModelSource plain;
+    const fs::path dir2 = fresh_dir("folder_cancel_not_set");
+    CHECK(export_world_folder(s, plain, nullptr, dir2.string(), o).ok);
 }

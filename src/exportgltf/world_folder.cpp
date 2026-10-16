@@ -17,6 +17,7 @@
 #include "castlemist/world/walk.h"
 
 #include "internal.h"
+#include "long_path.h"
 
 #include <algorithm>
 #include <atomic>
@@ -54,10 +55,16 @@ struct Fatal {
     std::mutex mu;
     std::string error;
     std::atomic<bool> stop{false};
+    const std::atomic<bool>* cancel = nullptr;   ///< WorldFolderOptions::cancel
     void set(const std::string& e) {
         std::lock_guard<std::mutex> lk(mu);
         if (error.empty()) error = e;
         stop = true;
+    }
+    /// True once a fatal error or the cancel flag stops the export.
+    bool stopped() {
+        if (!stop && cancel && cancel->load()) set("export cancelled");
+        return stop;
     }
 };
 
@@ -71,7 +78,7 @@ void run_pool(size_t n, unsigned threads, Fatal& fatal, F&& body) {
     std::atomic<size_t> next{0};
     auto work = [&] {
         try {
-            for (size_t i; !fatal.stop && (i = next.fetch_add(1)) < n;) body(i);
+            for (size_t i; !fatal.stopped() && (i = next.fetch_add(1)) < n;) body(i);
         } catch (const cw::DatIoError& e) {
             fatal.set(e.what());
         } catch (const std::exception& e) {
@@ -88,7 +95,7 @@ void run_pool(size_t n, unsigned threads, Fatal& fatal, F&& body) {
 }
 
 bool write_bytes(const fs::path& p, const std::vector<uint8_t>& b) {
-    std::ofstream f(p, std::ios::binary);
+    std::ofstream f(long_path(p), std::ios::binary);
     if (!f) return false;
     f.write(reinterpret_cast<const char*>(b.data()), static_cast<std::streamsize>(b.size()));
     f.close();   // the final buffered flush can fail (disk full): check after it
@@ -274,34 +281,38 @@ void export_one_cell(const cw::WorldScene& s, const cw::Cell& c, const cw::Textu
 /// The output folder rule (world_folder.h).
 bool prepare_dir(const fs::path& d, const std::string& dirUtf8, bool overwrite, std::string& error) {
     std::error_code ec;
-    if (fs::exists(d, ec)) {
-        if (!fs::is_directory(d, ec)) { error = "output folder not empty: " + dirUtf8; return false; }
-        const bool empty = fs::directory_iterator(d, ec) == fs::directory_iterator();
+    const fs::path ld = long_path(d, true);   // the clear walks children that may be past MAX_PATH
+    if (fs::exists(ld, ec)) {
+        if (!fs::is_directory(ld, ec)) { error = "output folder not empty: " + dirUtf8; return false; }
+        const bool empty = fs::directory_iterator(ld, ec) == fs::directory_iterator();
         if (ec) { error = "cannot read output folder " + dirUtf8 + ": " + ec.message(); return false; }
         if (!empty) {
             if (!overwrite) { error = "output folder not empty: " + dirUtf8; return false; }
             if (!is_world_export_folder(dirUtf8)) {
                 error = "output folder not empty: " + dirUtf8 +
-                        (fs::exists(d / "manifest.json", ec)
+                        (fs::exists(ld / "manifest.json", ec)
                              ? " (its manifest.json is not a castlemist world export, so it is not replaced)"
                              : " (no manifest.json: not a previous world export, so it is not replaced)");
                 return false;
             }
             // manifest.json first: an interrupted clear never leaves a manifest
             // describing a folder that is half gone.
-            fs::remove(d / "manifest.json", ec);
+            fs::remove(ld / "manifest.json", ec);
             if (ec) { error = "cannot clear " + utf8(d / "manifest.json") + ": " + ec.message(); return false; }
             std::vector<fs::path> entries;
-            for (const auto& e : fs::directory_iterator(d, ec)) entries.push_back(e.path());
-            for (const fs::path& p : entries) {
-                fs::remove_all(p, ec);
-                if (ec) { error = "cannot clear " + utf8(p) + ": " + ec.message(); return false; }
-            }
+            for (auto it = fs::directory_iterator(ld, ec); !ec && it != fs::directory_iterator(); it.increment(ec))
+                entries.push_back(it->path());
+            if (ec) { error = "cannot read output folder " + dirUtf8 + ": " + ec.message(); return false; }
+            for (const fs::path& p : entries)
+                if (!remove_tree(p, ec)) {
+                    error = "cannot clear " + utf8(d / p.filename()) + ": " + ec.message();
+                    return false;
+                }
         }
     }
-    fs::create_directories(d / "cells", ec);
-    if (!ec) fs::create_directories(d / "models", ec);
-    if (!ec) fs::create_directories(d / "textures", ec);   // the manifest names it even when empty
+    make_dirs(d / "cells", ec);
+    if (!ec) make_dirs(d / "models", ec);
+    if (!ec) make_dirs(d / "textures", ec);   // the manifest names it even when empty
     if (ec) { error = "cannot create " + dirUtf8 + ": " + ec.message(); return false; }
     return true;
 }
@@ -309,26 +320,24 @@ bool prepare_dir(const fs::path& d, const std::string& dirUtf8, bool overwrite, 
 /// Folder size by kind (WorldFolderReport::bytes).
 std::map<std::string, uint64_t> folder_bytes(const fs::path& d) {
     std::map<std::string, uint64_t> b = {{"prop-textures", 0}, {"terrain", 0}, {"geometry", 0}, {"sky", 0}};
+    const fs::path ld = long_path(d, true);
     std::error_code ec;
-    for (auto it = fs::recursive_directory_iterator(d, ec); !ec && it != fs::recursive_directory_iterator();
-         it.increment(ec)) {
-        if (!it->is_regular_file(ec)) continue;
-        const fs::path rel = it->path().lexically_relative(d);
+    walk_files(d, ec, [&](const fs::path& f, uint64_t n) {
+        const fs::path rel = f.lexically_relative(ld);
         const std::string top = rel.empty() ? std::string() : utf8(*rel.begin());
-        const std::string ext = utf8(it->path().extension());
-        const uint64_t n = it->file_size(ec);
+        const std::string ext = utf8(f.extension());
         if (top == "sky") b["sky"] += n;
         else if (ext == ".glb" || ext == ".fbx") b["geometry"] += n;
         else if (ext == ".png" && (top == "models" || top == "textures")) b["prop-textures"] += n;
         else if (ext == ".png" && top == "cells") b["terrain"] += n;
-    }
+    });
     return b;
 }
 
 /// The manifest's sky block from what write_skybox wrote: the first mode
 /// written in its own folder is the default; its equirect when baked.
 json sky_block(const fs::path& dir) {
-    std::ifstream in(dir / "sky" / "sky.json", std::ios::binary);
+    std::ifstream in(long_path(dir / "sky" / "sky.json"), std::ios::binary);
     if (!in) return nullptr;
     json sj;
     try { sj = json::parse(in); } catch (...) { return nullptr; }
@@ -372,6 +381,7 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
                                               : std::max(1u, std::thread::hardware_concurrency());
     std::vector<std::string> warnings;
     Fatal fatal;
+    fatal.cancel = opts.cancel;
 
     // 1. The cells the region keeps, without stats (no splits): their props name the needed models.
     //    A region that keeps nothing is refused before the folder is touched.
@@ -402,7 +412,7 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
              [&](size_t k) { export_one_model(scene, needed[k], src, dir, opts, pool, mouts[k]); });
     src.release_textures();   // W9: the models are written; their textures are not needed again
     lap("models");
-    if (fatal.stop) { rep.error = fatal.error; return rep; }
+    if (fatal.stopped()) { rep.error = fatal.error; return rep; }
 
     // 3. partition_cells from the measurements.
     cw::CellStats st;
@@ -449,7 +459,7 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
              [&](size_t k) { terrainTex[k] = src.texture(texIds[k], opts.maxTextureSize); });
     src.release_textures();   // W9: terrainTex holds them until the cells are baked
     lap("terrain-textures");
-    if (fatal.stop) { rep.error = fatal.error; return rep; }
+    if (fatal.stopped()) { rep.error = fatal.error; return rep; }
     std::unordered_map<uint32_t, const CappedTexture*> texById;
     for (size_t k = 0; k < texIds.size(); ++k)
         if (terrainTex[k] && !terrainTex[k]->mips.empty()) texById.emplace(texIds[k], terrainTex[k].get());
@@ -464,7 +474,7 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
         export_one_cell(scene, plan.cells[k], lookup, chunkAt, dir, opts, fatal, couts[k]);
     });
     lap("cells");
-    if (fatal.stop) { rep.error = fatal.error; return rep; }
+    if (fatal.stopped()) { rep.error = fatal.error; return rep; }
     std::vector<ManifestCell> mcells;
     size_t unbaked = 0;
     for (const CellOut& c : couts) {
@@ -491,6 +501,7 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
         else if (skyJson.is_null()) warnings.push_back("sky: sky.json names no written mode; sky: null");
     }
     lap("sky");
+    if (fatal.stopped()) { rep.error = fatal.error; return rep; }
 
     // 7. The probe and the spawn: a ray down (+Z) from above the region centre.
     std::string err;
@@ -518,7 +529,8 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
         if (spawn.is_null()) warnings.push_back("spawn: no ground under the region centre; spawn: null");
     }
 
-    // 8. The manifest, last.
+    // 8. The manifest, last (not once cancelled).
+    if (fatal.stopped()) { rep.error = fatal.error; return rep; }
     size_t animated = 0, resolved = 0, failedDecode = 0;
     std::unordered_map<uint32_t, std::string> clipOf;
     for (const ManifestCell& mc : mcells)
@@ -558,13 +570,13 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
     {
         const fs::path tmp = dir / "manifest.json.tmp";
         {
-            std::ofstream f(tmp, std::ios::binary);
+            std::ofstream f(long_path(tmp), std::ios::binary);
             f << man.dump(2) << '\n';
             f.close();   // check after the final flush (disk full), never before
             if (f.fail()) { rep.error = "cannot write " + utf8(tmp); return rep; }
         }
         std::error_code ec;
-        fs::rename(tmp, dir / "manifest.json", ec);
+        fs::rename(long_path(tmp), long_path(dir / "manifest.json"), ec);
         if (ec) { rep.error = "cannot rename " + utf8(tmp) + ": " + ec.message(); return rep; }
         manifestWritten = true;
     }
@@ -603,7 +615,7 @@ WorldFolderReport export_world_folder(const cw::WorldScene& scene, ModelSource& 
     // Never throws (spec "Error handling"); a failed export leaves no manifest.json.
     if (manifestWritten) {
         std::error_code ec;
-        fs::remove(u8path(dirUtf8) / "manifest.json", ec);
+        fs::remove(long_path(u8path(dirUtf8) / "manifest.json"), ec);
     }
     WorldFolderReport rep;
     rep.dir = dirUtf8;
@@ -613,7 +625,7 @@ WorldFolderReport export_world_folder(const cw::WorldScene& scene, ModelSource& 
 
 bool is_world_export_folder(const std::string& dirUtf8) {
     std::error_code ec;
-    const fs::path p = u8path(dirUtf8) / "manifest.json";
+    const fs::path p = long_path(u8path(dirUtf8) / "manifest.json");
     if (!fs::is_regular_file(p, ec)) return false;
     std::ifstream in(p, std::ios::binary);
     if (!in) return false;

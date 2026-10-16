@@ -14,6 +14,14 @@ with Poiyomi Toon 10, importing the Spirit Vale export (1151420; 66 cells at the
    `blender -b --factory-startup -P tools/blender/castlemist_world.py -- --to-fbx <dir>`.
    Either one records the `.fbx` paths in `manifest.json`, which is where the
    importer looks for them.
+
+   Path length: castlemist writes the folder through extended-length paths, so
+   a deep output folder loses nothing (relative paths inside it reach about 125
+   characters). Blender and Unity are not castlemist: unless Windows long paths
+   are enabled (the `LongPathsEnabled` registry switch), keep the export's
+   absolute path, and the project's `Assets/<export>` path, under about 130
+   characters, or Blender's `--to-fbx` and Unity's import can fail on the
+   deepest files.
 2. Copy `tools/unity/Castlemist` into the project's `Assets/`. Then copy the
    export folder into `Assets/`. Do it in that order, so the postprocessor
    sets the texture roles and `bakeAxisConversion` on the first import. The

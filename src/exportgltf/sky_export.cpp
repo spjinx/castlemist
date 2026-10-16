@@ -7,6 +7,7 @@
 #include "castlemist/extract/entry_extractor.h"
 #include "castlemist/format/dds.h"
 #include "castlemist/native/cmp_decompress_method0.hpp"
+#include "long_path.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -228,7 +229,7 @@ SkyExportReport write_skybox(const SkyInputs& in, const std::string& parentDir, 
         rep.error = "cannot clear " + rep.folder + ": " + ec.message();
         return rep;
     }
-    fs::create_directories(folder, ec);
+    make_dirs(folder, ec);
     if (ec) {
         rep.error = "cannot create " + rep.folder + ": " + ec.message();
         return rep;
@@ -337,7 +338,7 @@ SkyExportReport write_skybox(const SkyInputs& in, const std::string& parentDir, 
 
     json sky = {{"map", in.mapFileId}, {"envVersion", s.envVersion}, {"modes", modes}, {"warnings", top}};
     {
-        std::ofstream f(folder / "sky.json", std::ios::binary);
+        std::ofstream f(long_path(folder / "sky.json"), std::ios::binary);
         f << sky.dump(2) << '\n';
         if (!f) push_unique(top, "sky.json not written");
     }

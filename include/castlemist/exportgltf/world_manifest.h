@@ -19,6 +19,7 @@
 #include "castlemist/world/terrain_blend.h"
 #include "castlemist/world/world_scene.h"
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -58,6 +59,10 @@ struct WorldFolderOptions {
     bool srgbColour = true;
     float unityScale = 0.0254f;          ///< UNPROVEN, gltf_export.h:57 "GW2 inches" (spec D7)
     bool sky = true, collision = true, overwrite = false;
+    /// When set and it becomes true, export_world_folder stops at the next
+    /// model, cell or stage with error "export cancelled" and no manifest.json
+    /// (review I5: the GUI sets it when the app is closed during an export).
+    const std::atomic<bool>* cancel = nullptr;
 };
 
 /// @brief One entry of the manifest's `settings`: status is "UNPROVEN",

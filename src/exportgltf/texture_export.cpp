@@ -6,6 +6,7 @@
 ///        world export's model files): then they are PNG files beside it.
 
 #include "internal.h"
+#include "long_path.h"
 
 #include <algorithm>
 #include <cmath>
@@ -221,18 +222,18 @@ bool SharedImagePool::ensure(uint32_t fileId, const std::function<std::vector<ui
         err = "Could not encode image " + file_name(fileId) + ".";
     } else {
         std::error_code ec;
-        fs::create_directories(dir, ec);
+        make_dirs(dir, ec);
         {
-            std::ofstream out(tmp, std::ios::binary);
+            std::ofstream out(long_path(tmp), std::ios::binary);
             if (out) out.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
             out.close();
             if (!out) err = "Could not write image '" + p.dir + "/" + file_name(fileId) + ".tmp'.";
         }
         if (err.empty()) {
-            fs::rename(tmp, dst, ec);
+            fs::rename(long_path(tmp), long_path(dst), ec);
             if (ec) err = "Could not rename image '" + p.dir + "/" + file_name(fileId) + "': " + ec.message();
         }
-        if (!err.empty()) fs::remove(tmp, ec);
+        if (!err.empty()) fs::remove(long_path(tmp), ec);
     }
     published = err.empty();
     if (!published && error) *error = err;

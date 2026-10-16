@@ -11,6 +11,7 @@
 #include "castlemist/world/terrain_mesh.h"
 
 #include "internal.h"
+#include "long_path.h"
 
 #include <algorithm>
 #include <array>
@@ -272,9 +273,9 @@ bool write_cell_gltf(const std::string& glbPathUtf8, const cw::Cell& c, const Ce
 
     const fs::path outPath = fs::path(std::u8string(glbPathUtf8.begin(), glbPathUtf8.end()));
     std::error_code ec;
-    if (outPath.has_parent_path()) fs::create_directories(outPath.parent_path(), ec);
+    if (outPath.has_parent_path()) make_dirs(outPath.parent_path(), ec);
     const std::vector<uint8_t> glb = w.finish();
-    std::ofstream out(outPath, std::ios::binary);
+    std::ofstream out(long_path(outPath), std::ios::binary);
     if (!out) return fail("Could not open '" + glbPathUtf8 + "' for writing.");
     out.write(reinterpret_cast<const char*>(glb.data()), static_cast<std::streamsize>(glb.size()));
     out.close();

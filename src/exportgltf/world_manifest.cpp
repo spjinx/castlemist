@@ -11,6 +11,7 @@
 #include "castlemist/world/frame.h"
 #include "castlemist/world/surface_rules.h"
 #include "castlemist/world/terrain_bake.h"
+#include "long_path.h"
 
 #include <algorithm>
 #include <cassert>
@@ -532,7 +533,7 @@ size_t set_manifest_fbx(const std::string& exportDirUtf8) {
     const fs::path dir = fs::path(std::u8string(exportDirUtf8.begin(), exportDirUtf8.end()));
     json man;
     {
-        std::ifstream f(dir / "manifest.json", std::ios::binary);
+        std::ifstream f(long_path(dir / "manifest.json"), std::ios::binary);
         if (!f) return 0;
         man = json::parse(f, nullptr, false);
     }
@@ -544,7 +545,7 @@ size_t set_manifest_fbx(const std::string& exportDirUtf8) {
         const std::string glb = block["glb"].get<std::string>();
         const fs::path rel = fs::path(std::u8string(glb.begin(), glb.end())).replace_extension(".fbx");
         std::error_code ec;
-        if (fs::is_regular_file(dir / rel, ec)) {
+        if (fs::is_regular_file(long_path(dir / rel), ec)) {
             const std::u8string u = rel.generic_u8string();
             block["fbx"] = std::string(u.begin(), u.end());
             ++set;
@@ -559,19 +560,19 @@ size_t set_manifest_fbx(const std::string& exportDirUtf8) {
 
     const fs::path tmp = dir / "manifest.json.tmp";
     {
-        std::ofstream f(tmp, std::ios::binary);
+        std::ofstream f(long_path(tmp), std::ios::binary);
         f << man.dump(2) << '\n';
         f.close();
         if (f.fail()) {
             std::error_code ec;
-            fs::remove(tmp, ec);
+            fs::remove(long_path(tmp), ec);
             return 0;
         }
     }
     std::error_code ec;
-    fs::rename(tmp, dir / "manifest.json", ec);
+    fs::rename(long_path(tmp), long_path(dir / "manifest.json"), ec);
     if (ec) {
-        fs::remove(tmp, ec);
+        fs::remove(long_path(tmp), ec);
         return 0;
     }
     return set;

@@ -2,14 +2,15 @@
 /// @brief Equirect and cube-face writers over a radiance callback.
 
 #include "castlemist/exportgltf/sky_project.h"
+#include "internal.h"
+#include "long_path.h"
 
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <system_error>
 
-// texture_export.cpp already defines STB_IMAGE_WRITE_IMPLEMENTATION for this layer.
-#include "stb_image_write.h"
 
 namespace castlemist::exportgltf::sky {
 
@@ -106,13 +107,20 @@ bool write_png(const Image& img, const std::string& path, std::string& error) {
     std::filesystem::path parent = std::filesystem::path(path).parent_path();
     if (!parent.empty()) {
         std::error_code ec;
-        std::filesystem::create_directories(parent, ec);
+        make_dirs(parent, ec);
         if (ec) {
             error = "cannot create " + parent.string() + ": " + ec.message();
             return false;
         }
     }
-    if (!stbi_write_png(path.c_str(), img.width, img.height, 4, img.rgba.data(), img.width * 4)) {
+    // Encoded in memory and written through long_path(), so a sky folder past
+    // MAX_PATH is written too (review I4).
+    const std::vector<uint8_t> png = encode_png_pixels(img.width, img.height, 4, img.rgba);
+    std::ofstream out(long_path(std::filesystem::path(path)), std::ios::binary);
+    if (!png.empty() && out)
+        out.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+    out.close();
+    if (png.empty() || out.fail()) {
         error = "failed to write PNG (bad path, or disk/permission error)";
         return false;
     }

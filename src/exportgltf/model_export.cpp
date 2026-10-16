@@ -2,6 +2,7 @@
 /// @brief Orchestrates one ModelPreview -> one .glb document (the single-model export path).
 
 #include "internal.h"
+#include "long_path.h"
 
 #include <filesystem>
 #include <fstream>
@@ -25,7 +26,7 @@ GltfExportResult export_model_gltf(const ModelPreview& model, const std::string&
     std::string stem = outPath.stem().string();
 
     std::error_code ec;
-    fs::create_directories(outPath.parent_path(), ec);
+    make_dirs(outPath.parent_path(), ec);
 
     GltfWriter w;
 
@@ -92,7 +93,7 @@ GltfExportResult export_model_gltf(const ModelPreview& model, const std::string&
     }
 
     std::vector<uint8_t> glb = w.finish();
-    std::ofstream out(outPath, std::ios::binary);
+    std::ofstream out(long_path(outPath), std::ios::binary);
     if (!out) {
         result.error = "Could not open '" + glbPath + "' for writing.";
         return result;

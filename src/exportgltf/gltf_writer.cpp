@@ -11,6 +11,7 @@
 ///     raw buffer bytes, zero-padded to a multiple of 4 bytes.
 
 #include "internal.h"
+#include "long_path.h"
 
 #include <cctype>
 #include <cstring>
@@ -107,8 +108,8 @@ int GltfWriter::add_or_reuse_texture(uint32_t fileId, const std::vector<uint8_t>
         const std::string leaf = stem + ".png";
         const fs::path dir = fs::path(std::u8string(imageDir_.begin(), imageDir_.end()));
         std::error_code ec;
-        fs::create_directories(dir, ec);
-        std::ofstream out(dir / fs::path(std::u8string(leaf.begin(), leaf.end())), std::ios::binary);
+        make_dirs(dir, ec);
+        std::ofstream out(long_path(dir / fs::path(std::u8string(leaf.begin(), leaf.end()))), std::ios::binary);
         if (out) out.write(reinterpret_cast<const char*>(pngBytes.data()), static_cast<std::streamsize>(pngBytes.size()));
         out.close();  // flush now, so a failed write shows in the stream state
         if (!out) {
