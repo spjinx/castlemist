@@ -245,3 +245,24 @@ left as written; this list wins where they disagree.
 - **Not tried by hand.** Interactive input (fly, walk, pick, layer toggles, the
   prompt) has only been exercised by the headless capture and the unit tests,
   not driven by hand.
+- **Shader view and sky (2026-10-16).** A **Shader** toolbar button adds
+  `WorldShading::Shader` (`GW2_MAPWIN_SHADING=shader`). Static props within
+  `WorldMaterialSettings::shaderRange` (6000 units) of the camera, at most
+  `shaderMaxInstances` (1500) nearest, draw with their AMAT bgfx DXBC shaders
+  (`src/render/world_game.*`), lit by the map's env rig and the main window's
+  light pre-pass over those instances. Everything else keeps the Materials
+  look and is counted on the status line: terrain and water (no game shader is
+  wired for them), animated props, props whose traced materials are pending or
+  unusable, and props past the cap. The game shaders need one draw per
+  instance; all of Queensdale through them costs ~23 ms a frame, hence the
+  range and cap. The materials are traced by a separate below-normal-priority
+  pool that starts the first time Shader is chosen; GPU objects are built
+  under a 4 ms per-frame budget. `ModelColor` is set to 0.5 (the neutral of
+  the foliage shaders' `albedo * ModelColor * 2`, UNPROVEN). A **Sky** button
+  cycles Day / Night / Off (`GW2_MAPWIN_SKY`): sky modes 0 and 1 are baked once
+  per map on a worker with the skybox export's sampler and drawn behind the
+  world from the inverse view-projection, under Materials and Shader only
+  (Geometry stays the flat diagnostic look). Below the horizon, where the bake
+  has no data, it fades to the horizon colour, which is also the fog colour.
+  The world's light does not change with the sky mode (no proven link between
+  the lighting presets and the sky modes).

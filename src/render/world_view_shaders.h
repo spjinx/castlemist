@@ -544,9 +544,14 @@ float4 PSMain(VSOut i) : SV_Target {
 ///        the equirect as render_equirect lays it out: u = 0.5 - atan2(z, x)
 ///        / 2pi, v = acos(y) / pi. The texels are display values, written as
 ///        they are (no gamma: the bake already is what the export shows).
+///        Below the horizon the bake has no data of its own (the hemicube is
+///        the upper half; render_equirect smears the horizon row down), so
+///        castlemist's choice: it fades to the horizon's mean colour (the
+///        fog colour) within ~7 degrees under the horizon.
 inline constexpr const char* kSky = R"(
 cbuffer SkyCB : register(b0) {
     row_major float4x4 uInvViewProj;
+    float4 uHorizon;   // world_sky_horizon of this mode, display values
 };
 Texture2D    tSky : register(t0);
 SamplerState sSky : register(s0);
@@ -570,7 +575,8 @@ float4 PSMain(VSOut i) : SV_Target {
     float3 m = normalize(w.xyz / w.w);
     float3 u = float3(m.x, -m.z, m.y);
     float2 uv = float2(0.5 - atan2(u.z, u.x) / (2.0 * kPi), acos(clamp(u.y, -1.0, 1.0)) / kPi);
-    return float4(tSky.SampleLevel(sSky, uv, 0).rgb, 1.0);
+    float3 c = tSky.SampleLevel(sSky, uv, 0).rgb;
+    return float4(lerp(c, uHorizon.rgb, saturate(-u.y * 8.0)), 1.0);
 }
 )";
 

@@ -235,6 +235,10 @@ int mapwin_start_shader_models(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> d
     for (int w = 0; w < workers; ++w) {
         std::thread([wnd, gen, dat, queue, claims]() {
             MapWinLiveThread live;
+            // Below normal: with the model pool still loading, these threads
+            // oversubscribe the cores, and the UI thread's uploads (add_models,
+            // add_textures) were preempted into 30-70 ms stalls (Spirit Vale).
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
             try {
                 const castlemist::world::WorldScene& scene = *queue->scene;
                 auto batch = std::make_unique<MapWinShaderMsg>();

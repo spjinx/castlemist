@@ -170,9 +170,12 @@ CM_TEST(world_sky, view_draws_the_sky_behind_an_empty_world) {
     CHECK(px[1] < 10);
     CHECK(shot_pixel(v, W, H, 3 * W / 4, H / 4, px));   // upper right: south of east
     CHECK(px[1] > 245);
-    CHECK(shot_pixel(v, W, H, W / 4, 3 * H / 4, px));   // lower: below the horizon
-    CHECK(px[0] < 10);
-    CHECK_EQ(px[2], 200);
+    CHECK(shot_pixel(v, W, H, W / 4, 3 * H / 4, px));   // well below the horizon: its mean colour
+    WorldSkyImage day = quadrant_sky(0, 200);
+    float hz[3];
+    world_sky_horizon(day, 0.04f, hz);
+    CHECK_NEAR(px[0], static_cast<int>(hz[0] * 255.0f + 0.5f), 2);
+    CHECK_NEAR(px[2], static_cast<int>(hz[2] * 255.0f + 0.5f), 2);
 
     v.set_sky_time(WorldSkyTime::Night);
     CHECK_EQ(v.sky_mode(), 1);

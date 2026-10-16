@@ -104,8 +104,8 @@ struct WorldViewStats {
     int shaderInstances = 0, shaderDraws = 0;
     int shaderPending = 0, shaderNoShader = 0, shaderAnimated = 0, shaderCapped = 0;
     /// Models whose game materials are built on the GPU / failed to build
-    /// (cumulative since set_world); materials that sample the light buffer
-    /// and get the flat stand-in (no light pre-pass in the Map window).
+    /// (cumulative since set_world); built submeshes whose shader samples the
+    /// light buffer (served by the Shader pass's light pre-pass).
     int shaderModels = 0, shaderModelsFailed = 0, shaderLightStandIns = 0;
     /// Distinct game VS / PS objects created (cache by DXBC bytes).
     int shaderPrograms = 0;

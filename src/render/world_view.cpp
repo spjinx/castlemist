@@ -298,7 +298,8 @@ struct WorldView::Impl {
     struct SkyGPU {
         int mode = 0;
         ComPtr<ID3D11ShaderResourceView> srv;
-        float horizonLinear[3] = {0, 0, 0};   ///< world_sky_horizon, decoded to linear (the fog lerps in linear)
+        float horizon[3] = {0, 0, 0};         ///< world_sky_horizon, display values (kSky's lower hemisphere)
+        float horizonLinear[3] = {0, 0, 0};   ///< the same, decoded to linear (the fog lerps in linear)
     };
     std::vector<SkyGPU> skies;
     WorldSkyTime skyTime = WorldSkyTime::Day;
@@ -529,7 +530,7 @@ struct WorldView::Impl {
 
         D3D11_BUFFER_DESC bd{};
         bd.Usage = D3D11_USAGE_DYNAMIC;
-        bd.ByteWidth = sizeof(Mat4);
+        bd.ByteWidth = sizeof(Mat4) + 16;   // SkyCB: inverse view-projection, horizon colour
         bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         if (FAILED(dev->CreateBuffer(&bd, nullptr, &cbSky))) return false;
@@ -740,6 +741,8 @@ struct WorldView::Impl {
         D3D11_MAPPED_SUBRESOURCE ms;
         if (FAILED(ctx->Map(cbSky.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return;
         std::memcpy(ms.pData, &inv, sizeof inv);
+        const float hz[4] = {k.horizon[0], k.horizon[1], k.horizon[2], 1.0f};
+        std::memcpy(static_cast<uint8_t*>(ms.pData) + sizeof inv, hz, sizeof hz);
         ctx->Unmap(cbSky.Get(), 0);
         ctx->IASetInputLayout(nullptr);
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -1747,7 +1750,10 @@ void WorldView::set_sky(const std::vector<WorldSkyImage>& modes) {
             continue;
         float hz[3];
         world_sky_horizon(m, 0.04f, hz);
-        for (int c = 0; c < 3; ++c) k.horizonLinear[c] = std::pow(hz[c], 2.2f);   // the shaders gamma-encode by 1/2.2
+        for (int c = 0; c < 3; ++c) {
+            k.horizon[c] = hz[c];
+            k.horizonLinear[c] = std::pow(hz[c], 2.2f);
+        }   // the shaders gamma-encode by 1/2.2
         d->skies.push_back(std::move(k));
     }
 }
