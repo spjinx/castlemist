@@ -24,6 +24,13 @@ Sub-project 1's rule still holds: **no invented conventions**. A value the data
 does not settle is a labelled setting with its source, written into the
 manifest's `settings` and `warnings`, or it is left out.
 
+**Data only, no client.** By the user's rule of 2026-10-16 ("avoid direct game
+client links as much as possible"), this sub-project settles everything from the
+dat through castlemist's own readers: no disassembly or IDB work on
+`Gw2-64.exe`, no hooks, no emulator, no live-client or frame captures. Where
+the data cannot settle a value, it stays a labelled UNPROVEN setting. The
+collider transforms in `havk` are the ground truth for the scatter.
+
 **Numbering.** The world export spec's "Out of scope" names Udon and gameplay
 data as sub-project 5. Foliage takes number 5, and Udon moves to 6. The world
 export spec's "Zone models" out-of-scope line is what this sub-project picks up.
@@ -358,14 +365,20 @@ What this proves and what it does not:
 
 **Work, in order.**
 
-1. **Client code.** Find, in the `Gw2-64.exe` IDB the repo already uses
-   (frame §5.1), the function that expands a zone layer into instances, and
-   transcribe its RNG and placement maths.
-   - Ways in: the code that reads `PackMapZoneV23.flags` or `encodeData`, the
-     layer's `scaleRange`, `rotRange` or `instanceScaleJitter`, or the
-     `fadeRange` use.
-   - The transcription is recorded as a dated amendment to
-     `docs/research/gw2-terrain-to-unity.md` §1.3, with addresses.
+1. **Fit the rule from the data.** No client code (see "Data only, no
+   client"). Use the 4750 anchor-matched collider transforms as labelled
+   samples, against the zone's `seed`, the placement's index and cell, and the
+   layer's `scaleRange`, `rotRange`, `instanceScaleJitter`, `encodeData` and
+   `offsetData`.
+   - Candidate generators: common small RNGs (LCG variants, xorshift, MT19937,
+     splitmix and hash-of-index mixes) seeded from the zone seed, placement
+     index or cell.
+   - Draw orders to try: offset, yaw and scale, in each order.
+   - Data fields to test as precomputed placements: `offsetData`, `encodeData`.
+   - Stop at the first rule that passes step 2. Otherwise record what was
+     tried.
+   - The findings are recorded as a dated amendment to
+     `docs/research/gw2-terrain-to-unity.md` §1.3.
 2. **Validate against the colliders.** On all three maps, the rule must
    reproduce every anchor-matched collider entry (4378 + 88 + 284 = 4750):
    - x and y within 0.01 units;
@@ -378,7 +391,7 @@ What this proves and what it does not:
    colliders are game-computed placements of the same scatter (M4: collided
    placements are an ordinary subset by model), so a rule that matches all
    4750 is taken as proven.
-3. **Hypotheses to test even without the client code.** Each is labelled
+3. **Hypotheses to test alongside the fit.** Each is labelled
    `measured` if it holds on all 4750 entries within the tolerances above, and
    UNPROVEN otherwise.
    - **Tilt** = the terrain normal at the instance (from `terrain_height_at`'s
@@ -926,8 +939,8 @@ checklist items.
     result.
   - u and v are in [−24, 24), yaw in `rotRange.z`, scale in `scaleRange`.
   - No placement with a collider makes a second instance.
-  - The exact rule's transcription has its own unit vectors from the client
-    code.
+  - The exact rule, if found, has its own unit vectors taken from the
+    collider samples.
 - **Thinning.** `fmix32` known vectors. Kept counts at density 0, 0.5 and 1.
   Colliders are always kept.
 
@@ -1053,7 +1066,7 @@ shared with a prop.
 - **Phase 2.**
   - `zoneScatter` is `exact` with the reproduction passing, or
     `densityMatched` with every assumption labelled.
-  - The client-code research is recorded in the research note, as found or as
+  - The data-fit research is recorded in the research note, as found or as
     not found.
   - The Map Window budgets hold on Queensdale, or are recorded as missed with
     the lever taken.
@@ -1084,8 +1097,8 @@ shared with a prop.
    wind flag, CLI `--foliage`, schema and validator for records.
 7. Importers, phase-1 level: Unity tree prefab instances, Blender geometry
    nodes, with the headless Blender test.
-8. Phase 2 research: client scatter code, transcription, research note
-   amendment.
+8. Phase 2 research: fit the scatter rule from the data against the colliders,
+   and write the research note amendment.
 9. Phase 2 implementation: `zone_scatter` (exact, or density with the step-3
    hypotheses tested), pure tests and the dat reproduction test.
 10. Map Window at full density: measure the budgets, take levers if needed,
@@ -1104,14 +1117,14 @@ shared with a prop.
 
 | item | status | what would settle it |
 |---|---|---|
-| the client uses the anchor and slot rule | data-measured, client unread | the client's zone expansion code (phase 2, step 1) |
-| U1. visual transform = prop rule at `scale` | UNPROVEN, supported by M3 containment | the client's zone-instance transform, or a frame capture |
-| U2. one instance per type 1-2 placement | UNPROVEN (type 3 measured) | client code; else density fallback |
+| the client uses the anchor and slot rule | data-measured | the 4750-collider reproduction (phase 2, step 2) |
+| U1. visual transform = prop rule at `scale` | UNPROVEN, supported by M3 containment | the collider-to-model containment over all 4750 entries |
+| U2. one instance per type 1-2 placement | UNPROVEN (type 3 measured) | the data fit; else density fallback |
 | U3. tilt is ground alignment | hypothesis (M5) | D5 step 3 on 4750 colliders |
-| U4. walk position `k − 1` against column `c − 1` at row starts | open (no type-3 placement at a row start) | client code, or a type-1 visual check at a row start |
+| U4. walk position `k − 1` against column `c − 1` at row starts | open (no type-3 placement at a row start) | a type-1 visual check at a row start |
 | exact scatter (offset, yaw, scale, z, RNG, seed) | UNPROVEN | D5 steps 1-2 |
-| flag bit 0, `layerFlags`, `zoneFlags`, `noise`, `zOffsets`, `encodeData`, `collideData`, `offsetData` meaning | UNPROVEN | client code |
-| `fadeRange` as camera distance in map units | UNPROVEN | client code or a capture |
+| flag bit 0, `layerFlags`, `zoneFlags`, `noise`, `zOffsets`, `encodeData`, `collideData`, `offsetData` meaning | UNPROVEN | the data fit (D5 step 1); else stays a setting |
+| `fadeRange` as camera distance in map units | UNPROVEN | a visual check against the export at known distances |
 | 107 Queensdale collider scales outside `scaleRange` | unexplained | D5 |
 | 3 hand-placed Queensdale entries | linked by geometry; not scatter | none needed |
 | Unity: heightmap row order, texel centre, tree yaw sign, billboard distance with LODGroup prefabs, scaled-parent Terrain | UNPROVEN | terrain frame check, checklist |
@@ -1149,6 +1162,6 @@ shared with a prop.
 3. **PC density.** Default: All (every placement), with the Density knob.
 4. **Quest.** Default preset: collider trees only, Distance 0.5. Alternative:
    all trees.
-5. **Phase 2 fallback.** If the client's scatter code is not found or does not
-   reproduce the colliders, ship `densityMatched`, labelled UNPROVEN. Default:
+5. **Phase 2 fallback.** If no rule fitted from the data reproduces the
+   colliders, ship `densityMatched`, labelled UNPROVEN. Default:
    yes, rather than stop at phase 1.
