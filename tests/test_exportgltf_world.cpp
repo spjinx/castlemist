@@ -1771,3 +1771,33 @@ CM_TEST(world_folder, cancel_stops_without_manifest) {
     const fs::path dir2 = fresh_dir("folder_cancel_not_set");
     CHECK(export_world_folder(s, plain, nullptr, dir2.string(), o).ok);
 }
+
+// Review M2: a model with no drawable meshes is failed in the manifest (as
+// before) but counted apart in the report, so the GUI does not call it broken.
+CM_TEST(world_folder, empty_model_counted_apart) {
+    const cw::WorldScene s = tw::synthetic_world();
+    struct Emptying : tw::SyntheticModelSource {
+        std::shared_ptr<ModelPreview> load(uint32_t index, uint32_t fileId) override {
+            auto m = tw::SyntheticModelSource::load(index, fileId);
+            if (m && index == 0) m->meshes.clear();
+            return m;
+        }
+    } src;
+    const fs::path dir = fresh_dir("folder_empty_model");
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts());
+    CHECK(r.ok);
+    CHECK_EQ(r.modelsFailed, size_t(1));
+    CHECK_EQ(r.modelsEmpty, size_t(1));
+    CHECK(report_json(r)["counts"]["modelsEmpty"] == json(1));
+    const json man = read_json(dir / "manifest.json");
+    check_valid(man, "empty model");
+    CHECK(man["models"][0]["status"] == json("failed"));
+    CHECK(man["models"][0]["error"] == json("This model has no drawable meshes to export."));
+    // A model that did not load is failed and not empty.
+    tw::SyntheticModelSource failing;
+    failing.failIndex = 0;
+    const fs::path dir2 = fresh_dir("folder_empty_model_failed");
+    const WorldFolderReport r2 = export_world_folder(s, failing, nullptr, dir2.string(), synthetic_opts());
+    CHECK_EQ(r2.modelsFailed, size_t(1));
+    CHECK_EQ(r2.modelsEmpty, size_t(0));
+}

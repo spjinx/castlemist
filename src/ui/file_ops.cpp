@@ -720,6 +720,8 @@ void on_world_export_done(HWND hwnd, LPARAM lparam) {
     std::string msg = "Wrote the folder:\n" + e.dir + "\n\nManifest: " + e.manifest +
                       "\nCells: " + std::to_string(e.cells) +
                       ", models: " + std::to_string(e.modelsWritten) + " (failed " + std::to_string(e.modelsFailed) +
+                      (e.modelsEmpty ? ", " + std::to_string(e.modelsEmpty) + " of them empty: no drawable meshes"
+                                     : std::string()) +
                       "), props: " + std::to_string(e.propsWritten) + " (skipped " + std::to_string(e.propsSkipped) +
                       "), unbaked chunks: " + std::to_string(e.chunksUnbaked) +
                       ", warnings: " + std::to_string(e.warnings.size());
@@ -733,9 +735,9 @@ void on_world_export_done(HWND hwnd, LPARAM lparam) {
                "\nThe folder is still valid. " + std::string(castlemist::ripper::kWorldFbxAdvice) + ".";
     }
     msg += "\n\nTook " + std::string(took) + ". export.log in the folder has the full report.";
-    // Failures and the FBX step decide the icon, not the warning count: every real
-    // map carries per-material notes (review M10).
-    const bool clean = e.modelsFailed == 0 && r.fbxOk;
+    // Real failures and the FBX step decide the icon, not the warning count (every
+    // real map carries per-material notes) nor empty models (review M10, M2).
+    const bool clean = e.modelsFailed == e.modelsEmpty && r.fbxOk;
     MessageBoxW(hwnd, utf8_to_wide(msg).c_str(), L"World export finished", clean ? MB_ICONINFORMATION : MB_ICONWARNING);
 }
 

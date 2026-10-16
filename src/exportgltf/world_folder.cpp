@@ -111,6 +111,7 @@ struct ModelOut {
     std::vector<uint32_t> textures;                    ///< distinct texture fileIds
     std::unordered_map<uint32_t, uint64_t> texBytes;   ///< RGBA8 + mips at the cap
     std::vector<uint64_t> clipTokens, allTokens;       ///< animClipTokens, animationTokens
+    bool empty = false;                                ///< loaded, but no drawable meshes
 };
 
 /// Fills the preview's textures from the capped decode, measures it, writes
@@ -124,6 +125,11 @@ void export_one_model(const cw::WorldScene& scene, uint32_t mi, ModelSource& src
     mm.fileId = fileId;
     std::shared_ptr<ModelPreview> m = src.load(mi, fileId);
     if (!m) { mm.error = "model did not load"; return; }
+    if (m->meshes.empty()) {   // empty, not broken: counted apart (review M2)
+        mm.error = "This model has no drawable meshes to export.";
+        out.empty = true;
+        return;
+    }
     try {
         // Textures: mip 0 of the capped decode, as the map window draws them.
         std::vector<std::shared_ptr<const CappedTexture>> capped(m->textures.size());
@@ -594,6 +600,8 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
     rep.animated = animated;
     rep.animatedResolved = resolved;
     rep.clipsFailedDecode = failedDecode;
+    for (const ModelOut& o : mouts)
+        if (o.empty) ++rep.modelsEmpty;
     rep.warnings = man["warnings"].get<std::vector<std::string>>();
     rep.bytes = folder_bytes(dir);
     return rep;
@@ -642,6 +650,7 @@ json report_json(const WorldFolderReport& r) {
                  {{"cells", r.cells},
                   {"modelsWritten", r.modelsWritten},
                   {"modelsFailed", r.modelsFailed},
+                  {"modelsEmpty", r.modelsEmpty},
                   {"propsWritten", r.propsWritten},
                   {"propsSkipped", r.propsSkipped},
                   {"chunksUnbaked", r.chunksUnbaked},

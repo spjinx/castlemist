@@ -64,6 +64,9 @@ struct WorldFolderReport {
     bool ok = false; std::string error, dir, manifest;
     size_t cells = 0, modelsWritten = 0, modelsFailed = 0, propsWritten = 0, propsSkipped = 0,
            chunksUnbaked = 0, animated = 0, animatedResolved = 0, clipsFailedDecode = 0;
+    /// Of modelsFailed, the models with no drawable meshes: empty, not broken
+    /// (review M2). They stay `status: failed` in the manifest.
+    size_t modelsEmpty = 0;
     std::map<std::string, double> seconds;    ///< world-cells, models, terrain-textures, cells, sky, manifest
     std::map<std::string, uint64_t> bytes;    ///< prop-textures, terrain, geometry, sky
     std::vector<std::string> warnings;        ///< the manifest's warnings
