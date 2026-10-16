@@ -536,6 +536,44 @@ float4 PSMain(VSOut i) : SV_Target {
 }
 )";
 
+/// @brief The sky background (spec amendment "Shader view and sky"): one
+///        full-screen triangle drawn first, no depth. Each pixel's NDC point
+///        on the far plane goes through the camera's inverse view-projection
+///        (camera at the origin, world_camera_sky_inv_viewproj) to a map
+///        direction, then to Unity axes (x, -z, y; world/frame.cpp) and into
+///        the equirect as render_equirect lays it out: u = 0.5 - atan2(z, x)
+///        / 2pi, v = acos(y) / pi. The texels are display values, written as
+///        they are (no gamma: the bake already is what the export shows).
+inline constexpr const char* kSky = R"(
+cbuffer SkyCB : register(b0) {
+    row_major float4x4 uInvViewProj;
+};
+Texture2D    tSky : register(t0);
+SamplerState sSky : register(s0);
+
+struct VSOut {
+    float4 pos : SV_POSITION;
+    float2 ndc : TEXCOORD0;
+};
+
+VSOut VSMain(uint id : SV_VertexID) {
+    float2 t = float2((id << 1) & 2, id & 2);   // (0,0) (2,0) (0,2): covers the screen
+    VSOut o;
+    o.ndc = t * float2(2.0, -2.0) + float2(-1.0, 1.0);
+    o.pos = float4(o.ndc, 0.0, 1.0);
+    return o;
+}
+
+float4 PSMain(VSOut i) : SV_Target {
+    const float kPi = 3.14159265358979;
+    float4 w = mul(float4(i.ndc, 1.0, 1.0), uInvViewProj);
+    float3 m = normalize(w.xyz / w.w);
+    float3 u = float3(m.x, -m.z, m.y);
+    float2 uv = float2(0.5 - atan2(u.z, u.x) / (2.0 * kPi), acos(clamp(u.y, -1.0, 1.0)) / kPi);
+    return float4(tSky.SampleLevel(sSky, uv, 0).rgb, 1.0);
+}
+)";
+
 /// @brief kPropSkinned's whole source: its VS, then kPropMat's PSMain
 ///        (textured) and kInstanced's PSMain as PSAo (the AO look), each
 ///        copied from its own shader so the two cannot drift apart.

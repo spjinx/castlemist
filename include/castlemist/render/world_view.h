@@ -32,8 +32,15 @@ enum class WorldLayer { Terrain = 0, Props, Collision, Water, Count };
 ///        hemisphere + sun, baked AO); Materials paints what has its textures
 ///        (terrain: note §1.2; props: their diffuse per submesh, alpha as the
 ///        glTF export decides it) and falls back to Geometry for the rest.
+///        Shader draws the static props near the camera with the game's own
+///        bgfx DXBC material shaders (the main window's Shader mode, lit by
+///        the map's env rig) and everything else -- terrain, water, animated
+///        props, props beyond WorldMaterialSettings::shaderRange or past
+///        shaderMaxInstances, and props whose game materials are missing,
+///        failed or still building -- in the Materials look (stats() counts
+///        them). The sky (set_sky) shows under Materials and Shader only.
 ///        Materials after create().
-enum class WorldShading { Geometry, Materials };
+enum class WorldShading { Geometry, Materials, Shader };
 
 /// @brief A free camera in map space (up = -Z). `fwd` and `up` need not be
 ///        unit or exactly perpendicular; the view orthonormalizes them.
@@ -85,6 +92,26 @@ struct WorldViewStats {
     /// draws it from the preset; Geometry, or no preset, the flat sub-project
     /// 2 water (no preset also adds a warnings() line, note section 6).
     bool waterPreset = false;
+    /// The sky mode drawn last frame (sky_mode()), -1 for none.
+    int skyMode = -1;
+    /// Shader shading, last frame: prop instances drawn with game shaders,
+    /// their draw calls, and the instances in range (and frustum) that fell
+    /// back to the Materials look: their model's game materials are not in
+    /// (not traced yet, or still building on the GPU; `shaderPending`), some
+    /// submesh has none or failed to build (`shaderNoShader`), or the
+    /// placement plays a clip (`shaderAnimated`). `shaderCapped`: in range
+    /// but past shaderMaxInstances. All 0 under Geometry and Materials.
+    int shaderInstances = 0, shaderDraws = 0;
+    int shaderPending = 0, shaderNoShader = 0, shaderAnimated = 0, shaderCapped = 0;
+    /// Models whose game materials are built on the GPU / failed to build
+    /// (cumulative since set_world); materials that sample the light buffer
+    /// and get the flat stand-in (no light pre-pass in the Map window).
+    int shaderModels = 0, shaderModelsFailed = 0, shaderLightStandIns = 0;
+    /// Distinct game VS / PS objects created (cache by DXBC bytes).
+    int shaderPrograms = 0;
+    /// UI-thread ms the last frame spent building game materials
+    /// (prepare_shader), and the most any frame has since set_world.
+    float shaderBuildMs = 0, shaderBuildMsMax = 0;
 };
 
 /// @brief Draws one WorldScene into one window.
@@ -159,7 +186,35 @@ public:
     ///        hint (map units per second) when @p speedHint is non-null.
     WorldCamera frame_all(float* speedHint) const;
 
-    /// @brief Geometry or Materials (Materials after create()); takes effect next frame.
+    /// @brief Replaces the baked sky modes (bake_world_sky, world_sky.h):
+    ///        one texture per mode, uploaded once. Empty clears the sky.
+    ///        Does nothing before create() or while device_lost().
+    void set_sky(const std::vector<WorldSkyImage>& modes);
+    /// @brief The time of day the sky shows (Day after create()); takes
+    ///        effect next frame.
+    void set_sky_time(WorldSkyTime t);
+    WorldSkyTime sky_time() const;
+    /// @brief The mode the next frame draws: world_sky_mode(the baked modes,
+    ///        sky_time()), and -1 under Geometry or with no sky.
+    int sky_mode() const;
+
+    /// @brief Records worker-traced game materials (WorldGameLoad): CPU data
+    ///        only; the GPU objects are built by prepare_shader / render() as
+    ///        the models come into range. A model already given, an
+    ///        out-of-range index or a null `game` (counted failed) is
+    ///        ignored after the first. Does nothing before create() or while
+    ///        device_lost(). Call it on the thread that renders.
+    void add_game_materials(const std::vector<WorldGameLoad>& batch);
+    /// @brief Builds the game-shader GPU state (shaders from a cache by DXBC
+    ///        bytes, input layouts, a GVertex buffer, blend states) of models
+    ///        with an instance within shaderRange of @p cam, nearest first,
+    ///        until @p budgetMs is spent (<= 0: no limit). render() calls it
+    ///        under Shader with a small budget, so the UI thread never
+    ///        stalls on it. Returns how many such models still wait for
+    ///        their preview, their game data or this build.
+    int prepare_shader(const WorldCamera& cam, double budgetMs);
+
+    /// @brief Geometry, Materials or Shader (Materials after create()); takes effect next frame.
     void set_shading(WorldShading s);
     WorldShading shading() const;
     /// @brief Replaces the material settings (defaults after create()); takes

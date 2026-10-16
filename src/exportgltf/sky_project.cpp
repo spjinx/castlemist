@@ -10,6 +10,8 @@
 #include <filesystem>
 #include <fstream>
 #include <system_error>
+#include <thread>
+#include <vector>
 
 
 namespace castlemist::exportgltf::sky {
@@ -85,16 +87,25 @@ Image render_face(const Radiance& r, Face f, int size) {
 Image render_equirect(const Radiance& r, int width, int height) {
     // Unity Skybox/Panoramic (latitude-longitude): row 0 looks at +Y, the
     // image centre at +X, and u = 0.75 at -Z.
+    // Rows in parallel (the radiance is read-only); the image is the same
+    // whatever the thread count.
     Image img = blank(width, height);
-    for (int y = 0; y < height; ++y) {
-        float latitude = (y + 0.5f) / height * kPi;
-        float sl = std::sin(latitude), cl = std::cos(latitude);
-        for (int x = 0; x < width; ++x) {
-            float longitude = (0.5f - (x + 0.5f) / width) * 2.0f * kPi;
-            float d[3] = {sl * std::cos(longitude), cl, sl * std::sin(longitude)};
-            put(img, x, y, r(d));
+    auto rows = [&](int y0, int y1) {
+        for (int y = y0; y < y1; ++y) {
+            float latitude = (y + 0.5f) / height * kPi;
+            float sl = std::sin(latitude), cl = std::cos(latitude);
+            for (int x = 0; x < width; ++x) {
+                float longitude = (0.5f - (x + 0.5f) / width) * 2.0f * kPi;
+                float d[3] = {sl * std::cos(longitude), cl, sl * std::sin(longitude)};
+                put(img, x, y, r(d));
+            }
         }
-    }
+    };
+    const int n = std::clamp(static_cast<int>(std::thread::hardware_concurrency()), 1, std::max(1, height / 16));
+    std::vector<std::thread> pool;
+    for (int t = 1; t < n; ++t) pool.emplace_back(rows, height * t / n, height * (t + 1) / n);
+    rows(0, height / n);
+    for (std::thread& th : pool) th.join();
     return img;
 }
 

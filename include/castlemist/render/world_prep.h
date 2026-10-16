@@ -48,6 +48,13 @@ struct WorldMaterialSettings {
     /// castlemist's choice: colour textures decode sRGB to linear; the shaders
     /// gamma-encode (world_view_shaders.h:53).
     bool srgbColourTextures = true;
+    /// castlemist's choice (Shader shading): props whose world sphere is
+    /// within this many map units of the camera draw with the game's shaders,
+    /// at most `shaderMaxInstances` of them, nearest first. The game shaders
+    /// read their World matrix from a constant buffer, so they draw one
+    /// instance per call: the map's instanced Materials pass draws the rest.
+    float shaderRange = 6000;
+    int shaderMaxInstances = 1500;
 };
 
 /// @brief The terrain and water textures of @p s, for the terrain-texture
@@ -70,6 +77,31 @@ struct WorldModelLoad {
     uint32_t model = 0;                            ///< index into WorldScene::models
     std::shared_ptr<const ModelPreview> preview;   ///< picking, materials, joints, clips; null = failed
     std::shared_ptr<const PreparedModel> prep;     ///< null or !ok = failed
+};
+
+/// @brief The Map window's time of day for the sky: Day shows sky mode 0,
+///        Night mode 1 (docs/research/gw2-sky.md §3; modes 2 and 3 are
+///        UNPROVEN and not shown), Off the flat background.
+enum class WorldSkyTime { Day, Night, Off };
+
+/// @brief One baked sky mode for WorldView::set_sky: an equirect laid out
+///        as exportgltf's render_equirect writes it (Unity Skybox/Panoramic:
+///        row 0 looks up, the centre at Unity +X = map east), RGBA8,
+///        display-referred.
+struct WorldSkyImage {
+    int mode = 0;   ///< index into MapSky::modes
+    int width = 0, height = 0;
+    std::vector<uint8_t> rgba;
+};
+
+/// @brief One streamed model's game-shader materials for
+///        WorldView::add_game_materials: a preview loaded with the game
+///        shaders traced (ModelLoadOptions::wantGame) whose `gameMaterials`
+///        and `textures` (headers: fileIds) are what the view reads; its
+///        meshes may be dropped. Null `game` = the trace failed.
+struct WorldGameLoad {
+    uint32_t model = 0;                        ///< index into WorldScene::models
+    std::shared_ptr<const ModelPreview> game;
 };
 
 /// @brief prepare_world_model (flatten, AO bake, MatVtx, per-submesh ranges,

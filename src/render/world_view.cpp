@@ -12,6 +12,7 @@
 #include "castlemist/extract/model_types.h"
 #include "castlemist/world/anim.h"
 #include "castlemist/world/terrain_mesh.h"
+#include "castlemist/render/world_sky.h"
 
 #include "detail/light_calib.h"
 #include "detail/mesh_bake.h"
@@ -279,6 +280,20 @@ struct WorldView::Impl {
 
     TextureCache textures;  ///< fileId -> texture, filled by add_textures
     WorldShading shading = WorldShading::Materials;
+    // Sky (set_sky): one equirect per baked mode, drawn first under the
+    // Materials look (kSky); its horizon colour becomes the fog colour.
+    struct SkyGPU {
+        int mode = 0;
+        ComPtr<ID3D11ShaderResourceView> srv;
+        float horizonLinear[3] = {0, 0, 0};   ///< world_sky_horizon, decoded to linear (the fog lerps in linear)
+    };
+    std::vector<SkyGPU> skies;
+    WorldSkyTime skyTime = WorldSkyTime::Day;
+    ComPtr<ID3D11VertexShader> vsSky;
+    ComPtr<ID3D11PixelShader> psSky;
+    ComPtr<ID3D11Buffer> cbSky;
+    ComPtr<ID3D11SamplerState> sSky;              ///< linear, U wraps (longitude), V clamps
+    ComPtr<ID3D11DepthStencilState> dssOff;       ///< the sky: no depth test or write
     bool motion = true;
     bool hasWater = false;      ///< a water preset is loaded (set_world)
     double clock = 0;           ///< set_time
@@ -477,8 +492,27 @@ struct WorldView::Impl {
             !compile_ps(skinSrc.c_str(), "world_prop_skinned", "PSAo", psSkinAo))
             return false;
 
+        {
+            ComPtr<ID3DBlob> vsb, psb, err;
+            const char* src = world_shaders::kSky;
+            if (FAILED(D3DCompile(src, std::strlen(src), "world_sky", nullptr, nullptr, "VSMain", "vs_5_0", 0, 0, &vsb,
+                                  &err)) ||
+                FAILED(D3DCompile(src, std::strlen(src), "world_sky", nullptr, nullptr, "PSMain", "ps_5_0", 0, 0, &psb,
+                                  &err))) {
+                if (err) OutputDebugStringA(static_cast<const char*>(err->GetBufferPointer()));
+                return false;
+            }
+            if (FAILED(dev->CreateVertexShader(vsb->GetBufferPointer(), vsb->GetBufferSize(), nullptr, &vsSky)) ||
+                FAILED(dev->CreatePixelShader(psb->GetBufferPointer(), psb->GetBufferSize(), nullptr, &psSky)))
+                return false;
+        }
+
         D3D11_BUFFER_DESC bd{};
         bd.Usage = D3D11_USAGE_DYNAMIC;
+        bd.ByteWidth = sizeof(Mat4);
+        bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        if (FAILED(dev->CreateBuffer(&bd, nullptr, &cbSky))) return false;
         bd.ByteWidth = sizeof(WorldCB);
         bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -501,6 +535,8 @@ struct WorldView::Impl {
         if (FAILED(dev->CreateSamplerState(&sm, &sWrap))) return false;
         sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
         if (FAILED(dev->CreateSamplerState(&sm, &sClamp))) return false;
+        sm.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;   // the sky: longitude wraps, latitude clamps
+        if (FAILED(dev->CreateSamplerState(&sm, &sSky))) return false;
         // castlemist's choice: the flat normal bound for a missing terrain
         // normal slot has alpha 0 (no specular); BC5 normal maps sample
         // alpha 1, as in the game.
@@ -520,6 +556,8 @@ struct WorldView::Impl {
         if (FAILED(dev->CreateDepthStencilState(&dd, &dss))) return false;
         dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
         if (FAILED(dev->CreateDepthStencilState(&dd, &dssNoWrite))) return false;
+        dd.DepthEnable = FALSE;
+        if (FAILED(dev->CreateDepthStencilState(&dd, &dssOff))) return false;
 
         D3D11_BLEND_DESC bl{};
         D3D11_RENDER_TARGET_BLEND_DESC& t = bl.RenderTarget[0];
@@ -580,7 +618,7 @@ struct WorldView::Impl {
     /// every non-zero colour slot Ready. With no colour slot at all every
     /// ground SRV would be null (black), so it takes the AO look (ruling P5).
     bool chunk_textured(const ChunkGPU& g) const {
-        if (shading != WorldShading::Materials || !g.resolved || !(g.pickerScale > 0)) return false;
+        if (!materials_look() || !g.resolved || !(g.pickerScale > 0)) return false;
         if (!page_srv(g.picker, g.solid) || !page_srv(g.picker2, g.solid2)) return false;
         bool any = false;
         for (uint32_t id : g.color) {
@@ -661,6 +699,43 @@ struct WorldView::Impl {
         ctx->DrawIndexed(ib.count, 0, 0);
     }
 
+    /// Materials and Shader both paint the Materials look (Shader then
+    /// redraws its near props with the game's shaders).
+    bool materials_look() const { return shading != WorldShading::Geometry; }
+
+    /// The baked sky draw_sky would draw this frame, or null.
+    const SkyGPU* current_sky() const {
+        if (!materials_look() || skies.empty()) return nullptr;
+        std::vector<int> baked;
+        for (const SkyGPU& k : skies) baked.push_back(k.mode);
+        const int m = world_sky_mode(baked, skyTime);
+        for (const SkyGPU& k : skies)
+            if (k.mode == m) return &k;
+        return nullptr;
+    }
+
+    /// The full-screen sky triangle (kSky), no depth; the caller rebinds its state.
+    void draw_sky(const SkyGPU& k, const WorldCamera& cam) {
+        const Mat4 inv = world_camera_sky_inv_viewproj(cam, static_cast<float>(w) / static_cast<float>(std::max(1, h)));
+        D3D11_MAPPED_SUBRESOURCE ms;
+        if (FAILED(ctx->Map(cbSky.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return;
+        std::memcpy(ms.pData, &inv, sizeof inv);
+        ctx->Unmap(cbSky.Get(), 0);
+        ctx->IASetInputLayout(nullptr);
+        ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx->VSSetShader(vsSky.Get(), nullptr, 0);
+        ctx->PSSetShader(psSky.Get(), nullptr, 0);
+        ctx->PSSetConstantBuffers(0, 1, cbSky.GetAddressOf());
+        ctx->PSSetShaderResources(0, 1, k.srv.GetAddressOf());
+        ctx->PSSetSamplers(0, 1, sSky.GetAddressOf());
+        ctx->OMSetDepthStencilState(dssOff.Get(), 0);
+        ctx->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+        ctx->RSSetState(rs.Get());
+        ctx->Draw(3, 0);
+        ID3D11ShaderResourceView* none = nullptr;
+        ctx->PSSetShaderResources(0, 1, &none);
+    }
+
     /// While lost, nothing touches the device (device_lost() semantics).
     bool gpu_ok() const { return dev && !lost; }
 
@@ -723,7 +798,7 @@ struct WorldView::Impl {
     /// Whether the water plane draws from its preset this frame (Materials
     /// shading, a preset, the quad uploaded); otherwise the flat sub-project 2 water.
     bool water_from_preset() const {
-        return shading == WorldShading::Materials && waterHasPreset && !waterMesh.empty() && !waterInst.empty() &&
+        return materials_look() && waterHasPreset && !waterMesh.empty() && !waterInst.empty() &&
                waterInst[0].ready;
     }
 
@@ -922,7 +997,11 @@ struct WorldView::Impl {
         for (int k = 0; k < 3; ++k) c.sunCol[k] = sunColor[k] * 0.55f;
         c.skyCol[0] = fillColor[0] * 0.26f; c.skyCol[1] = fillColor[1] * 0.28f; c.skyCol[2] = fillColor[2] * 0.32f;
         c.groundCol[0] = 0.07f; c.groundCol[1] = 0.065f; c.groundCol[2] = 0.06f;
-        for (int k = 0; k < 3; ++k) c.fogCol[k] = kClear[k];
+        // With a sky, distant ground fades into the sky's horizon instead of
+        // the flat clear colour (the sky pass is drawn first, below).
+        const SkyGPU* sky = current_sky();
+        st.skyMode = sky ? sky->mode : -1;
+        for (int k = 0; k < 3; ++k) c.fogCol[k] = sky ? sky->horizonLinear[k] : kClear[k];
         c.exposure = 1.0f;
         c.aoStrength = 1.0f;
         // farDist is both the cull distance and the far plane here; the fog
@@ -937,6 +1016,7 @@ struct WorldView::Impl {
         // left real textures about 2x too dark (ruling P6).
         calibrated_light(sunColor, sunIntensity, fillColor, fillIntensity, 1.0f, c.matSunCol, c.matSkyCol);
         upload_world_cb(c);
+        if (sky) draw_sky(*sky, cam);
         bind_terrain_state();
 
         int visible = 0, draws = 0, untextured = 0;
@@ -980,7 +1060,7 @@ struct WorldView::Impl {
         batch.clear();
         propBatch.clear();
         skinBatch.clear();
-        const bool matProps = shading == WorldShading::Materials;
+        const bool matProps = materials_look();
         if (layers[static_cast<int>(WorldLayer::Props)]) {
             if (matProps) {
                 visible += propBatch.cull_into(props, models, kPropTint, 1.0f, cam, farD, planes, CullSkin::Static);
@@ -1426,6 +1506,41 @@ bool WorldView::save_screenshot(const char* bmpPath) {
     return std::fclose(f) == 0 && ok;
 }
 
+void WorldView::set_sky(const std::vector<WorldSkyImage>& modes) {
+    if (!d->gpu_ok()) return;
+    d->skies.clear();
+    for (const WorldSkyImage& m : modes) {
+        if (m.width <= 0 || m.height <= 0 || m.rgba.size() < static_cast<size_t>(m.width) * m.height * 4) continue;
+        D3D11_TEXTURE2D_DESC td{};
+        td.Width = static_cast<UINT>(m.width);
+        td.Height = static_cast<UINT>(m.height);
+        td.MipLevels = td.ArraySize = 1;
+        td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        td.SampleDesc.Count = 1;
+        td.Usage = D3D11_USAGE_IMMUTABLE;
+        td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SUBRESOURCE_DATA sd{m.rgba.data(), static_cast<UINT>(m.width) * 4, 0};
+        ComPtr<ID3D11Texture2D> t;
+        Impl::SkyGPU k;
+        k.mode = m.mode;
+        if (FAILED(d->dev->CreateTexture2D(&td, &sd, &t)) ||
+            FAILED(d->dev->CreateShaderResourceView(t.Get(), nullptr, &k.srv)))
+            continue;
+        float hz[3];
+        world_sky_horizon(m, 0.04f, hz);
+        for (int c = 0; c < 3; ++c) k.horizonLinear[c] = std::pow(hz[c], 2.2f);   // the shaders gamma-encode by 1/2.2
+        d->skies.push_back(std::move(k));
+    }
+}
+void WorldView::add_game_materials(const std::vector<WorldGameLoad>&) {}
+int WorldView::prepare_shader(const WorldCamera&, double) { return 0; }
+void WorldView::set_sky_time(WorldSkyTime t) { d->skyTime = t; }
+WorldSkyTime WorldView::sky_time() const { return d->skyTime; }
+int WorldView::sky_mode() const {
+    const Impl::SkyGPU* k = d->current_sky();
+    return k ? k->mode : -1;
+}
+
 void WorldView::set_shading(WorldShading s) { d->shading = s; }
 WorldShading WorldView::shading() const { return d->shading; }
 void WorldView::set_material_settings(const WorldMaterialSettings& s) { d->mat = s; }
@@ -1436,7 +1551,7 @@ bool WorldView::motion() const { return d->motion; }
 void WorldView::set_time(double seconds) { d->clock = seconds; }
 double WorldView::time() const { return d->clock; }
 bool WorldView::animating() const {
-    return d->shading == WorldShading::Materials && d->motion &&
+    return d->materials_look() && d->motion &&
            (d->scrollingMaterials > 0 || d->hasWater || d->st.animated > 0);
 }
 

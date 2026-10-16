@@ -63,6 +63,14 @@ bool same_mode(const Extractor::MapSky& s, size_t i, size_t j) {
            std::equal(std::begin(a.cube), std::end(a.cube), std::begin(b.cube)) && same_attribute_set(s, i, j);
 }
 
+} // namespace
+
+bool same_sky_mode(const Extractor::MapSky& s, size_t i, size_t j) {
+    return i < s.modes.size() && j < s.modes.size() && same_mode(s, i, j);
+}
+
+namespace {
+
 json id_or_null(uint32_t id) { return id ? json(id) : json(nullptr); }
 
 json mode_sources(const Extractor::MapSky& s, const Extractor::MapSkyMode& m) {
@@ -141,7 +149,12 @@ SkyInputs load_sky_inputs(Gw2Dat& dat, const std::vector<uint8_t>& mapBytes, con
                                     ": env chunk unreadable (" + e.what() + ")");
         return in;
     }
-    if (!in.sky.present) return in;
+    load_sky_textures(dat, tpl, in);
+    return in;
+}
+
+void load_sky_textures(Gw2Dat& dat, const json& tpl, SkyInputs& in) {
+    if (!in.sky.present) return;
 
     // Every distinct fileId the sky names, in a stable order.
     std::vector<uint32_t> ids;
@@ -209,7 +222,6 @@ SkyInputs load_sky_inputs(Gw2Dat& dat, const std::vector<uint8_t>& mapBytes, con
                 in.decodeWarnings.push_back("fileId " + std::to_string(at) + ": star atlas not decodable");
         }
     }
-    return in;
 }
 
 SkyExportReport write_skybox(const SkyInputs& in, const std::string& parentDir, const std::string& name,
