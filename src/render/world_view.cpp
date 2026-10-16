@@ -18,6 +18,7 @@
 #include "detail/mesh_bake.h"
 #include "world_camera.h"
 #include "world_draw.h"
+#include "world_game.h"
 #include "world_materials.h"
 #include "world_props.h"
 #include "world_view_shaders.h"
@@ -27,6 +28,7 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -40,6 +42,17 @@ namespace castlemist::render {
 using Microsoft::WRL::ComPtr;
 
 namespace {
+
+/// render()'s per-frame budget for building game materials (Shader): the
+/// Map window's UI thread must not stall on it.
+constexpr double kShaderBuildBudgetMs = 4.0;
+/// castlemist's choice, UNPROVEN: the engine's per-model colour. The foliage
+/// shaders (65 of Queensdale's game materials) pass ModelColor from the VS and
+/// compute albedo * ModelColor * 2 (`add r0.xyz, r0, r0` after the multiply),
+/// the "x vertex colour x 2" convention whose neutral is 0.5
+/// (docs/research/gw2-material-channels.md: lerp(0.5, vc, tinter.A) * 2). Left
+/// at zero, as the main window leaves it, every foliage leaf draws black.
+constexpr float kGameModelColor = 0.5f;
 
 /// Terrain albedo (the fly view's LAYER_TERRAIN tint).
 constexpr float kTerrainTint[3] = {0.52f, 0.56f, 0.46f};
@@ -294,6 +307,12 @@ struct WorldView::Impl {
     ComPtr<ID3D11Buffer> cbSky;
     ComPtr<ID3D11SamplerState> sSky;              ///< linear, U wraps (longitude), V clamps
     ComPtr<ID3D11DepthStencilState> dssOff;       ///< the sky: no depth test or write
+    // Shader shading (world_game.h): the game's material shaders for the near props.
+    WorldGamePass game;
+    GameVals gameVals;                 ///< base + env-rig uniforms, set_world
+    std::vector<uint8_t> gameSkip;     ///< per prop: drawn by the game pass this frame
+    std::vector<std::pair<float, uint32_t>> gameDraw;   ///< (squared distance, prop) drawn by the game pass
+    std::vector<std::pair<float, uint32_t>> gameCand;   ///< scratch: in range and frustum
     bool motion = true;
     bool hasWater = false;      ///< a water preset is loaded (set_world)
     double clock = 0;           ///< set_time
@@ -334,6 +353,7 @@ struct WorldView::Impl {
     bool create_targets() {
         rtv.Reset();
         dsv.Reset();
+        game.resize_prepass(dev.Get(), w, h);   // failure: the light buffer stand-in
         ComPtr<ID3D11Texture2D> back;
         if (FAILED(swap->GetBuffer(0, IID_PPV_ARGS(&back)))) return false;
         if (FAILED(dev->CreateRenderTargetView(back.Get(), nullptr, &rtv))) return false;
@@ -736,6 +756,138 @@ struct WorldView::Impl {
         ctx->PSSetShaderResources(0, 1, &none);
     }
 
+    /// The env rig's game uniforms (game_material.cpp's map-scene values).
+    void build_game_vals() {
+        gameVals.clear();
+        game_base_uniforms(gameVals, 1.0f);
+        MapEnvRig r;
+        r.present = true;
+        std::memcpy(r.sunDir, sunDir, sizeof r.sunDir);
+        std::memcpy(r.sunColor, sunColor, sizeof r.sunColor);
+        std::memcpy(r.fillColor, fillColor, sizeof r.fillColor);
+        r.sunIntensity = sunIntensity;
+        r.fillIntensity = fillIntensity;
+        game_map_env_uniforms(gameVals, r, sunDir, 1.0f);   // sunDir is toward the sun (set_world negated the env's)
+        // Engine uniforms the main window leaves at zero that map props read
+        // (kGameModelColor above): TexTransform2/3 identity like 0/1,
+        // and the per-model colour.
+        gameVals["TexTransform2A"] = {1, 0, 0, 0};
+        gameVals["TexTransform2B"] = {0, 1, 0, 0};
+        gameVals["TexTransform3A"] = {1, 0, 0, 0};
+        gameVals["TexTransform3B"] = {0, 1, 0, 0};
+        gameVals["ModelColor"] = {kGameModelColor, kGameModelColor, kGameModelColor, 1.0f};
+    }
+
+    /// Squared reach of the Shader range for an instance.
+    float game_reach2(const InstCPU& in) const {
+        const float r = std::max(0.0f, mat.shaderRange) + in.radiusW;
+        return r * r;
+    }
+
+    /// Builds what prepare_shader can within @p budgetMs; returns the models
+    /// in range still waiting.
+    int prepare_game(const WorldCamera& cam, double budgetMs) {
+        if (!gpu_ok()) return 0;
+        const auto t0 = std::chrono::steady_clock::now();
+        std::vector<std::pair<float, uint32_t>> inRange;   // (distance², model), nearest instance per model
+        std::vector<float> best(models.size(), -1.0f);
+        for (const InstCPU& in : props) {
+            if (!in.ready || in.clip >= 0 || in.mesh >= models.size()) continue;
+            const float dx = in.centerW[0] - cam.pos[0], dy = in.centerW[1] - cam.pos[1], dz = in.centerW[2] - cam.pos[2];
+            const float d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 > game_reach2(in)) continue;
+            if (best[in.mesh] < 0 || d2 < best[in.mesh]) best[in.mesh] = d2;
+        }
+        for (uint32_t m = 0; m < best.size(); ++m)
+            if (best[m] >= 0) inRange.emplace_back(best[m], m);
+        std::sort(inRange.begin(), inRange.end());
+        int waiting = 0;
+        for (const auto& [d2, m] : inRange) {
+            const ModelPreview* pv = m < previews.size() ? previews[m].get() : nullptr;
+            if (game.needs_build(m, pv)) {
+                const double spent =
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                if (budgetMs > 0 && spent >= budgetMs) {
+                    ++waiting;
+                    continue;
+                }
+                game.build(dev.Get(), m, *pv, gameVals);
+            }
+            const GameModelWorld::State st = game.state(m, pv, textures);
+            if (st == GameModelWorld::State::Waiting || st == GameModelWorld::State::NoData) ++waiting;
+        }
+        return waiting;
+    }
+
+    /// Shader shading: which props in range and frustum the game pass
+    /// draws this frame (gameDraw, gameSkip), and why the others fall back.
+    void select_game(const WorldCamera& cam, const float planes[6][4]) {
+        gameDraw.clear();
+        gameCand.clear();
+        gameSkip.assign(props.size(), 0);
+        for (uint32_t i = 0; i < props.size(); ++i) {
+            const InstCPU& in = props[i];
+            if (!in.ready || in.mesh >= models.size() || !models[in.mesh].ok) continue;
+            const float dx = in.centerW[0] - cam.pos[0], dy = in.centerW[1] - cam.pos[1], dz = in.centerW[2] - cam.pos[2];
+            const float d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 > game_reach2(in)) continue;
+            bool out = false;
+            for (int p = 0; p < 6 && !out; ++p)
+                out = planes[p][0] * in.centerW[0] + planes[p][1] * in.centerW[1] + planes[p][2] * in.centerW[2] +
+                          planes[p][3] < -in.radiusW;
+            if (!out) gameCand.emplace_back(d2, i);
+        }
+        std::sort(gameCand.begin(), gameCand.end());
+        const size_t cap = static_cast<size_t>(std::max(0, mat.shaderMaxInstances));
+        for (const auto& [d2, i] : gameCand) {
+            const InstCPU& in = props[i];
+            if (in.clip >= 0) { ++st.shaderAnimated; continue; }
+            const ModelPreview* pv = in.mesh < previews.size() ? previews[in.mesh].get() : nullptr;
+            switch (game.state(in.mesh, pv, textures)) {
+            case GameModelWorld::State::Ready:
+                if (gameDraw.size() >= cap) { ++st.shaderCapped; break; }
+                gameDraw.emplace_back(d2, i);
+                gameSkip[i] = 1;
+                break;
+            case GameModelWorld::State::NoShader: ++st.shaderNoShader; break;
+            default: ++st.shaderPending; break;
+            }
+        }
+    }
+
+    /// The game pass over gameDraw: opaque submeshes, or (@p blended) the
+    /// blended ones farthest first. Leaves the terrain state bound again.
+    int draw_game(bool blended, const GameFrame& f, size_t& tris) {
+        game.begin_frame(f);
+        game.bind_common(ctx.Get());
+        ctx->RSSetState(rs.Get());
+        int draws = 0;
+        if (!blended) {
+            // Grouped by model, so each material binds once for all its instances.
+            std::vector<std::pair<uint32_t, const Mat4*>> byModel;
+            byModel.reserve(gameDraw.size());
+            for (const auto& [d2, i] : gameDraw) byModel.emplace_back(props[i].mesh, &props[i].world);
+            std::stable_sort(byModel.begin(), byModel.end(),
+                             [](const auto& a, const auto& b) { return a.first < b.first; });
+            std::vector<const Mat4*> worlds;
+            for (size_t k = 0; k < byModel.size();) {
+                const uint32_t m = byModel[k].first;
+                worlds.clear();
+                for (; k < byModel.size() && byModel[k].first == m; ++k) worlds.push_back(byModel[k].second);
+                draws += game.draw_opaque_group(dev.Get(), ctx.Get(), m, worlds, textures, dss.Get(), tris);
+            }
+        } else {
+            for (auto it = gameDraw.rbegin(); it != gameDraw.rend(); ++it)
+                if (game.has_blended(props[it->second].mesh))
+                    draws += game.draw_instance(dev.Get(), ctx.Get(), props[it->second].mesh, props[it->second].world,
+                                                true, textures, dss.Get(), dssNoWrite.Get(), tris);
+        }
+        ID3D11ShaderResourceView* none[16] = {};
+        ctx->PSSetShaderResources(0, 16, none);
+        bind_terrain_state();
+        return draws;
+    }
+
     /// While lost, nothing touches the device (device_lost() semantics).
     bool gpu_ok() const { return dev && !lost; }
 
@@ -989,6 +1141,30 @@ struct WorldView::Impl {
         float planes[6][4];
         frustum_planes(VP, planes);
 
+        // Shader: pick the game-drawn props first, so the light pre-pass (its
+        // own targets and this depth buffer, cleared again after it) can run
+        // before anything of the frame is drawn.
+        st.shaderInstances = st.shaderDraws = 0;
+        st.shaderPending = st.shaderNoShader = st.shaderAnimated = st.shaderCapped = 0;
+        const bool gameProps = shading == WorldShading::Shader && layers[static_cast<int>(WorldLayer::Props)];
+        GameFrame gf;
+        game.clear_light();
+        if (gameProps) {
+            select_game(cam, planes);
+            gf.view = world_camera_view(cam);
+            gf.viewProj = VP;
+            game.begin_frame(gf);
+            if (!gameDraw.empty()) {
+                std::vector<std::pair<uint32_t, const Mat4*>> li;
+                li.reserve(gameDraw.size());
+                for (const auto& [d2, i] : gameDraw) li.emplace_back(props[i].mesh, &props[i].world);
+                game.light_prepass(ctx.Get(), li, dsv.Get(), dss.Get(), rs.Get(), textures, gameVals, w, h);
+                ctx->OMSetRenderTargets(1, rtv.GetAddressOf(), dsv.Get());
+                ctx->RSSetViewports(1, &vp);
+                ctx->ClearDepthStencilView(dsv.Get(), D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
+            }
+        }
+
         WorldCB c{};
         c.viewProj = VP;
         const Vec3 sun = norm({sunDir[0], sunDir[1], sunDir[2]});
@@ -1061,9 +1237,28 @@ struct WorldView::Impl {
         propBatch.clear();
         skinBatch.clear();
         const bool matProps = materials_look();
+        if (gameProps) {
+            auto pm = [](float out[16], const Mat4& m) {
+                for (int i = 0; i < 4; ++i)
+                    for (int j = 0; j < 4; ++j) out[i * 4 + j] = m.m[j * 4 + i];
+            };
+            pm(gf.v[static_cast<int>(GameDyn::ViewProjection)], VP);
+            pm(gf.v[static_cast<int>(GameDyn::View)], gf.view);
+            float* cp = gf.v[static_cast<int>(GameDyn::CameraPosition)];
+            cp[0] = cam.pos[0]; cp[1] = cam.pos[1]; cp[2] = cam.pos[2]; cp[3] = 1;
+            // (1/w, 1/h, w, h), as scene.cpp writes it.
+            float* sd = gf.v[static_cast<int>(GameDyn::ScreenDims)];
+            sd[0] = 1.0f / static_cast<float>(std::max(1, w)); sd[1] = 1.0f / static_cast<float>(std::max(1, h));
+            sd[2] = static_cast<float>(w); sd[3] = static_cast<float>(h);
+            float* tm = gf.v[static_cast<int>(GameDyn::Time)];
+            tm[0] = tm[1] = tm[2] = tm[3] = static_cast<float>(clock);
+            st.shaderInstances = static_cast<int>(gameDraw.size());
+        }
         if (layers[static_cast<int>(WorldLayer::Props)]) {
             if (matProps) {
-                visible += propBatch.cull_into(props, models, kPropTint, 1.0f, cam, farD, planes, CullSkin::Static);
+                visible += propBatch.cull_into(props, models, kPropTint, 1.0f, cam, farD, planes, CullSkin::Static,
+                                               gameProps ? &gameSkip : nullptr);
+                visible += static_cast<int>(gameProps ? gameDraw.size() : 0);
                 visible += skinBatch.cull_into(props, models, kPropTint, 1.0f, cam, farD, planes, CullSkin::Skinned);
             } else {
                 visible += batch.cull_into(props, models, kPropTint, 1.0f, cam, farD, planes);
@@ -1096,6 +1291,11 @@ struct WorldView::Impl {
         if (skinUp) ctx->VSSetShaderResources(1, 1, paletteSrv.GetAddressOf());
         if (propsUp) draws += propBatch.draw_materials(ctx.Get(), pm, 1, tris, matUntextured);
         if (skinUp) draws += skinBatch.draw_materials(ctx.Get(), sk, 1, tris, matUntextured);
+        if (gameProps && !gameDraw.empty()) {
+            const int n = draw_game(false, gf, tris);
+            draws += n;
+            st.shaderDraws += n;
+        }
         draws += batch.draw(dev.Get(), ctx.Get(), pl, tris);
         if (presetWater) {
             const int n = draw_water(planes, cam, farD, tris);
@@ -1112,6 +1312,11 @@ struct WorldView::Impl {
             ID3D11Buffer* noVb = nullptr;
             const UINT zero = 0;
             ctx->IASetVertexBuffers(2, 1, &noVb, &zero, &zero);
+        }
+        if (gameProps && !gameDraw.empty()) {
+            const int n = draw_game(true, gf, tris);
+            draws += n;
+            st.shaderDraws += n;
         }
 
         st.visible = visible;
@@ -1154,7 +1359,8 @@ bool WorldView::create(HWND surface) {
     if (FAILED(hr))
         hr = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, levels, ARRAYSIZE(levels),
                                            D3D11_SDK_VERSION, &sc, &d->swap, &d->dev, &got, &d->ctx);
-    if (FAILED(hr) || !d->create_targets() || !d->create_pipeline()) {
+    if (FAILED(hr) || !d->create_targets() || !d->create_pipeline() || !d->game.create(d->dev.Get()) ||
+        !d->game.create_prepass(d->dev.Get())) {
         d = std::make_unique<Impl>();
         return false;
     }
@@ -1183,6 +1389,7 @@ void WorldView::set_world(const castlemist::world::WorldScene& s) {
     d->previews.assign(s.models.size(), nullptr);
     d->rigs.assign(s.models.size(), {});
     d->clipMisses = d->skinMisses = d->clipDecodeFails = 0;
+    d->game.reset(s.models.size());
     d->instOf.assign(s.models.size(), {});
     d->props.clear();
     d->colSrc = castlemist::world::Collision{};
@@ -1215,6 +1422,7 @@ void WorldView::set_world(const castlemist::world::WorldScene& s) {
     } else {
         d->reset_light();
     }
+    d->build_game_vals();
     if (d->gpu_ok() && s.terrain.present)
         for (size_t i = 0; i < s.terrain.chunks.size(); ++i) d->upload_chunk(s.terrain, i);
     d->st.chunks = static_cast<int>(d->chunks.size());
@@ -1385,6 +1593,13 @@ void WorldView::add_models(const std::vector<std::pair<uint32_t, std::shared_ptr
 void WorldView::render(const WorldCamera& cam) {
     if (d->lost || !d->ctx || !d->rtv || !d->dsv) return;
     if (d->layers[static_cast<int>(WorldLayer::Collision)]) d->ensure_collision();
+    d->st.shaderBuildMs = 0;
+    if (d->shading == WorldShading::Shader && d->layers[static_cast<int>(WorldLayer::Props)]) {
+        const auto t0 = std::chrono::steady_clock::now();
+        d->prepare_game(cam, kShaderBuildBudgetMs);
+        d->st.shaderBuildMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        d->st.shaderBuildMsMax = std::max(d->st.shaderBuildMsMax, d->st.shaderBuildMs);
+    }
     d->draw(cam);
     d->lastCam = cam;
     d->hasFrame = true;
@@ -1445,6 +1660,10 @@ WorldViewStats WorldView::stats() const {
     s.textures = d->textures.ready();
     s.texturesFailed = d->textures.failed();
     s.textureMB = static_cast<float>(static_cast<double>(d->textures.bytes()) / (1024.0 * 1024.0));
+    s.shaderModels = d->game.models_built();
+    s.shaderModelsFailed = d->game.models_failed();
+    s.shaderPrograms = d->game.programs();
+    s.shaderLightStandIns = d->game.light_stand_ins();
     return s;
 }
 
@@ -1532,8 +1751,117 @@ void WorldView::set_sky(const std::vector<WorldSkyImage>& modes) {
         d->skies.push_back(std::move(k));
     }
 }
-void WorldView::add_game_materials(const std::vector<WorldGameLoad>&) {}
-int WorldView::prepare_shader(const WorldCamera&, double) { return 0; }
+void WorldView::add_game_materials(const std::vector<WorldGameLoad>& batch) {
+    if (!d->gpu_ok()) return;
+    for (const WorldGameLoad& l : batch) d->game.add(l.model, l.game);
+}
+int WorldView::prepare_shader(const WorldCamera& cam, double budgetMs) { return d->prepare_game(cam, budgetMs); }
+
+bool WorldView::focus_props(WorldCamera& cam) const {
+    // The densest 3000-unit cell of loaded props (XY), framed from its
+    // south-west, above its highest prop, 15 degrees down: the props fill the
+    // lower half and the horizon (and sky) the upper.
+    constexpr float kCell = 3000;
+    std::map<std::pair<int, int>, std::vector<const InstCPU*>> cells;
+    for (const InstCPU& in : d->props) {
+        if (!in.ready) continue;
+        cells[{static_cast<int>(std::floor(in.centerW[0] / kCell)), static_cast<int>(std::floor(in.centerW[1] / kCell))}]
+            .push_back(&in);
+    }
+    const std::vector<const InstCPU*>* best = nullptr;
+    for (const auto& [k, v] : cells)
+        if (!best || v.size() > best->size()) best = &v;
+    if (!best || best->empty()) return false;
+    float c[2] = {0, 0}, top = 1e30f;
+    std::vector<float> zs;
+    for (const InstCPU* in : *best) {
+        c[0] += in->centerW[0];
+        c[1] += in->centerW[1];
+        zs.push_back(in->centerW[2]);
+        top = std::min(top, in->centerW[2] - std::min(in->radiusW, 2000.0f));   // up is -Z
+    }
+    c[0] /= static_cast<float>(best->size());
+    c[1] /= static_cast<float>(best->size());
+    std::nth_element(zs.begin(), zs.begin() + static_cast<std::ptrdiff_t>(zs.size() / 2), zs.end());
+    const float zMid = zs[zs.size() / 2];
+    const Vec3 target{c[0], c[1], zMid};
+    const Vec3 pos{c[0] - 1800, c[1] - 900, std::min(top, zMid) - 400};
+    Vec3 h = sub(target, pos);
+    h.z = 0;
+    h = norm(h);
+    const float pitch = 0.26f;   // ~15 degrees below the horizon (+Z is down)
+    const Vec3 fwd = norm(Vec3{h.x * std::cos(pitch), h.y * std::cos(pitch), std::sin(pitch)});
+    Vec3 right = norm(cross(kWorldUp, fwd));
+    const Vec3 up = norm(cross(fwd, right));
+    cam.pos[0] = pos.x; cam.pos[1] = pos.y; cam.pos[2] = pos.z;
+    cam.fwd[0] = fwd.x; cam.fwd[1] = fwd.y; cam.fwd[2] = fwd.z;
+    cam.up[0] = up.x; cam.up[1] = up.y; cam.up[2] = up.z;
+    return true;
+}
+
+std::string WorldView::adapter() const {
+    if (!d->dev) return {};
+    ComPtr<IDXGIDevice> xd;
+    ComPtr<IDXGIAdapter> a;
+    DXGI_ADAPTER_DESC desc{};
+    if (FAILED(d->dev.As(&xd)) || FAILED(xd->GetAdapter(&a)) || FAILED(a->GetDesc(&desc))) return {};
+    std::string out;
+    for (const wchar_t* p = desc.Description; *p; ++p) out.push_back(*p < 128 ? static_cast<char>(*p) : '?');
+    return out;
+}
+
+bool WorldView::bench(const WorldCamera& cam, int frames, WorldViewBench& out) {
+    out = WorldViewBench{};
+    if (!d->gpu_ok() || !d->rtv || !d->dsv || frames <= 0) return false;
+    D3D11_QUERY_DESC qd{D3D11_QUERY_EVENT, 0};
+    D3D11_QUERY_DESC qj{D3D11_QUERY_TIMESTAMP_DISJOINT, 0};
+    D3D11_QUERY_DESC qt{D3D11_QUERY_TIMESTAMP, 0};
+    ComPtr<ID3D11Query> ev, disjoint, tBegin, tEnd;
+    if (FAILED(d->dev->CreateQuery(&qd, &ev)) || FAILED(d->dev->CreateQuery(&qj, &disjoint)) ||
+        FAILED(d->dev->CreateQuery(&qt, &tBegin)) || FAILED(d->dev->CreateQuery(&qt, &tEnd)))
+        return false;
+    const WorldViewStats keep = d->st;
+    // A quarter more frames first, unmeasured: the driver compiles a shader
+    // on its first draw and the GPU clocks up.
+    std::vector<float> cpu, gpu, wall;
+    const int warm = std::max(1, frames / 4);
+    for (int i = 0; i < warm + frames; ++i) {
+        const auto t0 = std::chrono::steady_clock::now();
+        d->ctx->Begin(disjoint.Get());
+        d->ctx->End(tBegin.Get());
+        d->draw(cam);
+        d->ctx->End(tEnd.Get());
+        d->ctx->End(disjoint.Get());
+        d->ctx->End(ev.Get());
+        const auto t1 = std::chrono::steady_clock::now();
+        BOOL done = FALSE;
+        while (d->ctx->GetData(ev.Get(), &done, sizeof done, 0) == S_FALSE) {
+        }
+        const auto t2 = std::chrono::steady_clock::now();
+        D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj{};
+        UINT64 a = 0, b = 0;
+        while (d->ctx->GetData(disjoint.Get(), &dj, sizeof dj, 0) == S_FALSE) {
+        }
+        d->ctx->GetData(tBegin.Get(), &a, sizeof a, 0);
+        d->ctx->GetData(tEnd.Get(), &b, sizeof b, 0);
+        if (i < warm) continue;
+        cpu.push_back(std::chrono::duration<float, std::milli>(t1 - t0).count());
+        wall.push_back(std::chrono::duration<float, std::milli>(t2 - t0).count());
+        if (!dj.Disjoint && dj.Frequency > 0 && b >= a)
+            gpu.push_back(static_cast<float>(static_cast<double>(b - a) * 1000.0 / static_cast<double>(dj.Frequency)));
+    }
+    auto stat = [](std::vector<float>& v, float& med, float& mx) {
+        if (v.empty()) return;
+        std::sort(v.begin(), v.end());
+        med = v[v.size() / 2];
+        mx = v.back();
+    };
+    stat(cpu, out.cpuMedian, out.cpuMax);
+    stat(gpu, out.gpuMedian, out.gpuMax);
+    stat(wall, out.wallMedian, out.wallMax);
+    d->st = keep;
+    return true;
+}
 void WorldView::set_sky_time(WorldSkyTime t) { d->skyTime = t; }
 WorldSkyTime WorldView::sky_time() const { return d->skyTime; }
 int WorldView::sky_mode() const {
@@ -1616,6 +1944,13 @@ std::vector<std::string> WorldView::warnings() const {
         w.push_back(std::to_string(d->skinMisses) +
                     " animated placements name a clip of a model without a skin stream (more than 256 joints, or "
                     "prepared without skin); drawn in bind pose");
+    if (d->shading == WorldShading::Shader) {
+        w.push_back("shader: game shaders draw static props within " + std::to_string(static_cast<int>(d->mat.shaderRange)) +
+                    " units, at most " + std::to_string(d->mat.shaderMaxInstances) +
+                    " (castlemist's choice); terrain, water, animated props and the rest keep the Materials look");
+        w.push_back("shader: ModelColor = 0.5 (neutral of albedo * ModelColor * 2, UNPROVEN); wind, local lights, "
+                    "shadows and fog are off; env cube grey");
+    }
     if (d->stillTransforms > 0)
         w.push_back(std::to_string(d->stillTransforms) +
                     " texTransforms entries are not scroll-only (flipbook, scale or rotate); drawn still (note \xc2\xa7" "4)");

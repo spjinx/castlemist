@@ -125,12 +125,15 @@ bool InstancedBatch::ensure_capacity(ID3D11Device* dev, uint32_t need) {
 
 int InstancedBatch::cull_into(const std::vector<InstCPU>& insts, const std::vector<MeshGPU>& meshes,
                               const float* tint, float alpha, const WorldCamera& cam, float farD,
-                              const float planes[6][4], CullSkin which) {
+                              const float planes[6][4], CullSkin which, const std::vector<uint8_t>* skip) {
     bucketOf_.assign(meshes.size() * 4, -1);
     skinBucketOf_.clear();
     int visible = 0;
-    for (const InstCPU& in : insts) {
+    const bool useSkip = skip && skip->size() == insts.size();
+    for (size_t ii = 0; ii < insts.size(); ++ii) {
+        const InstCPU& in = insts[ii];
         if (!in.ready || in.mesh >= meshes.size()) continue;   // model not streamed in yet
+        if (useSkip && (*skip)[ii]) continue;
         if ((which == CullSkin::Static && in.clip >= 0) || (which == CullSkin::Skinned && in.clip < 0)) continue;
         const MeshGPU& m = meshes[in.mesh];
         if (!m.ok) continue;

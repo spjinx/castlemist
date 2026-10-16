@@ -114,6 +114,13 @@ struct WorldViewStats {
     float shaderBuildMs = 0, shaderBuildMsMax = 0;
 };
 
+/// @brief WorldView::bench's frame times, ms: median and max of each.
+struct WorldViewBench {
+    float cpuMedian = 0, cpuMax = 0;    ///< the UI thread's draw (culling, uploads, submits)
+    float gpuMedian = 0, gpuMax = 0;    ///< GPU timestamps around the frame's commands
+    float wallMedian = 0, wallMax = 0;  ///< submit to GPU idle (includes any wait for the GPU to be scheduled)
+};
+
 /// @brief Draws one WorldScene into one window.
 class WorldView {
 public:
@@ -253,6 +260,18 @@ public:
     ///        chain and the next frame are untouched. False when the chunk
     ///        would not draw textured, @p size <= 0, or the device is lost.
     bool capture_chunk_albedo(size_t chunk, int size, std::vector<uint8_t>& rgba);
+    /// @brief Verification hook: moves @p cam low over the densest 3000-unit
+    ///        cell of loaded props, looking at it 15 degrees below the
+    ///        horizon (so the near props fill the lower half and the sky the
+    ///        upper). False, @p cam untouched, with no loaded prop.
+    bool focus_props(WorldCamera& cam) const;
+    /// @brief Verification hook: draws @p frames frames of @p cam (after
+    ///        frames / 4 unmeasured warm-up frames) into the back buffer
+    ///        without presenting, each waited on, and times each three ways
+    ///        (WorldViewBench). stats() is left as it was.
+    bool bench(const WorldCamera& cam, int frames, WorldViewBench& out);
+    /// @brief The adapter the device runs on (DXGI description), "" before create().
+    std::string adapter() const;
     /// @brief One line per UNPROVEN setting or castlemist choice in effect
     ///        (material_setting_warnings), for a log or the status bar.
     std::vector<std::string> warnings() const;

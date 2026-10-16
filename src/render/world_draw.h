@@ -141,11 +141,13 @@ public:
         first_.clear();
     }
     /// Culls @p insts (distance, then frustum sphere), picks a LOD by screen
-    /// size, and appends them to this frame's buckets.
+    /// size, and appends them to this frame's buckets. With @p skip
+    /// (index-aligned with @p insts), an instance whose entry is non-zero is
+    /// left out (Shader shading draws it with the game's shaders).
     /// Returns how many survived.
     int cull_into(const std::vector<InstCPU>& insts, const std::vector<MeshGPU>& meshes, const float* tint,
                   float alpha, const WorldCamera& cam, float farD, const float planes[6][4],
-                  CullSkin which = CullSkin::All);
+                  CullSkin which = CullSkin::All, const std::vector<uint8_t>* skip = nullptr);
     /// Skinned batches: the distinct (mesh index, clip) of this frame's
     /// buckets, in first-seen order (one pose each, spec SkinnedPropPass).
     std::vector<std::pair<uint32_t, int>> palette_keys();

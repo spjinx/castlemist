@@ -27,11 +27,15 @@ void world_camera_basis(const WorldCamera& c, Vec3& fwd, Vec3& right, Vec3& up) 
     up = cross(fwd, right);
 }
 
-Mat4 world_camera_viewproj(const WorldCamera& c, float aspect) {
+Mat4 world_camera_view(const WorldCamera& c) {
     Vec3 f, r, u;
     world_camera_basis(c, f, r, u);
     const Vec3 eye{c.pos[0], c.pos[1], c.pos[2]};
-    const Mat4 view = lookAt(eye, Vec3{eye.x + f.x, eye.y + f.y, eye.z + f.z}, u);
+    return lookAt(eye, Vec3{eye.x + f.x, eye.y + f.y, eye.z + f.z}, u);
+}
+
+Mat4 world_camera_viewproj(const WorldCamera& c, float aspect) {
+    const Mat4 view = world_camera_view(c);
     const float farD = std::max(c.farDist, 1.0f);
     const float a = (aspect > 0 && std::isfinite(aspect)) ? aspect : 1.0f;
     return mul(view, perspective(c.fovY, a, world_camera_near(farD), farD));

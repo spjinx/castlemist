@@ -18,6 +18,9 @@ float world_camera_near(float farDist);
 ///        and up re-orthogonalized. A degenerate fwd/up falls back to sane axes.
 void world_camera_basis(const WorldCamera& c, Vec3& fwd, Vec3& right, Vec3& up);
 
+/// @brief The view half of world_camera_viewproj (row-vector lookAt).
+Mat4 world_camera_view(const WorldCamera& c);
+
 /// @brief Row-vector view * proj for a camera (D3D 0..1 depth,
 ///        near = world_camera_near(c.farDist)).
 Mat4 world_camera_viewproj(const WorldCamera& c, float aspect);
