@@ -967,125 +967,248 @@ public:
         float scale = 1.0f;
     };
 
-    /// @brief `zon2` -> the map's scattered zone models (foliage, rocks, ground clutter).
-    ///
-    /// GW2 does not store a zone's instances as a list of transforms. A zone owns a
-    /// RECTANGLE of cells on a fixed 48-unit grid (`vertRect`, in cell coordinates
-    /// relative to the map rect), and `flags[]` is a **run-length encoded walk over
-    /// those cells**: byte pairs of (cells to skip, flag). A non-zero flag plants
-    /// one instance in the cell the walk has reached, and `flag >> 4` selects which
-    /// of the zone def's `layerDefArray[]` entries (1-based) supplies the model.
-    ///
-    /// This replaces an approximation that placed a SINGLE model per zone at the
-    /// polygon centroid, and took its fileId from the zone def's own `defFilename`
-    /// -- which is the zone definition, not a renderable model, so it had no GEOM
-    /// chunk and every zone silently loaded nothing. That is why the Zones toggle
-    /// appeared to do nothing at all.
-    ///
-    /// Ported from Tyria3D's ZoneRenderer, which places zones correctly. Kept
-    /// faithful to it, which means the per-layer scatter jitter the game applies
-    /// (`scaleRange`, `rotRange`, `instanceScaleJitter`, `probability`, `noise`)
-    /// is NOT yet reproduced: every instance lands centred on its cell, unrotated,
-    /// at scale 1, using `modelArray[0]`.
-    std::vector<MapZoneInst> parseMapZones() {
-        std::vector<MapZoneInst> out;
-        std::string root; uint16_t ver = 0;
-        size_t z = findChunk("zon2", &root, &ver);
-        if (!z || root.empty()) return out;
-        size_t off; json f;
+    /// @brief One `modelArray` entry of a zone layer def, as stored
+    ///        (docs/superpowers/specs/2026-10-16-world-foliage-design.md D2).
+    struct Zon2LayerModel { uint32_t fileId = 0; float probability = 0; uint32_t flags = 0;
+                            float hslOffset[3]{}; float zOffsets[2]{}; uint64_t permutation = 0; };
+    /// @brief One `layerDefArray` entry; fields named as in the template (spec D2).
+    struct Zon2Layer {
+        uint8_t type = 0, width = 0, height = 0, radiusGround = 0, sortGroup = 0, tiling = 0, noise = 0;
+        float scaleRange[2]{}, probability = 0, fadeRange[2]{}, rotRange[3][2]{}, hslRanges[4][2]{};
+        float instanceScaleJitter = 0; uint32_t layerFlags = 0;
+        uint32_t materialFileId = 0;                ///< the `materialname` filename
+        std::vector<Zon2LayerModel> models;
+    };
+    /// @brief One `zoneDefArray` entry: its `token` and layer defs.
+    struct Zon2Def { uint32_t token = 0; std::vector<Zon2Layer> layers; };
+    /// @brief One `encodeData` entry (spec M5: presumably a row index into `flags[]`, UNPROVEN).
+    struct Zon2EncodeRow { uint16_t index = 0; uint8_t offset = 0; };
+    /// @brief One `zoneArray` entry, as stored.
+    struct Zon2Zone {
+        uint32_t defToken = 0; int32_t vertRect[4]{}; uint8_t seed = 0; float range[2]{}, zPos = 0, waterHeight = 0;
+        uint32_t zoneFlags = 0; uint16_t broadId = 0;
+        std::vector<uint8_t> flags;                 ///< the run-length (skip, flag) bytes, as stored
+        std::vector<Zon2EncodeRow> encodeData;
+        std::vector<float> collideData;             ///< normalX, normalY, zPos triples
+        std::vector<uint16_t> offsetData;
+    };
+    /// @brief The `zon2` chunk read by template name (spec D2).
+    struct MapZon2 {
+        bool present = false; uint16_t version = 0;
+        float rect[4]{}; bool hasRect = false;      ///< parm rect, as parseMapZones reads it
+        std::vector<Zon2Def> defs; std::vector<Zon2Zone> zones;
+        std::vector<std::string> missingFields;     ///< "<struct>.<field>" the template version lacks (kept at defaults)
+    };
 
-        // The map's world rect (parm chunk) is the origin the cell grid hangs off.
-        float rectX0 = 0, rectY0 = 0;
+    /// @brief The run-length walk (spec Measurements, notation): calls
+    ///        fn(k, c, r, f) for every non-zero flag byte, with k the position
+    ///        after adding the skip byte, (c, r) = (vr[0] + k mod w, vr[1] + k / w).
+    ///        Nothing when w <= 0. A trailing odd byte is ignored.
+    template <class F> static void walkZoneFlags(const Zon2Zone& z, F&& fn) {
+        const int32_t w = z.vertRect[2] - z.vertRect[0];
+        if (w <= 0) return;
+        uint32_t k = 0;
+        for (size_t i = 0; i + 1 < z.flags.size(); i += 2) {
+            k += z.flags[i];
+            const uint8_t f = z.flags[i + 1];
+            if (!f) continue;
+            fn(k, z.vertRect[0] + (int32_t)(k % (uint32_t)w), z.vertRect[1] + (int32_t)(k / (uint32_t)w), f);
+        }
+    }
+
+    /// @brief Read `zon2` by template field name, version-agnostic: nested
+    ///        struct names come from each field's own `element`, as parseHavok()
+    ///        does (spec D2). A field the chunk's version lacks is named in
+    ///        `missingFields` and keeps its default. An array that would run past
+    ///        the file reads as empty.
+    MapZon2 parseZon2() {
+        MapZon2 out;
+        std::string root; uint16_t ver = 0;
+        const size_t z = findChunk("zon2", &root, &ver);
+        if (!z || root.empty()) return out;
+        out.present = true;
+        out.version = ver;
         {
             std::string proot; uint16_t pver = 0;
-            size_t parm = findChunk("parm", &proot, &pver);
+            const size_t parm = findChunk("parm", &proot, &pver);
             size_t po; json pf;
-            if (!parm || proot.empty() || !fieldOffset(proot, "rect", po, pf)) return out;
-            rectX0 = rdf(parm + po);
-            rectY0 = rdf(parm + po + 4);
+            if (parm && !proot.empty() && fieldOffset(proot, "rect", po, pf)) {
+                for (int k = 0; k < 4; ++k) out.rect[k] = rdf(parm + po + 4 * k);
+                out.hasRect = true;
+            }
         }
 
-        // World units per zone cell. 48 = 32 + 16, the constant Tyria3D uses.
-        constexpr float kCell = 48.0f;
-        constexpr size_t kMaxPlacements = 400000; // a busy map is tens of thousands
+        // Each struct type's expected fields are checked once.
+        std::vector<std::string> checked;
+        auto expect = [&](const std::string& type, std::initializer_list<const char*> names) {
+            if (type.empty() || std::find(checked.begin(), checked.end(), type) != checked.end()) return;
+            checked.push_back(type);
+            for (const char* n : names) {
+                size_t o; json fj;
+                if (!fieldOffset(type, n, o, fj)) out.missingFields.push_back(type + "." + n);
+            }
+        };
+        // Field readers by name; a field the struct lacks reads nothing.
+        auto at = [&](const std::string& t, const char* n, size_t e, size_t& p) {
+            size_t o; json fj;
+            if (!fieldOffset(t, n, o, fj)) return false;
+            p = e + o;
+            return true;
+        };
+        auto floats = [&](const std::string& t, const char* n, size_t e, float* dst, int count) {
+            size_t p;
+            if (at(t, n, e, p)) for (int k = 0; k < count; ++k) dst[k] = rdf(p + 4ull * k);
+        };
+        auto byteField = [&](const std::string& t, const char* n, size_t e, uint8_t& dst) {
+            size_t p;
+            if (at(t, n, e, p)) dst = rd8(p);
+        };
+        auto dwordField = [&](const std::string& t, const char* n, size_t e, uint32_t& dst) {
+            size_t p;
+            if (at(t, n, e, p)) dst = rd32(p);
+        };
 
-        // zoneDefArray: token -> (its layer defs' first model fileId, 1-based).
-        std::unordered_map<uint32_t, std::vector<uint32_t>> layerModels;
-        if (fieldOffset(root, "zoneDefArray", off, f)) {
-            std::string dt = f["element"].value("struct", std::string());
-            int ds = typeSize(dt);
-            uint32_t n = 0; size_t base = arrayAt(z + off, n);
-            for (uint32_t i = 0; base && ds > 0 && i < n; ++i) {
-                size_t e = base + (size_t)i * ds;
-                size_t o; json ff;
-                uint32_t tok = fieldOffset(dt, "token", o, ff) ? rd32(e + o) : 0;
-                if (!tok) continue;
-                std::vector<uint32_t> models;
-                if (fieldOffset(dt, "layerDefArray", o, ff)) {
-                    std::string lt = ff["element"].value("struct", std::string());
-                    int ls = typeSize(lt);
-                    uint32_t ln = 0; size_t lb = arrayAt(e + o, ln);
-                    for (uint32_t k = 0; lb && ls > 0 && k < ln; ++k) {
-                        size_t le = lb + (size_t)k * ls;
-                        uint32_t fid = 0;
-                        size_t mo; json mf;
-                        if (fieldOffset(lt, "modelArray", mo, mf)) {
-                            std::string mt = mf["element"].value("struct", std::string());
-                            int ms = typeSize(mt);
-                            uint32_t mn = 0; size_t mb = arrayAt(le + mo, mn);
-                            if (mb && ms > 0 && mn > 0) fid = decodeFilename(mt, mb); // modelArray[0]
-                        }
-                        models.push_back(fid);
-                    }
+        expect(root, {"zoneDefArray", "zoneArray"});
+        const FieldArray defs = fieldArray(root, "zoneDefArray", z);
+        expect(defs.type, {"token", "layerDefArray"});
+        out.defs.resize(defs.n);
+        for (uint32_t i = 0; i < defs.n; ++i) {
+            const size_t de = defs.base + (size_t)i * defs.stride;
+            Zon2Def& d = out.defs[i];
+            dwordField(defs.type, "token", de, d.token);
+            const FieldArray layers = fieldArray(defs.type, "layerDefArray", de);
+            const std::string& lt = layers.type;
+            expect(lt, {"type", "width", "height", "radiusGround", "sortGroup", "tiling", "noise", "scaleRange",
+                        "probability", "fadeRange", "rotRange", "hslRanges", "instanceScaleJitter", "layerFlags",
+                        "materialname", "modelArray"});
+            d.layers.resize(layers.n);
+            for (uint32_t li = 0; li < layers.n; ++li) {
+                const size_t le = layers.base + (size_t)li * layers.stride;
+                Zon2Layer& L = d.layers[li];
+                byteField(lt, "type", le, L.type);
+                byteField(lt, "width", le, L.width);
+                byteField(lt, "height", le, L.height);
+                byteField(lt, "radiusGround", le, L.radiusGround);
+                byteField(lt, "sortGroup", le, L.sortGroup);
+                byteField(lt, "tiling", le, L.tiling);
+                byteField(lt, "noise", le, L.noise);
+                floats(lt, "scaleRange", le, L.scaleRange, 2);
+                floats(lt, "probability", le, &L.probability, 1);
+                floats(lt, "fadeRange", le, L.fadeRange, 2);
+                floats(lt, "rotRange", le, &L.rotRange[0][0], 6);
+                floats(lt, "hslRanges", le, &L.hslRanges[0][0], 8);
+                floats(lt, "instanceScaleJitter", le, &L.instanceScaleJitter, 1);
+                dwordField(lt, "layerFlags", le, L.layerFlags);
+                L.materialFileId = decodeFilename(lt, le, "materialname");
+                const FieldArray models = fieldArray(lt, "modelArray", le);
+                const std::string& mt = models.type;
+                expect(mt, {"filename", "probability", "flags", "hslOffset", "zOffsets", "permutation"});
+                L.models.resize(models.n);
+                for (uint32_t mi = 0; mi < models.n; ++mi) {
+                    const size_t me = models.base + (size_t)mi * models.stride;
+                    Zon2LayerModel& M = L.models[mi];
+                    M.fileId = decodeFilename(mt, me);
+                    floats(mt, "probability", me, &M.probability, 1);
+                    dwordField(mt, "flags", me, M.flags);
+                    floats(mt, "hslOffset", me, M.hslOffset, 3);
+                    // `zOffsets` is byte[2] in the template; kept as the stored byte values.
+                    size_t p;
+                    if (at(mt, "zOffsets", me, p)) for (int k = 0; k < 2; ++k) M.zOffsets[k] = (float)rd8(p + k);
+                    if (at(mt, "permutation", me, p)) M.permutation = rd64(p);
                 }
-                layerModels[tok] = std::move(models);
             }
         }
-        if (layerModels.empty()) return out;
 
-        if (!fieldOffset(root, "zoneArray", off, f)) return out;
-        std::string zt = f["element"].value("struct", std::string());
-        int zs = typeSize(zt);
-        uint32_t n = 0; size_t base = arrayAt(z + off, n);
-        for (uint32_t i = 0; base && zs > 0 && i < n; ++i) {
-            size_t e = base + (size_t)i * zs;
-            size_t o; json ff;
-            uint32_t tok = fieldOffset(zt, "defToken", o, ff) ? rd32(e + o) : 0;
-            auto it = layerModels.find(tok);
-            if (it == layerModels.end() || it->second.empty()) continue;
-            const std::vector<uint32_t>& models = it->second;
+        const FieldArray zones = fieldArray(root, "zoneArray", z);
+        const std::string& zt = zones.type;
+        expect(zt, {"defToken", "vertRect", "seed", "range", "zPos", "waterHeight", "zoneFlags", "broadId", "flags",
+                    "encodeData", "collideData", "offsetData"});
+        out.zones.resize(zones.n);
+        for (uint32_t i = 0; i < zones.n; ++i) {
+            const size_t e = zones.base + (size_t)i * zones.stride;
+            Zon2Zone& Z = out.zones[i];
+            dwordField(zt, "defToken", e, Z.defToken);
+            size_t p;
+            if (at(zt, "vertRect", e, p)) for (int k = 0; k < 4; ++k) Z.vertRect[k] = (int32_t)rd32(p + 4ull * k);
+            byteField(zt, "seed", e, Z.seed);
+            floats(zt, "range", e, Z.range, 2);
+            floats(zt, "zPos", e, &Z.zPos, 1);
+            floats(zt, "waterHeight", e, &Z.waterHeight, 1);
+            dwordField(zt, "zoneFlags", e, Z.zoneFlags);
+            if (at(zt, "broadId", e, p)) Z.broadId = rd16(p);
 
-            int32_t vr[4] = {0, 0, 0, 0};
-            if (!fieldOffset(zt, "vertRect", o, ff)) continue;
-            for (int k = 0; k < 4; ++k) vr[k] = (int32_t)rd32(e + o + 4u * k);
-            int32_t cols = vr[2] - vr[0];   // zone width in cells
-            if (cols <= 0) continue;
-
-            float zpos = fieldOffset(zt, "zPos", o, ff) ? rdf(e + o) : 0;
-
-            if (!fieldOffset(zt, "flags", o, ff)) continue;
-            uint32_t fn = 0; size_t fb = arrayAt(e + o, fn);
-            if (!fb || fn < 2) continue;
-
-            // Run-length walk: (skip, flag) byte pairs over the zone's cell grid.
-            uint32_t linearPos = 0;
-            for (uint32_t k = 0; k + 1 < fn; k += 2) {
-                linearPos += rd8(fb + k);
-                uint32_t flag = rd8(fb + k + 1);
-                if (!flag) continue;
-                uint32_t layerIdx = flag >> 4;           // 1-based into layerDefArray
-                if (layerIdx == 0 || layerIdx > models.size()) continue;
-                uint32_t fid = models[layerIdx - 1];
-                if (!fid) continue;
-
-                MapZoneInst mz;
-                mz.fileId = fid;
-                mz.pos[0] = rectX0 + (float)(vr[0] + (int32_t)(linearPos % (uint32_t)cols)) * kCell;
-                mz.pos[1] = rectY0 + (float)(vr[1] + (int32_t)(linearPos / (uint32_t)cols)) * kCell;
-                mz.pos[2] = zpos;
-                out.push_back(mz);
-                if (out.size() >= kMaxPlacements) return out;
+            const FieldArray fl = fieldArray(zt, "flags", e);
+            if (fl.stride == 1 && fl.n) Z.flags.assign(d_ + fl.base, d_ + fl.base + fl.n);
+            const FieldArray en = fieldArray(zt, "encodeData", e);
+            expect(en.type, {"index", "offset"});
+            Z.encodeData.resize(en.n);
+            for (uint32_t k = 0; k < en.n; ++k) {
+                const size_t ee = en.base + (size_t)k * en.stride;
+                if (at(en.type, "index", ee, p)) Z.encodeData[k].index = rd16(p);
+                byteField(en.type, "offset", ee, Z.encodeData[k].offset);
             }
+            const FieldArray cd = fieldArray(zt, "collideData", e);
+            expect(cd.type, {"normalX", "normalY", "zPos"});
+            Z.collideData.resize(3ull * cd.n);
+            for (uint32_t k = 0; k < cd.n; ++k) {
+                const size_t ce = cd.base + (size_t)k * cd.stride;
+                floats(cd.type, "normalX", ce, &Z.collideData[3ull * k], 1);
+                floats(cd.type, "normalY", ce, &Z.collideData[3ull * k + 1], 1);
+                floats(cd.type, "zPos", ce, &Z.collideData[3ull * k + 2], 1);
+            }
+            const FieldArray od = fieldArray(zt, "offsetData", e);
+            if (od.stride == 2) {
+                Z.offsetData.reserve(od.n);
+                for (uint32_t k = 0; k < od.n; ++k) Z.offsetData.push_back(rd16(od.base + 2ull * k));
+            }
+        }
+        return out;
+    }
+
+    /// @brief `zon2` -> the map's scattered zone placements (foliage, rocks, ground clutter).
+    ///
+    /// GW2 does not store a zone's instances as a list of transforms. A zone owns a
+    /// rectangle of points on a fixed 48-unit grid (`vertRect`), and `flags[]` is a
+    /// run-length walk over it: byte pairs of (points to skip, flag). Each non-zero
+    /// flag `f` is one placement (walkZoneFlags(), parseZon2()).
+    ///
+    /// Measured on Queensdale, Lion's Arch and Spirit Vale against the havk
+    /// `zoneModels` colliders and the prp2 props
+    /// (docs/superpowers/specs/2026-10-16-world-foliage-design.md M2-M3):
+    /// - the position is the anchor `(x0 + 48 * (c - 1), y0 + 48 * r)` from the
+    ///   parm rect's south-west corner `(x0, y0)`, rows counting north. The column
+    ///   is `c - 1`, one cell west of the grid point (M2);
+    /// - the model is `layerDefArray[(f >> 4) - 1].modelArray[(f >> 1) & 7]` (M3).
+    ///
+    /// The Tyria3D-derived reader this replaces used `modelArray[0]` and column
+    /// `c`; both were measured wrong (M2, M3). A placement whose layer or slot does
+    /// not resolve, or whose model has no fileId, is skipped. The per-layer scatter
+    /// (`scaleRange`, `rotRange`, `instanceScaleJitter`, `probability`, `noise`,
+    /// bit 0 of `f`) is NOT reproduced: every instance is unrotated at scale 1, and
+    /// `pos[2]` is the zone's `zPos` (spec D5, phase 2).
+    std::vector<MapZoneInst> parseMapZones() {
+        std::vector<MapZoneInst> out;
+        const MapZon2 z = parseZon2();
+        if (!z.present || !z.hasRect) return out;
+        constexpr float kCell = 48.0f;   // map units per zone grid step (spec M2)
+        std::unordered_map<uint32_t, const Zon2Def*> defs;
+        for (const auto& d : z.defs) defs.emplace(d.token, &d);
+        for (const auto& zone : z.zones) {
+            auto it = defs.find(zone.defToken);
+            if (it == defs.end()) continue;
+            const Zon2Def& def = *it->second;
+            walkZoneFlags(zone, [&](uint32_t, int32_t c, int32_t r, uint8_t f) {
+                const uint32_t layer = f >> 4, slot = (f >> 1) & 7u;   // layer is 1-based
+                if (layer == 0 || layer > def.layers.size()) return;
+                const auto& models = def.layers[layer - 1].models;
+                if (slot >= models.size() || !models[slot].fileId) return;
+                MapZoneInst mz;
+                mz.fileId = models[slot].fileId;
+                mz.pos[0] = z.rect[0] + kCell * (float)(c - 1);
+                mz.pos[1] = z.rect[1] + kCell * (float)r;
+                mz.pos[2] = zone.zPos;
+                out.push_back(mz);
+            });
         }
         return out;
     }
@@ -1164,6 +1287,7 @@ public:
         std::string group;                     ///< "obs" | "prop" | "zone"
         bool hasSequence = false;              ///< the struct has a qword `sequence` (propModels)
         uint64_t sequence = 0;                 ///< `sequence` as stored: the animation it plays (§7.1)
+        uint64_t token = 0;                    ///< propModels `token`, as stored: a prp2 prop's `guid` (§7.1); 0 elsewhere
     };
 
     /// @brief The `havk` chunk's hulls and placements, unresolved
@@ -1237,8 +1361,8 @@ public:
         for (const auto& [arrayName, group] : {std::pair<const char*, const char*>{"obsModels", "obs"},
                                                {"propModels", "prop"}, {"zoneModels", "zone"}}) {
             const FieldArray m = fieldArray(root, arrayName, h);
-            size_t oT = 0, oR = 0, oS = 0, oG = 0, oQ = 0; json fj;
-            const bool hQ = qwordField(m.type, "sequence", oQ);
+            size_t oT = 0, oR = 0, oS = 0, oG = 0, oQ = 0, oK = 0; json fj;
+            const bool hQ = qwordField(m.type, "sequence", oQ), hK = qwordField(m.type, "token", oK);
             const bool hT = fieldOffset(m.type, "translate", oT, fj), hR = fieldOffset(m.type, "rotate", oR, fj),
                        hS = fieldOffset(m.type, "scale", oS, fj), hG = fieldOffset(m.type, "geometryIndex", oG, fj);
             if (!hG) continue;
@@ -1254,6 +1378,7 @@ public:
                 }
                 if (hS) p.scale = rdf(e + oS);
                 if (hQ) { p.hasSequence = true; p.sequence = rd64(e + oQ); }
+                if (hK) p.token = rd64(e + oK);
                 out.placements.push_back(std::move(p));
             }
         }
@@ -1662,6 +1787,9 @@ public:
         float bounds[4] = {0, 0, 0, 0};
         uint8_t color[4] = {0, 0, 0, 0};  // `color` byte4, as stored (meaning UNPROVEN, world-materials §3)
         uint64_t animSequence = 0;        // propAnimArray only: the clip's token64 name (world-materials §5)
+        // prp2 `guid` qword, as stored (a havk propModels `token` names it, world-frame §7.1).
+        // 0 for a propInstanceArray transform, whose struct has no guid.
+        uint64_t guid = 0;
         // The prp2 array this placement came from: "propArray", "propAnimArray",
         // "propMetaArray" or "propInstanceArray" (a base placement or one of its transforms).
         std::string group;
@@ -2500,6 +2628,7 @@ public:
             if (fieldOffset(objType, "color", o, f)) for (int k=0;k<4;++k) p.color[k] = rd8(e+o+k);
             // token64 clip name; only PackMapPropObjAnimSeqV* (propAnimArray) has it.
             if (fieldOffset(objType, "animSequence", o, f)) p.animSequence = rd64(e+o);
+            if (fieldOffset(objType, "guid", o, f) && f.value("kind", std::string()) == "qword") p.guid = rd64(e+o);
         };
 
         size_t off; json fj;
@@ -3757,10 +3886,11 @@ private:
         }
     }
 
-    // decode a "filename" field of a struct -> fileId (0 if none/invalid)
-    uint32_t decodeFilename(const std::string& typeName, size_t structStart) {
+    // decode a "filename" field of a struct -> fileId (0 if none/invalid).
+    // `field` names the field; a few structs call theirs otherwise (zon2 `materialname`).
+    uint32_t decodeFilename(const std::string& typeName, size_t structStart, const char* field = "filename") {
         size_t off; json fj;
-        if (!fieldOffset(typeName, "filename", off, fj)) return 0;
+        if (!fieldOffset(typeName, field, off, fj)) return 0;
         size_t t = follow(structStart + off);
         if (!t) return 0;
         uint16_t lo = rd16(t), hi = rd16(t + 2);

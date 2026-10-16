@@ -1320,3 +1320,72 @@ CM_TEST(world_dat, materials_scene_fields) {
     CHECK(resolved > 0);
     CHECK_EQ(bad, size_t(0));
 }
+
+// ---- zon2 (world foliage spec, M1-M3) ----
+
+#include <unordered_map>
+#include <unordered_set>
+
+// M1: the run-length walk's placement counts; M3: every visit's layer and
+// model slot resolve; parseMapZones() is the walk with the anchor column c - 1.
+CM_TEST(world_dat, zon2_reads_three_maps) {
+    if (!ensure_template()) SKIP("no struct template");
+    using Ex = castlemist::model::Extractor;
+    const std::map<uint32_t, size_t> kVisits = {{192711, 217114}, {191000, 32448}, {1151420, 7642}};
+    for (uint32_t id : kTestMaps) {
+        std::vector<uint8_t> bytes = packfile_by_file_id(id);
+        Ex ex(bytes, *castlemist::tpl::get());
+        const Ex::MapZon2 z = ex.parseZon2();
+        CHECK(z.present);
+        CHECK(z.hasRect);
+        for (const auto& m : z.missingFields) std::printf("    map %u missing field %s\n", id, m.c_str());
+        CHECK(z.missingFields.empty());
+        std::unordered_map<uint32_t, const Ex::Zon2Def*> defs;
+        for (const auto& d : z.defs) defs[d.token] = &d;
+        size_t visits = 0, bad = 0;
+        bool haveFirst = false;
+        int32_t firstC = 0;
+        for (const auto& zone : z.zones) {
+            auto it = defs.find(zone.defToken);
+            const Ex::Zon2Def* def = it == defs.end() ? nullptr : it->second;
+            Ex::walkZoneFlags(zone, [&](uint32_t, int32_t c, int32_t, uint8_t f) {
+                ++visits;
+                if (!haveFirst) { haveFirst = true; firstC = c; }
+                const uint32_t li = (f >> 4) - 1u, slot = (f >> 1) & 7u;
+                const bool ok = def && (f >> 4) > 0 && li < def->layers.size() && slot < def->layers[li].models.size();
+                bad += !ok;
+            });
+        }
+        std::printf("    map %u: zon2 v%u, %zu defs, %zu zones, %zu visits, %zu unresolved\n", id, z.version,
+                    z.defs.size(), z.zones.size(), visits, bad);
+        CHECK_EQ(visits, kVisits.at(id));
+        CHECK_EQ(bad, size_t(0));
+        const auto inst = ex.parseMapZones();
+        CHECK_EQ(inst.size(), visits);
+        CHECK(haveFirst && !inst.empty());
+        if (haveFirst && !inst.empty()) CHECK_EQ(inst[0].pos[0], z.rect[0] + 48.0f * (float)(firstC - 1));
+    }
+}
+
+// M3's prop cross-check: propModels `token` is a prp2 `guid`.
+CM_TEST(world_dat, havk_prop_tokens_read) {
+    if (!ensure_template()) SKIP("no struct template");
+    using Ex = castlemist::model::Extractor;
+    std::vector<uint8_t> bytes = packfile_by_file_id(192711);
+    Ex ex(bytes, *castlemist::tpl::get());
+    const Ex::MapHavok h = ex.parseHavok();
+    const auto props = ex.parseMapProps();
+    std::unordered_set<uint64_t> guids;
+    for (const auto& p : props)
+        if (p.guid) guids.insert(p.guid);
+    size_t tokens = 0, matched = 0;
+    for (const auto& p : h.placements) {
+        if (p.group != "prop" || !p.token) continue;
+        ++tokens;
+        matched += guids.count(p.token) != 0;
+    }
+    std::printf("    192711: %zu prop guids, %zu propModels tokens, %zu match a guid\n", guids.size(), tokens,
+                matched);
+    CHECK(tokens > 0);
+    CHECK(matched > 0);
+}

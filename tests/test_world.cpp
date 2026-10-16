@@ -782,3 +782,33 @@ CM_TEST(world, environment_keeps_water_presets) {
     for (const auto& w : scene.warnings) noted = noted || w.find("note §" "6") != std::string::npos;
     CHECK(noted);
 }
+
+// ---- zon2 run-length walk (world foliage spec, Measurements: notation) ----
+
+#include "castlemist/native/gw2model.hpp"
+
+#include <array>
+#include <vector>
+
+CM_TEST(zones, walk_skip_and_flag_pairs) {
+    using Ex = castlemist::model::Extractor;
+    Ex::Zon2Zone z;
+    const int32_t vr[4] = {10, 20, 14, 23};   // w = 4
+    for (int i = 0; i < 4; ++i) z.vertRect[i] = vr[i];
+    z.flags = {0, 0x31, 3, 0, 2, 0x23, 7, 0x10, 5};   // the trailing 5 is an odd byte
+    std::vector<std::array<uint32_t, 4>> got;
+    Ex::walkZoneFlags(z, [&](uint32_t k, int32_t c, int32_t r, uint8_t f) {
+        got.push_back({k, (uint32_t)c, (uint32_t)r, (uint32_t)f});
+    });
+    const std::vector<std::array<uint32_t, 4>> want = {{0, 10, 20, 0x31}, {5, 11, 21, 0x23}, {12, 10, 23, 0x10}};
+    CHECK_EQ(got.size(), want.size());
+    for (size_t i = 0; i < got.size() && i < want.size(); ++i)
+        for (int j = 0; j < 4; ++j) CHECK_EQ(got[i][j], want[i][j]);
+
+    // w = 0: nothing.
+    Ex::Zon2Zone flat = z;
+    flat.vertRect[2] = flat.vertRect[0];
+    size_t n = 0;
+    Ex::walkZoneFlags(flat, [&](uint32_t, int32_t, int32_t, uint8_t) { ++n; });
+    CHECK_EQ(n, size_t(0));
+}
