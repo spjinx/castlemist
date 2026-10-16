@@ -15,6 +15,7 @@
 #include "castlemist/world/frame.h"
 #include "castlemist/world/props.h"
 #include "castlemist/world/surface_rules.h"
+#include "castlemist/world/walk.h"
 #include "castlemist/extract/model_types.h"
 #include "castlemist/native/granny_anim.hpp"
 
@@ -458,6 +459,36 @@ CM_TEST(world_cell, terrain_welded_vertex_count) {
     cross3(&m.pos[m.idx[0] * 3], &m.pos[m.idx[1] * 3], &m.pos[m.idx[2] * 3], n);
     CHECK(n[2] < 0);   // up is -Z
     CHECK(m.nrm[2] < 0);
+}
+
+// The cell terrain is the surface castlemist walks on: each quad split along
+// the same diagonal as CollisionIndex::build (p00-p11), so a ray down hits the
+// same height on both (the Spirit Vale dat test's 32 rays, Task 13). A
+// checkerboard of heights makes every quad's two diagonals differ.
+CM_TEST(world_cell, terrain_matches_collision_index) {
+    cw::WorldScene s = cell_grid(2, 2);
+    for (auto& ch : s.terrain.chunks)
+        for (int j = 0; j < 33; ++j)
+            for (int i = 0; i < 33; ++i)
+                ch.heights[size_t(j) * 33 + i] = float(((ch.cx * 32 + i) + (ch.cy * 32 + j)) % 2) * 40.0f;
+    const cw::Cell c = cell_by_id(s, "c0_0_2x2");
+    CHECK(c.id == "c0_0_2x2");
+    const CellMesh m = build_cell_terrain(s.terrain, c);
+    std::vector<float> tris;
+    for (uint32_t i : m.idx)
+        for (size_t k = 0; k < 3; ++k) tris.push_back(m.pos[size_t(i) * 3 + k] + c.origin[k]);
+    const cw::CollisionIndex fromCell = cw::CollisionIndex::from_triangles({}, tris);
+    const cw::CollisionIndex fromScene = cw::CollisionIndex::build(s, true);
+    CHECK_EQ(fromCell.triangle_count(), fromScene.triangle_count());
+    uint32_t r = 12345u;
+    auto next = [&] { r = r * 1664525u + 1013904223u; return float(r >> 8) / float(1u << 24); };
+    const float down[3] = {0, 0, 1};
+    for (int k = 0; k < 64; ++k) {
+        const float o[3] = {c.rect[0] + next() * (c.rect[2] - c.rect[0]), c.rect[1] + next() * (c.rect[3] - c.rect[1]), -1000};
+        const auto a = fromCell.raycast(o, down, 1e5f), b = fromScene.raycast(o, down, 1e5f);
+        CHECK(a.has_value() && b.has_value());
+        if (a && b) CHECK_NEAR(a->t, b->t, 0.01);
+    }
 }
 
 CM_TEST(world_cell, shared_edge_welded) {
