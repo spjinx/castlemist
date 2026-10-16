@@ -3,7 +3,7 @@
 ///        meshes, the placed instances, the per-frame cull into (mesh, LOD)
 ///        buckets and the one-Map-per-frame instance stream.
 ///
-/// Follows the fly view's render_fly (map_fly.cpp): distance + frustum sphere
+/// Follows the main window's old mesh-only map view: distance + frustum sphere
 /// cull, LOD by screen size, buckets by (mesh, LOD), one dynamic instance
 /// buffer, one DrawIndexedInstanced per bucket.
 ///
@@ -141,7 +141,7 @@ public:
         first_.clear();
     }
     /// Culls @p insts (distance, then frustum sphere), picks a LOD by screen
-    /// size as render_fly does, and appends them to this frame's buckets.
+    /// size, and appends them to this frame's buckets.
     /// Returns how many survived.
     int cull_into(const std::vector<InstCPU>& insts, const std::vector<MeshGPU>& meshes, const float* tint,
                   float alpha, const WorldCamera& cam, float farD, const float planes[6][4],

@@ -615,7 +615,7 @@ CM_TEST(world_view, flatten_subranges_cover_each_lod_once) {
         CHECK_EQ(s[0].material, 0u);
         CHECK_EQ(s[1].material, 1u);
     }
-    // The 4-argument form (map_fly) gives the same buffers.
+    // The 4-argument form gives the same buffers.
     std::vector<MapVtx> v4;
     std::vector<uint32_t> i4;
     std::vector<std::pair<uint32_t, uint32_t>> l4;

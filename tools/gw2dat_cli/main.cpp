@@ -2583,7 +2583,7 @@ void cmd_world_export(const Args& a) {
     const double tWorld = secs();
 
     // Load each distinct prop model once, in parallel against the one parsed
-    // dat (read-only lookups, as build_map_scene does).
+    // dat (read-only lookups).
     std::vector<std::shared_ptr<ModelPreview>> models(scene.models.size());
     size_t loaded = 0;
     if (opt.props && !scene.models.empty()) {

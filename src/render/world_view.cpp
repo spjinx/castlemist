@@ -916,7 +916,7 @@ struct WorldView::Impl {
         c.viewProj = VP;
         const Vec3 sun = norm({sunDir[0], sunDir[1], sunDir[2]});
         c.sunDir[0] = sun.x; c.sunDir[1] = sun.y; c.sunDir[2] = sun.z;
-        // The fly view's budget (render_fly): sun up to ~0.55, ambient ~0.30.
+        // The old mesh-only map view's budget: sun up to ~0.55, ambient ~0.30.
         for (int k = 0; k < 3; ++k) c.sunCol[k] = sunColor[k] * 0.55f;
         c.skyCol[0] = fillColor[0] * 0.26f; c.skyCol[1] = fillColor[1] * 0.28f; c.skyCol[2] = fillColor[2] * 0.32f;
         c.groundCol[0] = 0.07f; c.groundCol[1] = 0.065f; c.groundCol[2] = 0.06f;
@@ -1581,7 +1581,7 @@ WorldCamera WorldView::frame_all(float* speedHint) const {
     float R = 0.5f * std::sqrt(ex * ex + ey * ey + ez * ez);
     if (!std::isfinite(R) || R < 1.0f) R = 1.0f;
 
-    // The fly view's framing (fly_frame_scene): back along -X and above the
+    // The old mesh-only map view's framing: back along -X and above the
     // highest point -- "above" is the smallest z, since up is -Z.
     const Vec3 pos{c.x - R * 0.62f, c.y, lo[2] - R * 0.28f};
     const Vec3 fwd = norm(sub(c, pos));

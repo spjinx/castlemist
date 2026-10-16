@@ -158,11 +158,9 @@ ExtractedEntry decompress_raw_entry(std::vector<uint8_t> raw_bytes, uint16_t com
                 };
 
                 if (db_has_chunk("prp2")) {
+                    // Classified only: world::load_world reads maps (ui preview,
+                    // Map Window, world export).
                     result.kind = PreviewKind::Map;
-                    auto tpl = castlemist::tpl::get_or_auto_load();
-                    if (tpl && !dat_path.empty()) {
-                        result.map = build_map_scene(result.decompressed, dat_path, *tpl);
-                    }
                     return result;
                 }
                 if (db_has_chunk("GEOM")) {
@@ -435,11 +433,7 @@ ExtractedEntry decompress_raw_entry(std::vector<uint8_t> raw_bytes, uint16_t com
     // PF packfile with a prop-placement chunk -> map scene (mapc/area). Checked
     // before GEOM since a map has prp2 but no GEOM of its own.
     if (castlemist::core::has_chunk(result.decompressed, "prp2")) {
-        result.kind = PreviewKind::Map;
-        auto tpl = castlemist::tpl::get_or_auto_load();
-        if (tpl && !dat_path.empty()) {
-            result.map = build_map_scene(result.decompressed, dat_path, *tpl);
-        }
+        result.kind = PreviewKind::Map;   // classified only, as above
         return result;
     }
 

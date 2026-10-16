@@ -1,7 +1,6 @@
 /// @file
-/// @brief Uploading a ModelPreview or a MapScene to the GPU, plus the LOD/submesh selectors.
+/// @brief Uploading a ModelPreview or a scene (set_scene) to the GPU, plus the LOD/submesh selectors.
 
-#include "detail/map_fly.h"
 #include "detail/state.h"
 
 #include <algorithm>
@@ -305,7 +304,6 @@ bool upload_scene_model(const ModelPreview& model, SceneModelGPU& out) {
 void clear_scene() {
     g_scene_models.clear();
     g_scene_insts.clear();
-    clear_fly_scene();
     g_scene_mode = false;
     g_scene_shown = false;
     g_focus_model = -1;
@@ -318,10 +316,6 @@ void set_scene(const std::vector<ModelPreview>& models, const std::vector<SceneI
 
     g_scene_models.resize(models.size());
     for (size_t i = 0; i < models.size(); ++i) upload_scene_model(models[i], g_scene_models[i]);
-    // Compact, AO-baked copies for the fly view. Built alongside the textured
-    // upload because this is the only place the CPU-side ModelPreview is still
-    // in hand -- SceneModelGPU keeps no geometry.
-    fly_add_models(models, 0);
 
     // Two bounding boxes: `plo/phi` = PROPS only, `lo/hi` = props + terrain. The
     // terrain plane spans the WHOLE map rect (often 6k-30k units wide) while the
@@ -342,11 +336,6 @@ void set_scene(const std::vector<ModelPreview>& models, const std::vector<SceneI
         g.world = sceneWorld(in.pos, in.rot, in.scale);
         g.layer = in.layer;
         g_scene_insts.push_back(g);
-        {
-            const ModelPreview& fmp = models[in.model];
-            float fr = fmp.radius * in.scale;
-            if (std::isfinite(fr) && fr > 0) fly_add_instance(in.model, g.world, fr, in.layer);
-        }
         if (in.layer == LAYER_COLLISION || in.layer == LAYER_ZONE || in.layer == LAYER_NAVMESH) continue;
         const ModelPreview& mp = models[in.model];
         float r = mp.radius * in.scale;
@@ -374,7 +363,7 @@ void set_scene(const std::vector<ModelPreview>& models, const std::vector<SceneI
     float ext[3] = {fhi[0]-flo[0], fhi[1]-flo[1], fhi[2]-flo[2]};
     g_scene_radius = 0.5f * std::sqrt(ext[0]*ext[0] + ext[1]*ext[1] + ext[2]*ext[2]);
     if (g_scene_radius < 1e-2f) g_scene_radius = 1.0f;
-    // Full box (props + terrain), for the fly camera's start position.
+    // Full box (props + terrain).
     if (lo[0] <= hi[0]) {
         g_scene_lo = {lo[0], lo[1], lo[2]};
         g_scene_hi = {hi[0], hi[1], hi[2]};
@@ -394,7 +383,6 @@ void add_scene_models(const std::vector<ModelPreview>& models, const std::vector
     int base = static_cast<int>(g_scene_models.size());
     g_scene_models.resize(g_scene_models.size() + models.size());
     for (size_t i = 0; i < models.size(); ++i) upload_scene_model(models[i], g_scene_models[base + i]);
-    fly_add_models(models, static_cast<size_t>(base));
     for (const auto& in : instances) {
         if (in.model < 0 || in.model >= static_cast<int>(models.size())) continue;
         int gm = base + in.model;
@@ -404,8 +392,6 @@ void add_scene_models(const std::vector<ModelPreview>& models, const std::vector
         g.world = sceneWorld(in.pos, in.rot, in.scale);
         g.layer = in.layer;
         g_scene_insts.push_back(g);
-        float fr = models[in.model].radius * in.scale;
-        if (std::isfinite(fr) && fr > 0) fly_add_instance(gm, g.world, fr, in.layer);
     }
 }
 
@@ -441,15 +427,7 @@ bool show_focus() { return g_show_focus; }
 void set_layer_visible(int layer, bool visible) { if (layer >= 0 && layer < LAYER_COUNT) g_layer_visible[layer] = visible; }
 bool layer_visible(int layer) { return (layer >= 0 && layer < LAYER_COUNT) ? g_layer_visible[layer] : false; }
 
-void set_mode(RenderMode mode) {
-    bool enteringFly = (mode == RenderMode::MapFly && g_mode != RenderMode::MapFly);
-    g_mode = mode;
-    // Entering the fly view drops the camera into an establishing shot over the
-    // scene; the orbit modes share g_rot/g_dist and are left untouched, so
-    // switching back and forth does not disturb either camera.
-    if (enteringFly && g_scene_mode) fly_frame_scene();
-    if (mode != RenderMode::MapFly) fly_clear_keys();
-}
+void set_mode(RenderMode mode) { g_mode = mode; }
 
 // --- per-submesh LOD + texture-size selection (single-model path) -----------
 int submesh_count() { return static_cast<int>(g_subs.size()); }
