@@ -60,6 +60,7 @@ names an address, that is `Gw2-64.exe` with ASLR disabled, imagebase
 | ---- | --------------- |
 | [gw2-map-scene.md](gw2-map-scene.md) | prop placement out of mapc/area prp2. GW2 is Z-up |
 | [gw2-world-frame.md](gw2-world-frame.md) | the world's frame: Z-up map space, units, bounds, and the conversions to Unity and Blender (measured with the frame probe) |
+| [gw2-terrain-to-unity.md](gw2-terrain-to-unity.md) | converting GW2 terrain, foliage (zon2), trees and decals to Unity Terrain for VRChat (Built-in, PC/Quest): mapping, pipeline proposal, unknowns |
 | [gw2-terrain-heightmap.md](gw2-terrain-heightmap.md) | the heightmap is chunk-**tiled**, 35x35 verts at stride 32 with 3 overlapping. Read flat, terrain renders as a squeezed wavy mat |
 | [gw2-map-lighting.md](gw2-map-lighting.md) | the per-map env sun and fill rig, and the tone mapping that stopped props blowing out to white |
 
