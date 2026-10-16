@@ -292,6 +292,26 @@ std::vector<std::string> make_vrchat_ready(ModelPreview& model) {
     return chains;
 }
 
+bool blender_folder_newer(const std::string& a, const std::string& b) {
+    // The numbers in each name, compared as numbers ("Blender 4.10" > "Blender 4.5").
+    auto nums = [](const std::string& s) {
+        std::vector<long> v;
+        for (size_t i = 0; i < s.size();) {
+            if (s[i] >= '0' && s[i] <= '9') {
+                long n = 0;
+                for (; i < s.size() && s[i] >= '0' && s[i] <= '9'; ++i) n = n * 10 + (s[i] - '0');
+                v.push_back(n);
+            } else {
+                ++i;
+            }
+        }
+        return v;
+    };
+    const std::vector<long> va = nums(a), vb = nums(b);
+    if (va != vb) return std::lexicographical_compare(vb.begin(), vb.end(), va.begin(), va.end());
+    return a > b;
+}
+
 std::string find_blender() {
     fs::path best;
     std::error_code ec;
@@ -299,7 +319,9 @@ std::string find_blender() {
         if (!fs::exists(root, ec)) continue;
         for (const auto& d : fs::directory_iterator(root, ec)) {
             const fs::path exe = d.path() / "blender.exe";
-            if (fs::exists(exe, ec) && (best.empty() || d.path().filename().string() > best.parent_path().filename().string()))
+            if (fs::exists(exe, ec) &&
+                (best.empty() ||
+                 blender_folder_newer(d.path().filename().string(), best.parent_path().filename().string())))
                 best = exe;
         }
     }

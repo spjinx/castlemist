@@ -76,6 +76,11 @@ VrchatModelReport export_vrchat_model(const ModelPreview& model, const std::stri
 /// The newest Blender under Program Files\Blender Foundation, or empty.
 std::string find_blender();
 
+/// find_blender's order: true when folder name @p a is a newer Blender than
+/// @p b, comparing the numbers in the names as numbers (review M4: "Blender
+/// 4.10" is newer than "Blender 4.5", which a string compare gets wrong).
+bool blender_folder_newer(const std::string& a, const std::string& b);
+
 /// World export (sub-project 4, Task 11): runs `tools/blender/castlemist_world.py
 /// --to-fbx <dir>` in one headless Blender session (Blender's output in
 /// `<dir>/blender.log`), then exportgltf::set_manifest_fbx, also after a failure
