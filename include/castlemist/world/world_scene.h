@@ -80,6 +80,10 @@ struct PropInstance {
     float pos[3] = {}, rot[3] = {}; float scale = 1;  ///< as stored, for references
     uint64_t animSequence = 0;              ///< propAnimArray: the clip's token64 name, as stored
     uint8_t color[4] = {0, 0, 0, 0};        ///< `color` as stored (meaning UNPROVEN)
+    /// `lod1`, `lod2`, `flags` as stored (prp2; a propInstanceArray transform has its
+    /// base record's). world/lods.h prop_lod_override reads them.
+    float lod1 = 0, lod2 = 0;
+    uint32_t flags = 0;
     std::string group;                      ///< "propArray" | "propAnimArray" | "propMetaArray" | "propInstanceArray"
 };
 

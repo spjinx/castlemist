@@ -357,6 +357,11 @@ struct Model {
     AnimInfo anim;
     CloudSystem effects;
     std::vector<ClothPiece> clothPieces;   // ModelFileData.clothData
+    // ModelFileData.lodOverride (V16+, float[2]) as stored: the LOD0->LOD1 and
+    // LOD1->LOD2 switch distances in model units (docs/research/gw2-model-lods.md).
+    // 0 where the version has no field; the client then uses 3500 / 7500.
+    float lodOverride[2] = {0, 0};
+    bool hasLodOverride = false;           // the field exists in this version
 };
 
 // --- AMAT (bgfx shader package) extraction ---
@@ -952,6 +957,7 @@ public:
         try { parseSkeleton(m); } catch (const std::exception&) { /* skeleton is optional */ }
         try { parseAnim(m); }     catch (const std::exception&) { /* animation is optional */ }
         try { parseEffects(m); }  catch (const std::exception&) { /* effects are optional */ }
+        try { if (modl) parseLodOverride(modl, m); } catch (const std::exception&) { /* optional */ }
         resolveBoneBindings(m);
         return m;
     }
@@ -1971,6 +1977,12 @@ public:
         // prp2 `guid` qword, as stored (a havk propModels `token` names it, world-frame §7.1).
         // 0 for a propInstanceArray transform, whose struct has no guid.
         uint64_t guid = 0;
+        // `lod1`, `lod2` (float) and `flags` (MapPropFlags dword), as stored; a
+        // propInstanceArray transform has its base record's. Bit 16 is OVERRIDE_LOD:
+        // the client passes lod1 / lod2 to the model only when it is set and they are
+        // not both 0 (Gw2-64.exe 0x140cb3f05; docs/research/gw2-model-lods.md).
+        float lod1 = 0, lod2 = 0;
+        uint32_t flags = 0;
         // The prp2 array this placement came from: "propArray", "propAnimArray",
         // "propMetaArray" or "propInstanceArray" (a base placement or one of its transforms).
         std::string group;
@@ -2810,6 +2822,9 @@ public:
             // token64 clip name; only PackMapPropObjAnimSeqV* (propAnimArray) has it.
             if (fieldOffset(objType, "animSequence", o, f)) p.animSequence = rd64(e+o);
             if (fieldOffset(objType, "guid", o, f) && f.value("kind", std::string()) == "qword") p.guid = rd64(e+o);
+            if (fieldOffset(objType, "lod1", o, f)) p.lod1 = rdf(e+o);
+            if (fieldOffset(objType, "lod2", o, f)) p.lod2 = rdf(e+o);
+            if (fieldOffset(objType, "flags", o, f) && f.value("kind", std::string()) == "dword") p.flags = rd32(e+o);
         };
 
         size_t off; json fj;
@@ -2852,6 +2867,7 @@ public:
                     for (uint32_t j = 0; tb && trSize > 0 && j < tn; ++j) {
                         size_t te = tb + (size_t)j * trSize;
                         MapProp q; q.fileId = p.fileId; q.group = p.group;
+                        q.lod1 = p.lod1; q.lod2 = p.lod2; q.flags = p.flags;   // the transform struct has none
                         size_t o; json f;
                         if (fieldOffset(trType, "position", o, f)) for (int k=0;k<3;++k) q.pos[k] = rdf(te+o+4*k);
                         if (fieldOffset(trType, "rotation", o, f)) for (int k=0;k<3;++k) q.rot[k] = rdf(te+o+4*k);
@@ -3810,6 +3826,19 @@ private:
         }
 
         if (vbase && mesh.vertexCount) decodeVertices(vbase, vbytes, mesh);
+    }
+
+    // ModelFileData.lodOverride (float[2], V16+) -> Model.lodOverride, as stored.
+    void parseLodOverride(size_t modl, Model& out) {
+        std::string root; uint16_t ver = 0;
+        (void)findChunk("MODL", &root, &ver);
+        if (root.empty()) return;
+        size_t off; json f;
+        if (!fieldOffset(root, "lodOverride", off, f)) return;
+        if (modl + off + 8 > n_) return;
+        out.lodOverride[0] = rdf(modl + off);
+        out.lodOverride[1] = rdf(modl + off + 4);
+        out.hasLodOverride = true;
     }
 
     // Parse ModelFileData.clothData -> Model.clothPieces. Each piece carries its
