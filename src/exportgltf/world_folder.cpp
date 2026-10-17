@@ -7,7 +7,10 @@
 #include "castlemist/exportgltf/vrchat_export.h"
 #include "castlemist/exportgltf/world_cell.h"
 #include "castlemist/exportgltf/world_export.h"
+#include "castlemist/exportgltf/world_foliage.h"
+#include "castlemist/exportgltf/world_lods.h"
 #include "castlemist/exportgltf/world_probe.h"
+#include "castlemist/exportgltf/world_unity_terrain.h"
 #include "castlemist/world/anim.h"
 #include "castlemist/world/cells.h"
 #include "castlemist/world/dat_read.h"
@@ -125,6 +128,9 @@ void export_one_model(const cw::WorldScene& scene, uint32_t mi, ModelSource& src
     mm.fileId = fileId;
     std::shared_ptr<ModelPreview> m = src.load(mi, fileId);
     if (!m) { mm.error = "model did not load"; return; }
+    mm.meshes = static_cast<int>(m->meshes.size());
+    mm.materialCount = static_cast<int>(m->materials.size());
+    mm.wind = model_wind(*m);   // world-foliage spec D7: recorded, not acted on (D10)
     if (m->meshes.empty()) {   // empty, not broken: counted apart (review M2)
         mm.error = "This model has no drawable meshes to export.";
         out.empty = true;
@@ -155,6 +161,7 @@ void export_one_model(const cw::WorldScene& scene, uint32_t mi, ModelSource& src
         for (const auto& [id, b] : out.texBytes) mm.textureBytes += b;
 
         for (const ModelMeshCPU& mesh : m->meshes) mm.triangles += mesh.indices.size() / 3;
+        mm.lods = model_lods_json(*m);   // Task 15b: levels, switch distances, triangles per level
         for (const auto& clip : m->animClips) mm.clips.push_back(clip.name);
         out.clipTokens = m->animClipTokens;
         out.allTokens = m->animationTokens;
@@ -188,6 +195,7 @@ void export_one_model(const cw::WorldScene& scene, uint32_t mi, ModelSource& src
         vo.gltf.imageUriPrefix = "Images/";
         vo.gltf.sharedImages = pool;                      // dat textures: <out>/textures/<fileId>.png (W8)
         vo.gltf.sharedImageUriPrefix = "../../textures/"; // from models/<fileId>/<fileId>.glb
+        vo.gltf.exportLods = true;                        // Task 15b: <node>_LOD1 / _LOD2 (world_lods.h)
         const VrchatFolderResult r = write_vrchat_folder(*m, utf8(folder), id, fileId, vo);
         m.reset();   // the preview is released once written
         for (const std::string& w : r.warnings) out.warnings.push_back("models: " + id + ": " + w);
@@ -213,15 +221,63 @@ struct CellOut {
     ManifestCell mc;
     size_t unbaked = 0;
     std::vector<std::string> warnings;
+    size_t foliageSkipped = 0, foliageFailedModel = 0, foliageScatter = 0, foliageDensity = 0;
+    std::vector<uint32_t> foliageModels;   ///< scene.models indices with a written record
+    /// The cell's records (models as manifest positions), written to foliage/<id>.bin after
+    /// the unityTerrain stage, which sets their bit 3 (world-foliage spec D7).
+    std::vector<FoliageRecord> records;
+    std::vector<uint8_t> albedoRgb;        ///< the baked albedo, kept for the unityTerrain tiles
 };
+
+/// What the cell stage needs to write the foliage records (world-foliage spec D7).
+struct FoliageCtx {
+    FoliageExport mode = FoliageExport::Off;
+    std::vector<uint32_t> manifestPos;   ///< scene.models index -> models[] position, UINT32_MAX = not exported
+    std::vector<char> modelOk;           ///< by scene.models index
+    std::vector<uint64_t> triangles;     ///< by scene.models index (LOD0, as measured)
+};
+
+/// The cell's records (sorted, models as manifest positions), with their counts.
+std::vector<FoliageRecord> cell_foliage_kept(const cw::WorldScene& s, const cw::Cell& c, const FoliageCtx& f,
+                                             CellOut& out) {
+    std::vector<FoliageRecord> kept;
+    if (f.mode == FoliageExport::Off || c.foliage.empty()) return kept;
+    const std::vector<FoliageRecord> recs = cell_foliage_records(s, c, f.mode, out.foliageSkipped);
+    kept.reserve(recs.size());
+    for (FoliageRecord r : recs) {
+        const uint32_t mi = r.model;
+        if (mi >= f.manifestPos.size() || f.manifestPos[mi] == UINT32_MAX || !f.modelOk[mi]) {
+            ++out.foliageFailedModel;
+            continue;
+        }
+        r.model = f.manifestPos[mi];
+        const uint16_t source = uint16_t((r.flags >> kFoliageSourceShift) & 3u);
+        if (source == uint16_t(cw::ZoneSource::Scatter)) ++out.foliageScatter;
+        if (source == uint16_t(cw::ZoneSource::Density)) ++out.foliageDensity;
+        if (r.flags & kFoliageFlagCollider) ++out.mc.colliderTrees;
+        out.mc.foliageTriangles += f.triangles[mi];
+        if (out.foliageModels.empty() || out.foliageModels.back() != mi) out.foliageModels.push_back(mi);
+        kept.push_back(r);
+        ++out.mc.foliageRecords;
+    }
+    return kept;
+}
+
+std::vector<uint8_t> foliage_bytes(const std::vector<FoliageRecord>& recs) {
+    std::vector<uint8_t> bytes(recs.size() * kFoliageRecordBytes);
+    for (size_t i = 0; i < recs.size(); ++i) encode_foliage_record(recs[i], bytes.data() + i * kFoliageRecordBytes);
+    return bytes;
+}
 
 void export_one_cell(const cw::WorldScene& s, const cw::Cell& c, const cw::TextureLookup& lookup,
                      const std::unordered_map<int64_t, size_t>& chunkAt, const fs::path& dir,
-                     const WorldFolderOptions& opts, Fatal& fatal, CellOut& out) {
+                     const WorldFolderOptions& opts, const FoliageCtx& fol, Fatal& fatal, CellOut& out) {
     const CellMesh terrain = build_cell_terrain(s.terrain, c, &out.warnings);
     const CellMesh water = build_cell_water(s, c, opts.waterTexelsPerChunk);
     const std::vector<CellMesh> colliders = opts.collision ? build_cell_colliders(s, c) : std::vector<CellMesh>{};
-    if (terrain.vertices() == 0 && water.vertices() == 0 && colliders.empty() && c.props.empty()) return;
+    out.records = cell_foliage_kept(s, c, fol, out);
+    if (terrain.vertices() == 0 && water.vertices() == 0 && colliders.empty() && c.props.empty() && out.records.empty())
+        return;
 
     const fs::path cellsDir = dir / "cells";
     CellImages img;
@@ -256,6 +312,7 @@ void export_one_cell(const cw::WorldScene& s, const cw::Cell& c, const cw::Textu
         out.mc.albedo = "cells/" + name;
         out.mc.albedoW = W;
         out.mc.albedoH = H;
+        if (opts.unityTerrain) out.albedoRgb = std::move(rgb);   // the unityTerrain tiles assemble it
     }
 
     if (water.vertices() > 0 && cw::water_has_preset(s)) {
@@ -272,6 +329,8 @@ void export_one_cell(const cw::WorldScene& s, const cw::Cell& c, const cw::Textu
             out.mc.water = "cells/" + name;
         }
     }
+
+    // The cell's foliage records are written after the unityTerrain stage (it sets bit 3).
 
     for (const CellMesh& m : colliders) out.mc.colliderTriangles += m.idx.size() / 3;
     out.mc.colliderParts = colliders.size();
@@ -325,17 +384,32 @@ bool prepare_dir(const fs::path& d, const std::string& dirUtf8, bool overwrite, 
 
 /// Folder size by kind (WorldFolderReport::bytes).
 std::map<std::string, uint64_t> folder_bytes(const fs::path& d) {
-    std::map<std::string, uint64_t> b = {{"prop-textures", 0}, {"terrain", 0}, {"geometry", 0}, {"sky", 0}};
+    std::map<std::string, uint64_t> b = {{"prop-textures", 0}, {"terrain", 0}, {"geometry", 0}, {"sky", 0}, {"foliage", 0},
+                                          {"unity-terrain", 0}};
     const fs::path ld = long_path(d, true);
     std::error_code ec;
+    // The first folder below @p d, by string: lexically_relative does not split the
+    // extended-length `\\?\C:\...` paths walk_files gives (libstdc++), so every top
+    // came out empty and prop-textures / terrain were always 0.
+    using Str = fs::path::string_type;
+    const Str base = ld.native();
+    const fs::path::value_type seps[] = {'\\', '/', 0};
     walk_files(d, ec, [&](const fs::path& f, uint64_t n) {
-        const fs::path rel = f.lexically_relative(ld);
-        const std::string top = rel.empty() ? std::string() : utf8(*rel.begin());
+        const Str& w = f.native();
+        std::string top;
+        if (w.size() > base.size() + 1 && w.compare(0, base.size(), base) == 0 &&
+            (w[base.size()] == '\\' || w[base.size()] == '/')) {
+            const Str rest = w.substr(base.size() + 1);
+            const size_t cut = rest.find_first_of(seps);
+            if (cut != Str::npos) top = utf8(fs::path(rest.substr(0, cut)));
+        }
         const std::string ext = utf8(f.extension());
         if (top == "sky") b["sky"] += n;
         else if (ext == ".glb" || ext == ".fbx") b["geometry"] += n;
         else if (ext == ".png" && (top == "models" || top == "textures")) b["prop-textures"] += n;
         else if (ext == ".png" && top == "cells") b["terrain"] += n;
+        else if (ext == ".bin" && top == "foliage") b["foliage"] += n;
+        else if (top == "terrain") b["unity-terrain"] += n;
     });
     return b;
 }
@@ -406,6 +480,16 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
         for (const cw::Cell& c : first.cells)
             for (uint32_t pi : c.props)
                 if (pi < scene.props.size() && scene.props[pi].model < use.size()) use[scene.props[pi].model] = 1;
+        // Zone-only models are used too (world-foliage spec D2, D7): the models of the
+        // zone instances in the kept cells that the foliage mode keeps.
+        if (opts.foliage != FoliageExport::Off)
+            for (const cw::Cell& c : first.cells)
+                for (uint32_t zi : c.foliage) {
+                    if (zi >= scene.zones.instances.size()) continue;
+                    const cw::ZoneInstance& z = scene.zones.instances[zi];
+                    if (opts.foliage == FoliageExport::Colliders && z.source != cw::ZoneSource::Collider) continue;
+                    if (z.model < use.size()) use[z.model] = 1;
+                }
         for (uint32_t i = 0; i < use.size(); ++i) if (use[i]) needed.push_back(i);
     }
     if (!prepare_dir(dir, dirUtf8, opts.overwrite, rep.error)) return rep;
@@ -439,6 +523,9 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
     if (plan.propsOutsideRegion)
         warnings.push_back("cells: " + std::to_string(plan.propsOutsideRegion) +
                            " placements and collision instances outside the region left out");
+    if (plan.foliageOutsideRegion && opts.foliage != FoliageExport::Off)
+        warnings.push_back("foliage: " + std::to_string(plan.foliageOutsideRegion) +
+                           " zone instances outside the region left out");
     for (const ModelOut& o : mouts) {
         warnings.insert(warnings.end(), o.warnings.begin(), o.warnings.end());
         if (!o.mm.ok) warnings.push_back("models: " + std::to_string(o.mm.fileId) + " failed: " + o.mm.error);
@@ -474,20 +561,97 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
         return it == texById.end() ? nullptr : it->second;
     };
 
-    // 5. Bake and write each cell.
+    // 5. Bake and write each cell, and its foliage records (world-foliage spec D7).
+    FoliageCtx fol;
+    fol.mode = scene.zones.present ? opts.foliage : FoliageExport::Off;
+    fol.manifestPos.assign(scene.models.size(), UINT32_MAX);
+    fol.modelOk.assign(scene.models.size(), 0);
+    fol.triangles.assign(scene.models.size(), 0);
+    for (size_t k = 0; k < mouts.size(); ++k) {
+        const uint32_t mi = mouts[k].mm.index;
+        fol.manifestPos[mi] = static_cast<uint32_t>(k);
+        fol.modelOk[mi] = mouts[k].mm.ok ? 1 : 0;
+        fol.triangles[mi] = mouts[k].mm.triangles;
+    }
+    if (fol.mode != FoliageExport::Off) {
+        bool any = false;
+        for (const cw::Cell& c : plan.cells) any = any || !c.foliage.empty();
+        std::error_code ec;
+        if (any) make_dirs(dir / "foliage", ec);
+        if (ec) {
+            rep.error = "cannot create " + utf8(dir / "foliage") + ": " + ec.message();
+            return rep;
+        }
+    }
     std::vector<CellOut> couts(plan.cells.size());
     run_pool(plan.cells.size(), threads, fatal, [&](size_t k) {
-        export_one_cell(scene, plan.cells[k], lookup, chunkAt, dir, opts, fatal, couts[k]);
+        export_one_cell(scene, plan.cells[k], lookup, chunkAt, dir, opts, fol, fatal, couts[k]);
     });
     lap("cells");
     if (fatal.stopped()) { rep.error = fatal.error; return rep; }
+
+    // 5b. The unityTerrain tiles (world-foliage spec D7), before the records are written:
+    //     the Terrain trees get flag bit 3 here.
+    json unityTerrain = nullptr;
+    if (opts.unityTerrain && scene.terrain.present) {
+        std::vector<std::vector<FoliageRecord>> recs(plan.cells.size());
+        std::vector<std::vector<uint8_t>> albedo(plan.cells.size());
+        for (size_t k = 0; k < couts.size(); ++k) {
+            if (!couts[k].written) continue;
+            recs[k] = std::move(couts[k].records);
+            albedo[k] = std::move(couts[k].albedoRgb);
+        }
+        std::vector<ManifestModel> mm;
+        mm.reserve(mouts.size());
+        for (const ModelOut& o : mouts) mm.push_back(o.mm);
+        UnityTerrainInput ui;
+        ui.scene = &scene;
+        ui.plan = &plan;
+        ui.cellAlbedoRgb = &albedo;
+        ui.texelsPerChunk = opts.texelsPerChunk;
+        ui.records = &recs;
+        ui.models = &mm;
+        std::string err;
+        unityTerrain = write_unity_terrain(ui, utf8(dir), warnings, &err);
+        if (!err.empty()) { rep.error = err; return rep; }
+        for (size_t k = 0; k < couts.size(); ++k) {
+            couts[k].albedoRgb = {};
+            if (couts[k].written) couts[k].records = std::move(recs[k]);
+        }
+        lap("unity-terrain");
+    }
+
+    // 5c. Each written cell's foliage records (world-foliage spec D7), only when it has any.
+    run_pool(couts.size(), threads, fatal, [&](size_t k) {
+        CellOut& c = couts[k];
+        if (!c.written || c.records.empty()) return;
+        const std::string name = plan.cells[k].id + ".bin";
+        if (!write_bytes(dir / "foliage" / name, foliage_bytes(c.records))) {
+            fatal.set("cannot write " + utf8(dir / "foliage" / name));
+            return;
+        }
+        c.mc.foliageFile = "foliage/" + name;
+        c.records = {};
+    });
+    if (fatal.stopped()) { rep.error = fatal.error; return rep; }
     std::vector<ManifestCell> mcells;
-    size_t unbaked = 0;
+    size_t unbaked = 0, folSkipped = 0, folFailed = 0, folScatter = 0, folDensity = 0;
+    std::vector<char> folUsed(mouts.size(), 0);   // models[] positions with a written record
     for (const CellOut& c : couts) {
         warnings.insert(warnings.end(), c.warnings.begin(), c.warnings.end());
         unbaked += c.unbaked;
-        if (c.written) mcells.push_back(c.mc);
+        folSkipped += c.foliageSkipped;
+        folFailed += c.foliageFailedModel;
+        if (!c.written) continue;
+        mcells.push_back(c.mc);
+        folScatter += c.foliageScatter;
+        folDensity += c.foliageDensity;
+        for (uint32_t mi : c.foliageModels) folUsed[fol.manifestPos[mi]] = 1;
     }
+    if (folSkipped)
+        warnings.push_back("foliage: " + std::to_string(folSkipped) + " placements with a degenerate transform skipped");
+    if (folFailed)
+        warnings.push_back("foliage: " + std::to_string(folFailed) + " placements of failed or missing models skipped");
     if (unbaked) warnings.push_back("terrain: " + std::to_string(unbaked) + " chunks with no usable colour texture baked grey");
     texById.clear();
     terrainTex.clear();
@@ -499,7 +663,9 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
     } else if (!sky) {
         warnings.push_back("sky: no sky inputs; sky: null");
     } else {
-        const sky::SkyExportReport sr = sky::write_skybox(*sky, utf8(dir), "sky");
+        sky::SkyExportOptions so;
+        so.approximate = opts.skyApproximate;
+        const sky::SkyExportReport sr = sky::write_skybox(*sky, utf8(dir), "sky", so);
         if (!sr.ok && sr.error.rfind("cannot ", 0) == 0) { rep.error = "sky: " + sr.error; return rep; }
         for (const std::string& w : sr.warnings) warnings.push_back("sky: " + w);
         if (sr.ok) skyJson = sky_block(dir);
@@ -565,7 +731,11 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
     in.sky = skyJson;
     in.spawn = spawn;
     in.counts = {{"chunksUnbaked", unbaked}, {"animated", animated}, {"animatedResolved", resolved},
-                 {"clipsFailedDecode", failedDecode}};
+                 {"clipsFailedDecode", failedDecode},
+                 {"foliage", {{"scatter", folScatter}, {"density", folDensity}, {"skipped", folSkipped},
+                              {"failedModel", folFailed}}}};
+    if (fol.mode != FoliageExport::Off) in.foliage = foliage_manifest_json(scene, in.models, folUsed);
+    in.unityTerrain = unityTerrain;
     in.warnings = warnings;
     in.textures = {{"dir", "textures"}, {"count", pool->written()}};
     in.clipOf = [&clipOf](uint32_t pi) {
@@ -603,6 +773,7 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
     for (const ModelOut& o : mouts)
         if (o.empty) ++rep.modelsEmpty;
     rep.warnings = man["warnings"].get<std::vector<std::string>>();
+    if (cn.contains("foliage")) rep.foliage = cn["foliage"];
     rep.bytes = folder_bytes(dir);
     return rep;
 }
@@ -656,7 +827,8 @@ json report_json(const WorldFolderReport& r) {
                   {"chunksUnbaked", r.chunksUnbaked},
                   {"animated", r.animated},
                   {"animatedResolved", r.animatedResolved},
-                  {"clipsFailedDecode", r.clipsFailedDecode}}},
+                  {"clipsFailedDecode", r.clipsFailedDecode},
+                  {"foliage", r.foliage}}},
                 {"seconds", r.seconds},
                 {"bytes", r.bytes},
                 {"warnings", r.warnings}};

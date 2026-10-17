@@ -14,6 +14,10 @@
 //   Prefabs/<fileId>.prefab          a variant of models/<fileId>/<fileId>.fbx, materials
 //                                    remapped with ModelImporter.AddRemap
 //   Controllers/<fileId>_<clip>.controller   one looping state, per (model, clip) used
+//                                    with a LODGroup LOD0..LODn when models[].lods.levels > 1
+//                                    (Task 15b, LodGroups / ModelLods: heights from the switch distances)
+//   Prefabs/Foliage/<fileId>.prefab  the model prefab + a LODGroup culled at fadeFar: LOD0 only,
+//                                    or the model's levels (FoliageImporter)
 //   GW2_<fileId>.unity               the scene:
 //     GW2_<fileId>    localScale = unityScale (the only scale; ruling W7)
 //       Cell_<id>     localPosition = frame.toUnity * cell.origin
@@ -21,10 +25,21 @@
 //         Water       MeshRenderer
 //         Colliders/Collider_k   MeshCollider only (no renderer)
 //         Props/<fileId>_<prop>  prefab instance, unity.t / r / s as given;
-//                                Animator + controller when the instance has a clip
+//                                Animator + controller when the instance has a clip;
+//                                instances[].lod: its own LODGroup heights (Task 15b)
+//         Foliage/Trees/<fileId>_<placement>  tree prefab instance per foliage tree
+//                                record (FoliageImporter; world-foliage spec D8)
+//         Foliage/Patches/<fileId>_<k>  type 1-2 records combined (FoliagePatches)
 //       Sun           Directional Light (light.sun raw), ambient Flat
 //       Spawn         at spawn.unity (when present)
 //       FrameProbe    probe.fbx at frameProbe.unity, checked by FrameProbe, then disabled
+//     GW2_<fileId>_Terrain   Unity Terrain mode only (TerrainBuilder): the tiles, with
+//                    the terrain frame check; the cells' mesh terrain and its
+//                    MeshCollider are then not instantiated (the .fbx keeps them)
+// Options (world-foliage D8, D9; ImportOptions): Terrain Mesh / Unity Terrain,
+// Foliage Off / Collider trees / Trees / All, Density 0..1, Distance x0.1..2
+// (on top of the manifest's fadeQualityScale, ruling S5), and the Quest preset
+// (Mesh, Collider trees, Distance 0.5). No wind sway is added (D10).
 // The importer does no frame maths beyond frame.toUnity on the cell origin.
 // Cell .fbx files hold absolute map-space vertices (castlemist_world.py
 // --to-fbx bakes every node transform), so their content is placed at
@@ -67,6 +82,14 @@ namespace Castlemist
         /// everything else is a warning or an error in the summary.
         public static ImportSummary Import(string assetFolder, float unityScale)
         {
+            return Import(assetFolder, unityScale, new ImportOptions());
+        }
+
+        /// Import with the window's options (world-foliage D8, D9).
+        public static ImportSummary Import(string assetFolder, float unityScale, ImportOptions opts)
+        {
+            if (opts == null) opts = new ImportOptions();
+            opts.Validate();
             var sw = Stopwatch.StartNew();
             var sum = new ImportSummary();
             string root = assetFolder.Replace('\\', '/').TrimEnd('/');
@@ -77,15 +100,26 @@ namespace Castlemist
                 throw new ArgumentException("unityScale must be a positive number, not " + unityScale);
             sum.warnings.Add("unityScale = " + unityScale.ToString("R") + " (UNPROVEN: 'GW2 inches', spec D7)");
             CastlemistPostprocessor.ClearCache();
+            // The mode in force: Terrain mode needs the export's unityTerrain block.
+            var eff = new ImportOptions { terrain = opts.terrain, foliage = opts.foliage, density = opts.density, distance = opts.distance };
+            if (eff.terrain == TerrainMode.UnityTerrain && m.UnityTerrain == null)
+            {
+                sum.errors.Add("unityTerrain: missing: Terrain mode needs the export's unityTerrain block " +
+                               "(world-export without --no-unity-terrain); mesh terrain is built");
+                eff.terrain = TerrainMode.Mesh;
+            }
+            sum.warnings.Add("options: " + eff);
 
-            var b = new Build(root, m, sum);
+            var b = new Build(root, m, sum, eff);
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
             b.Timed("fbxSettings", b.FbxBaseSettings);
             b.Timed("materials", b.Materials);
             b.Timed("modelImport", b.ModelImport);
             b.Timed("prefabs", b.Prefabs);
             b.Timed("controllers", b.Controllers);
+            b.Timed("foliagePrefabs", b.FoliagePrefabs);
             b.Timed("scene", () => b.Scene(unityScale));
+            b.Timed("terrain", () => b.UnityTerrain(unityScale));
             b.Timed("skyLight", b.SkyAndLight);
             b.Timed("probe", b.Probe);
 
@@ -106,6 +140,7 @@ namespace Castlemist
             Debug.Log("CASTLEMIST colliderParts=" + sum.colliderParts + " warnings=" + sum.warnings.Count +
                       " errors=" + sum.errors.Count + " seconds=" + sum.seconds.ToString("F1"));
             if (sum.probeLine != null) Debug.Log(sum.probeLine);
+            if (sum.terrainCheckLine != null) Debug.Log(sum.terrainCheckLine);
             Debug.Log(sum.PlanLine());
         }
 
@@ -116,15 +151,40 @@ namespace Castlemist
             readonly ImportSummary sum;
             public readonly List<string> Times = new List<string>();
             MaterialContext ctx;
-            // Per model index: name -> material, the prefab.
+            // Per model position in models[] (what instances and records name): name -> material, the prefab.
             readonly Dictionary<int, Dictionary<string, Material>> modelMats = new Dictionary<int, Dictionary<string, Material>>();
             readonly Dictionary<int, GameObject> prefabs = new Dictionary<int, GameObject>();
             readonly Dictionary<string, RuntimeAnimatorController> controllers = new Dictionary<string, RuntimeAnimatorController>();
             readonly Dictionary<string, Material> terrainMats = new Dictionary<string, Material>();
             readonly Dictionary<string, Material> waterMats = new Dictionary<string, Material>();
             GameObject mapRoot;
+            FoliageImporter foliage;
+            readonly ImportOptions opts;
+            bool UnityTerrainMode { get { return opts.terrain == TerrainMode.UnityTerrain; } }
 
-            public Build(string root, WorldManifest m, ImportSummary sum) { this.root = root; this.m = m; this.sum = sum; }
+            public Build(string root, WorldManifest m, ImportSummary sum, ImportOptions opts)
+            {
+                this.root = root; this.m = m; this.sum = sum; this.opts = opts;
+            }
+
+            // World-foliage D8: the bins read and planned, the tree prefabs saved.
+            public void FoliagePrefabs()
+            {
+                foliage = new FoliageImporter(root, m, sum, prefabs, opts);
+                foliage.Prefabs();
+            }
+
+            // World-foliage D8, Unity Terrain mode: the tiles and the terrain frame check.
+            public void UnityTerrain(float unityScale)
+            {
+                if (!UnityTerrainMode) return;
+                TerrainBuilder.Result r = TerrainBuilder.Build(root, m, unityScale, opts, foliage.Plan, foliage.TreePrefabs, prefabs, sum);
+                Debug.Log(r.FilesLine);
+                string line;
+                sum.terrainCheckOk = TerrainBuilder.CheckFrame(r.Tiles, m.UnityTerrain.Check, unityScale, out line);
+                sum.terrainCheckLine = line;
+                if (!sum.terrainCheckOk) sum.errors.Add("terrain frame check failed: " + line);
+            }
 
             public void Timed(string name, Action a)
             {
@@ -229,11 +289,11 @@ namespace Castlemist
                                 root + "/Materials/" + e.FileId + "/" + Safe(me.FileName) + ".mat");
                             foreach (string key in FbxMaterialNames(me, k)) mats[key] = mat;
                         }
-                        modelMats[e.Index] = mats;
+                        modelMats[e.Position] = mats;
                     }
                     foreach (WorldManifest.CellEntry c in m.Cells)
                     {
-                        if (c.HasTerrain && c.Albedo != null && Exists(c.Albedo, "cell " + c.Id + " albedo"))
+                        if (!UnityTerrainMode && c.HasTerrain && c.Albedo != null && Exists(c.Albedo, "cell " + c.Id + " albedo"))
                             terrainMats[c.Id] = PoiyomiMaterials.BuildSimple(ctx, root + "/Materials/terrain/" + Safe(c.Id) + ".mat",
                                 AssetDatabase.LoadAssetAtPath<Texture2D>(P(c.Albedo)), PoiyomiMaterials.Opaque);
                         if (c.WaterTexture != null && Exists(c.WaterTexture, "cell " + c.Id + " water"))
@@ -291,7 +351,7 @@ namespace Castlemist
                         mi.importCameras = false;
                         mi.importLights = false;
                         Dictionary<string, Material> mats;
-                        if (modelMats.TryGetValue(e.Index, out mats))
+                        if (modelMats.TryGetValue(e.Position, out mats))
                             foreach (KeyValuePair<string, Material> kv in mats)
                                 mi.AddRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), kv.Key), kv.Value);
                         if (e.Clips.Count == 0)
@@ -324,7 +384,7 @@ namespace Castlemist
                     var asset = AssetDatabase.LoadAssetAtPath<GameObject>(P(e.Fbx));
                     if (asset == null) { sum.errors.Add(P(e.Fbx) + ": no GameObject"); continue; }
                     Dictionary<string, Material> mats;
-                    modelMats.TryGetValue(e.Index, out mats);
+                    modelMats.TryGetValue(e.Position, out mats);
                     var ours = mats != null ? new HashSet<Material>(mats.Values) : new HashSet<Material>();
                     var notRemapped = new SortedSet<string>();
                     bool noMaterial = false;
@@ -347,11 +407,17 @@ namespace Castlemist
                         inst.name = e.FileId.ToString();
                         foreach (Transform t in inst.GetComponentsInChildren<Transform>(true))
                             GameObjectUtility.SetStaticEditorFlags(t.gameObject, StaticFlags);
+                        // Task 15b: LOD0..LODn from the model's LOD objects (LodGroups, ModelLods).
+                        if (e.LodLevels > 1)
+                        {
+                            LodGroups.Build(inst, e.LodLevels, e.LodDistances, size => ModelLods.PropCullHeight, sum.warnings, "model " + e.FileId);
+                            sum.lodPrefabs++;
+                        }
                         string path = root + "/Prefabs/" + e.FileId + ".prefab";
                         bool ok;
                         GameObject saved = PrefabUtility.SaveAsPrefabAsset(inst, path, out ok);
                         if (!ok || saved == null) { sum.errors.Add(path + ": prefab not saved"); continue; }
-                        prefabs[e.Index] = saved;
+                        prefabs[e.Position] = saved;
                         sum.prefabs++;
                     }
                     finally { Object.DestroyImmediate(inst); }
@@ -441,6 +507,8 @@ namespace Castlemist
                         go.transform.localPosition = V(i.T);
                         go.transform.localRotation = new Quaternion((float)i.R[0], (float)i.R[1], (float)i.R[2], (float)i.R[3]);
                         go.transform.localScale = Vector3.one * (float)i.S;
+                        // Task 15b: OVERRIDE_LOD placements get their own heights on the instance.
+                        if (i.Lod != null && e.LodLevels > 1 && LodGroups.Override(go, i.Lod)) sum.lodOverrides++;
                         RuntimeAnimatorController ac;
                         if (i.Clip != null && controllers.TryGetValue(i.Model + "\n" + i.Clip, out ac))
                         {
@@ -452,7 +520,9 @@ namespace Castlemist
                         }
                         sum.instances++;
                     }
+                    if (foliage != null) foliage.PlaceCell(c, cell);
                 }
+                if (foliage != null) foliage.Finish();
                 if (skipped > 0) sum.warnings.Add("instances: " + skipped + " skipped (their model has no prefab)");
             }
 
@@ -476,6 +546,7 @@ namespace Castlemist
                 bool keepRoot = false;
                 foreach (Transform t in tmp.GetComponentsInChildren<Transform>(true).ToArray())
                 {
+                    if (t == null) continue;  // under a node destroyed above (Terrain mode)
                     var mf = t.GetComponent<MeshFilter>();
                     var mr = t.GetComponent<MeshRenderer>();
                     if (mf == null || mf.sharedMesh == null) continue;
@@ -484,6 +555,14 @@ namespace Castlemist
                     bool isRoot = t == tmp.transform;
                     string n = BaseName(isRoot ? mf.sharedMesh.name : t.name);
                     if (isRoot) keepRoot = true;
+                    if (n == "Terrain" && UnityTerrainMode)
+                    {
+                        // Unity Terrain mode: the tile replaces the mesh terrain (and its MeshCollider).
+                        if (isRoot) { Object.DestroyImmediate(mr); Object.DestroyImmediate(mf); keepRoot = false; }
+                        else Object.DestroyImmediate(t.gameObject);
+                        terrain = true;
+                        continue;
+                    }
                     if (n == "Terrain")
                     {
                         if (!isRoot) t.SetParent(cell, true);
@@ -624,12 +703,13 @@ namespace Castlemist
     {
         DefaultAsset folder;
         float unityScale = (float)WorldManifest.DefaultUnityScale;
+        ImportOptions opts = new ImportOptions();
         string loadedFor;
         string status = "";
 
         public static void Open()
         {
-            GetWindow<ImportWorldWindow>(true, "Castlemist: Import World", true).minSize = new Vector2(420, 170);
+            GetWindow<ImportWorldWindow>(true, "Castlemist: Import World", true).minSize = new Vector2(420, 280);
         }
 
         void OnGUI()
@@ -649,6 +729,20 @@ namespace Castlemist
             }
             unityScale = EditorGUILayout.FloatField(new GUIContent("Unity scale",
                 "Unity units per map unit, on the GW2_<fileId> root. Default from the manifest: 0.0254, the 'GW2 inches' reading; UNPROVEN (spec D7)."), unityScale);
+            opts.terrain = (TerrainMode)EditorGUILayout.Popup(new GUIContent("Terrain",
+                "Mesh: the cells' terrain meshes and MeshColliders. Unity Terrain: one Terrain per 4 x 4-chunk tile with the baked " +
+                "albedo as its one layer, Unity details and Terrain trees (world-foliage D8). Quest stays on Mesh."),
+                (int)opts.terrain, new[] { "Mesh", "Unity Terrain (baked layer)" });
+            opts.foliage = (FoliageMode)EditorGUILayout.Popup(new GUIContent("Foliage",
+                "Off; Collider trees (the zone trees that have a havk collider); Trees (every tree); All (trees, grass and plants)."),
+                (int)opts.foliage, new[] { "Off", "Collider trees", "Trees", "All" });
+            opts.density = EditorGUILayout.Slider(new GUIContent("Density",
+                "Keeps a placement when fmix32(placement) < density x 2^32; trees with a collider are always kept (D9)."), opts.density, 0f, 1f);
+            opts.distance = EditorGUILayout.Slider(new GUIContent("Distance",
+                "Multiplies every fade distance (fadeFar x the manifest's fadeQualityScale), for the LODGroup culls and the Terrain distances (D9)."),
+                opts.distance, ImportOptions.MinDistance, ImportOptions.MaxDistance);
+            if (GUILayout.Button(new GUIContent("Quest preset", "Terrain Mesh, Foliage Collider trees, Distance 0.5 (D9).")))
+                opts = ImportOptions.Quest();
             using (new EditorGUI.DisabledScope(path == null))
             {
                 if (GUILayout.Button("Import"))
@@ -656,9 +750,9 @@ namespace Castlemist
                     if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()) return;
                     try
                     {
-                        ImportSummary s = WorldImporter.Import(path, unityScale);
+                        ImportSummary s = WorldImporter.Import(path, unityScale, opts);
                         WorldImporter.Log(s);
-                        status = s.PlanLine() + "\n" + (s.probeLine ?? "no probe") + "\n" + s.warnings.Count + " warnings, " + s.errors.Count + " errors (see the Console)";
+                        status = s.PlanLine() + "\n" + (s.probeLine ?? "no probe") + "\n" + (s.terrainCheckLine ?? "") + "\n" + s.warnings.Count + " warnings, " + s.errors.Count + " errors (see the Console)";
                     }
                     catch (Exception e)
                     {

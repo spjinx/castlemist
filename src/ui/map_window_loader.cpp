@@ -113,6 +113,12 @@ void mapwin_start_world(HWND wnd, uint64_t gen, std::string datPath, uint32_t ma
                 if (cancelled(gen)) return;
                 auto scene = std::make_shared<castlemist::world::WorldScene>(
                     castlemist::world::load_world(*dat, mapFileId, *tpl));
+                if (cancelled(gen)) return;
+                // The foliage grid here too, so the UI thread's set_world only takes it over.
+                const auto g0 = Clock::now();
+                r->foliage = std::make_unique<castlemist::render::FoliageGrid>(
+                    castlemist::render::build_foliage_grid(*scene));
+                r->foliageSeconds = seconds_since(g0);
                 r->scene = std::move(scene);
                 r->dat = std::move(dat);   // handed on to the model pool, read-only from here
             } catch (const std::exception& e) {
@@ -210,10 +216,13 @@ void mapwin_start_sky(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat,
                 in.sky = scene->environment.sky;
                 in.mapFileId = mapFileId;
                 if (cancelled(gen)) return;
-                castlemist::exportgltf::sky::load_sky_textures(*dat, *tpl, in);
+                castlemist::exportgltf::sky::load_sky_textures(*dat, *tpl, in, /*approx=*/true);
                 if (cancelled(gen)) return;
                 r->warnings = in.decodeWarnings;
                 r->modes = castlemist::render::bake_world_sky(in, kMapWinSkyWidth, r->warnings);
+                if (cancelled(gen)) return;
+                r->approxWarnings = in.decodeWarnings;
+                r->approxModes = castlemist::render::bake_world_sky(in, kMapWinSkyWidth, r->approxWarnings, true);
             } catch (const std::exception& e) {
                 r->warnings.push_back(std::string("sky: not baked: ") + e.what());
             }

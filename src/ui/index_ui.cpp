@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cwchar>
+#include <vector>
 #include <commdlg.h>
 
 namespace castlemist::ui {
@@ -169,21 +170,24 @@ void do_open_index(HWND hwnd) {
 // browser comes up already indexed. The exe runs from build/<preset>/bin/, so
 // the search climbs towards the repository root and dumps/index/. Silent on
 // absence -- File > Open Index DB still works.
-void try_autoload_index(HWND hwnd) {
+std::vector<std::wstring> index_db_candidates() {
     wchar_t exe[MAX_PATH];
     DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
     std::wstring dir(exe, n);
     size_t slash = dir.find_last_of(L"\\/");
     dir = (slash == std::wstring::npos) ? std::wstring() : dir.substr(0, slash + 1);
-    const std::wstring candidates[] = {
+    return {
         dir + L"gw2_index.db",
         dir + L"..\\..\\..\\dumps\\index\\gw2_index.db",
         dir + L"..\\..\\dumps\\index\\gw2_index.db",
         dir + L"..\\dumps\\index\\gw2_index.db",
         L"dumps\\index\\gw2_index.db",
     };
+}
+
+void try_autoload_index(HWND hwnd) {
     std::string err;
-    for (const std::wstring& p : candidates) {
+    for (const std::wstring& p : index_db_candidates()) {
         if (GetFileAttributesW(p.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
         if (castlemist::db::open(p, err)) { finish_open_index(hwnd, /*silent=*/true); return; }
     }

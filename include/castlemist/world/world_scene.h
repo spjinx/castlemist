@@ -1,10 +1,11 @@
 /// @file
 /// @brief WorldScene: one renderer-free description of a GW2 map (terrain,
-///        props, collision, water, environment), in map space.
+///        props, collision, water, environment, zone scatter), in map space.
 /// @ingroup world
 #pragma once
 
 #include "castlemist/native/gw2model.hpp"
+#include "castlemist/world/zones.h"
 
 #include <cstdint>
 #include <string>
@@ -79,6 +80,10 @@ struct PropInstance {
     float pos[3] = {}, rot[3] = {}; float scale = 1;  ///< as stored, for references
     uint64_t animSequence = 0;              ///< propAnimArray: the clip's token64 name, as stored
     uint8_t color[4] = {0, 0, 0, 0};        ///< `color` as stored (meaning UNPROVEN)
+    /// `lod1`, `lod2`, `flags` as stored (prp2; a propInstanceArray transform has its
+    /// base record's). world/lods.h prop_lod_override reads them.
+    float lod1 = 0, lod2 = 0;
+    uint32_t flags = 0;
     std::string group;                      ///< "propArray" | "propAnimArray" | "propMetaArray" | "propInstanceArray"
 };
 
@@ -138,6 +143,7 @@ struct WorldScene {
     Water water;
     Environment environment;
     Motion motion;
+    ZoneScatter zones;                      ///< zon2 scatter and the zone collider trees (zones.h)
     std::vector<std::string> warnings;
 };
 

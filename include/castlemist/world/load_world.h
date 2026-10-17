@@ -1,6 +1,6 @@
 /// @file
 /// @brief Loading a map into a WorldScene: load_world assembles terrain,
-///        props, collision, water and environment; the water and environment
+///        props, collision, zones, water and environment; the water and environment
 ///        steps are docs/research/gw2-world-frame.md §6.
 /// @ingroup world
 #pragma once
@@ -78,7 +78,7 @@ void run_section(std::vector<std::string>& warnings, const char* name, const std
 
 /// @brief One "chunk <fourcc> v<ver> not read" warning per distinct chunk in
 ///        @p chunks (fourcc, version) that no section reads. The chunks that
-///        are read: parm, trn, prp2, havk, watr, shor, rive, env.
+///        are read: parm, trn, prp2, havk, watr, shor, rive, env, zon2.
 std::vector<std::string> unread_chunk_warnings(const std::vector<std::pair<std::string, uint16_t>>& chunks);
 
 /// @brief The warnings for a map that lacks a section's chunk: "props: no prp2
@@ -89,9 +89,12 @@ std::vector<std::string> absent_chunk_warnings(const std::vector<std::pair<std::
 
 /// @brief Load a map packfile into a WorldScene.
 ///
-/// Runs terrain, terrain materials, props, collision, water and environment,
-/// each in its own `try`: one failing leaves its part empty and adds a named
-/// warning. `bounds` is `parm.rect` (§2). Every chunk in the packfile that no
+/// Runs terrain, terrain materials, props, collision, zones, water and
+/// environment, each in its own `try`: one failing leaves its part empty and
+/// adds a named warning. The zones section (zones.h, build_zones) reads `zon2`
+/// and links the havk `zoneModels` colliders, using the props and havk
+/// placements the props and collision sections read; it appends zone-only
+/// models to `models` after the prop models. `bounds` is `parm.rect` (§2). Every chunk in the packfile that no
 /// section reads is listed as `"chunk <fourcc> v<ver> not read"`, a missing
 /// `prp2` or `havk` chunk is warned (absent_chunk_warnings), and a
 /// `"units: ..."` warning records that map units per metre are UNPROVEN
@@ -111,7 +114,11 @@ WorldScene load_world(Gw2Dat& dat, uint32_t mapFileId, const nlohmann::json& tpl
 /// @brief A compact JSON description of a scene (no geometry):
 ///        {map, bounds ([x0, y0, x1, y1] or null), terrain:{present,
 ///        chunks:[x, y], resolvedMaterials}, models, props, animatedProps,
-///        collision:{meshes, instances}, water:{plane, planeZ (null without
+///        collision:{meshes, instances}, zones:{present, placementsByType:
+///        [t1, t2, t3], colliders:{entries, anchor, geometry, unlinked},
+///        propCrossChecks, propDisagreements, instances: [collider, scatter,
+///        density], scatter ("colliders" | "exact" |
+///        "densityMatched")}, water:{plane, planeZ (null without
 ///        a plane), surfaces, rivers}, sky:{present, modes, clouds,
 ///        lightPresent}, warnings}. Counts only: no per-chunk materials and
 ///        no frame (map space as stored, frame.h).

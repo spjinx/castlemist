@@ -94,6 +94,9 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
     // or external) is known too.
 
     auto out = std::make_shared<ModelPreview>();
+    out->lodOverride[0] = model.lodOverride[0];
+    out->lodOverride[1] = model.lodOverride[1];
+    out->hasLodOverride = model.hasLodOverride;
 
     // Resolve an external skeleton reference up front, before the mesh loop, so
     // BOTH the vertex skin bindings and the joint list bind to the right rig. A

@@ -47,7 +47,14 @@ the manifest changes.
    ```
 
    The exit code is 0 when there are no errors, the probe passed, and the
-   `CELL` and `INSTANCES` checks passed. Two other entry points exist:
+   `CELL` and `INSTANCES` checks passed. The world-foliage options
+   (spec D8, D9) are `-castlemistTerrain mesh|terrain`,
+   `-castlemistFoliage off|colliders|trees|all`, `-castlemistDensity <0..1>`,
+   `-castlemistDistance <0.1..2>` and `-castlemistQuest` (the Quest preset:
+   Mesh, Collider trees, Distance 0.5; the other flags apply on top). The
+   window has the same fields and a **Quest preset** button. The dry run takes
+   them as `--plan --mode mesh|terrain --foliage … --foliage-density d
+   --foliage-distance D`. Two other entry points exist:
    - `BatchEntry.CheckProbe -castlemistFile Assets/probe.fbx [-castlemistNoBakeAxis]`
      is the Task 1 axis probe.
    - `BatchEntry.CheckSkinnedProbe -castlemistFile Assets/<dir>/skinned_probe.fbx`
@@ -61,7 +68,17 @@ the manifest changes.
 1. **The summary equals the dry run.** The importer's `PLAN …` line must equal
    `python tools/world/validate_manifest.py <export> --plan` character for
    character. For the fixture (`cm_world_export_fixture`), that line is
-   `PLAN materials=4 prefabs=2 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0`.
+   `PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2 foliagePatches=2 terrains=0 detailPrototypes=0 detailCells=0 treeInstances=0 lodPrefabs=3 lodTreePrefabs=1 lodOverrides=1`
+   in mesh mode, and with `--mode terrain` / `-castlemistTerrain terrain`
+   `PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=0 water=1 lights=1 skybox=0 foliageTrees=1 foliagePatches=0 terrains=1 detailPrototypes=1 detailCells=2 treeInstances=1 lodPrefabs=3 lodTreePrefabs=1 lodOverrides=1`
+   (before the world-foliage work the line ended at `skybox`; Task 8 added
+   `foliageTrees`; Task 15b added the three `lod` counts). `LODS ... OK` checks
+   every model prefab, tree prefab and `instances[].lod` instance's LODGroup. Compare the line for the same options on both sides. In
+   batchmode, `FOLIAGE_TREES checked=<n> ... OK` also checks every foliage tree
+   instance against its record's `m`, `FOLIAGE_PATCHES` the patches, and in
+   Terrain mode `TERRAIN_TREES` every TreeInstance against its record and
+   `TERRAIN_FILES` the details and trees against the export's `_d<k>.png` and
+   `_trees.bin` (at density 1 with every kind shown).
 2. **The compile is clean.** No `error CS` and no `warning CS` from
    `Assets/Castlemist`.
 3. **The frame probe passes.** It prints
@@ -95,6 +112,30 @@ the manifest changes.
     not add it. Then build and test once. Upload size is UNPROVEN and not
     enforced.
 
+### World foliage (spec `docs/superpowers/specs/2026-10-16-world-foliage-design.md`, D8-D10, Testing "Unity")
+
+12. **Both modes, both maps.** Spirit Vale and Queensdale, in Mesh and Unity
+    Terrain mode: a clean compile, the `PLAN` line equal to the dry run with
+    the same options, and in Terrain mode
+    `TERRAIN_CHECK points=32 … OK` (the terrain frame check: `Terrain.SampleHeight`
+    at the manifest's 32 heightmap sample vertices, tolerance 0.5 units ×
+    unityScale; a failure names the axis).
+13. **Density and the Quest preset.** At `-castlemistDensity 0.5` the counts
+    equal `--plan --foliage-density 0.5`, and the collider trees are all still
+    placed (`foliageTrees` + `treeInstances` ≥ the colliderTrees count). The Quest
+    preset places exactly the collider trees (`--plan --foliage colliders`), in
+    mesh terrain.
+14. **Trees stand on their colliders.** In Play mode walk into trees with a
+    CharacterController: every tree you bump into is drawn.
+15. **Terrain tree yaw.** Place a Terrain tree beside a GameObject copy of the
+    same record (Mesh mode): they face the same way (`terrainTreeYawSign`,
+    UNPROVEN).
+16. **Detail density** against the Map Window at the same place.
+17. **Frame Debugger draws and import time** per mode, at the spawn; the
+    `CASTLEMIST import … in N s` line.
+18. **No sway.** Foliage stands still; `foliage.models[].wind` stays in the
+    manifest only (spec D10).
+
 ## Results
 
 | date | editor | export | item | result |
@@ -107,4 +148,10 @@ the manifest changes.
 | 2026-10-15 | 2022.3.22f1 batchmode, Poiyomi Pro 9.0.α18 | Spirit Vale, 36-cell export | 1-3 | PASS: the same PLAN line; probe OK; importer 59 s |
 | 2026-10-15 | 6000.0.42f1 batchmode | fixture | 1-3 | PASS: the same PLAN line; probe OK; skinned probe OK |
 | 2026-10-15 | dry run | Spirit Vale, 66-cell export (budget 500 000) | 1 | `python tools/world/validate_manifest.py <dir> --plan` prints `PLAN materials=1057 prefabs=380 controllers=37 cells=66 instances=2354 colliders=52 terrainColliders=66 water=0 lights=1 skybox=1`; the Unity importer was not run on it |
+| 2026-10-16 | 2022.3.22f1 batchmode, no Poiyomi (Standard fallback) | fixture (with model 103 and foliage) | 1-3 | PASS: `PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2`, equal to the dry run; no `error CS` / `warning CS`; probe OK; `FOLIAGE_TREES checked=2 records=2 maxRelErr=1.19E-007 OK`; the 2 type-1 records counted as deferred in a warning |
+| 2026-10-16 | 2022.3.22f1 batchmode, no Poiyomi | Spirit Vale, 66-cell export with foliage (world-foliage Task 8) | 1-3 | PASS: `PLAN materials=1061 prefabs=381 controllers=37 cells=66 instances=2354 colliders=52 terrainColliders=66 water=0 lights=1 skybox=1 foliageTrees=284`, equal to the dry run; probe OK; 66 cells centred; 2354 instances within 3.95e-6 and 284 foliage trees within 9.42e-7 of `m`. Importer 91 s (280 s wall, first import) |
+| 2026-10-17 | 2022.3.22f1 batchmode, no Poiyomi | fixture (world-fbx run) | 1-3, 12-13 | PASS in both modes: mesh `… foliageTrees=2 foliagePatches=2 terrains=0 detailPrototypes=0 detailCells=0 treeInstances=0`, terrain `… terrainColliders=0 … foliageTrees=1 foliagePatches=0 terrains=1 detailPrototypes=1 detailCells=2 treeInstances=1`, each equal to the dry run, also at density 0.5 and with the Quest preset; `TERRAIN_CHECK points=32 tiles=1 maxErr=2.457E-05 tol=0.0127 OK`; `TERRAIN_FILES checked=2 OK`; the fixture's one Terrain tree stands above the height range (h 1.19) and is clamped by Unity (warned; `TERRAIN_TREES … yClamped=1 OK`); no `error CS` / `warning CS` |
+| 2026-10-17 | 2022.3.22f1 batchmode, no Poiyomi | Spirit Vale, 66 cells, 21 tiles (world-foliage Task 13 export) | 1-3, 12-13 | PASS. Mesh: `… foliageTrees=284 foliagePatches=357 terrains=0 …` (357 patches hold all 21 060 type 1-2 records, at most 10 032 vertices); terrain: `materials=998 … terrainColliders=0 … foliageTrees=284 foliagePatches=0 terrains=21 detailPrototypes=20 detailCells=17568 treeInstances=0` (no Terrain trees: every type-3 record leans 27-99°); density 0.5: patches 320 / detailCells 9324, trees 284 in both; Quest preset: trees 284, nothing else. All equal to the dry run. `TERRAIN_CHECK points=32 tiles=21 maxErr=0.01025 tol=0.0127 OK` (0.40 map units of the 0.5 allowed: the 19 466-unit height range in Unity's 15-bit heightmap); `TERRAIN_FILES checked=41 OK`. Importer 91 s mesh (287 s wall, first import), 48 s terrain, 34-51 s for the variants |
+| 2026-10-17 | 2022.3.22f1 batchmode, no Poiyomi | Queensdale region 8,4,15,11 (4 cells, 4 tiles) | 1-3, 12-13 | PASS. Mesh: `materials=846 prefabs=431 controllers=29 cells=4 instances=1385 … foliageTrees=1090 foliagePatches=1506 …`; terrain: `materials=843 … foliageTrees=98 foliagePatches=0 terrains=4 detailPrototypes=100 detailCells=31685 treeInstances=992`; density 0.5: mesh trees 704 / patches 1285, terrain trees 80 + 624 Terrain trees, detail layers 97 / cells 16322; Quest preset: `foliageTrees=318` (the 318 collider trees) and nothing else. All equal to the dry run. `TERRAIN_CHECK points=32 tiles=4 maxErr=0.003709 tol=0.0127 OK`, `TERRAIN_FILES checked=104 OK`, `TERRAIN_TREES checked=992 maxRelErr=1.39E-007 OK`. Importer 99 s mesh (239 s wall, first import), 63 s mesh re-import, 50 s terrain, 37-60 s for the variants. A region export's `models[].index` is not its position: the importer now keys prefabs by position (before, 1010 of 1385 props had no prefab) |
+| — | VRChat 2022.3 + Poiyomi 10, editor | Spirit Vale, Queensdale | 14-18 | not tried (no editor session) |
 | — | VRChat 2022.3 + Poiyomi 10, editor | Spirit Vale | 4-11 | not tried (no editor session; items 4 to 11 need one). Poiyomi 10 is not on this machine; only Pro 9.0.α18 was tried |

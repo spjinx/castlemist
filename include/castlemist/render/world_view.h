@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "castlemist/render/world_foliage_grid.h"
 #include "castlemist/render/world_prep.h"
 #include "castlemist/world/world_scene.h"
 
@@ -25,8 +26,9 @@ struct CappedTexture;   // castlemist/extract/model_types.h
 namespace castlemist::render {
 
 /// @brief What the view can draw; each can be toggled with WorldView::set_layer.
-///        Collision is off after create(); the rest are on.
-enum class WorldLayer { Terrain = 0, Props, Collision, Water, Count };
+///        Collision is off after create(); the rest are on. Foliage is the
+///        scene's zone instances (spec D6), as set_foliage_show selects.
+enum class WorldLayer { Terrain = 0, Props, Collision, Water, Foliage, Count };
 
 /// @brief How the view shades. Geometry is sub-project 2's look (flat tint,
 ///        hemisphere + sun, baked AO); Materials paints what has its textures
@@ -112,6 +114,18 @@ struct WorldViewStats {
     /// UI-thread ms the last frame spent building game materials
     /// (prepare_shader), and the most any frame has since set_world.
     float shaderBuildMs = 0, shaderBuildMsMax = 0;
+    /// Foliage (spec D6): zone instances in the scene and those whose model
+    /// has arrived (placed, cumulative since set_world); last frame's
+    /// instances drawn, their draw calls and triangles (thousands), the grid
+    /// tiles kept by the cull and the instances dropped past
+    /// kFoliageMaxVisible. zoneTrees: Collider instances; zoneUnlinked: the
+    /// scene's colliders with no tree model (ZoneScatter::collidersUnlinked).
+    /// shaderFoliage: under Shader shading, the foliage instances drawn in
+    /// the Materials look (all of them; 0 otherwise). The foliage counts are
+    /// included in visible, draws and ktris above.
+    int foliageInstances = 0, foliagePlaced = 0, foliageVisible = 0, foliageDraws = 0, foliageKtris = 0,
+        foliageTiles = 0, foliageCapped = 0, zoneTrees = 0, zoneUnlinked = 0, shaderFoliage = 0;
+    float foliageCullMs = 0;   ///< CPU ms of last frame's foliage cull and bucketing
 };
 
 /// @brief WorldView::bench's frame times, ms: median and max of each.
@@ -144,7 +158,12 @@ public:
     ///        order as stored, UNPROVEN, note §1.6). The collision meshes upload on the first
     ///        set_layer(Collision, true) or the first render() with that layer
     ///        on (not while device_lost()); the CPU copy is then released.
-    void set_world(const castlemist::world::WorldScene& s);
+    ///        Foliage: takes ownership of @p grid (build_foliage_grid of @p s,
+    ///        built on a worker) and records each zone instance's matrix;
+    ///        they draw once add_models brings their model. A null @p grid,
+    ///        or one not sized for @p s.zones.instances, is built here on
+    ///        the calling thread instead.
+    void set_world(const castlemist::world::WorldScene& s, std::unique_ptr<FoliageGrid> grid = nullptr);
     /// @brief Uploads streamed, already prepared prop models
     ///        (prepare_world_model_shared, typically on a load worker): GPU
     ///        buffers and instance placement only, no CPU prep. Instances of a
@@ -152,7 +171,9 @@ public:
     ///        preview, or a null or not-ok prep counts as failed; a model
     ///        already added (loaded or failed) is ignored. Does nothing before
     ///        create() or while device_lost(). Call it on the thread that
-    ///        renders. The previews are kept (for picking).
+    ///        renders. The previews are kept (for picking). A model's zone
+    ///        instances are placed too (their world spheres go into the
+    ///        foliage grid); a model shared by props and zones is uploaded once.
     void add_models(const std::vector<WorldModelLoad>& batch);
     /// @brief Uploads worker-decoded textures (decode_texture_capped) into the
     ///        view's cache, keyed by fileId: once per fileId, a decode that
@@ -220,6 +241,32 @@ public:
     ///        stalls on it. Returns how many such models still wait for
     ///        their preview, their game data or this build.
     int prepare_shader(const WorldCamera& cam, double budgetMs);
+
+    /// @brief Which zone instances the Foliage layer draws (Colliders after create()).
+    void set_foliage_show(FoliageShow s);
+    /// @brief `foliageDistanceScale` (1 after create(); <= 0 or non-finite
+    ///        reads as 1): every fade range is multiplied by it (and by
+    ///        foliage_fade_quality_scale()).
+    void set_foliage_distance_scale(float scale);
+    /// @brief The client's factor on every layer's fadeRange at the graphics
+    ///        quality in force (2): 1.5 (castlemist::world::zone_fade_quality_scale).
+    ///        The cull's distance scale is foliageDistanceScale times it.
+    float foliage_fade_quality_scale() const;
+    /// @brief Verification hook (spec D6 "Headless"): moves @p cam to frame
+    ///        the placed Collider instance whose world sphere centre is
+    ///        nearest @p cam's position, from 4x its radius back along @p
+    ///        cam's view direction (direction and up kept), turns the
+    ///        Collision layer on, and writes the sphere's pixel rect {left,
+    ///        top, right, bottom} (as animated_screen_rect; all 0 when it is
+    ///        off the surface) to @p rect. False, @p cam and the layers
+    ///        untouched, when no Collider instance is placed.
+    bool focus_zone_tree(WorldCamera& cam, int rect[4]);
+    /// @brief Verification hook (GW2_MAPWIN_FOCUS=foliage / foliagemax /
+    ///        forest): moves @p cam to foliage_focus_view's ground-level view
+    ///        of the tile at @p quantile of placed density (of Collider
+    ///        instances only with @p collidersOnly; up kept level). False,
+    ///        @p cam untouched, when nothing that counts is placed.
+    bool focus_foliage(WorldCamera& cam, float quantile, bool collidersOnly = false) const;
 
     /// @brief Geometry, Materials or Shader (Materials after create()); takes effect next frame.
     void set_shading(WorldShading s);

@@ -638,6 +638,58 @@ CM_TEST(mapsky, sky_distance_from_trn) {
     CHECK_EQ(map_sky(3134778).skyDistance, 24576.0f);
 }
 
+// Mad King's Labyrinth 2499169 is a 32-bit-pointer packfile (PF v1) whose
+// light pointers point backwards: the light records shared by several presets
+// sit before the pointer arrays. A self-relative 32-bit pointer is signed, so
+// it must sign-extend; read unsigned it lands 4 GB past the file and the map
+// had "no light rig".
+CM_TEST(mapsky, labyrinth_light_rig_reads_through_backward_32bit_pointers) {
+    if (!ensure_template()) SKIP("no gw2_packfile.json struct template");
+    std::vector<uint8_t> bytes = packfile_by_file_id(2499169);
+    castlemist::model::Extractor ex(bytes, *castlemist::tpl::get());
+    auto l = ex.parseMapEnv(0);   // dataGlobal lighting[0]
+    CHECK(l.present);
+    CHECK_EQ(l.lightCount, 8);
+    CHECK_NEAR(l.sunIntensity, 1.30584f, 1e-4f);
+    CHECK(ex.parseMapEnv().present);   // the auto (brightest) preset too
+}
+
+// 2499169 haze (gw2-sky.md amendment 2026-10-17): dataGlobal->haze[0] is the
+// record whose nearColor bytes are 7D 66 79 FF, farColor 59 83 3B FF (stored
+// B, G, R, A), distRange (0, 3327.1), heightColor A1 9D 45 FF, depthCue
+// 0.000383; four zones, zone 0 with its own three hazes and one 4-vertex
+// shape; parm.rect +-9216.
+CM_TEST(mapsky, labyrinth_haze_zones_rect_and_lighting) {
+    auto s = map_sky(2499169);
+    CHECK(s.present);
+    CHECK_EQ(s.haze.size(), size_t{3});
+    if (s.haze.size() == 3) {
+        const auto& h = s.haze[0];
+        CHECK_NEAR(h.farColor[0], 0x3B / 255.f, 1e-6f);
+        CHECK_NEAR(h.farColor[1], 0x83 / 255.f, 1e-6f);
+        CHECK_NEAR(h.farColor[2], 0x59 / 255.f, 1e-6f);
+        CHECK_NEAR(h.farColor[3], 1.0f, 1e-6f);
+        CHECK_NEAR(h.nearColor[0], 0x79 / 255.f, 1e-6f);
+        CHECK_NEAR(h.nearColor[2], 0x7D / 255.f, 1e-6f);
+        CHECK_NEAR(h.heightColor[0], 0x45 / 255.f, 1e-6f);
+        CHECK_NEAR(h.distRange[1], 3327.1028f, 1e-2f);
+        CHECK_NEAR(h.depthCue, 0.000383f, 1e-6f);
+        CHECK_NEAR(s.haze[2].farColor[0], 0x60 / 255.f, 1e-6f);   // ca f6 60 ff
+    }
+    CHECK_EQ(s.zones.size(), size_t{4});
+    if (s.zones.size() == 4) {
+        CHECK_EQ(s.zones[0].haze.size(), size_t{3});
+        CHECK_EQ(s.zones[0].shapes.size(), size_t{1});
+        if (!s.zones[0].shapes.empty()) CHECK_EQ(s.zones[0].shapes[0].size(), size_t{4});
+        CHECK(s.zones[0].area > 1e7f);
+        CHECK(s.zones[3].area < 2e5f);   // the 200-unit triangle
+    }
+    CHECK_EQ(s.mapRect[0], -9216.0f);
+    CHECK_EQ(s.mapRect[3], 9216.0f);
+    CHECK_EQ(s.lighting.size(), size_t{3});
+    if (s.lighting.size() == 3) CHECK(s.lighting[0].present);
+}
+
 // gw2-sky.md §8.2: starFile 187544 is a PF packfile with chunk STAR v0 --
 // S = 0.125, 1699 stars of {e0, e1, u0, u1, v0, v1}, atlas fileId 187543.
 CM_TEST(mapstars, star_file_187544) {

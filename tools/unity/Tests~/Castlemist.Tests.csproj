@@ -1,5 +1,5 @@
 <!-- Unity-free tests of the importer's manifest reader (MiniJson, WorldManifest,
-     ImportSummary). Unity ignores folders ending in '~'. Not run by CI:
+     ImportSummary, FoliageRecords, FoliagePlan, ModelLods). Unity ignores folders ending in '~'. Not run by CI:
        dotnet run with the project and an export dir after the argument separator
      (for example build/debug/world_fixture). -->
 <Project Sdk="Microsoft.NET.Sdk">
@@ -17,5 +17,8 @@
     <Compile Include="../Castlemist/Editor/MiniJson.cs" />
     <Compile Include="../Castlemist/Editor/WorldManifest.cs" />
     <Compile Include="../Castlemist/Editor/ImportSummary.cs" />
+    <Compile Include="../Castlemist/Editor/FoliageRecords.cs" />
+    <Compile Include="../Castlemist/Editor/FoliagePlan.cs" />
+    <Compile Include="../Castlemist/Editor/ModelLods.cs" />
   </ItemGroup>
 </Project>

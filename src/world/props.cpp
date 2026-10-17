@@ -51,6 +51,9 @@ void build_props(const std::vector<castlemist::model::Extractor::MapProp>& in, W
         inst.group = p.group;
         inst.animSequence = p.animSequence;
         for (int k = 0; k < 4; ++k) inst.color[k] = p.color[k];
+        inst.lod1 = p.lod1;
+        inst.lod2 = p.lod2;
+        inst.flags = p.flags;
         client_world_matrix(p.pos, p.rot, p.scale, inst.world);
         if (p.group == "propAnimArray") out.motion.animatedProps.push_back((uint32_t)out.props.size());
         out.props.push_back(std::move(inst));

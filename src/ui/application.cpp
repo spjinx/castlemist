@@ -326,7 +326,11 @@ int run(HINSTANCE hInstance, int cmd_show) {
         // -- the subtitle search needs the CINP list.
         {
             std::string ierr;
-            bool iok = castlemist::db::open(L"dumps/index/gw2_index.db", ierr);
+            bool iok = false;
+            for (const std::wstring& cand : index_db_candidates())
+                if (GetFileAttributesW(cand.c_str()) != INVALID_FILE_ATTRIBUTES &&
+                    (iok = castlemist::db::open(cand, ierr)))
+                    break;
             log("index db open=%d (%s)\n", (int)iok, ierr.c_str());
         }
         {
@@ -787,8 +791,9 @@ int run(HINSTANCE hInstance, int cmd_show) {
         h.geometry = castlemist::ui::mapwin_shading_is_geometry(castlemist::core::env::text("GW2_MAPWIN_SHADING"));
         h.shader = castlemist::ui::mapwin_shading_from_text(castlemist::core::env::text("GW2_MAPWIN_SHADING")) ==
                    castlemist::render::WorldShading::Shader;
-        // GW2_MAPWIN_SKY=day|night|off: the sky's time of day (Day otherwise).
-        castlemist::render::parse_world_sky_time(castlemist::core::env::text("GW2_MAPWIN_SKY"), h.sky);
+        // GW2_MAPWIN_SKY=day|night|off and/or approx|proven, e.g. "night,proven":
+        // the sky's time of day (Day otherwise) and bake (the approximate sky otherwise).
+        castlemist::render::parse_world_sky(castlemist::core::env::text("GW2_MAPWIN_SKY"), h.sky, h.skyKind);
         // Minimum below 0 so that GW2_MAPWIN_TIME=0 is honoured (real() ignores values <= minimum).
         if (castlemist::core::env::is_set("GW2_MAPWIN_TIME")) {
             h.fixedTime = true;
@@ -796,6 +801,15 @@ int run(HINSTANCE hInstance, int cmd_show) {
         }
         h.focusAnimated = castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "animated";
         h.focusProps = castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "props";
+        h.focusZoneTree = castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "zonetree";
+        h.focusHorizon = castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "horizon";
+        if (castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "foliage") h.focusFoliage = 0.9f;
+        if (castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "foliagemax") h.focusFoliage = 1.0f;
+        if (castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "forest") { h.focusFoliage = 1.0f; h.focusForest = true; }
+        if (castlemist::core::env::is_set("GW2_MAPWIN_FOLIAGE_SCALE"))
+            h.foliageScale = castlemist::core::env::real("GW2_MAPWIN_FOLIAGE_SCALE", 0.0f, 0.0f);
+        // GW2_MAPWIN_FOLIAGE=off|colliders|all: the Foliage layer (on, Colliders otherwise).
+        h.foliage = castlemist::ui::mapwin_foliage_from_text(castlemist::core::env::text("GW2_MAPWIN_FOLIAGE"));
         if (castlemist::core::env::is_set("GW2_MAPWIN_SHADER_RANGE"))
             h.shaderRange = castlemist::core::env::real("GW2_MAPWIN_SHADER_RANGE", 0.0f, -1.0f);
         if (castlemist::core::env::is_set("GW2_MAPWIN_SHADER_MAX"))

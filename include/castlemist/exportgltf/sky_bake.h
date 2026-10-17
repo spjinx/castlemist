@@ -35,14 +35,61 @@ struct BakeResult {
     std::vector<uint32_t> cardTextures;    ///< card textures baked, in card order, no repeats
 };
 
+/// How an approximate-sky input is known (gw2-sky.md amendment 2026-10-17).
+enum class InputSource {
+    Measured,   ///< read from the map data, the data path itself proven
+    Derived,    ///< from the map data through a path read in the client's static code
+    Guess,      ///< UNPROVEN: no proven source; a stated stand-in
+};
+/// "measured", "derived from static code", "UNPROVEN guess".
+const char* input_source_name(InputSource s);
+
+/// One labelled input of the approximate sky.
+struct InputLabel {
+    std::string input;     ///< e.g. "FogColorFar"
+    InputSource source = InputSource::Guess;
+    std::string value;     ///< the value used, printable
+    std::string note;      ///< where it comes from
+};
+
+/// The inputs the proven-only bake leaves out, for the approximate sky
+/// (gw2-sky.md amendment 2026-10-17). With them, make_sky_sampler also bakes
+/// the hemicube's horizon haze and sun glow, haze-dominated and lit texture
+/// cards, the material cards it has a transcribed shader for, and the cloud
+/// layers. Every input carries a label.
+struct ApproxInputs {
+    bool haveFog = false;
+    float fogFar[4] = {0, 0, 0, 1};        ///< FogColorFar, RGBA 0..1
+    /// The haze's nearColor.w and distRange (d0, d1), for the clouds' distance
+    /// fog (VS 1645): fz = saturate((viewZ - d0) / (d1 - d0)); without them fz = 1.
+    bool haveFogDist = false;
+    float fogNearW = 1, fogDist[2] = {0, 0};
+    bool haveSun = false;                  ///< sun colour/direction and SH below are set
+    float sunColor[3] = {1, 1, 1};         ///< sunClr.rgb
+    float sunDir[3] = {0, 0, 1};           ///< sunDir.xyz, GW2 axes, normalized: the direction the light travels
+    float sh[3][4] = {};                   ///< shRed, shGreen, shBlue
+    float cameraZ = 0;                     ///< GW2 z of the camera (up = -z), for the cloud planes
+    float cardFade = 1, cloudFade = 1;     ///< EnvEnvironment card / cloud fades
+    float time = 0;                        ///< the `Time` uniform for material cards
+    float alphaRef = 0;                    ///< the `AlphaRef` uniform for material cards
+    std::vector<InputLabel> labels;        ///< one per input, copied into the bake's warnings
+};
+
 /// Sampler for sky mode @p modeIndex of @p sky. Directions passed to the
 /// returned radiance are Unity directions (left-handed, +Y up, +Z north).
 /// @p stars is the parsed `starFile` (Extractor::parseStars); its atlas is
 /// looked up in @p textures by `stars->atlas`. Sizes use `sky.skyDistance`
-/// (F0, gw2-sky.md §7.1).
+/// (F0, gw2-sky.md §7.1). Without @p approx the bake is the proven-only one;
+/// with it, the approximate sky (ApproxInputs).
 BakeResult make_sky_sampler(const castlemist::model::Extractor::MapSky& sky, size_t modeIndex,
                             const TextureMap& textures,
-                            const castlemist::model::Extractor::MapStars* stars = nullptr);
+                            const castlemist::model::Extractor::MapStars* stars = nullptr,
+                            const ApproxInputs* approx = nullptr);
+
+/// The AMAT whose sky-card pixel shader the approximate sky transcribes
+/// (Mad King's "flow fire" card, PS 12 of AMAT 1262294). Material cards with
+/// any other material stay unbaked.
+inline constexpr uint32_t kFlowFireMaterial = 1262294;
 
 /// GW2 sky space (X east, Y north, Z down; gw2-sky.md §1) to Unity.
 void gw2_to_unity(const float gw2[3], float unity[3]);

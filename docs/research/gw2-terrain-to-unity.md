@@ -188,6 +188,246 @@ the RNG and its seeding (`seed` is per zone, 0 on many), the ground
 alignment, and `zOffsets`. A Unity build can match the game's **density and
 model mix per cell**, not its exact instances, until these are proven.
 
+#### 2026-10-16: zone scatter rule (static client and data fit)
+
+**Decision for the World Foliage spec D5: `exact`.** The rule below, read
+from `Gw2-64.exe` (PE timestamp 1792004482, the disable-ASLR copy, image base
+`0x140000000`) and run against castlemist's own terrain, reproduces **all 4750**
+anchor-matched `havk.zoneModels` colliders (Queensdale 4378, Lion's Arch 88,
+Spirit Vale 284) within D5 step 2's tolerances:
+
+| component | pass | worst error | tolerance |
+|---|---|---|---|
+| x, y | 4750 / 4750 | 0.00195 | 0.01 |
+| yaw | 4750 / 4750 | 5e-9 rad | 1e-4 |
+| tilt (x, y) | 4750 / 4750 | 2.4e-7 rad | 1e-4 |
+| scale | 4750 / 4750 | 4.8e-9 | 1e-5 |
+| z | 4750 / 4750 | 0.0092 | 0.5 |
+
+Queensdale's three "hand-placed" entries (3350-3352, scale 0.84, spec M2) are
+excluded from the count, as D5 says. They are **not** hand-placed: they are the
+three type-3 cells of zone 135, a zone stored without `encodeData`, which the
+castlemist walk misreads (see the decode below). The rule gives their x, y, yaw
+and scale exactly (tilt and z not checked: no terrain stencil was dumped for
+them):
+
+| entry | x, y | yaw | scale | model |
+|---|---|---|---|---|
+| 3350 | 17171.012, 3269.344 | 0.80742 | 0.84 | 85090 |
+| 3351 | 17184.000, 3648.000 | 5.68292 | 0.84 | 85933 |
+| 3352 | 17171.713, 4041.689 | 1.97905 | 0.84 | 85090 |
+
+What the fit does **not** cover: the type-1/2 path (no type-1/2 placement has
+a collider), the graphics-quality input, the zone transform, the clamp, the
+water rule and the random-z rule (none of them is exercised by the 4750). Those
+parts are transcribed from the code and are UNPROVEN by data. The spec's
+`zoneScatter = exact` holds for type 3. For types 1-2 it is the transcribed
+rule, labelled as such.
+
+**How it was found.** No IDB or analysed Ghidra project existed for this build,
+and `~/gw2re.gpr` holds the September build. A scratch PyGhidra project
+(Ghidra 12.1.3, JDK 21, imported with no auto-analysis) was used, and only the
+functions below were decompiled. The ways in:
+- the source-path strings `...\Engine\Map\Zones\ZnPlacement.cpp`, `ZnZone.cpp`,
+  `ZnChunk.cpp`, `ZnData.cpp`, `ZnCompress.cpp` and the asserts beside them
+  (`fillCount < MAX_TILING`, `queryFlags == 0 || (noGroundcover != onlyGroundcover)`,
+  `collideData`);
+- their RIP-relative xrefs;
+- `.pdata` to find the function roots.
+
+The game was never launched, attached to or hooked.
+
+| address | file | what it does |
+|---|---|---|
+| `0x140c8a440` | ZnContext | query path: for each zone and each 32 × 32-vertex chunk in a rect, calls `0x140cc23c0`; clamp rect = map rect inset by 1 unit, matrix from the map |
+| `0x140cc23c0` | ZnPlacement | per chunk: decodes the rows, seeds the RNG per cell, picks the collideData entry, dispatches on flag bit 0 |
+| `0x140cc1f50` | ZnPlacement | **single-instance path** (flag bit 0 clear: type 3) |
+| `0x140cc1900` | ZnPlacement | **tiling path** (flag bit 0 set: types 1-2), up to 4 instances per cell |
+| `0x140cc2880` | ZnPlacement | xy jitter, clamp, ground height, z rules |
+| `0x140cc2af0` | ZnPlacement | yaw, random tilt or ground-normal tilt |
+| `0x140cbc110` | (by position, ZnModel) | per-slot z offset from the `zOffsets` bytes |
+| `0x140cbc210` | (by position, ZnModel) | optional `subModel` second instance |
+| `0x140cbc0d0` / `0x140cbc0b0` / `0x140cbc090` | (by position, ZnModel) | tiling count by quality; fadeRange × {0.85, 1, 1.5, 2}[quality] |
+| `0x140cd0660` / `0x140cd0410` | ZnCompress | row decode of `flags` (raw, or RLE through `encodeData`) |
+| `0x140cc80d0`, `0x140cc8150` | ZnZone | vertex index `(x1−x0)(row−y0) + col − x0`; vertex position `(48 col + ox, 48 row + oy, 0)` |
+| `0x140c8b9b0`, `0x140c8bb60` | ZnData | pack → runtime layer and model; model flag bits remapped (table `0x141d6e110` → `0x141d6e170`) |
+| `0x140e23f90` / `0x140e24cf0` | | RNG seed |
+| `0x140e24b10` / `0x140e243d0` / `0x140e24280` | | RNG int range / float ×2⁻³¹ / float ×4.6566126e-10 |
+| `0x1409bf1f0` | | round to nearest even (magic 1.75·2²³) |
+| `0x142592280` | .data | 256-entry uint32 seed table (count `0x100` at `0x142592680`) |
+| `0x141e44210` / `0x141e443a0` / `0x141e44600` | .rdata | tiling offset patterns: 25 × {2, 3, 4} float2 |
+| `0x141e449c4` | .rdata | scale step 0.07734375 (= 99/1280) |
+
+Tried and not it: the vtable `0x141d62630` (TrnQueryBasic). Its slots +0x58 and
++0x68 are not the zone ground query. The ground query's implementation was
+**not located**. Its behaviour is reproduced by the measured terrain rule below.
+
+**The `flags` decode was wrong in castlemist (phase 1).** `0x140cd0410` reads
+`flags` as **(count, value) run-length pairs: `count` cells of `value`**. It is
+not "skip `count`, then one flag". A zone with no `encodeData` stores `flags`
+raw, one byte per vertex (`0x140cd0660`; `flags.size() == w·h` on all 34 such
+zones). Two checks hold on all zones:
+- `encodeData[r] = {index, offset}` is the pair holding row r's first cell and
+  the count already used from it: `Σ count[<index] + offset = r·w` on 687 of
+  687 encoded zones.
+- `offsetData[i]` is the first `collideData` index of the zone's i-th 32 × 32
+  chunk: 53 of 53 zones.
+
+With the client decode, the true placement counts are:
+
+| map | placements | type 1 / 2 / 3 | old walk |
+|---|---|---|---|
+| Queensdale | 247 804 | 193 125 / 44 380 / 10 299 | 217 114 |
+| Lion's Arch | 40 252 | 36 939 / 2 300 / 1 013 | 32 448 |
+| Spirit Vale | 8 670 | 8 386 / 0 / 284 | 7 642 |
+
+The old walk's `k` is the cell *after* a run. So a run of one cell (all 4750
+collided cells) sits at `k − 1`, which is spec M2's `c − 1` (U4 answered: the
+walk position is `k − 1`, the run's last cell). Runs longer than one and raw
+zones lost cells. On Queensdale, the type-3 cells of the 45 collided models are
+4381 under the true decode, exactly the 4381 colliders (spec M4 holds).
+
+**Cell and position.** Cell `p` of a zone is vertex `(col, row) = (vr0 + p mod
+w, vr1 + ⌊p / w⌋)` and sits at `P = (x0 + 48·col, y0 + 48·row)`, with `(x0, y0)`
+the parm rect's south-west corner. The context matrix is identity on the test
+maps (not exercised otherwise).
+
+**The flag byte.** Layer `(f >> 4) − 1`, model slot `(f >> 1) & 7` (spec M3,
+now read in the code). Bit 0 selects the path: 1 = tiling (`0x140cc1900`),
+0 = single (`0x140cc1f50`). Under the true decode bit 0 is set on all type-1/2
+cells and clear on all type-3 cells.
+
+**RNG** (`0x140e24b10` family; Park-Miller "minimal standard" 48271 by Schrage,
+with the client's own fix-up):
+```
+seed(s):  state = s ? s : 0x075BD924
+next():   state = state*48271 − (state/44488)*0x7FFFFFFF      (uint32 wrap)
+          if state > 0x7FFFFFFF: state += 0x80000000           (uint32 wrap)
+          if state == 0: state = 0x075BD924
+fA() = float(next()) * 2^-31            (0x140e243d0, constant 0x30000000)
+fB() = float(next()) * 4.6566126e-10    (0x140e24280, constant 0x2FFFFFFF)
+irange(a, b) = a + next() % (b − a + 1) (0x140e24b10)
+```
+All float arithmetic is single precision, one rounding per operation, with no
+FMA.
+
+**Seed per cell** (`0x140cc23c0`): with `lx = col − vr0`, `ly = row − vr1`
+and `w = vr2 − vr0`,
+`seed = (zone.seed << 8) ^ T[(lx + w·ly + lx·ly) mod 256] ^ (((4·ly) ^ lx) << 14)`,
+where T is the table at `0x142592280`. The generator is re-seeded for every
+non-empty cell.
+
+**Model flags** are remapped at load (`0x140c8b9b0`). The pack bits that matter
+here, with their runtime bit in brackets:
+- `0x1` (r0x1): no xy jitter.
+- `0x2` (r0x2), `0x200000` (r0x4), `0x4` (r0x8): align to the ground. `0x200000`
+  also snaps by 90°. `0x4` also scales the tilt by 0.35.
+- `0x8` (r0x10), `0x20000` (r0x20): random tilt from `rotRange`. `0x20000` also
+  turns off the random sign.
+- `0x10` with `0x800` (r0x4040): random z.
+- `0x20` (r0x80): rot.x = π.
+- `0x200` (r0x100): yaw from the normal.
+- `0x1000` (r0x8000): water test.
+- `0x800000` (r0x100000): skipped at quality 0 in the tiling path.
+
+The collided models on the test maps carry these pack flags: `0x100000`,
+`0x100002`, `0x100004`, `0x100005`, `0x100008`, `0x100084`, `0x120000`, `0x2000`,
+`0x2004`, `0x2082` and `0x2084`.
+
+**Single-instance path, draw order** (`0x140cc1f50`; this is what the 4750
+validate):
+1. z offset (`0x140cbc110`): `r = fA()`;
+   `zoff = 36 − ((z0 + r·(z1 − z0)) / 255)·72`, where z0 and z1 are the slot's
+   `zOffsets` bytes. 128 / 128 gives −0.14.
+2. Jitter, unless pack flag `0x1`: `x = P.x + (24 − fB()·48)`, then
+   `y = P.y + (24 − fB()·48)`. So u and v lie in (−24, 24].
+3. Clamp x, y to the context rect. On the `0x140c8a440` path this is the map
+   rect inset by 1 unit.
+4. Ground height h:
+   - zoneFlags bit 1 (`collideData`): `h = collideData[i].zPos`.
+   - Otherwise, the terrain under (x, y) on the triangle split NE-SW: plane
+     (NW, NE, SW) when `fx + fy ≤ 1`, else (NE, SW, SE). Here fx counts east
+     and fy south within the quad of 96-unit samples.
+   - Pack flag `0x1000` (water test): when the ground value exceeds the water
+     query's value (as stored, Z down), the water value is used, and the two
+     cases below are skipped.
+   - The r0x4040 case: `h = max(fB()·h, 120)`.
+
+   Then `z = h + zoff`.
+5. Rotation (`0x140cc2af0`):
+   - Start with rot = (π if pack `0x20`, 0, 0).
+   - **Yaw** `rot.z = (rotRange.z0 + fB()·(z1 − z0))·(π/180)`.
+   - If random tilt: `rot.x = (x0 + fB()·(x1 − x0) + rot.x)·π/180`, negated if
+     `fB() > 0.5` (that sign draw only without `0x20000`). Then `rot.y` the same
+     way from rotRange.y.
+   - Else, if ground-aligned: take the ground normal n and set
+     `rot.x = −atan2(ny, √(nz² + nx²))` and `rot.y = atan2(nx, √(nz² + ny²))`.
+     - n = `(nx, ny, √(1 − nx² − ny²))` from `collideData[i]` under zoneFlags
+       bit 1.
+     - Otherwise n is the terrain plane chosen by **fx ≤ fy: (NW, NE, SW), else
+       (NE, SW, SE)**. This is not the triangle the height uses. It is measured
+       (3537 / 3537 at ≤ 6.5e-8 rad); the query function was not found.
+     - Pack `0x200` sets `rot.z = −atan2(ny, nx) − π/2`.
+     - Pack `0x200000` adds ±π/2 to rot.x (if |nx| ≤ |ny|) or to rot.y.
+     - Pack `0x4` multiplies rot.x and rot.y by 0.35.
+6. **Scale:** `s = s0 + fA()·(s1 − s0)`, then
+   `s = s0 + roundEven((s − s0)/Δ)·Δ` with `Δ = 0.07734375`. A single global
+   step, not per layer. This explains spec M5's out-of-range scales: 122 of the
+   4750 (107 on Queensdale) round past s1, and none falls below s0.
+7. `subModel` (`0x140cbc210`): if the layer has one, `r = fA()`. When `r ≤`
+   the subModel's probability, a second instance of the subModel's model is
+   made with the same transform.
+
+**collideData index** (zoneFlags bit 1): `i = offsetData[chunk] + n`. Here
+`chunk = (col>>5 − vr0>>5) + (row>>5 − vr1>>5)·(((vr2−1)>>5) + 1 − vr0>>5)`,
+and n is the cell's order among the chunk's non-empty cells, rows then columns.
+215 / 215 samples give z to 6.5e-5 and 53 / 53 normals to 1.4e-8 rad.
+
+**Tiling path** (`0x140cc1900`, types 1-2). Transcribed only; no collider
+validates it:
+1. `zoff` as in step 1, once per cell.
+2. Skip the cell if pack `0x800000` and quality 0.
+3. `pattern = irange(0, 24)`.
+4. `count = irange(1, T)`. T comes from `tiling` (`0x140cbc0d0`): quality 2
+   gives `tiling`; quality 1 gives `tiling`, or 3 for 4; quality 0 gives
+   `tiling − 1`, or 2 for 4. A `tiling` of 0 or 1 gives `tiling` at any quality.
+5. For each instance k < count, the base point is `P + (24, 24) + offset`:
+   - offset = (0, 0) for count 1;
+   - otherwise entry k of pattern `pattern` in the table for count 2, 3 or 4,
+     and then there is no jitter.
+
+   Then steps 2-6 above run per instance. There is no subModel on this path.
+
+The quality input comes from a getter (`0x140c58c10`, not read); castlemist
+should take 2 (full tiling). Note the extra (24, 24): groundcover is centred on
+the cell between four vertices, and trees on the vertex.
+
+**Not used by placement** (no read in the two expansion paths): the layer and
+model `probability` (`zoneProbability`: the flag already names the model, so
+the draw is offline), `instanceScaleJitter`, `noise`, `hslRanges` / `hslOffset`
+and `radiusGround`. `fadeRange` is scaled by the quality factor at chunk build.
+Their render-time meaning stays UNPROVEN.
+
+**D5 step 3 hypotheses** (`world_dat.zones_hypotheses`, all 4750 unless noted):
+
+| hypothesis | result | status |
+|---|---|---|
+| tilt = terrain normal, clamped to `rotRange` x/y | 234 / 4750, worst 2.26 rad | UNPROVEN as phrased (tilt is per model flag: none 743, random 417 + 125, ground 3537 + 53) |
+| z = `terrain_height_at` | 2286 / 4750 within 0.5 | UNPROVEN as phrased (z = NE-SW triangle + zOffset: 4535 / 4535, worst 0.0093) |
+| scale = `scaleRange[0] + Δ·k` | 4750 / 4750, Δ = 99/1280 global | **measured** (and read in the code) |
+| `collideData` = the ground (normal, z) | z 215 / 215, normal 53 / 53 | **measured** |
+
+**Proven now.** The client uses the anchor and slot rule. The anchor is the
+decoded cell's vertex, the slot is `(f >> 1) & 7`, and the layer is
+`(f >> 4) − 1`. The rule is read in the code and reproduces all 4750
+colliders. U3 (tilt is ground alignment) is answered: only for ground-aligned
+models.
+
+Scratch scripts and dumps for this amendment are not committed (the spec's
+rule): `sim.py`, `validate.py`, `fitn*.py`, `zones.py`, and the dumps from
+`CM_ZONE_SAMPLES` (`*.csv`, `*.terrain.csv`, `*.zones.csv`, `*.layers.csv`,
+`*.unmatched.csv`).
+
 ### 1.4 Trees placed as props: `prp2` — decoded and exported
 
 `prp2` placements are already exported as prefab instances (11 687 on

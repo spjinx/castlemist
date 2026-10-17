@@ -13,9 +13,19 @@
 //   parse    (--dat <path> (--index N | --file-id N) | --data <bin>) --template <json>
 //                                            [--max-depth D] [--max-nodes N] [--out <json>]
 //   sniff    --dat <path> (--index N | --file-id N)
+//   map      (--dat <path> (--index N | --file-id N) | --data <bin>) --template <json>
+//            -- a map's props, terrain, collision and zones (zon2 placements: count,
+//            byType, layerUnresolved). zones: the client decode of flags (count, value
+//            pairs, raw bytes without encodeData), the cell's vertex x0 + 48 c and model
+//            slot (flag >> 1) & 7 (world foliage spec M2-M3); output changed 2026-10-16
 //   skybox   --dat <path> --file-id N --template <json> --out <dir> [--name NAME]
-//            [--size <face px>] [--equirect <width px>]
+//            [--size <face px>] [--equirect <width px>] [--approx]
 //            -- a map's sky as Unity skybox images in <out>/<name> (default map_<fileId>)
+//   world-export --dat <path> --file-id N --template <json> (--out <file.glb> | --out-dir <dir>)
+//            [--foliage off|colliders|all] [--no-unity-terrain] [--region cx0,cy0,cx1,cy1] [--no-fbx] ...
+//            -- a map as one .glb, or as the world export folder (flags: cmd_world_export_folder);
+//            --foliage (default all) picks the zone foliage records written;
+//            --no-unity-terrain leaves out the unityTerrain tiles (terrain/)
 //   character (--key-name NAME | --key KEY) [--character NAME] [--tab N]
 //            [--out <json>] [--cmap <content_map.bin>]
 //            -- lists an account's characters, or resolves one character's
@@ -1431,13 +1441,36 @@ void cmd_map(const Args& a) {
     for (const auto& kv : coll.counts) cj[kv.first] = kv.second;
     j["collision"] = std::move(cj);
     {
+        // The client decode, the cell's vertex and model slot (flag >> 1) & 7 (world
+        // foliage spec M2-M3); output changed 2026-10-16.
         auto zones = ex.parseMapZones();
         std::unordered_map<uint32_t,int> zu;
         json zs2 = json::array();
         for (const auto& z : zones) zu[z.fileId]++;
         for (size_t i = 0; i < zones.size() && i < 5; ++i)
             zs2.push_back({{"fileId",zones[i].fileId},{"pos",{zones[i].pos[0],zones[i].pos[1],zones[i].pos[2]}}});
-        j["zones"] = {{"placements", zones.size()}, {"uniqueModels", zu.size()}, {"sample", zs2}};
+        // Every walk visit by its layer's `type`; a visit whose def, layer or slot
+        // does not resolve counts in layerUnresolved instead.
+        using Ex = castlemist::model::Extractor;
+        const Ex::MapZon2 z2 = ex.parseZon2();
+        std::unordered_map<uint32_t, const Ex::Zon2Def*> defs;
+        for (const auto& d : z2.defs) defs.emplace(d.token, &d);
+        std::map<std::string, size_t> byType;
+        size_t unresolved = 0;
+        for (const auto& zone : z2.zones) {
+            auto it = defs.find(zone.defToken);
+            const Ex::Zon2Def* def = it == defs.end() ? nullptr : it->second;
+            Ex::walkZoneFlags(zone, [&](uint32_t, int32_t, int32_t, uint8_t f) {
+                const uint32_t layer = f >> 4, slot = (f >> 1) & 7u;
+                if (!def || layer == 0 || layer > def->layers.size() || slot >= def->layers[layer - 1].models.size()) {
+                    ++unresolved;
+                    return;
+                }
+                ++byType[std::to_string(def->layers[layer - 1].type)];
+            });
+        }
+        j["zones"] = {{"placements", zones.size()}, {"uniqueModels", zu.size()}, {"byType", byType},
+                      {"layerUnresolved", unresolved}, {"sample", zs2}};
     }
     emit(j);
 }
@@ -1462,12 +1495,14 @@ void cmd_skybox(const Args& a) {
     if (has(a, "size")) opt.faceSize = static_cast<int>(to_u64(a.at("size")));
     if (has(a, "equirect")) opt.equirectWidth = static_cast<int>(to_u64(a.at("equirect")));
     if (opt.faceSize < 1 || opt.equirectWidth < 2) fail("--size and --equirect must be positive");
+    // --approx: the approximate sky (gw2-sky.md amendment 2026-10-17), labelled in sky.json.
+    opt.approximate = has(a, "approx");
 
     Gw2Dat dat;
     load_dat_file(dat, need(a, "dat"));
     uint32_t idx = 0;
     std::vector<uint8_t> data = extract_bytes(dat, a, idx);
-    sky::SkyInputs in = sky::load_sky_inputs(dat, data, tpl, fileId);
+    sky::SkyInputs in = sky::load_sky_inputs(dat, data, tpl, fileId, opt.approximate);
     sky::SkyExportReport rep = sky::write_skybox(in, out, name, opt);
     json j = sky::report_json(rep);
     std::fputs(j.dump().c_str(), stdout);
@@ -2428,6 +2463,15 @@ void cmd_world(const Args& a) {
 ///              [--no-terrain] [--no-props] [--collision] [--no-textures]
 ///              [--animations] [--scale <s>] [--threads <n>]
 /// Task 10: --out-dir writes the whole export folder through export_world_folder.
+///   --out-dir <dir> [--texels-per-chunk 64|128|256|512] [--max-texture <n>]
+///   [--region cx0,cy0,cx1,cy1] [--cell-max-chunks <n>] [--cell-max-tris <n>]
+///   [--cell-max-texture-mb <mb>] [--no-sky] [--sky-approx] [--no-collision] [--overwrite]
+///   [--foliage off|colliders|all] [--no-unity-terrain] [--threads <n>] [--no-fbx] [--blender <exe>]
+/// --foliage (world-foliage spec D7, default all): which zone instances become
+/// foliage/<cell>.bin records -- none, the collider trees only, or every one the
+/// world build made.
+/// --no-unity-terrain (world-foliage spec D7): no terrain/ tiles and no
+/// unityTerrain block (the Unity importer's Terrain mode then has nothing to build).
 /// Task 11: then, unless --no-fbx, ripper::convert_world_to_fbx (Blender found, or
 /// --blender <exe>); its result is the report's "fbx" block. Blender missing or
 /// failing leaves the export ok, with fbx.ok false and the folder valid.
@@ -2472,8 +2516,17 @@ void cmd_world_export_folder(const Args& a) {
     if (has(a, "cell-max-texture-mb")) opts.budget.maxTextureMB = std::stod(a.at("cell-max-texture-mb"));
     if (opts.budget.maxChunks < 1) fail("--cell-max-chunks must be at least 1");
     opts.sky = !has(a, "no-sky");
+    opts.skyApproximate = has(a, "sky-approx");   // the approximate sky, off by default
     opts.collision = !has(a, "no-collision");
     opts.overwrite = has(a, "overwrite");
+    opts.unityTerrain = !has(a, "no-unity-terrain");
+    if (has(a, "foliage")) {   // world-foliage spec D7: zone foliage records, default all
+        const std::string& f = a.at("foliage");
+        if (f == "off") opts.foliage = eg::FoliageExport::Off;
+        else if (f == "colliders") opts.foliage = eg::FoliageExport::Colliders;
+        else if (f == "all") opts.foliage = eg::FoliageExport::All;
+        else fail("--foliage must be off, colliders or all");
+    }
     if (has(a, "threads")) opts.threads = static_cast<int>(to_u64(a.at("threads")));
     const bool fbx = !has(a, "no-fbx");   // Step 4: Blender --to-fbx (Task 11)
 
@@ -2504,7 +2557,8 @@ void cmd_world_export_folder(const Args& a) {
     if (opts.sky) {
         try {
             auto bytes = castlemist::world::read_file_bytes(dat, fileId);
-            if (bytes) skyIn = castlemist::exportgltf::sky::load_sky_inputs(dat, *bytes, tpl, fileId);
+            if (bytes)
+                skyIn = castlemist::exportgltf::sky::load_sky_inputs(dat, *bytes, tpl, fileId, opts.skyApproximate);
         } catch (const std::exception& ex) { progress(std::string("sky inputs unavailable: ") + ex.what()); }
     }
     auto src = eg::make_dat_model_source(dat);

@@ -10,7 +10,10 @@
 //  - instance unity.t is in map units relative to the cell origin, Unity axes;
 //    unityScale is applied once, on the map root (ruling W7);
 //  - unity.r is a Unity quaternion (x, y, z, w);
-//  - light, water, frameProbe, sky, spawn and map.bounds may be null.
+//  - light, water, frameProbe, sky, spawn and map.bounds may be null;
+//  - foliage (the world-foliage block) and cells[].foliage are optional; the
+//    records themselves are read by FoliageRecords;
+//  - unityTerrain (world-foliage D7) is optional: Terrain mode needs it.
 // An unknown format or major version, or a missing required field, throws
 // ManifestException naming the field. No UnityEngine dependency (the
 // tools/unity/Tests~ harness compiles it with plain dotnet).
@@ -211,6 +214,10 @@ namespace Castlemist
         public LightEntry Light;   // null: not finite or absent
         public double[] SpawnUnity;  // null: no spawn hint
         public ProbeEntry FrameProbe;  // null: no probe
+        public FoliageBlock Foliage;   // null: no foliage block (world-foliage D7)
+        public UnityTerrainBlock UnityTerrain;  // null: no unityTerrain block (world-foliage D7)
+        /// settings.zoneFadeQualityScale.value (1 when absent); UnityTerrain.FadeQualityScale wins when present.
+        public double ZoneFadeQualityScale = 1.0;
         public readonly List<string> Warnings = new List<string>();
 
         public sealed class UvScroll
@@ -222,12 +229,21 @@ namespace Castlemist
 
         public sealed class ModelEntry
         {
+            /// models[].index: the scene.models index (not the position on a region export).
             public int Index;
+            /// The entry's position in models[]: what instances, foliage records and prototypes name.
+            public int Position;
             public long FileId;
             public string Folder, Glb, Fbx, Materials, Status, Error;
+            /// models[].triangles (0 when absent): the patch split's vertex bound (FoliagePlan.PatchCapacity).
+            public long Triangles;
             public List<string> Clips = new List<string>();
             public List<string> DarkDecalMaterials = new List<string>();
             public List<UvScroll> UvScroll = new List<UvScroll>();
+            /// models[].lods (Task 15b): LodLevels 1 when absent (no LODGroup);
+            /// LodDistances the model's switch distances, model units (null when absent).
+            public int LodLevels = 1;
+            public double[] LodDistances;
             public bool Ok { get { return Status == "ok"; } }
         }
 
@@ -241,6 +257,7 @@ namespace Castlemist
             public double S;
             public string Clip;  // null: static
             public double[] M;   // map space, column-major, absolute (null if absent)
+            public double[] Lod; // instances[].lod (Task 15b): its own switch distances, model units; null = the model's
         }
 
         public sealed class CellEntry
@@ -251,6 +268,123 @@ namespace Castlemist
             public bool HasTerrain;
             public int ColliderParts;
             public readonly List<InstanceEntry> Instances = new List<InstanceEntry>();
+            /// cells[].foliage (world-foliage D7); FoliageFile null: no records.
+            public string FoliageFile;
+            public int FoliageRecords, FoliageColliderTrees;
+            /// rect (map x0, y0, x1, y1; null when absent) and chunks (cx0, cy0, cx1, cy1; null for a cell without terrain).
+            public double[] Rect;
+            public int[] Chunks;
+        }
+
+        public sealed class FoliageLayer
+        {
+            public int Index, Type;
+            public double FadeFar;  // fadeRange[1]
+            /// Manifest models[] positions by slot; -1 for an unused slot.
+            public readonly List<int> Models = new List<int>();
+        }
+
+        public sealed class FoliageModel
+        {
+            public int Model;
+            public double FadeFar;
+            /// foliage.models[].terrainDetail: one mesh, one material, types 1-2 (a Unity detail in Terrain mode).
+            public bool TerrainDetail;
+        }
+
+        /// unityTerrain (world-foliage D7): positions and sizes in Unity axes before unityScale, map units.
+        public sealed class UnityTerrainBlock
+        {
+            public int TileChunks = 4, HeightmapResolution = 129, DetailResolution = 256;
+            public double DetailCellUnits = 48, HMin, HMax, FadeQualityScale = 1.0;
+            public readonly List<TerrainTile> Tiles = new List<TerrainTile>();
+            public readonly List<DetailPrototypeEntry> DetailPrototypes = new List<DetailPrototypeEntry>();
+            public readonly List<TreePrototypeEntry> TreePrototypes = new List<TreePrototypeEntry>();
+            /// unityTerrain.check as parsed: [{ "unity": [x, z], "height": y }], map units before unityScale.
+            public List<object> Check = new List<object>();
+
+            public int DetailPrototypeOf(int model)
+            {
+                for (int i = 0; i < DetailPrototypes.Count; ++i) if (DetailPrototypes[i].Model == model) return i;
+                return -1;
+            }
+
+            public int TreePrototypeOf(int model)
+            {
+                for (int i = 0; i < TreePrototypes.Count; ++i) if (TreePrototypes[i].Model == model) return i;
+                return -1;
+            }
+
+            /// The tile whose block holds chunk (cx, cy), or null.
+            public TerrainTile TileOfChunk(int cx, int cy)
+            {
+                int bx = (cx / TileChunks) * TileChunks, by = (cy / TileChunks) * TileChunks;
+                foreach (TerrainTile t in Tiles) if (t.Chunks[0] == bx && t.Chunks[1] == by) return t;
+                return null;
+            }
+        }
+
+        public sealed class TerrainTile
+        {
+            public string Id, Heights, Holes, Albedo, TreesFile;
+            public int[] Chunks;             // cx0, cy0, cx1, cy1 (the real chunks)
+            public double[] Position, Size;  // x, up, z
+            public int TreesRecords;
+            public readonly List<TileDetail> Details = new List<TileDetail>();
+
+            /// The real (unpadded) area, map x0, y0, x1, y1 (= Unity x, z).
+            public double[] Real(int tileChunks)
+            {
+                double cw = Size[0] / tileChunks, cd = Size[2] / tileChunks;
+                double x0 = Position[0], z1 = Position[2] + Size[2];
+                return new[] { x0, z1 - (Chunks[3] - Chunks[1] + 1) * cd, x0 + (Chunks[2] - Chunks[0] + 1) * cw, z1 };
+            }
+        }
+
+        public sealed class TileDetail
+        {
+            public int Prototype, Records;
+            public string Counts;
+        }
+
+        public sealed class DetailPrototypeEntry
+        {
+            public int Model;
+            public double MinScale = 1, MaxScale = 1, FadeFar;
+        }
+
+        public sealed class TreePrototypeEntry
+        {
+            public int Model;
+            public double FadeFar;
+        }
+
+        /// The importers' fade factor (ruling S5): unityTerrain.fadeQualityScale, else settings.zoneFadeQualityScale, else 1.
+        public double FadeQualityScale { get { return UnityTerrain != null ? UnityTerrain.FadeQualityScale : ZoneFadeQualityScale; } }
+
+        static int[] Ints(double[] v)
+        {
+            if (v == null) return null;
+            var r = new int[v.Length];
+            for (int i = 0; i < v.Length; ++i) r[i] = (int)v[i];
+            return r;
+        }
+
+        public sealed class FoliageBlock
+        {
+            public string Scatter;
+            public readonly List<FoliageLayer> Layers = new List<FoliageLayer>();
+            public readonly List<FoliageModel> Models = new List<FoliageModel>();
+
+            /// foliage.models[].fadeFar for a model, else the largest far value of
+            /// the layers naming it, else 0.
+            public double FadeFar(int model)
+            {
+                foreach (FoliageModel fm in Models) if (fm.Model == model) return fm.FadeFar;
+                double f = 0;
+                foreach (FoliageLayer l in Layers) if (l.Models.Contains(model)) f = Math.Max(f, l.FadeFar);
+                return f;
+            }
         }
 
         public sealed class WaterEntry
@@ -317,6 +451,8 @@ namespace Castlemist
             JObj settings = r.OptObj("settings");
             JObj dd = settings != null ? settings.OptObj("darkDecalRule") : null;
             if (dd != null) m.DarkDecalRule = dd.Bool("value", true);
+            JObj fq = settings != null ? settings.OptObj("zoneFadeQualityScale") : null;
+            if (fq != null) m.ZoneFadeQualityScale = fq.OptNum("value", 1.0);
 
             JObj terrain = r.OptObj("terrain");
             m.TerrainPresent = terrain != null && terrain.Bool("present", false);
@@ -326,6 +462,7 @@ namespace Castlemist
                 var e = new ModelEntry
                 {
                     Index = mo.Int("index"),
+                    Position = m.Models.Count,
                     FileId = mo.Long("fileId"),
                     Folder = mo.OptStr("folder"),
                     Glb = mo.OptStr("glb"),
@@ -333,9 +470,17 @@ namespace Castlemist
                     Materials = mo.OptStr("materials"),
                     Status = mo.Str("status"),
                     Error = mo.OptStr("error"),
+                    Triangles = (long)mo.OptNum("triangles", 0),
                     Clips = mo.Strings("clips"),
                     DarkDecalMaterials = mo.Strings("darkDecalMaterials"),
                 };
+                JObj lods = mo.OptObj("lods");
+                if (lods != null)
+                {
+                    e.LodLevels = (int)lods.OptNum("levels", 1);
+                    if (e.LodLevels < 1 || e.LodLevels > 3) throw new ManifestException(lods.Path + ".levels: " + e.LodLevels + " is not 1..3");
+                    e.LodDistances = lods.Vec("distances", 2);
+                }
                 foreach (JObj u in mo.Objs("uvScroll"))
                 {
                     double[] sc = u.Vec("scroll", 2);
@@ -355,9 +500,18 @@ namespace Castlemist
                     Albedo = c.OptStr("albedo"),
                     HasTerrain = m.TerrainPresent && !c.IsNull("chunks"),
                     ColliderParts = (int)c.OptNum("colliderParts", 0),
+                    Rect = c.OptVec("rect", 4),
+                    Chunks = Ints(c.OptVec("chunks", 4)),
                 };
                 JObj w = c.OptObj("water");
                 if (w != null) cell.WaterTexture = w.OptStr("texture");
+                JObj fo = c.OptObj("foliage");
+                if (fo != null)
+                {
+                    cell.FoliageFile = fo.Str("file");
+                    cell.FoliageRecords = fo.Int("records");
+                    cell.FoliageColliderTrees = (int)fo.OptNum("colliderTrees", 0);
+                }
                 foreach (JObj inst in c.Objs("instances"))
                 {
                     JObj u = inst.Obj("unity");
@@ -371,9 +525,73 @@ namespace Castlemist
                         S = u.Num("s"),
                         Clip = inst.OptStr("clip"),
                         M = inst.OptVec("m", 16),
+                        Lod = inst.OptVec("lod", 2),
                     });
                 }
                 m.Cells.Add(cell);
+            }
+
+            JObj fol = r.OptObj("foliage");
+            if (fol != null)
+            {
+                m.Foliage = new FoliageBlock { Scatter = fol.OptStr("scatter") };
+                foreach (JObj l in fol.Objs("layers"))
+                {
+                    var layer = new FoliageLayer { Index = l.Int("index"), Type = l.Int("type"), FadeFar = l.Vec("fadeRange", 2)[1] };
+                    List<object> slots = l.OptArr("models");
+                    for (int i = 0; i < slots.Count; ++i)
+                    {
+                        if (slots[i] == null) { layer.Models.Add(-1); continue; }
+                        if (!(slots[i] is double)) throw new ManifestException(l.Path + ".models[" + i + "]: not a number");
+                        layer.Models.Add((int)(double)slots[i]);
+                    }
+                    m.Foliage.Layers.Add(layer);
+                }
+                foreach (JObj fm in fol.Objs("models"))
+                    m.Foliage.Models.Add(new FoliageModel { Model = fm.Int("model"), FadeFar = fm.OptNum("fadeFar", 0),
+                                                            TerrainDetail = fm.Bool("terrainDetail", false) });
+            }
+
+            JObj ut = r.OptObj("unityTerrain");
+            if (ut != null)
+            {
+                var b = new UnityTerrainBlock
+                {
+                    TileChunks = ut.Int("tileChunks"),
+                    HeightmapResolution = ut.Int("heightmapResolution"),
+                    DetailResolution = ut.Int("detailResolution"),
+                    DetailCellUnits = ut.OptNum("detailCellUnits", 48),
+                    FadeQualityScale = ut.OptNum("fadeQualityScale", m.ZoneFadeQualityScale),
+                };
+                if (b.TileChunks < 1) throw new ManifestException("manifest.unityTerrain.tileChunks: must be positive");
+                JObj hr = ut.Obj("heightRange");
+                b.HMin = hr.Num("min");
+                b.HMax = hr.Num("max");
+                foreach (JObj t in ut.Objs("tiles"))
+                {
+                    var tile = new TerrainTile
+                    {
+                        Id = t.Str("id"),
+                        Chunks = Ints(t.Vec("chunks", 4)),
+                        Position = t.Vec("position", 3),
+                        Size = t.Vec("size", 3),
+                        Heights = t.Str("heights"),
+                        Holes = t.OptStr("holes"),
+                        Albedo = t.Str("albedo"),
+                    };
+                    foreach (JObj d in t.Objs("details"))
+                        tile.Details.Add(new TileDetail { Prototype = d.Int("prototype"), Counts = d.Str("counts"), Records = d.Int("records") });
+                    JObj tr = t.OptObj("trees");
+                    if (tr != null) { tile.TreesFile = tr.Str("file"); tile.TreesRecords = tr.Int("records"); }
+                    b.Tiles.Add(tile);
+                }
+                foreach (JObj d in ut.Objs("detailPrototypes"))
+                    b.DetailPrototypes.Add(new DetailPrototypeEntry { Model = d.Int("model"), MinScale = d.OptNum("minScale", 1),
+                                                                      MaxScale = d.OptNum("maxScale", 1), FadeFar = d.OptNum("fadeFar", 0) });
+                foreach (JObj d in ut.Objs("treePrototypes"))
+                    b.TreePrototypes.Add(new TreePrototypeEntry { Model = d.Int("model"), FadeFar = d.OptNum("fadeFar", 0) });
+                b.Check = ut.OptArr("check");
+                m.UnityTerrain = b;
             }
 
             JObj water = r.OptObj("water");

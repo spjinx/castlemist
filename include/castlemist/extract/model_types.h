@@ -476,6 +476,11 @@ struct ModelPreview {
     float radius = 1.0f;                      ///< Bounding-sphere radius.
     uint32_t totalVerts = 0;                  ///< Sum over all submeshes.
     uint32_t totalTris = 0;                   ///< Sum over all submeshes (LOD0).
+    /// @brief `ModelFileData.lodOverride` as stored (model units; 0 = not set):
+    ///        the LOD0->LOD1 and LOD1->LOD2 switch distances. See
+    ///        castlemist::world::model_lod_distances for the client's rule.
+    float lodOverride[2] = {0, 0};
+    bool hasLodOverride = false;              ///< The MODL version has the field.
 
     /// @name Skeleton (bind pose)
     /// @{

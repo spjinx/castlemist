@@ -36,7 +36,7 @@ int page_block(const Terrain& t, int maxChunks) {
 struct Ctx {
     const WorldScene& s; const CellStats& st; const CellBudget& b; const Grid& g;
     uint64_t terrTrisPerChunk;
-    std::vector<std::vector<uint32_t>> chunkProps, chunkColl;   // by cy*nx+cx
+    std::vector<std::vector<uint32_t>> chunkProps, chunkColl, chunkFol;   // by cy*nx+cx
     std::vector<Cell> out;
     std::vector<std::string> warnings;
 };
@@ -98,11 +98,14 @@ void emit(Ctx& c, int cx0, int cy0, int w, int h, bool split) {
         for (int x = cx0; x < cx0 + w; ++x) {
             const auto& p = c.chunkProps[size_t(y) * c.g.nx + x];
             const auto& q = c.chunkColl[size_t(y) * c.g.nx + x];
+            const auto& f = c.chunkFol[size_t(y) * c.g.nx + x];
             cell.props.insert(cell.props.end(), p.begin(), p.end());
             cell.collision.insert(cell.collision.end(), q.begin(), q.end());
+            cell.foliage.insert(cell.foliage.end(), f.begin(), f.end());
         }
     std::sort(cell.props.begin(), cell.props.end());
     std::sort(cell.collision.begin(), cell.collision.end());
+    std::sort(cell.foliage.begin(), cell.foliage.end());
     c.out.push_back(std::move(cell));
 }
 
@@ -115,6 +118,13 @@ int cell_block_chunks(const Terrain& t, int maxChunks) {
 
 void chunk_of_point(const Terrain& t, float x, float y, int& cx, int& cy) {
     point_chunk(make_grid(t), x, y, cx, cy);
+}
+
+bool point_in_chunk_grid(const Terrain& t, float x, float y) {
+    if (t.chunks.empty() || !std::isfinite(x) || !std::isfinite(y)) return false;
+    const Grid g = make_grid(t);
+    const double fx = std::floor((double(x) - g.x0) / g.cdx), fy = std::floor((double(g.y1) - y) / g.cdy);
+    return fx >= 0 && fy >= 0 && fx < double(g.nx) && fy < double(g.ny);
 }
 
 CellPlan partition_cells(const WorldScene& s, const CellStats& st, const CellBudget& b, const ChunkRegion& r) {
@@ -138,6 +148,7 @@ CellPlan partition_cells(const WorldScene& s, const CellStats& st, const CellBud
         c.origin[1] = (c.rect[1] + c.rect[3]) * 0.5f;
         for (uint32_t i = 0; i < s.props.size(); ++i) c.props.push_back(i);
         for (uint32_t i = 0; i < s.collision.instances.size(); ++i) c.collision.push_back(i);
+        for (uint32_t i = 0; i < s.zones.instances.size(); ++i) c.foliage.push_back(i);
         uint64_t tris = 0, bytes = 0; std::set<uint32_t> files;
         for (const auto& p : s.props) {
             if (p.model < st.modelTriangles.size()) tris += st.modelTriangles[p.model];
@@ -159,9 +170,10 @@ CellPlan partition_cells(const WorldScene& s, const CellStats& st, const CellBud
 
     const Grid g = make_grid(s.terrain);
     const int segs = std::max(s.terrain.chunks.front().samples - 1, 0);
-    Ctx c{s, st, b, g, uint64_t(segs) * uint64_t(segs) * 2, {}, {}, {}, {}};
+    Ctx c{s, st, b, g, uint64_t(segs) * uint64_t(segs) * 2, {}, {}, {}, {}, {}};
     c.chunkProps.assign(size_t(g.nx) * g.ny, {});
     c.chunkColl.assign(size_t(g.nx) * g.ny, {});
+    c.chunkFol.assign(size_t(g.nx) * g.ny, {});
     for (uint32_t i = 0; i < s.props.size(); ++i) {
         int cx, cy; point_chunk(g, s.props[i].world[12], s.props[i].world[13], cx, cy);
         c.chunkProps[size_t(cy) * g.nx + cx].push_back(i);
@@ -169,6 +181,10 @@ CellPlan partition_cells(const WorldScene& s, const CellStats& st, const CellBud
     for (uint32_t i = 0; i < s.collision.instances.size(); ++i) {
         int cx, cy; point_chunk(g, s.collision.instances[i].world[12], s.collision.instances[i].world[13], cx, cy);
         c.chunkColl[size_t(cy) * g.nx + cx].push_back(i);
+    }
+    for (uint32_t i = 0; i < s.zones.instances.size(); ++i) {   // as props: by the translation, clamped
+        int cx, cy; point_chunk(g, s.zones.instances[i].world[12], s.zones.instances[i].world[13], cx, cy);
+        c.chunkFol[size_t(cy) * g.nx + cx].push_back(i);
     }
 
     const int B = plan.blockChunks;
@@ -191,7 +207,10 @@ CellPlan partition_cells(const WorldScene& s, const CellStats& st, const CellBud
         const bool keep = r.whole() || (!none && k.cx0 <= cell.cx0 && cell.cx0 + cell.w - 1 <= k.cx1 &&
                                         k.cy0 <= cell.cy0 && cell.cy0 + cell.h - 1 <= k.cy1);
         if (keep) plan.cells.push_back(std::move(cell));
-        else plan.propsOutsideRegion += cell.props.size() + cell.collision.size();
+        else {
+            plan.propsOutsideRegion += cell.props.size() + cell.collision.size();
+            plan.foliageOutsideRegion += cell.foliage.size();
+        }
     }
     std::sort(plan.cells.begin(), plan.cells.end(), [](const Cell& a, const Cell& d) {
         return a.cy0 != d.cy0 ? a.cy0 < d.cy0 : a.cx0 < d.cx0;

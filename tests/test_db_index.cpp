@@ -16,6 +16,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <string>
 
 namespace {
@@ -92,6 +93,17 @@ CM_TEST(index_db, opening_a_missing_file_reports_an_error) {
     CHECK_FALSE(castlemist::db::open(L"no_such_index_file_12345.db", err));
     CHECK_FALSE(err.empty());
     CHECK_FALSE(castlemist::db::is_open());
+}
+
+CM_TEST(index_db, opening_a_missing_file_creates_nothing) {
+    // With the directory present, sqlite3_open16 would happily create the file.
+    std::filesystem::create_directories("dumps/index");
+    std::string err;
+    CHECK_FALSE(castlemist::db::open(L"dumps/index/__cm_missing_12345.db", err));
+    CHECK(err.find("no such file") != std::string::npos);
+    CHECK_FALSE(castlemist::db::open(L"no_such_index_file_12345.db", err));
+    CHECK_FALSE(std::filesystem::exists("dumps/index/__cm_missing_12345.db"));
+    CHECK_FALSE(std::filesystem::exists("no_such_index_file_12345.db"));
 }
 
 CM_TEST(index_db, reads_metadata_and_counts) {

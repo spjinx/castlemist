@@ -24,6 +24,7 @@
 #include <vector>
 
 #include <windowsx.h>
+#include <commctrl.h>
 
 #include "castlemist/core/env.h"
 #include "castlemist/extract/model_types.h"
@@ -200,7 +201,7 @@ const wchar_t* kSurfaceClass = L"Gw2MapWindowSurface";
 struct MapWin {
     HWND wnd = nullptr, surface = nullptr, status = nullptr, warnEdit = nullptr;
     HWND bWalk = nullptr, bFly = nullptr, bTerrain = nullptr, bProps = nullptr, bColl = nullptr, bWater = nullptr, bMaterials = nullptr, bMotion = nullptr,
-         bReset = nullptr, bWarn = nullptr, bShader = nullptr, bSky = nullptr;
+         bReset = nullptr, bWarn = nullptr, bShader = nullptr, bSky = nullptr, bSkyApprox = nullptr, bFoliage = nullptr;
     uint64_t gen = 0;
     uint32_t mapFileId = 0;
     std::string datPath;
@@ -230,8 +231,12 @@ struct MapWin {
     // Sky: baked once per map on its thread (mapwin_start_sky), kept to
     // re-upload after a lost device.
     castlemist::render::WorldSkyTime skyTime = castlemist::render::WorldSkyTime::Day;
-    std::vector<castlemist::render::WorldSkyImage> sky;
+    /// Which bake is shown: the approximate sky by default (gw2-sky.md amendment 2026-10-17).
+    castlemist::render::WorldSkyKind skyKind = castlemist::render::WorldSkyKind::Approx;
+    std::vector<castlemist::render::WorldSkyImage> sky;        ///< proven-only bake
     std::vector<std::string> skyWarnings;
+    std::vector<castlemist::render::WorldSkyImage> skyApprox;  ///< approximate bake
+    std::vector<std::string> skyApproxWarnings;
     bool skyStarted = false, skyDone = false;
     double skySeconds = 0;
     float skyUploadMs = 0;
@@ -247,6 +252,12 @@ struct MapWin {
     std::vector<float> shaderAddMs;
     /// The slowest render() (CPU, WorldViewStats::ms) since the window opened.
     float renderMsMax = 0;
+    // Foliage (spec D6): on after create(), Colliders; the grid is built on
+    // the world worker and handed to set_world, whose UI-thread time is kept.
+    bool foliageOn = true;
+    castlemist::render::FoliageShow foliageShow = castlemist::render::FoliageShow::Colliders;
+    float setWorldMs = 0;
+    double foliageGridSeconds = 0;
 
     FlyState fly;
     float fovY = 1.15f, farDist = 40000;
@@ -374,6 +385,31 @@ void apply_layer_buttons(MapWin& m) {
     m.dirty = true;
 }
 
+/// The Foliage split button: its label, and the layer and sub-mode in the view.
+void apply_foliage(MapWin& m) {
+    const bool all = m.foliageShow == castlemist::render::FoliageShow::All;
+    SetWindowTextW(m.bFoliage, !m.foliageOn ? L"Foliage: Off" : all ? L"Foliage: All" : L"Foliage: Colliders");
+    m.view.set_layer(WorldLayer::Foliage, m.foliageOn);
+    m.view.set_foliage_show(m.foliageShow);
+    m.dirty = true;
+}
+
+/// The Foliage button's drop-down: Colliders / All, the current one checked.
+/// All is greyed while the scene's scatter mode is Colliders (phase 1).
+void foliage_menu(MapWin& m) {
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+    const bool all = m.foliageShow == castlemist::render::FoliageShow::All;
+    const bool allOk = m.scene && m.scene->zones.mode != castlemist::world::ZoneScatterMode::Colliders;
+    AppendMenuW(menu, MF_STRING | (all ? 0u : MF_CHECKED), ID_MW_FOLIAGE_COLLIDERS, L"Colliders");
+    AppendMenuW(menu, MF_STRING | (all ? MF_CHECKED : 0u) | (allOk ? 0u : MF_GRAYED), ID_MW_FOLIAGE_ALL, L"All");
+    RECT rc;
+    GetWindowRect(m.bFoliage, &rc);
+    // Without TPM_RETURNCMD the choice comes back as WM_COMMAND.
+    TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_TOPALIGN, rc.left, rc.bottom, 0, m.wnd, nullptr);
+    DestroyMenu(menu);
+}
+
 /// The scene warnings, then the view's own (UNPROVEN settings, missing water preset).
 void refresh_warnings(MapWin& m) {
     if (!m.scene) return;
@@ -381,7 +417,8 @@ void refresh_warnings(MapWin& m) {
     for (const std::string& w : m.scene->warnings) warn += widen(w) + L"\r\n";
     if (m.viewOk)
         for (const std::string& w : m.view.warnings()) warn += widen(w) + L"\r\n";
-    for (const std::string& w : m.skyWarnings) warn += widen(w) + L"\r\n";
+    const bool approx = m.skyKind == castlemist::render::WorldSkyKind::Approx;
+    for (const std::string& w : approx ? m.skyApproxWarnings : m.skyWarnings) warn += widen(w) + L"\r\n";
     if (warn.empty()) warn = L"(no warnings)";
     SetWindowTextW(m.warnEdit, warn.c_str());
 }
@@ -395,6 +432,11 @@ void start_shader_pool(MapWin& m) {
     m.shaderWorkers = mapwin_start_shader_models(m.wnd, m.gen, m.dat, m.shaderQueue, m.claims);
 }
 
+/// The baked modes of the bake the Approx sky toggle selects.
+const std::vector<castlemist::render::WorldSkyImage>& current_sky(const MapWin& m) {
+    return m.skyKind == castlemist::render::WorldSkyKind::Approx ? m.skyApprox : m.sky;
+}
+
 void sync_sky_button(MapWin& m) {
     std::wstring t = L"Sky: ";
     switch (m.skyTime) {
@@ -403,6 +445,8 @@ void sync_sky_button(MapWin& m) {
     default: t += L"Off"; break;
     }
     SetWindowTextW(m.bSky, t.c_str());
+    SendMessageW(m.bSkyApprox, BM_SETCHECK,
+                 m.skyKind == castlemist::render::WorldSkyKind::Approx ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 
 void apply_shading_buttons(MapWin& m) {
@@ -420,6 +464,62 @@ void apply_shading_buttons(MapWin& m) {
 }
 
 void headless_capture(MapWin& m);
+
+/// GW2_MAPWIN_FOCUS=zonetree (spec D6 "Headless"): WorldView::focus_zone_tree
+/// on the Collider instance nearest the start camera @p cam, from 4x its
+/// radius, with the Collision layer on. Only the view direction is chosen
+/// here. frame_all's steep view, stepped back from, lands inside hills and
+/// map-edge walls, whose collision (drawn from both faces) then fills the
+/// shot. So the camera looks 15 degrees below the horizon (as focus_props)
+/// from one of eight headings, the start view's first, taking the first
+/// whose sight line to the tree (up to 3 radii, short of the tree's own
+/// collider) hits nothing in @p coll, else the one whose first hit is
+/// farthest. Two probes in opposite directions give the tree's sphere centre
+/// and 4x radius (their midpoint and half their distance). False, @p cam and
+/// @p rect untouched, when no Collider instance is placed.
+bool focus_zone_tree_shot(castlemist::render::WorldView& v, const castlemist::world::CollisionIndex* coll,
+                          castlemist::render::WorldCamera& cam, int rect[4]) {
+    const castlemist::render::WorldCamera start = cam;
+    const float pc = std::cos(0.2618f), ps = std::sin(0.2618f);   // 15 degrees; +z is down
+    auto look = [&](float heading) {
+        cam = start;   // the same start point, so the same nearest tree
+        const float hx = std::cos(heading), hy = std::sin(heading);
+        cam.fwd[0] = hx * pc; cam.fwd[1] = hy * pc; cam.fwd[2] = ps;
+        cam.up[0] = hx * ps; cam.up[1] = hy * ps; cam.up[2] = -pc;
+    };
+    const float h0 = (std::fabs(start.fwd[0]) + std::fabs(start.fwd[1]) > 1e-4f)
+                         ? std::atan2(start.fwd[1], start.fwd[0]) : 0.0f;
+    constexpr float kPi = 3.14159265f;
+    int r[4];
+    look(h0);
+    if (!v.focus_zone_tree(cam, r)) {
+        cam = start;
+        return false;
+    }
+    const float a[3] = {cam.pos[0], cam.pos[1], cam.pos[2]};
+    look(h0 + kPi);
+    v.focus_zone_tree(cam, r);
+    const float centre[3] = {0.5f * (a[0] + cam.pos[0]), 0.5f * (a[1] + cam.pos[1]), 0.5f * (a[2] + cam.pos[2])};
+    const float dx = a[0] - cam.pos[0], dy = a[1] - cam.pos[1], dz = a[2] - cam.pos[2];
+    const float back = 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);   // 4x the radius
+    float best = h0, bestFree = -1;
+    for (int k = 0; k < 8; ++k) {
+        const float heading = h0 + static_cast<float>(k) * kPi / 4;
+        look(heading);
+        v.focus_zone_tree(cam, r);
+        if (!coll) { best = heading; break; }
+        const float dir[3] = {centre[0] - cam.pos[0], centre[1] - cam.pos[1], centre[2] - cam.pos[2]};
+        const float maxT = 0.75f * back;
+        const auto hit = coll->raycast(cam.pos, dir, maxT);
+        const float free = hit ? hit->t : maxT;
+        if (free > bestFree) { bestFree = free; best = heading; }
+        if (!hit) break;
+    }
+    look(best);
+    v.focus_zone_tree(cam, r);
+    for (int k = 0; k < 4; ++k) rect[k] = r[k];
+    return true;
+}
 
 /// No device: as a first-time creation failure, a message (none when
 /// headless, which writes its ok=0 stats line instead), then the window
@@ -447,12 +547,14 @@ void recover_device(MapWin& m) {
     GetClientRect(m.surface, &rc);
     m.view.resize(rc.right, rc.bottom);
     if (m.scene) {
+        // The worker's grid went to the old world; a rare reset rebuilds it here.
         m.view.set_world(*m.scene);
         if (!m.models.empty()) m.view.add_models(m.models);
         if (!m.gameLoads.empty()) m.view.add_game_materials(m.gameLoads);
     }
-    if (!m.sky.empty()) m.view.set_sky(m.sky);
+    if (!current_sky(m).empty()) m.view.set_sky(current_sky(m));
     apply_layer_buttons(m);
+    apply_foliage(m);
     apply_shading_buttons(m);
     if (m.headless && m.headless->fixedTime) m.view.set_time(m.headless->time);
     // create() dropped the texture cache with the old device; the decoded
@@ -491,6 +593,7 @@ void update_status(MapWin& m) {
             else if ((m.skyTime == castlemist::render::WorldSkyTime::Night) != (st.skyMode == 1))
                 s += st.skyMode == 0 ? L"  |  sky: day (no night sky)" : L"  |  sky: night (no day sky)";
         }
+        if (st.foliageInstances > 0) s += L"  |  " + mapwin_foliage_status(st);
         swprintf(buf, 512, L"  |  vis %d  draws %d  %d ktri  %.1f ms", st.visible, st.draws, st.ktris, st.ms);
         s += buf;
     }
@@ -509,6 +612,9 @@ void headless_capture(MapWin& m) {
     const double elapsed = std::chrono::duration<double>(Clock::now() - m.opened).count();
     bool shot = false;
     int animRect[4] = {-1, -1, -1, -1};
+    int treeRect[4] = {-1, -1, -1, -1};
+    castlemist::render::WorldViewBench benchNoFol;
+    bool benchedNoFol = false;
     int shaderLeft = 0;
     float shaderPrepMs = 0;
     castlemist::render::WorldViewBench bench;
@@ -523,6 +629,10 @@ void headless_capture(MapWin& m) {
         castlemist::render::WorldCamera cam = m.view.frame_all(&hint);
         if (m.headless->focusAnimated) m.view.focus_animated(cam);
         if (m.headless->focusProps) m.view.focus_props(cam);
+        if (m.headless->focusFoliage >= 0) m.view.focus_foliage(cam, m.headless->focusFoliage, m.headless->focusForest);
+        if (m.headless->focusZoneTree && focus_zone_tree_shot(m.view, m.coll.get(), cam, treeRect))
+            SendMessageW(m.bColl, BM_SETCHECK, BST_CHECKED, 0);   // focus_zone_tree turned the layer on
+        if (m.headless->focusHorizon) mapwin_level_camera(cam);
         set_camera(m, cam);
         if (m.headless->fixedTime) m.view.set_time(m.headless->time);
         // Shader: everything in range is built before the shot (no budget),
@@ -550,7 +660,15 @@ void headless_capture(MapWin& m) {
         int r[4];
         if (m.view.animated_screen_rect(camera(m), r))
             for (int k = 0; k < 4; ++k) animRect[k] = r[k];
-        if (m.headless->benchFrames > 0) m.view.bench(camera(m), m.headless->benchFrames, bench);
+        if (m.headless->benchFrames > 0) {
+            m.view.bench(camera(m), m.headless->benchFrames, bench);
+            // The same frames without foliage: the difference is the foliage's cost.
+            if (m.foliageOn) {
+                m.view.set_layer(WorldLayer::Foliage, false);
+                benchedNoFol = m.view.bench(camera(m), m.headless->benchFrames, benchNoFol);
+                m.view.set_layer(WorldLayer::Foliage, true);
+            }
+        }
     }
     const auto st = m.view.stats();
     std::vector<float> add = m.addMs;
@@ -565,28 +683,42 @@ void headless_capture(MapWin& m) {
                               : m.view.shading() == castlemist::render::WorldShading::Shader ? "shader" : "materials";
     char extra[1536];
     std::snprintf(extra, sizeof extra,
-                  "sky=%s skyMode=%d skyModes=%zu sky_s=%.2f sky_upload_ms=%.2f "
+                  "sky=%s skyKind=%s skyMode=%d skyModes=%zu sky_s=%.2f sky_upload_ms=%.2f "
                   "shaderInstances=%d shaderDraws=%d shaderPending=%d shaderNoShader=%d shaderAnimated=%d "
                   "shaderCapped=%d shaderModels=%d shaderModelsFailed=%d shaderPrograms=%d shaderLightStandIns=%d "
                   "shaderLeft=%d shader_prep_ms=%.1f shader_build_ms_max=%.2f shader_batches=%zu "
                   "shader_add_ms_median=%.2f shader_add_ms_max=%.2f render_ms_max=%.2f bench_frames=%d "
                   "bench_cpu_ms=%.2f/%.2f bench_gpu_ms=%.2f/%.2f bench_wall_ms=%.2f/%.2f "
                   "warm_frames=%d warm_s=%.2f warm_frame_ms_max=%.2f warm_build_ms_max=%.2f cam=%.0f,%.0f,%.0f adapter=\"%s\" ",
-                  castlemist::render::world_sky_time_name(m.skyTime), st.skyMode, m.sky.size(), m.skySeconds,
+                  castlemist::render::world_sky_time_name(m.skyTime), castlemist::render::world_sky_kind_name(m.skyKind),
+                  st.skyMode, current_sky(m).size(), m.skySeconds,
                   m.skyUploadMs, st.shaderInstances, st.shaderDraws, st.shaderPending, st.shaderNoShader,
                   st.shaderAnimated, st.shaderCapped, st.shaderModels, st.shaderModelsFailed, st.shaderPrograms,
                   st.shaderLightStandIns, shaderLeft, shaderPrepMs, st.shaderBuildMsMax, sadd.size(), saddMedian, saddMax,
                   m.renderMsMax, m.headless->benchFrames, bench.cpuMedian, bench.cpuMax, bench.gpuMedian,
                   bench.gpuMax, bench.wallMedian, bench.wallMax, warmFrames, warmSeconds, warmWorstMs, warmBuildMax, m.fly.pos[0], m.fly.pos[1], m.fly.pos[2],
                   m.viewOk ? m.view.adapter().c_str() : "");
-    char line[4096];
+    char fol[768];
+    std::snprintf(fol, sizeof fol,
+                  "foliageInstances=%d foliagePlaced=%d foliageVisible=%d foliageDraws=%d foliageKtris=%d "
+                  "foliageTiles=%d foliageCapped=%d foliageCullMs=%.2f zoneTrees=%d zoneUnlinked=%d shaderFoliage=%d "
+                  "treeRect=%d,%d,%d,%d foliage=%s foliageFadeQuality=%.2f set_world_ms=%.2f foliage_grid_s=%.3f "
+                  "bench_nofoliage_cpu_ms=%.2f/%.2f bench_nofoliage_gpu_ms=%.2f/%.2f ",
+                  st.foliageInstances, st.foliagePlaced, st.foliageVisible, st.foliageDraws, st.foliageKtris,
+                  st.foliageTiles, st.foliageCapped, st.foliageCullMs, st.zoneTrees, st.zoneUnlinked, st.shaderFoliage,
+                  treeRect[0], treeRect[1], treeRect[2], treeRect[3],
+                  !m.foliageOn ? "off" : m.foliageShow == castlemist::render::FoliageShow::All ? "all" : "colliders",
+                  m.view.foliage_fade_quality_scale(), m.setWorldMs, m.foliageGridSeconds, benchedNoFol ? benchNoFol.cpuMedian : 0.0f,
+                  benchedNoFol ? benchNoFol.cpuMax : 0.0f, benchedNoFol ? benchNoFol.gpuMedian : 0.0f,
+                  benchedNoFol ? benchNoFol.gpuMax : 0.0f);
+    char line[5120];
     std::snprintf(line, sizeof line,
                   "map=%u ok=%d models=%zu loaded=%d failed=%d props=%zu visible=%d draws=%d ktris=%d ms=%.2f "
                   "chunks=%d collisionTris=%zu warnings=%zu world_s=%.2f collision_s=%.2f models_s=%.2f total_s=%.2f "
                   "add_batches=%zu add_ms_median=%.2f add_ms_max=%.2f "
                   "shading=%s time=%.2f textures=%d textureMB=%.1f texturesFailed=%d animated=%d unresolvedClips=%d clipsFailedDecode=%d "
                   "chunksUntextured=%d materialsUntextured=%d waterPreset=%d animRect=%d,%d,%d,%d "
-                  "%sshot=%d timeout=%d error=\"%s\"\n",
+                  "%s%sshot=%d timeout=%d error=\"%s\"\n",
                   m.mapFileId, (m.scene && m.viewOk) ? 1 : 0, models_total(m), st.modelsLoaded, st.modelsFailed,
                   m.scene ? m.scene->props.size() : size_t(0), st.visible, st.draws, st.ktris, st.ms, st.chunks,
                   m.coll ? m.coll->triangle_count() : size_t(0), m.scene ? m.scene->warnings.size() : size_t(0),
@@ -594,7 +726,7 @@ void headless_capture(MapWin& m) {
                   shadingName,
                   m.view.time(), st.textures, st.textureMB, st.texturesFailed, st.animated, st.unresolvedClips, st.clipsFailedDecode,
                   st.chunksUntextured, st.materialsUntextured, st.waterPreset ? 1 : 0, animRect[0], animRect[1],
-                  animRect[2], animRect[3], extra, shot ? 1 : 0,
+                  animRect[2], animRect[3], extra, fol, shot ? 1 : 0,
                   elapsed >= kHeadlessTimeout ? 1 : 0, m.error.c_str());
     if (std::ofstream f(m.headless->statsPath, std::ios::binary); f) f << line;
     if (m.headless->quitWindow) PostMessageW(m.headless->quitWindow, WM_CLOSE, 0, 0);
@@ -627,8 +759,12 @@ void on_world(MapWin& m, std::unique_ptr<MapWinWorldMsg> r) {
         return;
     }
     m.scene = std::move(r->scene);
+    m.foliageGridSeconds = r->foliageSeconds;
     if (m.viewOk) {
-        m.view.set_world(*m.scene);
+        // The grid was built on the worker: set_world only takes it over (< 50 ms, spec Performance).
+        const auto t0 = Clock::now();
+        m.view.set_world(*m.scene, std::move(r->foliage));
+        m.setWorldMs = std::chrono::duration<float, std::milli>(Clock::now() - t0).count();
         apply_layer_buttons(m);
         frame_map(m);
     }
@@ -698,9 +834,11 @@ void on_sky(MapWin& m, std::unique_ptr<MapWinSkyMsg> r) {
     m.skySeconds = r->seconds;
     m.skyWarnings = std::move(r->warnings);
     m.sky = std::move(r->modes);
+    m.skyApproxWarnings = std::move(r->approxWarnings);
+    m.skyApprox = std::move(r->approxModes);
     if (m.viewOk) {
         const auto t0 = Clock::now();
-        m.view.set_sky(m.sky);
+        m.view.set_sky(current_sky(m));
         m.skyUploadMs = std::chrono::duration<float, std::milli>(Clock::now() - t0).count();
     }
     refresh_warnings(m);
@@ -1003,12 +1141,38 @@ LRESULT CALLBACK MapWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             m->skyTime = mapwin_next_sky(m->skyTime);
             apply_shading_buttons(*m);
             break;
+        case ID_MW_SKY_APPROX:
+            m->skyKind = SendMessageW(m->bSkyApprox, BM_GETCHECK, 0, 0) == BST_CHECKED
+                             ? castlemist::render::WorldSkyKind::Approx
+                             : castlemist::render::WorldSkyKind::Proven;
+            if (m->viewOk && m->skyDone) m->view.set_sky(current_sky(*m));
+            apply_shading_buttons(*m);
+            break;
+        case ID_MW_FOLIAGE:
+            m->foliageOn = !m->foliageOn;
+            apply_foliage(*m);
+            break;
+        case ID_MW_FOLIAGE_COLLIDERS:
+        case ID_MW_FOLIAGE_ALL:
+            m->foliageShow = LOWORD(wparam) == ID_MW_FOLIAGE_ALL ? castlemist::render::FoliageShow::All
+                                                                 : castlemist::render::FoliageShow::Colliders;
+            m->foliageOn = true;   // choosing a sub-mode shows it
+            apply_foliage(*m);
+            break;
         case ID_MW_RESET: frame_map(*m); break;
         case ID_MW_WARNINGS: layout(*m); break;   // the panel never keeps focus
         default: return DefWindowProcW(hwnd, msg, wparam, lparam);
         }
         SetFocus(m->surface);   // keys (WASD, Space) go back to the view after any toolbar command
         return 0;
+    case WM_NOTIFY: {
+        const auto* nh = reinterpret_cast<const NMHDR*>(lparam);
+        if (m && nh && nh->hwndFrom == m->bFoliage && nh->code == BCN_DROPDOWN) {
+            foliage_menu(*m);
+            return 0;
+        }
+        break;
+    }
     case WM_ACTIVATE: {
         const LRESULT r = DefWindowProcW(hwnd, msg, wparam, lparam);
         if (m && LOWORD(wparam) != WA_INACTIVE) SetFocus(m->surface);
@@ -1073,6 +1237,18 @@ std::wstring mapwin_shader_status(castlemist::render::WorldShading shading, cons
     return s;
 }
 
+void mapwin_level_camera(castlemist::render::WorldCamera& c) {
+    float f[2] = {c.fwd[0], c.fwd[1]};
+    float l = std::sqrt(f[0] * f[0] + f[1] * f[1]);
+    if (!(l > 1e-6f)) { f[0] = 1; f[1] = 0; l = 1; }
+    c.fwd[0] = f[0] / l;
+    c.fwd[1] = f[1] / l;
+    c.fwd[2] = 0;
+    c.up[0] = 0;
+    c.up[1] = 0;
+    c.up[2] = -1;
+}
+
 castlemist::render::WorldSkyTime mapwin_next_sky(castlemist::render::WorldSkyTime t) {
     using castlemist::render::WorldSkyTime;
     return t == WorldSkyTime::Day ? WorldSkyTime::Night : t == WorldSkyTime::Night ? WorldSkyTime::Off : WorldSkyTime::Day;
@@ -1089,6 +1265,21 @@ std::wstring mapwin_material_status(const castlemist::render::WorldViewStats& st
     std::wstring s = buf;
     if (st.texturesFailed > 0) s += L" (" + std::to_wstring(st.texturesFailed) + L" failed)";
     return s;
+}
+
+int mapwin_foliage_from_text(const std::string& text) {
+    std::string t;
+    for (char c : text) t.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    if (t == "off") return 0;
+    if (t == "colliders") return 1;
+    if (t == "all") return 2;
+    return -1;
+}
+
+std::wstring mapwin_foliage_status(const castlemist::render::WorldViewStats& st) {
+    wchar_t buf[64];
+    swprintf(buf, 64, L"fol %d/%d", st.foliageVisible, st.foliagePlaced);
+    return buf;
 }
 
 void close_map_window() {
@@ -1145,10 +1336,14 @@ void open_map_window(HWND owner, uint32_t mapFileId, const MapWinHeadless* headl
     m->bProps = mk(L"BUTTON", L"Props", BS_AUTOCHECKBOX, next(60), y, 60, h, ID_MW_PROPS);
     m->bColl = mk(L"BUTTON", L"Collision", BS_AUTOCHECKBOX, next(75), y, 75, h, ID_MW_COLLISION);
     m->bWater = mk(L"BUTTON", L"Water", BS_AUTOCHECKBOX, next(60), y, 60, h, ID_MW_WATER);
+    // Click: Foliage on / off; the arrow: the Colliders / All sub-mode (spec D6).
+    m->bFoliage = mk(L"BUTTON", L"Foliage: Colliders", BS_SPLITBUTTON, next(125), y, 125, h, ID_MW_FOLIAGE);
     m->bMaterials = mk(L"BUTTON", L"Materials", BS_AUTOCHECKBOX | BS_PUSHLIKE, next(75), y, 75, h, ID_MW_MATERIALS);
     m->bShader = mk(L"BUTTON", L"Shader", BS_AUTOCHECKBOX | BS_PUSHLIKE, next(65), y, 65, h, ID_MW_SHADER);
     m->bMotion = mk(L"BUTTON", L"Motion", BS_AUTOCHECKBOX | BS_PUSHLIKE, next(65), y, 65, h, ID_MW_MOTION);
     m->bSky = mk(L"BUTTON", L"Sky: Day", BS_PUSHBUTTON, next(75), y, 75, h, ID_MW_SKY);
+    // Checked: the approximate sky (labelled inputs); unchecked: the proven-only bake.
+    m->bSkyApprox = mk(L"BUTTON", L"Approx sky", BS_AUTOCHECKBOX | BS_PUSHLIKE, next(80), y, 80, h, ID_MW_SKY_APPROX);
     x += 12;
     m->bReset = mk(L"BUTTON", L"Reset", BS_PUSHBUTTON, next(70), y, 70, h, ID_MW_RESET);
     m->bWarn = mk(L"BUTTON", L"Warnings", BS_AUTOCHECKBOX | BS_PUSHLIKE, next(80), y, 80, h, ID_MW_WARNINGS);
@@ -1164,6 +1359,13 @@ void open_map_window(HWND owner, uint32_t mapFileId, const MapWinHeadless* headl
     if (m->headless && m->headless->geometry) SendMessageW(m->bMaterials, BM_SETCHECK, BST_UNCHECKED, 0);
     if (m->headless && m->headless->shader) SendMessageW(m->bShader, BM_SETCHECK, BST_CHECKED, 0);
     if (m->headless) m->skyTime = m->headless->sky;
+    if (m->headless) m->skyKind = m->headless->skyKind;
+    SendMessageW(m->bSkyApprox, BM_SETCHECK,
+                 m->skyKind == castlemist::render::WorldSkyKind::Approx ? BST_CHECKED : BST_UNCHECKED, 0);
+    if (m->headless && m->headless->foliage >= 0) {
+        m->foliageOn = m->headless->foliage > 0;
+        if (m->headless->foliage == 2) m->foliageShow = castlemist::render::FoliageShow::All;
+    }
 
     m->surface = CreateWindowExW(0, kSurfaceClass, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, kToolbarH, kSurfaceW,
                                  kSurfaceH, m->wnd, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(ID_MW_SURFACE)),
@@ -1176,6 +1378,8 @@ void open_map_window(HWND owner, uint32_t mapFileId, const MapWinHeadless* headl
     layout(*m);
 
     m->viewOk = m->view.create(m->surface);
+    if (m->viewOk && m->headless && m->headless->foliageScale > 0)
+        m->view.set_foliage_distance_scale(m->headless->foliageScale);
     if (!m->viewOk) {
         if (!m->headless)
             MessageBoxW(owner, L"Could not create a Direct3D 11 device for the Map window.", L"Map Window", MB_ICONERROR);
@@ -1190,6 +1394,7 @@ void open_map_window(HWND owner, uint32_t mapFileId, const MapWinHeadless* headl
     GetClientRect(m->surface, &rc);
     m->view.resize(rc.right, rc.bottom);
     apply_layer_buttons(*m);
+    apply_foliage(*m);
     apply_shading_buttons(*m);
     if (m->headless && m->headless->fixedTime) m->view.set_time(m->headless->time);
     if (m->headless && (m->headless->shaderRange > 0 || m->headless->shaderMax >= 0)) {

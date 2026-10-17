@@ -12,6 +12,7 @@
 #include "castlemist/extract/model_types.h"
 #include "castlemist/world/anim.h"
 #include "castlemist/world/terrain_mesh.h"
+#include "castlemist/world/zone_scatter.h"
 #include "castlemist/render/world_sky.h"
 
 #include "detail/light_calib.h"
@@ -252,6 +253,10 @@ struct WorldView::Impl {
     ComPtr<ID3D11Buffer> palette;                 ///< StructuredBuffer<float4x4>, every pose of the frame
     ComPtr<ID3D11ShaderResourceView> paletteSrv;
     UINT paletteCap = 0;                          ///< bones
+    // Foliage (spec D6): kFoliageHead + kInstanced's PS (AO look) / kPropMat's PS (textured).
+    ComPtr<ID3D11VertexShader> vsFol, vsFolMat;
+    ComPtr<ID3D11PixelShader> psFol, psFolMat;
+    ComPtr<ID3D11InputLayout> ilFol, ilFolMat;
     int w = 1, h = 1;
 
     std::vector<ChunkGPU> chunks;
@@ -282,6 +287,21 @@ struct WorldView::Impl {
     int waterPresetIndex = -1;
     ComPtr<ID3D11ShaderResourceView> heightSrv;   ///< build_height_grid's R32F; null without terrain
     HeightGrid heightGrid;                          ///< its placement (z released after upload)
+
+    // Foliage: the zone instances (spec D6). set_world takes the grid with
+    // its draw data (each instance's matrix and model, by model; built on the
+    // worker); add_models fills the grid's spheres; draw() culls through the
+    // grid into folBatch.
+    std::unique_ptr<FoliageGrid> fol;
+    FoliageShow folShow = FoliageShow::Colliders;
+    float folScale = 1;                         ///< foliageDistanceScale
+    /// The client's fadeRange factor at the graphics quality in force (2):
+    /// 1.5 (zone_fade_quality_scale; castlemist applies it with the quality-2
+    /// tiling, manifest `zoneFadeQualityScale`). Multiplies folScale.
+    float folQuality = castlemist::world::zone_fade_quality_scale(
+        castlemist::world::zone_scatter_rule_in_force().graphicsQuality);
+    FoliageBatch folBatch;
+    std::vector<FoliageVisible> folVis;         ///< this frame's foliage_cull survivors
 
     InstancedBatch batch;       ///< this frame's instanced draw (props too under Geometry)
     InstancedBatch propBatch;   ///< props under Materials: the material pass (static ones)
@@ -466,6 +486,53 @@ struct WorldView::Impl {
         return best;
     }
 
+    /// The placed Collider zone instance whose sphere centre is nearest @p pos, or -1.
+    int nearest_zone_tree(const float pos[3]) const {
+        if (!fol) return -1;
+        int best = -1;
+        float bestD2 = 0;
+        const size_t n = std::min(fol->collider.size(), fol->sphere.size() / 4);
+        for (size_t i = 0; i < n; ++i) {
+            const float* sp = &fol->sphere[i * 4];
+            if (!fol->collider[i] || !(sp[3] >= 0)) continue;
+            const float dx = sp[0] - pos[0], dy = sp[1] - pos[1], dz = sp[2] - pos[2];
+            const float d2 = dx * dx + dy * dy + dz * dz;
+            if (best < 0 || d2 < bestD2) { best = static_cast<int>(i); bestD2 = d2; }
+        }
+        return best;
+    }
+
+    /// The pixel rect of the world sphere (@p c, @p r) seen from @p cam (see
+    /// WorldView::animated_screen_rect); false when wholly behind or off the surface.
+    bool sphere_screen_rect(const WorldCamera& cam, const float c[3], float r, int rect[4]) const {
+        if (w <= 0 || h <= 0) return false;
+        const Mat4 VP = world_camera_viewproj(cam, static_cast<float>(w) / static_cast<float>(std::max(1, h)));
+        // The 8 corners of the sphere's box (row vectors: clip = p VP). A corner
+        // behind the camera makes the rect the whole surface (conservative); all
+        // eight behind: none.
+        float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+        int behind = 0;
+        for (int k = 0; k < 8; ++k) {
+            const float p[3] = {c[0] + ((k & 1) ? r : -r), c[1] + ((k & 2) ? r : -r), c[2] + ((k & 4) ? r : -r)};
+            float q[4];
+            for (int j = 0; j < 4; ++j) q[j] = p[0] * VP.m[j] + p[1] * VP.m[4 + j] + p[2] * VP.m[8 + j] + VP.m[12 + j];
+            if (!(q[3] > 1e-4f)) { ++behind; continue; }
+            const float sx = (q[0] / q[3] * 0.5f + 0.5f) * static_cast<float>(w);
+            const float sy = (0.5f - q[1] / q[3] * 0.5f) * static_cast<float>(h);
+            x0 = std::min(x0, sx); x1 = std::max(x1, sx);
+            y0 = std::min(y0, sy); y1 = std::max(y1, sy);
+        }
+        if (behind == 8) return false;
+        if (behind > 0) { x0 = 0; y0 = 0; x1 = static_cast<float>(w); y1 = static_cast<float>(h); }
+        const int L = std::clamp(static_cast<int>(std::floor(x0)), 0, w);
+        const int T = std::clamp(static_cast<int>(std::floor(y0)), 0, h);
+        const int R = std::clamp(static_cast<int>(std::ceil(x1)), 0, w);
+        const int B = std::clamp(static_cast<int>(std::ceil(y1)), 0, h);
+        if (R <= L || B <= T) return false;
+        rect[0] = L; rect[1] = T; rect[2] = R; rect[3] = B;
+        return true;
+    }
+
     bool create_pipeline() {
         const D3D11_INPUT_ELEMENT_DESC el[] = {
             {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
@@ -508,6 +575,11 @@ struct WorldView::Impl {
             {"BLENDINDICES", 0, DXGI_FORMAT_R8G8B8A8_UINT, 2, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
             {"BLENDWEIGHT", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 2, 4, D3D11_INPUT_PER_VERTEX_DATA, 0},
         };
+        const std::string folSrc = world_shaders::foliage_source(false), folMatSrc = world_shaders::foliage_source(true);
+        if (folSrc.empty() || folMatSrc.empty() ||
+            !compile(folSrc.c_str(), "world_foliage", eli, 6, vsFol, psFol, ilFol) ||
+            !compile(folMatSrc.c_str(), "world_foliage_mat", elp, 8, vsFolMat, psFolMat, ilFolMat))
+            return false;
         const std::string skinSrc = world_shaders::prop_skinned_source();
         if (!compile(skinSrc.c_str(), "world_prop_skinned", els, 10, vsSkin, psSkin, ilSkin) ||
             !compile_ps(skinSrc.c_str(), "world_prop_skinned", "PSAo", psSkinAo))
@@ -1149,6 +1221,9 @@ struct WorldView::Impl {
         // before anything of the frame is drawn.
         st.shaderInstances = st.shaderDraws = 0;
         st.shaderPending = st.shaderNoShader = st.shaderAnimated = st.shaderCapped = 0;
+        st.foliageVisible = st.foliageDraws = st.foliageKtris = st.foliageTiles = st.foliageCapped = 0;
+        st.shaderFoliage = 0;
+        st.foliageCullMs = 0;
         const bool gameProps = shading == WorldShading::Shader && layers[static_cast<int>(WorldLayer::Props)];
         GameFrame gf;
         game.clear_light();
@@ -1269,6 +1344,25 @@ struct WorldView::Impl {
         }
         if (layers[static_cast<int>(WorldLayer::Collision)])
             visible += batch.cull_into(colInsts, colMeshes, kCollisionTint, 1.0f, cam, farD, planes);
+        // Foliage (spec D6 "Cull"): tiles, then instances by fade and sphere,
+        // capped nearest tile first; then (mesh, LOD) buckets.
+        folBatch.clear();
+        if (layers[static_cast<int>(WorldLayer::Foliage)] && fol) {
+            LARGE_INTEGER f0, f1;
+            QueryPerformanceCounter(&f0);
+            FoliageCullStats fst;
+            foliage_cull(*fol, cam.pos, planes, folScale * folQuality, folShow == FoliageShow::Colliders,
+                         kFoliageMaxVisible, folVis, fst);
+            st.foliageVisible = folBatch.cull_into(folVis, *fol, models, cam);
+            st.foliageTiles = fst.tiles;
+            st.foliageCapped = fst.capped;
+            QueryPerformanceCounter(&f1);
+            if (freq.QuadPart)
+                st.foliageCullMs = static_cast<float>(1000.0 * static_cast<double>(f1.QuadPart - f0.QuadPart) /
+                                                      static_cast<double>(freq.QuadPart));
+            visible += st.foliageVisible;
+            if (shading == WorldShading::Shader) st.shaderFoliage = st.foliageVisible;
+        }
         // Water: the flat sub-project 2 plane in the instanced batch, unless
         // it draws from its env preset (kWater, right after the batch: still
         // after pass 1 and collision, before pass 2).
@@ -1288,8 +1382,18 @@ struct WorldView::Impl {
         sk.vs = vsSkin.Get();
         sk.ps = psSkin.Get();
         sk.cbSkin = cbSkin.Get();
+        // Foliage: kFoliageHead's VS with kInstanced's PS (AO) and kPropMat's PS (textured), both dithered.
+        const InstPipeline folAo{ilFol.Get(), vsFol.Get(), psFol.Get(), bsAlpha.Get(), dssNoWrite.Get(), dss.Get()};
+        PropMatPipeline folPm = pm;
+        folPm.ao = folAo;
+        folPm.il = ilFolMat.Get();
+        folPm.vs = vsFolMat.Get();
+        folPm.ps = psFolMat.Get();
+        size_t folTris = 0;
+        int folUntextured = 0;   // the foliage's AO-look sub-ranges (not counted in materialsUntextured)
         int matUntextured = 0;
         const bool propsUp = matProps && propBatch.upload(dev.Get(), ctx.Get());
+        const bool folUp = matProps && folBatch.upload(dev.Get(), ctx.Get());
         const bool skinUp = matProps && pose_skinned(pm.time) && skinBatch.upload(dev.Get(), ctx.Get());
         if (skinUp) ctx->VSSetShaderResources(1, 1, paletteSrv.GetAddressOf());
         if (propsUp) draws += propBatch.draw_materials(ctx.Get(), pm, 1, tris, matUntextured);
@@ -1299,6 +1403,10 @@ struct WorldView::Impl {
             draws += n;
             st.shaderDraws += n;
         }
+        // Foliage pass 1 (opaque, clip, AO look; depth writes on), before the
+        // translucent water; Geometry draws it all in the AO look.
+        if (folUp) st.foliageDraws += folBatch.draw_materials(ctx.Get(), folPm, 1, folTris, folUntextured);
+        else if (!matProps) st.foliageDraws += folBatch.draw(dev.Get(), ctx.Get(), folAo, folTris);
         draws += batch.draw(dev.Get(), ctx.Get(), pl, tris);
         if (presetWater) {
             const int n = draw_water(planes, cam, farD, tris);
@@ -1308,6 +1416,7 @@ struct WorldView::Impl {
         // Pass 2 per batch: the blended static buckets, then the blended
         // skinned ones (each sorted back to front within its own batch only).
         if (propsUp) draws += propBatch.draw_materials(ctx.Get(), pm, 2, tris, matUntextured);
+        if (folUp) st.foliageDraws += folBatch.draw_materials(ctx.Get(), folPm, 2, folTris, folUntextured);
         if (skinUp) {
             draws += skinBatch.draw_materials(ctx.Get(), sk, 2, tris, matUntextured);
             ID3D11ShaderResourceView* none = nullptr;
@@ -1322,6 +1431,9 @@ struct WorldView::Impl {
             st.shaderDraws += n;
         }
 
+        draws += st.foliageDraws;
+        tris += folTris;
+        st.foliageKtris = static_cast<int>(folTris / 1000);
         st.visible = visible;
         st.draws = draws;
         st.chunksUntextured = untextured;
@@ -1385,7 +1497,7 @@ void WorldView::resize(int w, int h) {
         d->lost = true;
 }
 
-void WorldView::set_world(const castlemist::world::WorldScene& s) {
+void WorldView::set_world(const castlemist::world::WorldScene& s, std::unique_ptr<FoliageGrid> grid) {
     d->chunks.clear();
     d->models.assign(s.models.size(), MeshGPU{});
     d->modelTried.assign(s.models.size(), 0);
@@ -1458,6 +1570,23 @@ void WorldView::set_world(const castlemist::world::WorldScene& s) {
         d->hasExtent = true;
     }
 
+    // Foliage (spec D6): the worker-built grid with its draw data (each zone
+    // instance's matrix and model, by model), placed by add_models. The UI
+    // thread only takes it over (spec Performance); only a missing or
+    // mismatched grid is built here.
+    {
+        const size_t n = s.zones.instances.size();
+        if (!grid || grid->tileOf.size() != n || grid->sphere.size() != n * 4 || grid->mesh.size() != n ||
+            grid->world.size() != n * 16 || grid->models != s.models.size() ||
+            grid->modelStart.size() != s.models.size() + 1)
+            grid = std::make_unique<FoliageGrid>(build_foliage_grid(s));
+        d->fol = std::move(grid);
+        d->folVis.clear();
+        d->st.foliageInstances = static_cast<int>(n);
+        d->st.zoneTrees = static_cast<int>(d->fol->colliders);
+        d->st.zoneUnlinked = static_cast<int>(s.zones.collidersUnlinked);
+    }
+
     if (!d->gpu_ok()) return;
 
     // Collision: ~1M triangles on a big map, off by default -- kept on the
@@ -1515,6 +1644,20 @@ void WorldView::add_models(const std::vector<WorldModelLoad>& batch) {
         }
         ++d->st.modelsLoaded;
         d->previews[m] = l.preview;
+        // Its zone instances: world spheres into the foliage grid (one
+        // MeshGPU serves the model's props and zone instances alike).
+        if (d->fol && m + 1 < d->fol->modelStart.size()) {
+            const MeshGPU& mg = d->models[m];
+            for (uint32_t k = d->fol->modelStart[m]; k < d->fol->modelStart[m + 1]; ++k) {
+                const uint32_t zi = d->fol->byModel[k];
+                Mat4 W;
+                std::memcpy(W.m, &d->fol->world[static_cast<size_t>(zi) * 16], sizeof W.m);
+                const Vec3 c = transformPoint({mg.center[0], mg.center[1], mg.center[2]}, W);
+                const float cw[3] = {c.x, c.y, c.z};
+                foliage_set_sphere(*d->fol, zi, cw, mg.radius * max_column_length(W.m));
+                if (d->fol->sphere[static_cast<size_t>(zi) * 4 + 3] >= 0) ++d->st.foliagePlaced;
+            }
+        }
         // Clips (spec SkinnedPropPass, note §5): an instance plays the clip
         // its animSequence names when the model has a skin stream; otherwise
         // it stays in bind pose and is counted. No fallback rule (UNPROVEN).
@@ -1748,8 +1891,8 @@ void WorldView::set_sky(const std::vector<WorldSkyImage>& modes) {
         if (FAILED(d->dev->CreateTexture2D(&td, &sd, &t)) ||
             FAILED(d->dev->CreateShaderResourceView(t.Get(), nullptr, &k.srv)))
             continue;
-        float hz[3];
-        world_sky_horizon(m, 0.04f, hz);
+        float hz[3] = {m.horizon[0], m.horizon[1], m.horizon[2]};
+        if (!m.hasHorizon) world_sky_horizon(m, 0.04f, hz);
         for (int c = 0; c < 3; ++c) {
             k.horizon[c] = hz[c];
             k.horizonLinear[c] = std::pow(hz[c], 2.2f);
@@ -1904,33 +2047,41 @@ bool WorldView::focus_animated(WorldCamera& cam) const {
 
 bool WorldView::animated_screen_rect(const WorldCamera& cam, int rect[4]) const {
     const InstCPU* in = d->nearest_animated(cam.pos);
-    if (!in || d->w <= 0 || d->h <= 0) return false;
-    const Mat4 VP = world_camera_viewproj(cam, static_cast<float>(d->w) / static_cast<float>(std::max(1, d->h)));
-    // The 8 corners of the sphere's box (row vectors: clip = p VP). A corner
-    // behind the camera makes the rect the whole surface (conservative); all
-    // eight behind: none.
-    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
-    int behind = 0;
-    const float r = in->radiusW;
-    for (int k = 0; k < 8; ++k) {
-        const float p[3] = {in->centerW[0] + ((k & 1) ? r : -r), in->centerW[1] + ((k & 2) ? r : -r),
-                            in->centerW[2] + ((k & 4) ? r : -r)};
-        float c[4];
-        for (int j = 0; j < 4; ++j) c[j] = p[0] * VP.m[j] + p[1] * VP.m[4 + j] + p[2] * VP.m[8 + j] + VP.m[12 + j];
-        if (!(c[3] > 1e-4f)) { ++behind; continue; }
-        const float sx = (c[0] / c[3] * 0.5f + 0.5f) * static_cast<float>(d->w);
-        const float sy = (0.5f - c[1] / c[3] * 0.5f) * static_cast<float>(d->h);
-        x0 = std::min(x0, sx); x1 = std::max(x1, sx);
-        y0 = std::min(y0, sy); y1 = std::max(y1, sy);
-    }
-    if (behind == 8) return false;
-    if (behind > 0) { x0 = 0; y0 = 0; x1 = static_cast<float>(d->w); y1 = static_cast<float>(d->h); }
-    const int L = std::clamp(static_cast<int>(std::floor(x0)), 0, d->w);
-    const int T = std::clamp(static_cast<int>(std::floor(y0)), 0, d->h);
-    const int R = std::clamp(static_cast<int>(std::ceil(x1)), 0, d->w);
-    const int B = std::clamp(static_cast<int>(std::ceil(y1)), 0, d->h);
-    if (R <= L || B <= T) return false;
-    rect[0] = L; rect[1] = T; rect[2] = R; rect[3] = B;
+    if (!in) return false;
+    return d->sphere_screen_rect(cam, in->centerW, in->radiusW, rect);
+}
+
+void WorldView::set_foliage_show(FoliageShow s) { d->folShow = s; }
+void WorldView::set_foliage_distance_scale(float scale) {
+    d->folScale = (scale > 0 && std::isfinite(scale)) ? scale : 1.0f;
+}
+float WorldView::foliage_fade_quality_scale() const { return d->folQuality; }
+
+bool WorldView::focus_foliage(WorldCamera& cam, float quantile, bool collidersOnly) const {
+    float pos[3], fwd[3];
+    if (!d->fol || !foliage_focus_view(*d->fol, quantile, collidersOnly, pos, fwd)) return false;
+    const Vec3 f{fwd[0], fwd[1], fwd[2]};
+    const Vec3 right = norm(cross(kWorldUp, f));
+    const Vec3 up = norm(cross(f, right));
+    for (int k = 0; k < 3; ++k) { cam.pos[k] = pos[k]; cam.fwd[k] = fwd[k]; }
+    cam.up[0] = up.x; cam.up[1] = up.y; cam.up[2] = up.z;
+    return true;
+}
+
+bool WorldView::focus_zone_tree(WorldCamera& cam, int rect[4]) {
+    const int i = d->nearest_zone_tree(cam.pos);
+    if (i < 0) return false;
+    const float* sp = &d->fol->sphere[static_cast<size_t>(i) * 4];
+    Vec3 f{cam.fwd[0], cam.fwd[1], cam.fwd[2]};
+    if (!(dot(f, f) > 1e-12f)) f = Vec3{1, 0, 0};
+    f = norm(f);
+    const float back = 4.0f * sp[3];
+    cam.pos[0] = sp[0] - f.x * back;
+    cam.pos[1] = sp[1] - f.y * back;
+    cam.pos[2] = sp[2] - f.z * back;
+    set_layer(WorldLayer::Collision, true);
+    rect[0] = rect[1] = rect[2] = rect[3] = 0;
+    d->sphere_screen_rect(cam, sp, sp[3], rect);
     return true;
 }
 

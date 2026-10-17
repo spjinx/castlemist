@@ -2,6 +2,7 @@
 /// @brief Orchestrates one ModelPreview -> one .glb document (the single-model export path).
 
 #include "internal.h"
+#include "castlemist/exportgltf/world_lods.h"
 #include "long_path.h"
 
 #include <filesystem>
@@ -34,7 +35,8 @@ GltfExportResult export_model_gltf(const ModelPreview& model, const std::string&
     write_model_textures(w, model.textures, texIndices, opts.imageDirUtf8, opts.imageUriPrefix,
                          opts.sharedImages.get(), opts.sharedImageUriPrefix);
     std::vector<int> materialIndices = write_materials(w, model, texIndices);
-    std::vector<MeshExportInfo> meshes = write_meshes(w, model, materialIndices);
+    std::vector<MeshExportInfo> meshes =
+        write_meshes(w, model, materialIndices, opts.exportLods ? model_lod_levels(model) : 1);
     result.particlesJsonPath = write_particle_sidecar(model, materialIndices, glbPath);
 
     std::vector<JointExportInfo> joints;
@@ -59,6 +61,19 @@ GltfExportResult export_model_gltf(const ModelPreview& model, const std::string&
         json node{{"name", nodeName}, {"mesh", mesh.meshIndex}};
         if (skinIndex >= 0 && model.meshes[mesh.sourceIndex].hasSkin) node["skin"] = skinIndex;
         rootChildren.push_back(w.add_node(std::move(node)));
+    }
+    // World export LODs: "<LOD0 node name>_LOD<k>", after every LOD0 node, only for
+    // the levels a mesh has its own index set for (world_lods.h).
+    for (const MeshExportInfo& mesh : meshes) {
+        if (mesh.lods.empty()) continue;
+        const std::string& meshName = model.meshes[mesh.sourceIndex].meshName;
+        const std::string base = !meshName.empty() ? meshName + "_" + std::to_string(mesh.sourceIndex)
+                                                   : stem + "_mesh" + std::to_string(mesh.sourceIndex);
+        for (const auto& [level, meshIndex] : mesh.lods) {
+            json node{{"name", base + "_LOD" + std::to_string(level)}, {"mesh", meshIndex}};
+            if (skinIndex >= 0 && model.meshes[mesh.sourceIndex].hasSkin) node["skin"] = skinIndex;
+            rootChildren.push_back(w.add_node(std::move(node)));
+        }
     }
     for (size_t i = 0; i < model.joints.size(); ++i) {
         if (model.joints[i].parent < 0) rootChildren.push_back(joints[i].nodeIndex);

@@ -8,7 +8,7 @@ namespace castlemist::world {
 
 namespace {
 
-/// Squared distance from @p cam to each model's nearest instance (infinity
+/// Squared distance from @p cam to each model's nearest prop or zone instance (infinity
 /// for a model with no instance).
 std::vector<double> nearest_keys(const WorldScene& s, const float cam[3]) {
     const size_t n = s.models.size();
@@ -19,6 +19,13 @@ std::vector<double> nearest_keys(const WorldScene& s, const float cam[3]) {
         const double dy = double(p.world[13]) - cam[1];
         const double dz = double(p.world[14]) - cam[2];
         key[p.model] = std::min(key[p.model], dx * dx + dy * dy + dz * dz);
+    }
+    for (const ZoneInstance& z : s.zones.instances) {   // zone models rank by their zone instances too
+        if (z.model >= n) continue;
+        const double dx = double(z.world[12]) - cam[0];
+        const double dy = double(z.world[13]) - cam[1];
+        const double dz = double(z.world[14]) - cam[2];
+        key[z.model] = std::min(key[z.model], dx * dx + dy * dy + dz * dz);
     }
     return key;
 }

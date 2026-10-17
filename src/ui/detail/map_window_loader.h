@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "castlemist/native/gw2dat.h"
+#include "castlemist/render/world_foliage_grid.h"
 #include "castlemist/render/world_prep.h"
 #include "castlemist/world/stream.h"
 #include "castlemist/world/walk.h"
@@ -113,8 +114,12 @@ struct MapWinWorldMsg {
     uint64_t gen = 0;
     std::shared_ptr<const castlemist::world::WorldScene> scene;   ///< null on error
     std::string error;
-    double seconds = 0;   ///< dat open + load_world
+    double seconds = 0;   ///< dat open + load_world + the foliage grid
     std::shared_ptr<Gw2Dat> dat;   ///< the parsed dat the world came from, for the model pool (read-only)
+    /// The scene's FoliageGrid (build_foliage_grid), built on the worker so
+    /// WorldView::set_world only takes it over (spec D6); null on error.
+    std::unique_ptr<castlemist::render::FoliageGrid> foliage;
+    double foliageSeconds = 0;   ///< the grid build alone
 };
 
 /// @brief WM_APP_MAPWIN_COLLISION: the walk index of the scene.
@@ -146,11 +151,15 @@ struct MapWinTexturesMsg {
 };
 
 /// @brief WM_APP_MAPWIN_SKY: the baked sky modes (bake_world_sky) and every
-///        warning of the bake and its texture decode.
+///        warning of the bake and its texture decode, for the proven-only
+///        bake (`modes`, `warnings`) and the approximate one (`approxModes`,
+///        `approxWarnings`).
 struct MapWinSkyMsg {
     uint64_t gen = 0;
     std::vector<castlemist::render::WorldSkyImage> modes;
     std::vector<std::string> warnings;
+    std::vector<castlemist::render::WorldSkyImage> approxModes;
+    std::vector<std::string> approxWarnings;
     double seconds = 0;   ///< texture decode + bake
 };
 
@@ -169,7 +178,8 @@ inline constexpr int kMapWinSkyWidth = 2048;
 
 /// @brief Starts the sky thread: decodes the textures of
 ///        `scene->environment.sky` (load_sky_textures) and bakes modes 0 and
-///        1 at kMapWinSkyWidth (bake_world_sky); posts one WM_APP_MAPWIN_SKY.
+///        1 at kMapWinSkyWidth (bake_world_sky), proven-only and approximate;
+///        posts one WM_APP_MAPWIN_SKY.
 void mapwin_start_sky(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat,
                       std::shared_ptr<const castlemist::world::WorldScene> scene, uint32_t mapFileId);
 

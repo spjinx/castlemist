@@ -323,6 +323,12 @@ constexpr UINT_PTR ID_MW_MATERIALS = 2221;
 constexpr UINT_PTR ID_MW_MOTION = 2222;
 constexpr UINT_PTR ID_MW_SHADER = 2223;
 constexpr UINT_PTR ID_MW_SKY = 2224;
+/// The Foliage toggle (a split button) and its menu's sub-modes (spec D6).
+constexpr UINT_PTR ID_MW_FOLIAGE = 2225;
+constexpr UINT_PTR ID_MW_FOLIAGE_COLLIDERS = 2226;
+constexpr UINT_PTR ID_MW_FOLIAGE_ALL = 2227;
+/// The Map window's approximate-sky toggle (on: the approximate sky; off: proven-only).
+constexpr UINT_PTR ID_MW_SKY_APPROX = 2228;
 /// Map window timers (on the map window, not the main one): the 16 ms frame
 /// pump and the ~4 Hz status line.
 constexpr UINT_PTR TIMER_MW_FRAME = 6;
@@ -893,6 +899,8 @@ BakeSelectResult show_bake_select_dialog(HWND owner, const ModelPreview& model);
 // ---- index_ui.cpp -- opening a gw2index SQLite and wiring its filters
 void finish_open_index(HWND hwnd, bool silent);
 void do_open_index(HWND hwnd);
+/// Exe-relative places the gw2index database may live, best first.
+std::vector<std::wstring> index_db_candidates();
 void try_autoload_index(HWND hwnd);
 
 // ---- window_proc.cpp -- the menu and the three window procedures

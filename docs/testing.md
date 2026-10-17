@@ -121,6 +121,44 @@ Three more hooks steer the capture:
   `x0,y0,x1,y1` (conservative when a corner is behind the camera). Two runs
   with different `GW2_MAPWIN_TIME` and the same focus can be compared inside
   that rectangle to prove that something moved.
+- `GW2_MAPWIN_FOLIAGE=off|colliders|all` sets the Foliage layer (spec
+  `2026-10-16-world-foliage-design.md` D6): off, or on with that sub-mode. The
+  default, as in the window, is on with `colliders`.
+- `GW2_MAPWIN_FOCUS=zonetree` frames the Collider zone instance nearest the
+  start camera (the whole-map view) from 4x its world-sphere radius, turns the
+  Collision layer on, and reports the sphere's screen rectangle as `treeRect`
+  (`-1,-1,-1,-1` without this focus; `0,0,0,0` when it is off the surface).
+  The camera looks 15 degrees below the horizon from the first of eight
+  headings, starting at the start view's, whose sight line to the tree hits no
+  collision. Stepping back along the steep whole-map view lands behind
+  hills and the map-edge walls, whose collision then fills the shot.
+  Compare a shot with `GW2_MAPWIN_FOLIAGE=off` against one with `colliders`
+  at this focus: off shows the bare trunk colliders, on shows each inside its
+  tree.
+- `GW2_MAPWIN_FOCUS=foliage` stands 150 units above the ground in the
+  foliage tile at the 90th percentile of placed zone instances (a p90 view for
+  the budgets), looking 8 degrees down along the densest of eight headings
+  (`foliage_focus_view`). `foliagemax` takes the densest tile, and `forest`
+  the densest tile of Collider instances (a ground-level view into the trees).
+- `GW2_MAPWIN_FOLIAGE_SCALE=<x>` sets `foliageDistanceScale`. The cull also
+  multiplies every fade range by the client's factor at graphics quality 2
+  (1.5, `foliageFadeQuality`), so 0.6667 reproduces the stored ranges.
+
+The foliage fields of the stats line (spec D6 "Stats"): `foliageInstances`
+(zone instances in the scene), `foliagePlaced` (those whose model has
+arrived), `foliageVisible`, `foliageDraws`, `foliageKtris`, `foliageTiles`
+(grid tiles kept by the cull), `foliageCapped` (instances past
+`foliageMaxVisible` 20 000), `foliageCullMs` (CPU ms of the cull and
+bucketing, last frame), `zoneTrees` (Collider instances), `zoneUnlinked`
+(havk zoneModels entries without a model), `shaderFoliage` (foliage drawn in
+the Materials look under Shader), `treeRect` (above), and `foliage`
+(`off`/`colliders`/`all`), `foliageFadeQuality` (the fade factor above). Also: `set_world_ms` (the UI thread's
+`WorldView::set_world`, which takes over the worker-built FoliageGrid and
+its draw data),
+`foliage_grid_s` (the grid build on the world worker), and
+`bench_nofoliage_cpu_ms` / `bench_nofoliage_gpu_ms` (median/max of the same
+`GW2_MAPWIN_BENCH` frames with Foliage off; `bench_*_ms` minus these is the
+foliage's cost; 0 when Foliage is off).
 
 The dump directory is not created for you; `dumps/mapwin` must already exist.
 

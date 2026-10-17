@@ -580,6 +580,99 @@ float4 PSMain(VSOut i) : SV_Target {
 }
 )";
 
+/// @brief The foliage pass's vertex half (spec D6 "Draw"): kInstanced's
+///        streams with the per-instance float4 carrying the fade (x) instead
+///        of a tint, and bayer4x4 (world_foliage_grid.h's table) for the
+///        screen-door discard. foliage_source() appends a pixel shader copied
+///        from kInstanced (AO look) or kPropMat (textured) with the discard
+///        as its first line. The AO look's albedo is the props' (kFoliageTint
+///        = world_view.cpp's kPropTint). Depth writes stay on; no sorting.
+inline constexpr const char* kFoliageHead = R"(
+cbuffer WorldCB : register(b0) {
+    row_major float4x4 uViewProj;
+    float3 uSunDir;     float uExposure;
+    float3 uSunCol;     float uAoStrength;
+    float3 uSkyCol;     float uFogStart;
+    float3 uGroundCol;  float uFogEnd;
+    float3 uFogCol;     float _pad0;
+    float3 uCamPos;     float _pad1;
+    float3 uAlbedo;     float _pad2;
+    float3 uMatSunCol;  float _pad3;   // calibrated light (detail/light_calib.h)
+    float3 uMatSkyCol;  float _pad4;
+};
+cbuffer MatCB : register(b1) {
+    float2 uUvOffset; float uUvSet; float uAlphaMode;
+    float uTextured;  float3 _mpad;
+};
+
+Texture2D tDiffuse : register(t0);
+SamplerState sWrap : register(s0);
+
+static const float3 kFoliageTint = float3(0.78, 0.76, 0.72);
+static const float kBayer[16] = {0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
+
+// (M[py & 3][px & 3] + 0.5) / 16 at the pixel SV_Position.xy names.
+float bayer4x4(float2 pix) {
+    uint2 q = uint2(pix) & 3;
+    return (kBayer[q.y * 4 + q.x] + 0.5) / 16.0;
+}
+
+struct VSIn {
+    float3 pos : POSITION;   // model space
+    float4 nao : NORMAL;     // xyz = normal*0.5+0.5, w = baked AO
+#ifdef FOLIAGE_TEXTURED
+    float2 uv0 : TEXCOORD4;
+    float2 uv1 : TEXCOORD5;
+#endif
+    float4 r0  : TEXCOORD0;  // world columns
+    float4 r1  : TEXCOORD1;
+    float4 r2  : TEXCOORD2;
+    float4 inst: TEXCOORD3;  // x = fade
+};
+struct VSOut {
+    float4 pos : SV_POSITION;
+    float3 nrm : NORMAL;
+    float2 aod : TEXCOORD0;  // x = AO, y = distance to camera
+    float4 tint: TEXCOORD1;
+    float2 uv  : TEXCOORD2;
+    float  fade: TEXCOORD3;
+};
+
+VSOut VSMain(VSIn i) {
+    float4 p = float4(i.pos, 1.0);
+    float3 wp = float3(dot(p, i.r0), dot(p, i.r1), dot(p, i.r2));
+    float3 n  = i.nao.xyz * 2.0 - 1.0;
+    float3 wn = float3(dot(n, i.r0.xyz), dot(n, i.r1.xyz), dot(n, i.r2.xyz));
+    VSOut o;
+    o.pos  = mul(float4(wp, 1.0), uViewProj);
+    o.nrm  = wn;
+    o.aod  = float2(i.nao.w, distance(wp, uCamPos));
+    o.tint = float4(kFoliageTint, 1.0);
+#ifdef FOLIAGE_TEXTURED
+    o.uv   = (uUvSet != 0 ? i.uv1 : i.uv0) + uUvOffset;
+#else
+    o.uv   = float2(0, 0);
+#endif
+    o.fade = i.inst.x;
+    return o;
+}
+)";
+
+/// @brief The foliage shader: kFoliageHead, then the PSMain of kPropMat
+///        (@p textured) or kInstanced, verbatim except for the screen-door
+///        discard (`fade < bayer4x4(SV_Position.xy)`) as its first statement.
+///        Empty if a source lost its PSMain.
+inline std::string foliage_source(bool textured) {
+    const std::string ps(textured ? kPropMat : kInstanced);
+    const size_t at = ps.find("float4 PSMain(");
+    if (at == std::string::npos) return {};
+    std::string body = ps.substr(at);
+    const size_t brace = body.find('{');
+    if (brace == std::string::npos) return {};
+    body.insert(brace + 1, "\n    if (i.fade < bayer4x4(i.pos.xy)) discard;");
+    return std::string(textured ? "#define FOLIAGE_TEXTURED 1\n" : "") + kFoliageHead + body;
+}
+
 /// @brief kPropSkinned's whole source: its VS, then kPropMat's PSMain
 ///        (textured) and kInstanced's PSMain as PSAo (the AO look), each
 ///        copied from its own shader so the two cannot drift apart.

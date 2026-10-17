@@ -40,6 +40,9 @@ struct Cell {
     float rect[4] = {0, 0, 0, 0};    ///< map space x0,y0,x1,y1
     float origin[3] = {0, 0, 0};     ///< rect centre, z 0
     std::vector<uint32_t> props, collision;   ///< indices into scene.props / scene.collision.instances
+    /// Indices into scene.zones.instances, bucketed by the translation's (x, y) as props are
+    /// (world-foliage spec D7). Foliage does not count toward `triangles` (it is distance-culled).
+    std::vector<uint32_t> foliage;
     uint64_t triangles = 0; double textureMB = 0; bool split = false, overBudget = false;
 };
 
@@ -47,6 +50,7 @@ struct CellPlan {
     std::vector<Cell> cells;
     int blockChunks = 4;
     size_t propsOutsideRegion = 0;   ///< props + collision instances in cells the region dropped
+    size_t foliageOutsideRegion = 0; ///< zone instances in cells the region dropped
     /// The region actually kept: the requested one snapped outward to whole
     /// blocks of blockChunks and clamped to the chunk grid, so the kept cells
     /// tile it exactly (the manifest's terrain.region). whole() for the whole
@@ -62,6 +66,11 @@ int cell_block_chunks(const Terrain& t, int maxChunks);
 /// @brief Chunk (cx, cy) containing (x, y): cx = floor((x - x0)/cdx), cy = floor((y1 - y)/cdy),
 ///        each clamped to the grid.
 void chunk_of_point(const Terrain& t, float x, float y, int& cx, int& cy);
+
+/// @brief False when chunk_of_point would clamp (x, y): the point lies outside the chunk
+///        grid (west of x0, east of the last column, north of y1 or south of the last
+///        row), when it is not finite, and on a map with no terrain chunks.
+bool point_in_chunk_grid(const Terrain& t, float x, float y);
 
 /// @brief The map's cells. A non-whole @p r keeps every cell of each block it
 ///        overlaps (CellPlan::region); a cell is never cut by the region.

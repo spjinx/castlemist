@@ -226,6 +226,10 @@ struct MeshExportInfo {
     int meshIndex = -1;
     uint32_t materialIndex = 0;
     size_t sourceIndex = 0; // index into ModelPreview::meshes (write_meshes skips empty ones)
+    /// (level, glTF mesh) for each level 1.. whose index set is the mesh's own
+    /// (world_lods.h mesh_lod_source); levels it repeats are left out. Empty
+    /// unless write_meshes was given lodLevels > 1.
+    std::vector<std::pair<int, int>> lods;
 };
 
 /// @brief Write one glTF `mesh` (one primitive) per `ModelMeshCPU`, with
@@ -233,8 +237,12 @@ struct MeshExportInfo {
 ///        Geometry stays in the model's own local/bind space -- callers place
 ///        it via the referencing node's transform, never by pre-transforming
 ///        vertices.
+///        With @p lodLevels > 1 (the world export only, GltfExportOptions::exportLods),
+///        each mesh's own LOD1.. index sets become extra glTF meshes whose one
+///        primitive shares the LOD0 primitive's attributes, material and morph
+///        targets and has only its own `indices`; with 1 (the default) nothing changes.
 std::vector<MeshExportInfo> write_meshes(GltfWriter& w, const ModelPreview& model,
-                                         const std::vector<int>& materialIndices);
+                                         const std::vector<int>& materialIndices, int lodLevels = 1);
 
 // =================================================================== skeleton ==
 
