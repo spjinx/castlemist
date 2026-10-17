@@ -1576,6 +1576,24 @@ public:
               nightBrightness = 0, nightHazeBottom = 0, nightHazeDensity = 0, nightHazeFalloff = 0,
               nightLightIntensity = 0, nightStarDensity = 0, verticalOffset = 0;
     };
+    // Haze (PackMapEnvDataHaze*), the source of the engine fog uniforms
+    // (docs/research/gw2-sky.md §11, amendment 2026-10-17). Colours are RGBA
+    // 0..1: the file stores each byte4 as B, G, R, A -- the client's import
+    // (0x140c889e0) puts byte 2 in x, byte 1 in y, byte 0 in z, byte 3 in w.
+    struct MapHaze {
+        float nearColor[4] = {0, 0, 0, 0}, farColor[4] = {0, 0, 0, 0}, heightColor[4] = {0, 0, 0, 0};
+        float distRange[2] = {0, 0}, heightRange[2] = {0, 0}, sunDirRange[2] = {0, 0};
+        float depthCue = 0;
+    };
+    // One per-zone env block (dataLocalArray[i]): its haze and the shapes
+    // (2D polygons) it covers. An empty `haze` means the zone has none of its
+    // own; the client then takes its parent's (EnvEnvironment 0x140c60340).
+    struct MapEnvZone {
+        std::string name;
+        std::vector<MapHaze> haze;                          // as stored, slot 0 day, 1 night, 2 alternate
+        std::vector<std::vector<std::array<float, 2>>> shapes;   // shapeArray[k].vertexArray (x, y)
+        float area = 0;                                     // summed shoelace area of the shapes
+    };
     struct MapSky {
         bool present = false;                    // env chunk + dataGlobal found
         uint16_t envVersion = 0;
@@ -1590,6 +1608,16 @@ public:
         // Sizes the hemicube (0.4 F0), the star sphere (0.5 F0) and the sky
         // card quads (F = F0 at load).
         float skyDistance = 24576.0f;
+        // dataGlobal->haze[] (slot 0 day, 1 night, 2 alternate: 0x140c60340
+        // picks 0 at t = 1, 1 at t = 0, 2 when its flag is set).
+        std::vector<MapHaze> haze;
+        // dataLocalArray[]: per-zone blocks (haze and shapes only).
+        std::vector<MapEnvZone> zones;
+        // parm.rect (x0, y0, x1, y1), the map's extent; all 0 without a parm chunk.
+        float mapRect[4] = {0, 0, 0, 0};
+        // dataGlobal->lighting[k] for k = 0..2, read like parseMapEnv(k) (colour
+        // bytes in stored order); `present` false for a missing slot.
+        std::vector<MapEnvLight> lighting;
     };
 
     MapSky parseMapSky() {
@@ -1760,6 +1788,88 @@ public:
                 p.verticalOffset = rdFloat1(st, "verticalOffset", s);
             }
         } catch (const std::exception&) {}
+
+        // Haze, per env block (gw2-sky.md amendment 2026-10-17). A haze
+        // ptr_array_ptr holds pointers to PackMapEnvDataHaze*; several blocks
+        // may point at the same record.
+        auto readHaze = [&](const std::string& blockType, size_t block, std::vector<MapHaze>& out) {
+            size_t o; json fj;
+            if (!fieldOffset(blockType, "haze", o, fj)) return;
+            const std::string ht = subType(fj, "element");
+            if (ht.empty()) return;
+            uint32_t n = 0;
+            size_t base = arrayAt(block + o, n);
+            if (!base || n > 16) return;
+            auto colour = [&](const char* name, size_t e, float c[4]) {
+                size_t a; json cf;
+                if (!fOff(ht, name, e, a, cf)) return;
+                // byte4 stored B, G, R, A (0x140c889e0: byte 2 -> x ... byte 3 -> w).
+                c[0] = rd8(a + 2) / 255.f; c[1] = rd8(a + 1) / 255.f; c[2] = rd8(a) / 255.f; c[3] = rd8(a + 3) / 255.f;
+            };
+            for (uint32_t i = 0; i < n; ++i) {
+                size_t e = follow(base + (size_t)i * ptr_);
+                if (!e) continue;
+                MapHaze h;
+                colour("nearColor", e, h.nearColor);
+                colour("farColor", e, h.farColor);
+                colour("heightColor", e, h.heightColor);
+                rdFloat2(ht, "distRange", e, h.distRange);
+                rdFloat2(ht, "heightRange", e, h.heightRange);
+                rdFloat2(ht, "sunDirRange", e, h.sunDirRange);
+                h.depthCue = rdFloat1(ht, "depthCue", e);
+                out.push_back(h);
+            }
+        };
+        try { readHaze(gt, g, out.haze); } catch (const std::exception&) { out.haze.clear(); }
+        try {
+            size_t lo; json lfj;
+            if (fieldOffset(root, "dataLocalArray", lo, lfj)) {
+                const std::string zt = subType(lfj, "element");
+                const int zs = typeSize(zt);
+                uint32_t nz = 0;
+                size_t zbase = arrayAt(env + lo, nz);
+                if (zbase && zs > 0 && nz <= 4096 && zbase + (uint64_t)nz * zs <= n_) {
+                    for (uint32_t i = 0; i < nz; ++i) {
+                        const size_t e = zbase + (size_t)i * zs;
+                        MapEnvZone z;
+                        try { z.name = nameAt(zt, "name", e); } catch (const std::exception&) {}
+                        try { readHaze(zt, e, z.haze); } catch (const std::exception&) { z.haze.clear(); }
+                        try {
+                            Arr shapes = arrayField(zt, "shapeArray", e);
+                            for (uint32_t k = 0; k < shapes.n && k < 256; ++k) {
+                                const size_t se = shapes.base + (size_t)k * shapes.size;
+                                size_t vo; json vfj;
+                                if (!fieldOffset(shapes.type, "vertexArray", vo, vfj)) continue;
+                                uint32_t nv = 0;
+                                size_t vb = arrayAt(se + vo, nv);   // float2 elements, 8 bytes each
+                                if (!vb || nv > 4096 || vb + (uint64_t)nv * 8 > n_) continue;
+                                std::vector<std::array<float, 2>> poly;
+                                for (uint32_t v = 0; v < nv; ++v) poly.push_back({rdf(vb + 8 * v), rdf(vb + 8 * v + 4)});
+                                double a2 = 0;
+                                for (size_t v = 0; v < poly.size(); ++v) {
+                                    const auto& p = poly[v];
+                                    const auto& q = poly[(v + 1) % poly.size()];
+                                    a2 += (double)p[0] * q[1] - (double)q[0] * p[1];
+                                }
+                                z.area += (float)(std::fabs(a2) * 0.5);
+                                z.shapes.push_back(std::move(poly));
+                            }
+                        } catch (const std::exception&) {}
+                        out.zones.push_back(std::move(z));
+                    }
+                }
+            }
+        } catch (const std::exception&) {}
+        try {
+            std::string pr; uint16_t pv = 0;
+            size_t parm = findChunk("parm", &pr, &pv);
+            size_t ro; json rf;
+            if (parm && !pr.empty() && fieldOffset(pr, "rect", ro, rf))
+                for (int k = 0; k < 4; ++k) out.mapRect[k] = rdf(parm + ro + 4 * k);
+        } catch (const std::exception&) {}
+        for (int k = 0; k < 3; ++k) {
+            try { out.lighting.push_back(parseMapEnv(k)); } catch (const std::exception&) { out.lighting.push_back({}); }
+        }
 
         // gw2-sky.md §7.1: TerrainClient hands the EnvContext
         // (float)(3072 * max(3, round(trn.swapDistance / 3072))); the 3072 is
