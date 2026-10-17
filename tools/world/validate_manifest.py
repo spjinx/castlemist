@@ -403,6 +403,12 @@ def _check_shared_materials(m, root, models, errors):
             errors.append("ERROR %s.key: duplicate key %s (also entries[%d])" % (p, key, table[key][0]))
         else:
             table[key] = (k, e)
+    gm = sm.get("generatedMaps") or {}
+    gdir = gm.get("dir") if isinstance(gm.get("dir"), str) else ""
+    try:   # the exact spellings: Windows finds "x_projector.png" for "x_Projector.png", Unity's paths do not
+        gnames = set(os.listdir(os.path.join(root, gdir))) if gdir else set()
+    except OSError:
+        gnames = set()
     slots, users = {}, {}
     for i in keyed:
         mod, p = models[i], "models[%d].materialKeys" % i
@@ -424,7 +430,8 @@ def _check_shared_materials(m, root, models, errors):
                 errors.append("ERROR %s[%d]: %s says key %r" % (p, j, mod["materials"], e.get("key")))
             for f in _map_files(e):
                 rel = posixpath.normpath(posixpath.join(folder, f))
-                if not _exists(root, rel):
+                if not _exists(root, rel) or (gdir and posixpath.dirname(rel) == gdir and
+                                              posixpath.basename(rel) not in gnames):
                     errors.append("ERROR %s: missing file: %s (material %d)" % (mod["materials"], rel, j))
     for key, (k, e) in table.items():
         p = "sharedMaterials.entries[%d]" % k
@@ -439,7 +446,6 @@ def _check_shared_materials(m, root, models, errors):
             errors.append("ERROR %s.slots: %r, the models hold %d" % (p, e.get("slots"), slots.get(key, 0)))
         if e.get("models") != len(users.get(key, ())):
             errors.append("ERROR %s.models: %r, %d models hold it" % (p, e.get("models"), len(users.get(key, ()))))
-    gm = sm.get("generatedMaps") or {}
     d = os.path.join(root, gm.get("dir", ""))
     if not os.path.isdir(d):
         errors.append("ERROR sharedMaterials.generatedMaps.dir: missing file: %s" % gm.get("dir"))

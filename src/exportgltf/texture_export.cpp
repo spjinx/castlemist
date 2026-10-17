@@ -10,6 +10,7 @@
 #include "sha1.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <condition_variable>
 #include <filesystem>
@@ -161,7 +162,8 @@ struct SharedImagePool::Impl {
     std::string dir;
     mutable std::mutex mu;
     std::condition_variable cv;
-    std::map<std::string, Slot> slots;   // by file name
+    std::map<std::string, Slot> slots;   // by lower-case file name (Windows names ignore case)
+    std::map<std::string, std::string> spelling;   // lower-case -> the first caller's name
     size_t written = 0;
     uint64_t bytesRequested = 0, bytesWritten = 0;
 };
@@ -201,7 +203,15 @@ std::string SharedImagePool::ensure_content(const std::vector<uint8_t>& png, con
         if (error) *error = "Could not encode a generated image.";
         return {};
     }
-    const std::string name = sha1_hex(png) + suffix + ".png";
+    std::string name = sha1_hex(png) + suffix + ".png";
+    {
+        // One file per name ignoring case: a later spelling gets the first one's
+        // (the export's own suffixes never differ only by case; this is a guard).
+        std::lock_guard<std::mutex> lk(impl_->mu);
+        std::string low = name;
+        for (char& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        name = impl_->spelling.try_emplace(low, name).first->second;
+    }
     uint64_t bytes = png.size();
     return ensure_file(name, [&png] { return png; }, error, &bytes) ? name : std::string();
 }
@@ -212,7 +222,9 @@ bool SharedImagePool::ensure_file(const std::string& name, const std::function<s
     Impl& p = *impl_;
     {
         std::unique_lock<std::mutex> lk(p.mu);
-        auto [it, claimed] = p.slots.try_emplace(name);
+        std::string low = name;
+        for (char& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        auto [it, claimed] = p.slots.try_emplace(low);
         if (!claimed) {   // another caller owns it: wait until it is in place (or failed)
             p.cv.wait(lk, [&] { return it->second.done; });
             if (!it->second.ok && error) *error = it->second.error;
@@ -229,7 +241,9 @@ bool SharedImagePool::ensure_file(const std::string& name, const std::function<s
         ~Publish() {
             {
                 std::lock_guard<std::mutex> lk(p.mu);
-                Impl::Slot& s = p.slots[name];
+                std::string low = name;
+                for (char& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                Impl::Slot& s = p.slots[low];
                 s.done = true;
                 s.ok = published;
                 s.error = published ? std::string()

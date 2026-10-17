@@ -82,14 +82,16 @@ public:
     /// The map's JSON ({file, uv, fileId, source}), or null when it is not
     /// present or its PNG could not be written (with a warning). With a pool
     /// (Task 15d) the file is the pool's "<sha1>_<suffix>.png", shared by every
-    /// map of the export with the same bytes and role.
-    json write(const MapSlot& slot, const std::string& suffix) {
+    /// map of the export with the same bytes and role; an extra layer's
+    /// (@p extra) is "<sha1>_x-<lower-case role>.png", so it never meets a
+    /// Poiyomi role's name ("projector" and "Projector" are one file on Windows).
+    json write(const MapSlot& slot, const std::string& suffix, bool extra = false) {
         if (!slot.present) return json();
         const std::vector<uint8_t> png = encode_png(slot.tex);
         std::string rel;
         if (pool_) {
             std::string err;
-            const std::string leaf = pool_->ensure_content(png, "_" + suffix, &err);
+            const std::string leaf = pool_->ensure_content(png, extra ? "_x-" + lower_ascii(suffix) : "_" + suffix, &err);
             if (leaf.empty()) {
                 warnings_.push_back(suffix + " map (" + slot.source + ") could not be written to " + poolPrefix_ +
                                     ": left out" + (err.empty() ? "" : " (" + err + ")"));
@@ -255,7 +257,7 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
         jm["alphaMask"] = std::move(alphaMask);
         json extras = json::array();
         for (const MaterialMaps::Extra& x : maps.extras) {
-            json e = mw.write(x.slot, safe_file_name(x.role.empty() ? "extra" : x.role));
+            json e = mw.write(x.slot, safe_file_name(x.role.empty() ? "extra" : x.role), true);
             if (e.is_null()) continue;
             e["role"] = x.role;
             e["use"] = x.use.empty() ? json() : json(x.use);

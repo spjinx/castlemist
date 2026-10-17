@@ -2675,6 +2675,35 @@ CM_TEST(world_materials, content_pool_writes_once) {
     for (auto& f : futures) CHECK(f.get() == sha1_hex(a) + "_X.png");
     CHECK_EQ(p2.written(), size_t(1));
     CHECK_EQ(p2.bytes_written(), uint64_t(3));
+    // Names that differ only by case are one file on Windows: the first spelling wins.
+    SharedImagePool p3((dir / "gen3").string());
+    const std::string up = p3.ensure_content(a, "_Projector");
+    CHECK(p3.ensure_content(a, "_projector") == up);
+    CHECK_EQ(p3.written(), size_t(1));
+}
+
+// An extra layer's pooled name is "_x-<lower-case role>": never a Poiyomi role's
+// name in another case (Spirit Vale: an extra "projector" beside a "Projector" map).
+CM_TEST(world_materials, extra_layer_names) {
+    ModelPreview model = glow_quad();
+    ModelMaterialCPU::ExtraTexture x;
+    x.texIndex = wadd_tex(model, wtex(2, 2, std::vector<std::array<uint8_t, 4>>(4, {9, 9, 9, 255}), 4001));
+    x.fileId = 4001;
+    x.role = "Projector";
+    model.materials[0].extraTextures.push_back(x);
+    const fs::path out = fresh_dir("keys_extra");
+    const auto r = write_vrchat_folder(model, (out / "models" / "1").string(), "1", 1, world_vo(out));
+    CHECK(r.ok);
+    const json mj = read_json(out / "models" / "1" / "materials.json");
+    bool found = false;
+    for (const json& e : mj["materials"][0]["maps"]["extras"]) {
+        const std::string f = e["file"].get<std::string>();
+        if (e["role"] == json("Projector")) {
+            found = true;
+            CHECK(f.size() > 16 && f.substr(f.size() - 16) == "_x-projector.png");
+        }
+    }
+    CHECK(found);
 }
 
 // The key is the content: equal materials of two models share it whatever their
