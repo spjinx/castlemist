@@ -14,7 +14,10 @@
 //   Prefabs/<fileId>.prefab          a variant of models/<fileId>/<fileId>.fbx, materials
 //                                    remapped with ModelImporter.AddRemap
 //   Controllers/<fileId>_<clip>.controller   one looping state, per (model, clip) used
-//   Prefabs/Foliage/<fileId>.prefab  the model prefab + a LOD0-only LODGroup (FoliageImporter)
+//                                    with a LODGroup LOD0..LODn when models[].lods.levels > 1
+//                                    (Task 15b, LodGroups / ModelLods: heights from the switch distances)
+//   Prefabs/Foliage/<fileId>.prefab  the model prefab + a LODGroup culled at fadeFar: LOD0 only,
+//                                    or the model's levels (FoliageImporter)
 //   GW2_<fileId>.unity               the scene:
 //     GW2_<fileId>    localScale = unityScale (the only scale; ruling W7)
 //       Cell_<id>     localPosition = frame.toUnity * cell.origin
@@ -22,7 +25,8 @@
 //         Water       MeshRenderer
 //         Colliders/Collider_k   MeshCollider only (no renderer)
 //         Props/<fileId>_<prop>  prefab instance, unity.t / r / s as given;
-//                                Animator + controller when the instance has a clip
+//                                Animator + controller when the instance has a clip;
+//                                instances[].lod: its own LODGroup heights (Task 15b)
 //         Foliage/Trees/<fileId>_<placement>  tree prefab instance per foliage tree
 //                                record (FoliageImporter; world-foliage spec D8)
 //         Foliage/Patches/<fileId>_<k>  type 1-2 records combined (FoliagePatches)
@@ -403,6 +407,12 @@ namespace Castlemist
                         inst.name = e.FileId.ToString();
                         foreach (Transform t in inst.GetComponentsInChildren<Transform>(true))
                             GameObjectUtility.SetStaticEditorFlags(t.gameObject, StaticFlags);
+                        // Task 15b: LOD0..LODn from the model's LOD objects (LodGroups, ModelLods).
+                        if (e.LodLevels > 1)
+                        {
+                            LodGroups.Build(inst, e.LodLevels, e.LodDistances, size => ModelLods.PropCullHeight, sum.warnings, "model " + e.FileId);
+                            sum.lodPrefabs++;
+                        }
                         string path = root + "/Prefabs/" + e.FileId + ".prefab";
                         bool ok;
                         GameObject saved = PrefabUtility.SaveAsPrefabAsset(inst, path, out ok);
@@ -497,6 +507,8 @@ namespace Castlemist
                         go.transform.localPosition = V(i.T);
                         go.transform.localRotation = new Quaternion((float)i.R[0], (float)i.R[1], (float)i.R[2], (float)i.R[3]);
                         go.transform.localScale = Vector3.one * (float)i.S;
+                        // Task 15b: OVERRIDE_LOD placements get their own heights on the instance.
+                        if (i.Lod != null && e.LodLevels > 1 && LodGroups.Override(go, i.Lod)) sum.lodOverrides++;
                         RuntimeAnimatorController ac;
                         if (i.Clip != null && controllers.TryGetValue(i.Model + "\n" + i.Clip, out ac))
                         {

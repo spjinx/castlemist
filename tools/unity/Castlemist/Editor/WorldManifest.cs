@@ -240,6 +240,10 @@ namespace Castlemist
             public List<string> Clips = new List<string>();
             public List<string> DarkDecalMaterials = new List<string>();
             public List<UvScroll> UvScroll = new List<UvScroll>();
+            /// models[].lods (Task 15b): LodLevels 1 when absent (no LODGroup);
+            /// LodDistances the model's switch distances, model units (null when absent).
+            public int LodLevels = 1;
+            public double[] LodDistances;
             public bool Ok { get { return Status == "ok"; } }
         }
 
@@ -253,6 +257,7 @@ namespace Castlemist
             public double S;
             public string Clip;  // null: static
             public double[] M;   // map space, column-major, absolute (null if absent)
+            public double[] Lod; // instances[].lod (Task 15b): its own switch distances, model units; null = the model's
         }
 
         public sealed class CellEntry
@@ -469,6 +474,13 @@ namespace Castlemist
                     Clips = mo.Strings("clips"),
                     DarkDecalMaterials = mo.Strings("darkDecalMaterials"),
                 };
+                JObj lods = mo.OptObj("lods");
+                if (lods != null)
+                {
+                    e.LodLevels = (int)lods.OptNum("levels", 1);
+                    if (e.LodLevels < 1 || e.LodLevels > 3) throw new ManifestException(lods.Path + ".levels: " + e.LodLevels + " is not 1..3");
+                    e.LodDistances = lods.Vec("distances", 2);
+                }
                 foreach (JObj u in mo.Objs("uvScroll"))
                 {
                     double[] sc = u.Vec("scroll", 2);
@@ -513,6 +525,7 @@ namespace Castlemist
                         S = u.Num("s"),
                         Clip = inst.OptStr("clip"),
                         M = inst.OptVec("m", 16),
+                        Lod = inst.OptVec("lod", 2),
                     });
                 }
                 m.Cells.Add(cell);

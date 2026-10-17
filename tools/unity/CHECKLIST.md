@@ -68,11 +68,12 @@ the manifest changes.
 1. **The summary equals the dry run.** The importer's `PLAN …` line must equal
    `python tools/world/validate_manifest.py <export> --plan` character for
    character. For the fixture (`cm_world_export_fixture`), that line is
-   `PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2 foliagePatches=2 terrains=0 detailPrototypes=0 detailCells=0 treeInstances=0`
+   `PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2 foliagePatches=2 terrains=0 detailPrototypes=0 detailCells=0 treeInstances=0 lodPrefabs=3 lodTreePrefabs=1 lodOverrides=1`
    in mesh mode, and with `--mode terrain` / `-castlemistTerrain terrain`
-   `PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=0 water=1 lights=1 skybox=0 foliageTrees=1 foliagePatches=0 terrains=1 detailPrototypes=1 detailCells=2 treeInstances=1`
+   `PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=0 water=1 lights=1 skybox=0 foliageTrees=1 foliagePatches=0 terrains=1 detailPrototypes=1 detailCells=2 treeInstances=1 lodPrefabs=3 lodTreePrefabs=1 lodOverrides=1`
    (before the world-foliage work the line ended at `skybox`; Task 8 added
-   `foliageTrees`). Compare the line for the same options on both sides. In
+   `foliageTrees`; Task 15b added the three `lod` counts). `LODS ... OK` checks
+   every model prefab, tree prefab and `instances[].lod` instance's LODGroup. Compare the line for the same options on both sides. In
    batchmode, `FOLIAGE_TREES checked=<n> ... OK` also checks every foliage tree
    instance against its record's `m`, `FOLIAGE_PATCHES` the patches, and in
    Terrain mode `TERRAIN_TREES` every TreeInstance against its record and

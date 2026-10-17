@@ -28,6 +28,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -319,7 +320,8 @@ namespace Castlemist
             cache[model] = null;
             GameObject src;
             if (!modelPrefabs.TryGetValue(model, out src)) return null;
-            MeshFilter mf = src.GetComponentInChildren<MeshFilter>(true);
+            // The first LOD0 mesh: never a "<name>_LOD<k>" object (Task 15b; details keep LOD0 only).
+            MeshFilter mf = src.GetComponentsInChildren<MeshFilter>(true).FirstOrDefault(f => !LodGroups.IsLodObject(f.gameObject));
             MeshRenderer mr = mf != null ? mf.GetComponent<MeshRenderer>() : null;
             if (mf == null || mf.sharedMesh == null || mr == null)
             {
