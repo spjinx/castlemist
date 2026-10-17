@@ -7,7 +7,12 @@
 //
 // What it builds, all under <folder>/ (re-import updates in place: .mat,
 // .prefab and .controller assets keep their GUIDs; the scene is rebuilt):
-//   Materials/<fileId>/<Mat>.mat     from models/<fileId>/materials.json (PoiyomiMaterials)
+//   Materials/Shared/<key>.mat       one per material key (Task 15d: sharedMaterials; every model's
+//                                    slots of that key, LOD renderers included, remap to it), from
+//                                    the key's first used materials.json entry (PoiyomiMaterials);
+//                                    "<key>_<8 hex>.mat" for a slot the manifest gives another dark
+//                                    decal or uvScroll
+//   Materials/<fileId>/<Mat>.mat     from models/<fileId>/materials.json, for an export without keys
 //   Materials/terrain/<id>.mat       Poiyomi Opaque, _MainTex = cells/<id>_albedo.png
 //   Materials/water/<id>.mat         Poiyomi Fade, _MainTex = cells/<id>_water.png
 //   Materials/Skybox.mat             Skybox/Panoramic from sky.equirect
@@ -130,6 +135,32 @@ namespace Castlemist
             Debug.Log("CASTLEMIST import " + root + " -> " + scenePath + " in " + sum.seconds.ToString("F1") + " s (" +
                       string.Join(", ", b.Times) + ")");
             return sum;
+        }
+
+        /// Task 15d: what one shared .mat is built for -- the key, and the dark
+        /// decal and uvScroll the manifest gives the slot (validate_manifest.py
+        /// material_variant counts the same).
+        public static string SharedMaterialVariant(string key, bool dark, WorldManifest.UvScroll sc)
+        {
+            string v = key;
+            if (dark) v += "|dark";
+            if (sc != null)
+                v += "|scroll:" + sc.UvIndex + ":" + sc.U.ToString("R", System.Globalization.CultureInfo.InvariantCulture) +
+                     ":" + sc.V.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+            return v;
+        }
+
+        /// The .mat file name of a variant: the key, or "<key>_<first 8 hex of SHA-1(variant)>"
+        /// for a dark-decal or uvScroll variant. A key's file name never changes, so
+        /// re-importing keeps the GUID of every unchanged key.
+        public static string SharedMaterialFile(string key, string variant)
+        {
+            if (variant == key) return key;
+            using (var sha = System.Security.Cryptography.SHA1.Create())
+            {
+                byte[] h = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(variant));
+                return key + "_" + BitConverter.ToString(h, 0, 4).Replace("-", "").ToLowerInvariant();
+            }
         }
 
         /// Writes the summary to the log: warnings, errors, PLAN and PROBE lines.
@@ -256,8 +287,15 @@ namespace Castlemist
                 ctx = MaterialContext.Create(sum.warnings);
                 EnsureFolder(root + "/Materials/terrain");
                 EnsureFolder(root + "/Materials/water");
+                bool anyKeys = false;
                 foreach (WorldManifest.ModelEntry e in m.Models)
-                    if (e.Ok && e.Materials != null) EnsureFolder(root + "/Materials/" + e.FileId);
+                    if (e.Ok && e.Materials != null)
+                    {
+                        if (e.MaterialKeys.Count > 0) anyKeys = true;
+                        else EnsureFolder(root + "/Materials/" + e.FileId);
+                    }
+                if (anyKeys) EnsureFolder(root + "/Materials/Shared");
+                var shared = new Dictionary<string, Material>(StringComparer.Ordinal);   // variant -> .mat (Task 15d)
 
                 AssetDatabase.StartAssetEditing();
                 try
@@ -285,8 +323,22 @@ namespace Castlemist
                             if (!me.UsedByMeshes) continue;  // particle-only materials (VRChat export §1)
                             bool dark = m.DarkDecalRule && e.DarkDecalMaterials.Contains(me.Name);
                             WorldManifest.UvScroll sc = e.UvScroll.FirstOrDefault(u => u.Material == me.Name);
-                            Material mat = PoiyomiMaterials.BuildModelMaterial(ctx, me, folder, dark, sc,
-                                root + "/Materials/" + e.FileId + "/" + Safe(me.FileName) + ".mat");
+                            Material mat;
+                            if (me.Key != null)
+                            {
+                                // Task 15d: one .mat per key, built from its first used entry; the manifest's
+                                // per-model dark decal and uvScroll make a variant of it when they differ.
+                                string variant = SharedMaterialVariant(me.Key, dark, sc);
+                                if (!shared.TryGetValue(variant, out mat))
+                                {
+                                    mat = PoiyomiMaterials.BuildModelMaterial(ctx, me, folder, dark, sc,
+                                        root + "/Materials/Shared/" + SharedMaterialFile(me.Key, variant) + ".mat");
+                                    shared[variant] = mat;
+                                }
+                            }
+                            else
+                                mat = PoiyomiMaterials.BuildModelMaterial(ctx, me, folder, dark, sc,
+                                    root + "/Materials/" + e.FileId + "/" + Safe(me.FileName) + ".mat");
                             foreach (string key in FbxMaterialNames(me, k)) mats[key] = mat;
                         }
                         modelMats[e.Position] = mats;

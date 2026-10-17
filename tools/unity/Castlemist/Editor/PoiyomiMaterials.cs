@@ -341,10 +341,25 @@ namespace Castlemist
 
         static void SetTex(MaterialContext ctx, Material mat, string prop, string folder, MaterialsFile.MapRef m, string tag)
         {
-            string path = folder + "/" + m.File.Replace('\\', '/');
+            string path = AssetPath(folder + "/" + m.File.Replace('\\', '/'));
             var tex = AssetDatabase.LoadAssetAtPath<Texture2D>(path);
             if (tex == null) { ctx.Warnings.Add(tag + ": " + prop + " texture missing: " + path); return; }
             if (mat.HasProperty(prop)) mat.SetTexture(prop, tex);
+        }
+
+        /// `path` with "." and ".." segments folded (a world export's maps are
+        /// ../../textures/gen/... from the model folder; the AssetDatabase wants
+        /// a plain Assets/... path).
+        public static string AssetPath(string path)
+        {
+            var parts = new List<string>();
+            foreach (string s in path.Split('/'))
+            {
+                if (s == "." || s.Length == 0) continue;
+                if (s == ".." && parts.Count > 0 && parts[parts.Count - 1] != "..") parts.RemoveAt(parts.Count - 1);
+                else parts.Add(s);
+            }
+            return string.Join("/", parts.ToArray());
         }
 
         static void SetF(Material m, string p, float v) { if (m.HasProperty(p)) m.SetFloat(p, v); }

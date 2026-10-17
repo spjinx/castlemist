@@ -216,6 +216,8 @@ namespace Castlemist
         public ProbeEntry FrameProbe;  // null: no probe
         public FoliageBlock Foliage;   // null: no foliage block (world-foliage D7)
         public UnityTerrainBlock UnityTerrain;  // null: no unityTerrain block (world-foliage D7)
+        /// sharedMaterials.entries (Task 15d); empty for an export before it.
+        public readonly List<SharedMaterial> SharedMaterials = new List<SharedMaterial>();
         /// settings.zoneFadeQualityScale.value (1 when absent); UnityTerrain.FadeQualityScale wins when present.
         public double ZoneFadeQualityScale = 1.0;
         public readonly List<string> Warnings = new List<string>();
@@ -244,7 +246,17 @@ namespace Castlemist
             /// LodDistances the model's switch distances, model units (null when absent).
             public int LodLevels = 1;
             public double[] LodDistances;
+            /// models[].materialKeys (Task 15d): the key of each materials.json entry; empty when absent.
+            public List<string> MaterialKeys = new List<string>();
             public bool Ok { get { return Status == "ok"; } }
+        }
+
+        /// sharedMaterials.entries[] (Task 15d): one per material key.
+        public sealed class SharedMaterial
+        {
+            public string Key, Name;
+            public int Model, Material, Slots;
+            public bool UsedByMeshes;
         }
 
         public sealed class InstanceEntry
@@ -473,6 +485,7 @@ namespace Castlemist
                     Triangles = (long)mo.OptNum("triangles", 0),
                     Clips = mo.Strings("clips"),
                     DarkDecalMaterials = mo.Strings("darkDecalMaterials"),
+                    MaterialKeys = mo.Strings("materialKeys"),
                 };
                 JObj lods = mo.OptObj("lods");
                 if (lods != null)
@@ -530,6 +543,15 @@ namespace Castlemist
                 }
                 m.Cells.Add(cell);
             }
+
+            JObj sm = r.OptObj("sharedMaterials");
+            if (sm != null)
+                foreach (JObj e in sm.Objs("entries"))
+                    m.SharedMaterials.Add(new SharedMaterial
+                    {
+                        Key = e.Str("key"), Name = e.OptStr("name"), Model = e.Int("model"), Material = e.Int("material"),
+                        Slots = (int)e.OptNum("slots", 0), UsedByMeshes = e.Bool("usedByMeshes", true),
+                    });
 
             JObj fol = r.OptObj("foliage");
             if (fol != null)
@@ -659,7 +681,7 @@ namespace Castlemist
 
         public sealed class MapRef
         {
-            public string File;  // relative to the model folder
+            public string File;  // relative to the model folder (a world export's: ../../textures/gen/<sha1>_<Role>.png)
             public int Uv;
         }
 
@@ -673,6 +695,8 @@ namespace Castlemist
         public sealed class MaterialEntry
         {
             public string Name, FileName, Preset, RenderPreset, Cull;
+            /// The material's content key (Task 15d); null in an export before it.
+            public string Key;
             public bool UsedByMeshes = true, Exact = true;
             public int Mode;
             public BlendRaw Blend;  // null: no game blend word
@@ -709,6 +733,7 @@ namespace Castlemist
                 {
                     Name = m.Str("name"),
                     FileName = m.OptStr("fileName") ?? m.Str("name"),
+                    Key = m.OptStr("key"),
                     Preset = m.OptStr("preset"),
                     RenderPreset = m.OptStr("renderPreset"),
                     Cull = m.OptStr("cull") ?? "Back",
