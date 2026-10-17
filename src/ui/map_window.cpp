@@ -632,6 +632,7 @@ void headless_capture(MapWin& m) {
         if (m.headless->focusFoliage >= 0) m.view.focus_foliage(cam, m.headless->focusFoliage, m.headless->focusForest);
         if (m.headless->focusZoneTree && focus_zone_tree_shot(m.view, m.coll.get(), cam, treeRect))
             SendMessageW(m.bColl, BM_SETCHECK, BST_CHECKED, 0);   // focus_zone_tree turned the layer on
+        if (m.headless->focusHorizon) mapwin_level_camera(cam);
         set_camera(m, cam);
         if (m.headless->fixedTime) m.view.set_time(m.headless->time);
         // Shader: everything in range is built before the shot (no budget),
@@ -1234,6 +1235,18 @@ std::wstring mapwin_shader_status(castlemist::render::WorldShading shading, cons
         s += buf;
     }
     return s;
+}
+
+void mapwin_level_camera(castlemist::render::WorldCamera& c) {
+    float f[2] = {c.fwd[0], c.fwd[1]};
+    float l = std::sqrt(f[0] * f[0] + f[1] * f[1]);
+    if (!(l > 1e-6f)) { f[0] = 1; f[1] = 0; l = 1; }
+    c.fwd[0] = f[0] / l;
+    c.fwd[1] = f[1] / l;
+    c.fwd[2] = 0;
+    c.up[0] = 0;
+    c.up[1] = 0;
+    c.up[2] = -1;
 }
 
 castlemist::render::WorldSkyTime mapwin_next_sky(castlemist::render::WorldSkyTime t) {

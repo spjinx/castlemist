@@ -1891,8 +1891,8 @@ void WorldView::set_sky(const std::vector<WorldSkyImage>& modes) {
         if (FAILED(d->dev->CreateTexture2D(&td, &sd, &t)) ||
             FAILED(d->dev->CreateShaderResourceView(t.Get(), nullptr, &k.srv)))
             continue;
-        float hz[3];
-        world_sky_horizon(m, 0.04f, hz);
+        float hz[3] = {m.horizon[0], m.horizon[1], m.horizon[2]};
+        if (!m.hasHorizon) world_sky_horizon(m, 0.04f, hz);
         for (int c = 0; c < 3; ++c) {
             k.horizon[c] = hz[c];
             k.horizonLinear[c] = std::pow(hz[c], 2.2f);

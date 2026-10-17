@@ -96,6 +96,12 @@ struct WorldSkyImage {
     int mode = 0;   ///< index into MapSky::modes
     int width = 0, height = 0;
     std::vector<uint8_t> rgba;
+    /// The colour distant ground fades to and the sky shows below the
+    /// horizon, display values. Set by the approximate bake to its
+    /// FogColorFar (the game's own fog colour); when unset the view takes
+    /// world_sky_horizon of the image.
+    bool hasHorizon = false;
+    float horizon[3] = {0, 0, 0};
 };
 
 /// @brief One streamed model's game-shader materials for

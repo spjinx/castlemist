@@ -115,6 +115,11 @@ CM_TEST(world_sky, approximate_bake_draws_the_haze) {
     world_sky_horizon(approx[0], 0.05f, ha);
     CHECK_NEAR(hp[1], 0.0f, 1e-6f);
     CHECK_NEAR(ha[1], 1.0f, 1e-2f);
+    // The view's fog / below-horizon colour: FogColorFar for the approximate sky.
+    CHECK_FALSE(proven[0].hasHorizon);
+    CHECK(approx[0].hasHorizon);
+    CHECK_NEAR(approx[0].horizon[1], 1.0f, 1e-6f);
+    CHECK_NEAR(approx[0].horizon[0], 0.0f, 1e-6f);
     bool labelled = false;
     for (const auto& w : wa) labelled = labelled || w.find("approx input: FogColorFar") != std::string::npos;
     CHECK(labelled);

@@ -103,6 +103,10 @@ std::vector<WorldSkyImage> bake_world_sky(const sky::SkyInputs& in, int width, s
         sky::Image img = sky::render_equirect(b.radiance, width, width / 2);
         WorldSkyImage w;
         w.mode = static_cast<int>(mode);
+        if (approximate && ai.haveFog) {   // the game's fog colour, not the band around the horizon
+            w.hasHorizon = true;
+            for (int k = 0; k < 3; ++k) w.horizon[k] = std::clamp(ai.fogFar[k], 0.0f, 1.0f);
+        }
         w.width = img.width;
         w.height = img.height;
         w.rgba = std::move(img.rgba);

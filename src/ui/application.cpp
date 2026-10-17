@@ -802,6 +802,7 @@ int run(HINSTANCE hInstance, int cmd_show) {
         h.focusAnimated = castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "animated";
         h.focusProps = castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "props";
         h.focusZoneTree = castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "zonetree";
+        h.focusHorizon = castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "horizon";
         if (castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "foliage") h.focusFoliage = 0.9f;
         if (castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "foliagemax") h.focusFoliage = 1.0f;
         if (castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "forest") { h.focusFoliage = 1.0f; h.focusForest = true; }
