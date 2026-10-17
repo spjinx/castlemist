@@ -297,6 +297,10 @@ std::string chunk_name(size_t i, const TerrainChunk& c) {
 
 using Ex = castlemist::model::Extractor;
 
+/// Chunks per blend-page side on every map whose page grid fits one value
+/// (Queensdale, Lion's Arch, Spirit Vale; note §4.2). Used only to break a tie.
+constexpr int kMeasuredChunksPerPage = 4;
+
 /// The PIMG file's PGTB table, or `present = false` with a warning.
 Ex::MapPagedImage read_paged_image(uint32_t fileId, Gw2Dat& dat, const nlohmann::json& tpl,
                                    std::vector<std::string>& warnings) {
@@ -357,12 +361,23 @@ void resolve_terrain_materials(Terrain& t, const castlemist::model::Extractor::M
     int perPage = 0;
     if (!pages.empty()) {
         int found = 0;
+        bool fitsMeasured = false;
         for (int n = 1; n <= std::max(t.chunksX, t.chunksY); ++n)
             if ((uint32_t)((t.chunksX + n - 1) / n) == pagesX && (uint32_t)((t.chunksY + n - 1) / n) == pagesY) {
                 if (!found) perPage = n;
+                if (n == kMeasuredChunksPerPage) fitsMeasured = true;
                 ++found;
             }
-        if (found != 1) {
+        if (found > 1 && fitsMeasured) {
+            // Small maps (Mad King's Labyrinth: 6x6 chunks on 2x2 pages) fit
+            // several n. Every map with a unique fit measures 4, so take it.
+            warnings.push_back("terrain materials: page grid " + std::to_string(pagesX) + "x" + std::to_string(pagesY) +
+                               " fits " + std::to_string(found) + " chunks-per-page values for " +
+                               std::to_string(t.chunksX) + "x" + std::to_string(t.chunksY) + " chunks; using " +
+                               std::to_string(kMeasuredChunksPerPage) +
+                               ", the value every uniquely fitting map measures (UNPROVEN here)");
+            perPage = kMeasuredChunksPerPage;
+        } else if (found != 1) {
             warnings.push_back("terrain materials: page grid " + std::to_string(pagesX) + "x" + std::to_string(pagesY) +
                                " fits " + std::to_string(found) + " chunks-per-page values for " +
                                std::to_string(t.chunksX) + "x" + std::to_string(t.chunksY) + " chunks; no blend pages");
