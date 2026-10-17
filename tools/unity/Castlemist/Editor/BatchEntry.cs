@@ -10,15 +10,23 @@
 // FrameProbe.Check's PROBE line and exits with 0 (OK) or 1.
 //
 //   ... -executeMethod Castlemist.BatchEntry.ImportWorld -castlemistWorld Assets/<export>
-//     [-castlemistScale <s>]
+//     [-castlemistScale <s>] [-castlemistTerrain mesh|terrain]
+//     [-castlemistFoliage off|colliders|trees|all] [-castlemistDensity f]
+//     [-castlemistDistance f] [-castlemistQuest]
 //
 // ImportWorld runs WorldImporter.Import on the folder (scale: the manifest's
-// unityScale unless given), logs the warnings, the PROBE line and the PLAN
-// line (validate_manifest.py --plan's format), then CELL lines checking that
-// each cell's terrain lies under its Cell_<id> origin, INSTANCES checking the
-// prop matrices and FOLIAGE_TREES the foliage tree instances (count, order,
-// LODGroup and matrix against each record's m). Exit 0 when there are no
-// errors, the probe passed (or there was none) and those checks passed.
+// unityScale unless given; options: ImportOptions, -castlemistQuest the Quest
+// preset, then the other flags on top), logs the warnings, the PROBE line, the
+// TERRAIN_CHECK line (Terrain mode) and the PLAN line (validate_manifest.py
+// --plan --mode --foliage --foliage-density --foliage-distance's format), then
+// CELL lines checking that each cell's terrain lies under its Cell_<id> origin,
+// INSTANCES checking the prop matrices, FOLIAGE_TREES the foliage tree
+// instances (count, order, LODGroup and matrix against each record's m, as
+// FoliagePlan places them), FOLIAGE_PATCHES the patches (count, LODGroup,
+// at most 65 535 vertices unless one record, every record's position inside
+// its patch's bounds) and, in Terrain mode, TERRAIN_TREES (each TreeInstance's
+// position against its record's m). Exit 0 when there are no errors, the probe
+// and the terrain frame check passed (or did not run) and those checks passed.
 //
 //   ... -executeMethod Castlemist.BatchEntry.CheckSkinnedProbe -castlemistFile Assets/<dir>/skinned_probe.fbx
 //     [-castlemistNoBakeAxis]
@@ -100,13 +108,14 @@ namespace Castlemist
                 float scale = scaleArg != null
                     ? float.Parse(scaleArg, CultureInfo.InvariantCulture)
                     : (float)WorldManifest.Parse(System.IO.File.ReadAllText(folder + "/manifest.json")).UnityScale;
+                ImportOptions opts = Options();
                 Debug.Log("CASTLEMIST unity=" + Application.unityVersion + " world=" + folder + " unityScale=" +
-                          scale.ToString("R", CultureInfo.InvariantCulture) +
+                          scale.ToString("R", CultureInfo.InvariantCulture) + " " + opts +
                           " poiyomi=" + (Shader.Find(PoiyomiMaterials.ShaderName) != null ? "found" : "absent"));
-                ImportSummary sum = WorldImporter.Import(folder, scale);
+                ImportSummary sum = WorldImporter.Import(folder, scale, opts);
                 WorldImporter.Log(sum);
-                bool cellsOk = CheckCells(folder);
-                code = sum.errors.Count == 0 && (sum.probeLine == null || sum.probeOk) && cellsOk ? 0 : 1;
+                bool cellsOk = CheckCells(folder, opts);
+                code = sum.errors.Count == 0 && (sum.probeLine == null || sum.probeOk) && sum.terrainCheckOk && cellsOk ? 0 : 1;
             }
             catch (Exception e)
             {
@@ -116,10 +125,23 @@ namespace Castlemist
             EditorApplication.Exit(code);
         }
 
+        /// The import options from the command line (ImportOptions defaults; -castlemistQuest first).
+        static ImportOptions Options()
+        {
+            ImportOptions o = HasArg("-castlemistQuest") ? ImportOptions.Quest() : new ImportOptions();
+            string a;
+            if ((a = Arg("-castlemistTerrain")) != null) o.terrain = ImportOptions.ParseTerrain(a);
+            if ((a = Arg("-castlemistFoliage")) != null) o.foliage = ImportOptions.ParseFoliage(a);
+            if ((a = Arg("-castlemistDensity")) != null) o.density = float.Parse(a, CultureInfo.InvariantCulture);
+            if ((a = Arg("-castlemistDistance")) != null) o.distance = float.Parse(a, CultureInfo.InvariantCulture);
+            o.Validate();
+            return o;
+        }
+
         /// Each Cell_<id>'s terrain must be centred under the cell's own
         /// position (the cell origin is its rect centre): a check that the
         /// -origin offset of the cell .fbx content is right.
-        static bool CheckCells(string folder)
+        static bool CheckCells(string folder, ImportOptions opts)
         {
             WorldManifest m = WorldManifest.Parse(System.IO.File.ReadAllText(folder + "/manifest.json"));
             GameObject root = GameObject.Find("GW2_" + m.MapFileId);
@@ -177,26 +199,123 @@ namespace Castlemist
             bool instOk = maxErr < 1e-4;
             Debug.Log("INSTANCES checked=" + checkedInst + " maxRelErr=" + maxErr.ToString("E2", CultureInfo.InvariantCulture) +
                       " rootScale=" + scale.ToString("R", CultureInfo.InvariantCulture) + (instOk ? " OK" : " FAIL"));
-            return ok && instOk && CheckFoliage(folder, m, root);
+            if (m.UnityTerrain == null) opts = new ImportOptions { terrain = TerrainMode.Mesh, foliage = opts.foliage, density = opts.density, distance = opts.distance };
+            var errs = new List<string>();
+            FoliagePlan plan = FoliagePlan.Build(m, c => FoliageRecords.Read(folder + "/" + c.FoliageFile), opts, errs);
+            bool foliageOk = CheckFoliage(m, root, plan);
+            bool patchesOk = CheckPatches(m, root, plan);
+            bool terrainOk = plan.Mode != TerrainMode.UnityTerrain || CheckTerrainTrees(m, plan);
+            return ok && instOk && foliageOk && patchesOk && terrainOk;
+        }
+
+        /// The map-space translation of a record in Unity world space: root * C * t.
+        static Vector3 WorldOf(WorldManifest m, GameObject root, FoliageRecord r)
+        {
+            var u = new Vector3();
+            for (int i = 0; i < 3; ++i)
+                u[i] = (float)(m.ToUnity[i, 0] * r.M[9] + m.ToUnity[i, 1] * r.M[10] + m.ToUnity[i, 2] * r.M[11]);
+            return root.transform.TransformPoint(u);
+        }
+
+        /// FOLIAGE_PATCHES: Cell_<id>/Foliage/Patches holds the plan's patches, each with a LOD0-only LODGroup,
+        /// at most 65 535 vertices unless it holds one record, and every record's position inside its bounds.
+        static bool CheckPatches(WorldManifest m, GameObject root, FoliagePlan plan)
+        {
+            var fails = new List<string>();
+            int patches = 0, want = 0, recs = 0;
+            long maxVerts = 0;
+            foreach (FoliageCellPlan cp in plan.Cells)
+            {
+                want += cp.Patches.Count;
+                Transform parent = root.transform.Find("Cell_" + cp.Cell.Id + "/Foliage/Patches");
+                int have = parent != null ? parent.childCount : 0;
+                if (have != cp.Patches.Count) { fails.Add(cp.Cell.Id + ": " + have + " patches, plan " + cp.Patches.Count); continue; }
+                for (int k = 0; k < have; ++k)
+                {
+                    Transform t = parent.GetChild(k);
+                    FoliagePatchPlan pp = cp.Patches[k];
+                    string name = m.Models[pp.Model].FileId + "_" + pp.K;
+                    if (t.name != name) fails.Add(cp.Cell.Id + ": patch " + k + " is " + t.name + ", plan " + name);
+                    LODGroup lg = t.GetComponent<LODGroup>();
+                    if (lg == null || lg.lodCount != 1) fails.Add(t.name + ": no LOD0-only LODGroup");
+                    MeshFilter mf = t.GetComponent<MeshFilter>();
+                    Renderer rd = t.GetComponent<Renderer>();
+                    if (mf == null || mf.sharedMesh == null || rd == null) { fails.Add(t.name + ": no mesh"); continue; }
+                    long v = mf.sharedMesh.vertexCount;
+                    maxVerts = Math.Max(maxVerts, v);
+                    if (v > FoliagePlan.PatchMaxVertices && pp.Records.Count > 1) fails.Add(t.name + ": " + v + " vertices");
+                    Bounds b = rd.bounds;
+                    b.Expand(1e-3f);
+                    foreach (FoliageRecord r in pp.Records)
+                    {
+                        Vector3 w = WorldOf(m, root, r);
+                        // A model's origin may sit outside its own mesh (sideways): test against the bounds grown by one patch square.
+                        Bounds g = b;
+                        g.Expand((float)(2 * FoliagePlan.PatchUnits) * root.transform.localScale.x);
+                        if (!g.Contains(w)) fails.Add(t.name + ": record " + r.Placement + " outside its patch");
+                        ++recs;
+                    }
+                    ++patches;
+                }
+            }
+            bool ok = fails.Count == 0;
+            Debug.Log("FOLIAGE_PATCHES checked=" + patches + " plan=" + want + " records=" + recs + " maxVertices=" + maxVerts +
+                      (ok ? " OK" : " FAIL " + string.Join("; ", fails.Take(5))));
+            return ok;
+        }
+
+        /// TERRAIN_TREES: each Terrain's TreeInstances, in order, at its record's world position within 1e-3 of a tile.
+        static bool CheckTerrainTrees(WorldManifest m, FoliagePlan plan)
+        {
+            GameObject root = GameObject.Find("GW2_" + m.MapFileId);
+            GameObject troot = GameObject.Find("GW2_" + m.MapFileId + "_Terrain");
+            if (root == null || troot == null) { Debug.LogError("TERRAIN_TREES FAIL no root"); return false; }
+            var fails = new List<string>();
+            int n = 0, clampedY = 0;
+            double maxErr = 0;
+            foreach (FoliageTilePlan tp in plan.Tiles)
+            {
+                Transform t = troot.transform.Find("Tile_" + tp.Tile.Id);
+                Terrain terrain = t != null ? t.GetComponent<Terrain>() : null;
+                if (terrain == null) { fails.Add(tp.Tile.Id + ": no Terrain"); continue; }
+                TreeInstance[] ti = terrain.terrainData.treeInstances;
+                if (ti.Length != tp.Trees.Count) { fails.Add(tp.Tile.Id + ": " + ti.Length + " trees, plan " + tp.Trees.Count); continue; }
+                Vector3 size = terrain.terrainData.size, pos = terrain.transform.position;
+                for (int i = 0; i < ti.Length; ++i)
+                {
+                    Vector3 got = pos + Vector3.Scale(ti[i].position, size);
+                    Vector3 want = WorldOf(m, root, tp.Trees[i]);
+                    // Unity clamps TreeInstance.position.y to 0..1: a tree outside the terrain's height range
+                    // (TerrainBuilder warns) is checked in x and z only.
+                    if (want.y < pos.y || want.y > pos.y + size.y) { want.y = got.y; ++clampedY; }
+                    double err = (got - want).magnitude / Math.Max(1.0, size.x);
+                    maxErr = Math.Max(maxErr, err);
+                    ++n;
+                }
+            }
+            bool ok = fails.Count == 0 && maxErr < 1e-5;
+            Debug.Log("TERRAIN_TREES checked=" + n + " yClamped=" + clampedY + " maxRelErr=" + maxErr.ToString("E2", CultureInfo.InvariantCulture) +
+                      (ok ? " OK" : " FAIL " + string.Join("; ", fails.Take(5))));
+            return ok;
         }
 
         /// World-foliage D8: Cell_<id>/Foliage/Trees holds one instance per tree
-        /// record of an ok model, in record order, each with a LODGroup, and its
+        /// record the plan places, in record order, each with a LODGroup, and its
         /// world matrix equals root * C * m * C^-1 from the record's own m.
-        static bool CheckFoliage(string folder, WorldManifest m, GameObject root)
+        static bool CheckFoliage(WorldManifest m, GameObject root, FoliagePlan plan)
         {
             double maxErr = 0;
             int checkedTrees = 0, want = 0;
             var fails = new List<string>();
-            foreach (WorldManifest.CellEntry c in m.Cells)
+            foreach (FoliageCellPlan cp in plan.Cells)
             {
-                if (c.FoliageFile == null) continue;
-                List<FoliageRecord> recs = FoliageRecords.Read(folder + "/" + c.FoliageFile);
-                var trees = recs.Where(r => FoliageRecords.IsTree(r, m.Foliage) && r.Model < m.Models.Count && m.Models[(int)r.Model].Ok).ToList();
+                WorldManifest.CellEntry c = cp.Cell;
+                List<FoliageRecord> trees = cp.Trees;
                 want += trees.Count;
                 Transform parent = root.transform.Find("Cell_" + c.Id + "/Foliage/Trees");
                 int have = parent != null ? parent.childCount : 0;
                 if (have != trees.Count) { fails.Add(c.Id + ": " + have + " trees, " + trees.Count + " records"); continue; }
+                if (have == 0) continue;
                 for (int k = 0; k < have; ++k)
                 {
                     Transform t = parent.GetChild(k);

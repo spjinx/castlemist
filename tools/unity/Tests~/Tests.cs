@@ -43,6 +43,8 @@ namespace Castlemist.Tests
  ""light"":null,""water"":null,""frameProbe"":null,""sky"":null,""spawn"":null,
  ""warnings"":[]}";
 
+        const string MeshPlan = "PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2 foliagePatches=2 terrains=0 detailPrototypes=0 detailCells=0 treeInstances=0";
+
         static int Main(string[] args)
         {
             Run("minijson.values", () =>
@@ -85,11 +87,39 @@ namespace Castlemist.Tests
                 Throws<ManifestException>(() => WorldManifest.Parse(Minimal.Replace("\"fileId\":7", "\"fileId\":\"7\"")), "manifest.map.fileId");
                 Throws<ManifestException>(() => WorldManifest.Parse("[1"), "manifest.json");
             });
+            Run("manifest.model_position", () =>
+            {
+                // A region export keeps scene.models indices: instances and records name the position instead.
+                WorldManifest m = WorldManifest.Parse(Minimal.Replace("\"models\":[]",
+                    "\"models\":[{\"index\":5,\"fileId\":11,\"status\":\"ok\"},{\"index\":9,\"fileId\":12,\"status\":\"ok\"}]"));
+                Check(m.Models[1].Index == 9 && m.Models[1].Position == 1 && m.Models[0].Position == 0, "position");
+            });
             Run("summary.plan_line", () =>
             {
-                var s = new ImportSummary { materials = 5, prefabs = 3, controllers = 1, cells = 1, instances = 4, colliders = 1, terrainColliders = 1, water = 1, lights = 1, skybox = 0, foliageTrees = 2 };
+                var s = new ImportSummary { materials = 5, prefabs = 3, controllers = 1, cells = 1, instances = 4, colliders = 1, terrainColliders = 1, water = 1, lights = 1, skybox = 0, foliageTrees = 2, foliagePatches = 2 };
                 // The world_manifest_plan ctest's expected line for the fixture, verbatim.
-                Check(s.PlanLine() == "PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2", s.PlanLine());
+                Check(s.PlanLine() == MeshPlan, s.PlanLine());
+            });
+            Run("foliage.fmix32_keep", () =>
+            {
+                Check(FoliageRecords.Fmix32(0) == 0 && FoliageRecords.Fmix32(1) == 0x514E28B7u && FoliageRecords.Fmix32(3) == 0x85F0B427u, "vectors");
+                Check(!FoliageRecords.Keep(3, 0, 0.5f) && FoliageRecords.Keep(3, 1, 0.5f) && FoliageRecords.Keep(1, 0, 0.5f), "half");
+                Check(FoliageRecords.Keep(0xFFFFFFFFu, 0, 0f) && FoliageRecords.Keep(3, 1, 0f) && !FoliageRecords.Keep(0, 0, 0f), "zero");
+                Check(FoliageRecords.Keep(0xFFFFFFFEu, 0, 1f), "one");
+                Check(FoliageRecords.DensityThreshold(0.3f) == 0.3 * 4294967296.0, "decimal density");
+                int kept = 0;
+                for (uint i = 0; i < 20000; ++i) if (FoliageRecords.Keep(i, 0, 0.5f)) ++kept;
+                Check(kept > 9600 && kept < 10400, "kept " + kept);
+            });
+            Run("options.quest_and_names", () =>
+            {
+                ImportOptions q = ImportOptions.Quest();
+                Check(q.terrain == TerrainMode.Mesh && q.foliage == FoliageMode.ColliderTrees && q.distance == 0.5f && q.density == 1f, "quest");
+                Check(ImportOptions.ParseTerrain("terrain") == TerrainMode.UnityTerrain && ImportOptions.ParseFoliage("colliders") == FoliageMode.ColliderTrees, "parse");
+                Throws<ArgumentException>(() => ImportOptions.ParseFoliage("some"), "foliage must be");
+                Throws<ArgumentException>(() => new ImportOptions { distance = 3f }.Validate(), "distance");
+                Throws<ArgumentException>(() => new ImportOptions { density = -0.1f }.Validate(), "density");
+                Check(FoliagePlan.PatchCapacity(12) == 1820 && FoliagePlan.PatchCapacity(30000) == 1 && FoliagePlan.PatchCapacity(0) == 21845, "capacity");
             });
             Run("foliage.records", () =>
             {
@@ -141,7 +171,9 @@ namespace Castlemist.Tests
                     Check(m.Cells[0].ColliderParts == 1 && m.Cells[0].WaterTexture != null, "collider/water");
                     WorldManifest.InstanceEntry i = m.Cells[0].Instances[3];
                     Check(i.Model == 1 && i.Clip == "TestClip" && i.S == 3.0 && i.T[0] == 2288.0 && i.R.Length == 4, "instance");
-                    Check(m.Light != null && m.Light.Ambient.Length == 3 && m.Sky == null && m.FrameProbe.Fbx == "probe.fbx", "light/sky/probe");
+                    // probe.fbx is recorded once world-fbx (Blender) has run on the export; the ctest fixture has none.
+                    Check(m.Light != null && m.Light.Ambient.Length == 3 && m.Sky == null &&
+                          (m.FrameProbe.Fbx == null || m.FrameProbe.Fbx == "probe.fbx"), "light/sky/probe");
                     double[] o = m.MapToUnity(m.Cells[0].Origin);
                     Check(o[0] == -12288.0 && o[2] == 36864.0, "origin");
                 });
@@ -156,6 +188,48 @@ namespace Castlemist.Tests
                     int trees = 0;
                     foreach (FoliageRecord r in recs) if (FoliageRecords.IsTree(r, m.Foliage)) ++trees;
                     Check(recs.Count == 4 && trees == 2, "trees " + trees);
+                });
+                Run("fixture.unity_terrain", () =>
+                {
+                    WorldManifest m = WorldManifest.Parse(File.ReadAllText(Path.Combine(dir, "manifest.json")));
+                    WorldManifest.UnityTerrainBlock ut = m.UnityTerrain;
+                    Check(ut != null && ut.Tiles.Count == 1 && ut.HeightmapResolution == 129 && ut.DetailResolution == 256, "block");
+                    Check(ut.Check.Count == 32 && ut.FadeQualityScale == 1.5 && m.FadeQualityScale == 1.5, "check / fade");
+                    WorldManifest.TerrainTile t = ut.Tiles[0];
+                    Check(t.Id == "t0_0" && t.Holes != null && t.TreesRecords == 1 && t.Details.Count == 1, "tile");
+                    double[] real = t.Real(ut.TileChunks);
+                    Check(real[0] == -15360 && real[2] == -15360 + 6144 && real[3] == 39936 && real[1] == 39936 - 6144, "real");
+                    Check(ut.TileOfChunk(1, 1) == t && ut.DetailPrototypeOf(2) == 0 && ut.TreePrototypeOf(0) == 0, "lookups");
+                    Check(m.Cells[0].Chunks[2] == 1 && m.Cells[0].Rect[0] == -15360 && m.Models[2].Triangles == 12, "cell / model");
+                    Check(m.Foliage.Models.Exists(fm => fm.Model == 2 && fm.TerrainDetail), "terrainDetail");
+                });
+                Run("fixture.plan_counts", () =>
+                {
+                    // The foliage counts of the world_manifest_plan / _plan_terrain ctests (validate_manifest.py plan_foliage).
+                    WorldManifest m = WorldManifest.Parse(File.ReadAllText(Path.Combine(dir, "manifest.json")));
+                    Func<WorldManifest.CellEntry, List<FoliageRecord>> read = c => FoliageRecords.Read(Path.Combine(dir, c.FoliageFile));
+                    Func<ImportOptions, string> counts = o =>
+                    {
+                        var errs = new List<string>();
+                        FoliagePlan p = FoliagePlan.Build(m, read, o, errs);
+                        Check(errs.Count == 0, string.Join("; ", errs));
+                        return p.TreeCount + " " + p.PatchCount + " " + p.Tiles.Count + " " + p.DetailPrototypeCount + " " +
+                               p.DetailCellCount + " " + p.TreeInstanceCount;
+                    };
+                    string got;
+                    Check((got = counts(new ImportOptions())) == "2 2 0 0 0 0", "mesh " + got);
+                    Check((got = counts(new ImportOptions { terrain = TerrainMode.UnityTerrain })) == "1 0 1 1 2 1", "terrain " + got);
+                    Check((got = counts(new ImportOptions { density = 0.5f })) == "2 1 0 0 0 0", "mesh 0.5 " + got);
+                    Check((got = counts(new ImportOptions { terrain = TerrainMode.UnityTerrain, density = 0.5f })) == "1 0 1 1 1 1", "terrain 0.5 " + got);
+                    Check((got = counts(new ImportOptions { terrain = TerrainMode.UnityTerrain, foliage = FoliageMode.ColliderTrees })) == "1 0 1 0 0 1", "terrain colliders " + got);
+                    Check((got = counts(ImportOptions.Quest())) == "2 0 0 0 0 0", "quest " + got);
+                    Check((got = counts(new ImportOptions { foliage = FoliageMode.Off })) == "0 0 0 0 0 0", "off " + got);
+                    Check((got = counts(new ImportOptions { density = 0f })) == "2 0 0 0 0 0", "density 0 keeps colliders " + got);
+                    // The detail cells, row 0 north: (38, 82) and (101, 92).
+                    FoliagePlan tp = FoliagePlan.Build(m, read, new ImportOptions { terrain = TerrainMode.UnityTerrain }, new List<string>());
+                    int[] d0 = tp.Tiles[0].Details[0];
+                    Check(d0[82 * 256 + 38] == 1 && d0[92 * 256 + 101] == 1, "detail cells");
+                    Check(tp.Tiles[0].Trees.Count == 1 && tp.Tiles[0].Trees[0].Placement == 0, "terrain tree");
                 });
                 Run("fixture.materials", () =>
                 {

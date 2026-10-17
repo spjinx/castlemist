@@ -85,6 +85,31 @@ class Keywords(unittest.TestCase):
         self.assertEqual(errs, [])  # the real schema uses only the supported set
 
 
+class Thinning(unittest.TestCase):
+    """world-foliage D9: fmix32 and the keep rule (the C# FoliageRecords.Keep is the same)."""
+
+    def test_fmix32_vectors(self):
+        self.assertEqual(vm.fmix32(0), 0)
+        self.assertEqual(vm.fmix32(1), 0x514E28B7)
+        self.assertEqual(vm.fmix32(3), 0x85F0B427)
+
+    def test_density_half_keeps_colliders(self):
+        # placement 3 hashes to 0.523: dropped at 0.5 unless it has a collider (bit 0).
+        self.assertFalse(vm.foliage_keep(3, 0, 0.5))
+        self.assertTrue(vm.foliage_keep(3, 1, 0.5))
+        self.assertTrue(vm.foliage_keep(1, 0, 0.5))           # 0.318
+        self.assertTrue(vm.foliage_keep(0xFFFFFFFF, 0, 0.0))  # a geometry-only collider is always kept
+        self.assertTrue(vm.foliage_keep(3, 1, 0.0))
+        self.assertFalse(vm.foliage_keep(0, 0, 0.0))          # fmix32(0) = 0 is not < 0
+        self.assertTrue(vm.foliage_keep(0xFFFFFFFE, 0, 1.0))  # density 1 keeps every placement
+
+    def test_kept_counts(self):
+        n = 20000
+        for d, lo, hi in [(0.0, 0, 0), (0.5, 0.48 * n, 0.52 * n), (1.0, n, n)]:
+            k = sum(1 for p in range(n) if vm.foliage_keep(p, 0, d))
+            self.assertTrue(lo <= k <= hi, (d, k))
+
+
 @unittest.skipUnless(EXPORT, "needs an export dir")
 class Export(unittest.TestCase):
     def run_copy(self, edit=None, remove=None, plan=False, prep=None):
@@ -115,10 +140,107 @@ class Export(unittest.TestCase):
     def test_plan_foliage_trees(self):
         # Layer type 3 or layer 0xFFFF (world-foliage D8): the collider tree and the geometry-only one.
         lines, ok = self.run_copy(plan=True)
-        self.assertTrue(any(l.startswith("PLAN ") and l.endswith(" foliageTrees=2") for l in lines), lines)
+        self.assertTrue(any(l.startswith("PLAN ") and " foliageTrees=2 " in l for l in lines), lines)
         # Layer 0 no longer a tree layer: only the geometry-only collider is left.
         lines, ok = self.run_copy(edit=lambda j: j["foliage"]["layers"][0].__setitem__("type", 1), plan=True)
-        self.assertTrue(any(l.startswith("PLAN ") and l.endswith(" foliageTrees=1") for l in lines), lines)
+        self.assertTrue(any(l.startswith("PLAN ") and " foliageTrees=1 " in l for l in lines), lines)
+
+    def plan_line(self, **kw):
+        d = tempfile.mkdtemp(prefix="cm_vm_")
+        try:
+            dst = os.path.join(d, "x")
+            shutil.copytree(EXPORT, dst)
+            if "prep" in kw:
+                kw.pop("prep")(dst)
+            m = vm.load_json(os.path.join(dst, "manifest.json"))
+            line, errs = vm.plan(m, dst, **kw)
+            return line
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    @staticmethod
+    def fields(line):
+        return dict(kv.split("=") for kv in line.split()[1:])
+
+    def test_plan_foliage_modes(self):
+        # Mesh: trees 2 (collider tree, geometry-only collider); the two grass records in squares (1,1) and (3,1).
+        f = self.fields(self.plan_line())
+        self.assertEqual((f["foliageTrees"], f["foliagePatches"], f["terrains"], f["treeInstances"]), ("2", "2", "0", "0"))
+        f = self.fields(self.plan_line(foliage="off"))
+        self.assertEqual((f["foliageTrees"], f["foliagePatches"]), ("0", "0"))
+        f = self.fields(self.plan_line(foliage="colliders"))
+        self.assertEqual((f["foliageTrees"], f["foliagePatches"]), ("2", "0"))
+        f = self.fields(self.plan_line(foliage="trees"))
+        self.assertEqual((f["foliageTrees"], f["foliagePatches"]), ("2", "0"))
+        # Density 0.5: grass placement 1 (0.318) kept, placement 3 (0.523) dropped.
+        f = self.fields(self.plan_line(density=0.5))
+        self.assertEqual((f["foliageTrees"], f["foliagePatches"]), ("2", "1"))
+        f = self.fields(self.plan_line(density=0.0))
+        self.assertEqual((f["foliageTrees"], f["foliagePatches"]), ("2", "0"))
+        # Terrain: the collider tree is a Terrain tree, the grass are details in 2 cells; no mesh terrain.
+        f = self.fields(self.plan_line(mode="terrain"))
+        self.assertEqual((f["foliageTrees"], f["foliagePatches"], f["terrains"], f["detailPrototypes"], f["detailCells"],
+                          f["treeInstances"], f["terrainColliders"], f["materials"]), ("1", "0", "1", "1", "2", "1", "0", "5"))
+        f = self.fields(self.plan_line(mode="terrain", density=0.5))
+        self.assertEqual((f["detailPrototypes"], f["detailCells"], f["treeInstances"]), ("1", "1", "1"))
+        f = self.fields(self.plan_line(mode="terrain", foliage="colliders"))
+        self.assertEqual((f["foliageTrees"], f["detailPrototypes"], f["detailCells"], f["treeInstances"]), ("1", "0", "0", "1"))
+        # Quest preset: mesh, collider trees, distance 0.5 (distance changes no count).
+        f = self.fields(self.plan_line(foliage="colliders", distance=0.5))
+        self.assertEqual((f["foliageTrees"], f["foliagePatches"], f["terrains"]), ("2", "0", "0"))
+
+    def test_plan_density_keeps_colliders(self):
+        # The collider tree's placement set to 3 (0.523): still kept at 0.5, and at 0.
+        prep = self.patch_bin(8, "<I", 3, record=0)
+        for d in (0.5, 0.0):
+            f = self.fields(self.plan_line(prep=prep, density=d))
+            self.assertEqual(f["foliageTrees"], "2", d)
+        # Without its collider bit it is thinned like any other tree.
+        def no_collider(dst):
+            prep(dst)
+            self.patch_bin(6, "<H", 8, record=0)(dst)
+        f = self.fields(self.plan_line(prep=no_collider, density=0.5))
+        self.assertEqual(f["foliageTrees"], "1")
+
+    def test_plan_patch_split(self):
+        # A patch holds at most max(1, 65535 // (3 x triangles)) records of one model and square, in record order.
+        def tri(n):
+            def prep(dst):
+                p = os.path.join(dst, "manifest.json")
+                j = vm.load_json(p)
+                j["models"][2]["triangles"] = n
+                with open(p, "w") as f:
+                    json.dump(j, f)
+            return prep
+        self.assertEqual(self.fields(self.plan_line(prep=tri(21845)))["foliagePatches"], "2")
+        # Both grass records in one square (the second moved onto the first's x, y): one patch at cap 2, two at cap 1.
+        def same_square(n):
+            def prep(dst):
+                tri(n)(dst)
+                with open(os.path.join(dst, self.BIN), "r+b") as f:
+                    f.seek(2 * 100 + 12 + 36)
+                    xy = f.read(8)
+                    f.seek(3 * 100 + 12 + 36)
+                    f.write(xy)
+            return prep
+        self.assertEqual(self.fields(self.plan_line(prep=same_square(10922)))["foliagePatches"], "1")
+        self.assertEqual(self.fields(self.plan_line(prep=same_square(10923)))["foliagePatches"], "2")
+
+    def test_plan_cli_options(self):
+        import io
+        import contextlib
+        for bad_args in (["--mode", "x"], ["--foliage", "some"], ["--foliage-density", "1.5"],
+                         ["--foliage-distance", "0.05"], ["--foliage-distance", "3"]):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = vm.main(["vm", EXPORT, "--plan"] + bad_args)
+            self.assertEqual(code, 2, bad_args)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = vm.main(["vm", EXPORT, "--plan", "--mode", "terrain", "--foliage", "colliders",
+                            "--foliage-density", "0.5", "--foliage-distance", "0.5"])
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertIn(" treeInstances=1", out.getvalue())
 
     def test_model_index_out_of_range_in_plan(self):
         lines, ok = self.run_copy(edit=lambda j: j["cells"][0]["instances"][1].__setitem__("model", 9), plan=True)

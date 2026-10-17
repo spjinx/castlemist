@@ -278,11 +278,22 @@ if (CASTLEMIST_PYTHON)
     add_test(NAME world_manifest_unit
              COMMAND "${CASTLEMIST_PYTHON}" -I "${PROJECT_SOURCE_DIR}/tools/world/test_validate_manifest.py"
                      "${CMAKE_BINARY_DIR}/world_fixture")
-    set_tests_properties(world_manifest_validate world_manifest_plan world_manifest_selftest world_manifest_unit
-        PROPERTIES FIXTURES_REQUIRED world_fixture RESOURCE_LOCK world_fixture TIMEOUT 120)
+    # Unity Terrain mode (world-foliage D8): the cell's mesh terrain and its material are not built (terrainColliders=0,
+    # materials 5 - 1 + the shared Nature/Terrain/Standard template); one tile. The collider tree (bit 3) is a Terrain
+    # tree, the geometry-only collider stays a prefab instance. The two grass records (model 103, terrainDetail) are
+    # details: (-13500, 36000) and (-10500, 35500) in tile t0_0 (x0 -15360, y1 39936) fall in the 48-unit cells
+    # (floor(1860/48), floor(3936/48)) = (38, 82) and (floor(4860/48), floor(4436/48)) = (101, 92): 2 non-zero texels.
+    add_test(NAME world_manifest_plan_terrain
+             COMMAND "${CASTLEMIST_PYTHON}" -I "${_cm_vm}" "${CMAKE_BINARY_DIR}/world_fixture" --plan --mode terrain)
+    set_tests_properties(world_manifest_validate world_manifest_plan world_manifest_plan_terrain world_manifest_selftest
+        world_manifest_unit PROPERTIES FIXTURES_REQUIRED world_fixture RESOURCE_LOCK world_fixture TIMEOUT 120)
     set_tests_properties(world_manifest_validate PROPERTIES PASS_REGULAR_EXPRESSION "^OK")
+    # Mesh mode, Foliage All, density 1: trees are the collider tree and the geometry-only collider; the two grass
+    # records are 1536-unit squares (1, 1) and (3, 1) of the cell (x0 -15360, y0 33792), so 2 patches.
     set_tests_properties(world_manifest_plan PROPERTIES PASS_REGULAR_EXPRESSION
-        "PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2")   # trees: the collider tree and the geometry-only collider
+        "PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2 foliagePatches=2 terrains=0 detailPrototypes=0 detailCells=0 treeInstances=0")
+    set_tests_properties(world_manifest_plan_terrain PROPERTIES PASS_REGULAR_EXPRESSION
+        "PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=0 water=1 lights=1 skybox=0 foliageTrees=1 foliagePatches=0 terrains=1 detailPrototypes=1 detailCells=2 treeInstances=1")
     set_tests_properties(world_manifest_selftest PROPERTIES PASS_REGULAR_EXPRESSION "SELFTEST OK")
 endif()
 

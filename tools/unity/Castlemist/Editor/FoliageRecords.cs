@@ -91,6 +91,41 @@ namespace Castlemist
             return f != null && r.Layer < f.Layers.Count && f.Layers[r.Layer].Type == 3;
         }
 
+        public const ushort FlagCollider = 1, FlagTerrainTree = 1 << 3, FlagOutsideTerrain = 1 << 4;
+        public const uint NoPlacement = 0xFFFFFFFF;
+
+        /// MurmurHash3's 32-bit finaliser (foliageThinHash, spec D9): 0 -> 0, 1 -> 0x514E28B7.
+        public static uint Fmix32(uint h)
+        {
+            unchecked
+            {
+                h ^= h >> 16;
+                h *= 0x85EBCA6B;
+                h ^= h >> 13;
+                h *= 0xC2B2AE35;
+                h ^= h >> 16;
+                return h;
+            }
+        }
+
+        /// The Density knob (spec D9; validate_manifest.py foliage_keep): a record with a collider (bit 0) or
+        /// without a placement (0xFFFFFFFF, a geometry-only collider) is always kept; otherwise
+        /// fmix32(placement) < density * 2^32.
+        public static bool Keep(uint placement, ushort flags, float density)
+        {
+            if ((flags & FlagCollider) != 0 || placement == NoPlacement) return true;
+            return Fmix32(placement) < DensityThreshold(density);
+        }
+
+        /// density * 2^32, with the float taken at its shortest decimal (0.3f -> 0.3, as Python parses
+        /// "--foliage-density 0.3"), so the importer and the dry run keep the same records.
+        public static double DensityThreshold(float density)
+        {
+            if (!(density > 0f)) return 0.0;
+            if (density >= 1f) return 4294967296.0;
+            return (double)(decimal)density * 4294967296.0;
+        }
+
         /// The LODGroup cull height (spec D8):
         /// clamp(size / (2 fadeFar D tan(fov / 2)), 1e-4, 1). A fadeFar that is not
         /// positive and finite gives 1e-4 (never culled in practice).

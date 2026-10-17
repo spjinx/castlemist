@@ -19,7 +19,15 @@
 //   skybox           1 when RenderSettings.skybox was set from the sky
 //   foliageTrees     foliage tree prefab instances placed (world-foliage D8):
 //                    records whose layer has type 3 or is 0xFFFF and whose
-//                    model is ok (validate_manifest.py plan_foliage_trees)
+//                    model is ok, shown and kept (FoliagePlan; validate_manifest.py
+//                    plan_foliage), not Terrain trees
+//   foliagePatches   foliage patch meshes (type 1-2 records not made details)
+//   terrains         Unity Terrain tiles (Terrain mode)
+//   detailPrototypes detail layers set, summed over the tiles
+//   detailCells      non-zero 48-unit detail cells, summed over tiles and layers
+//   treeInstances    Terrain TreeInstances (bit-3 records, Terrain mode)
+// In Terrain mode the cells' mesh terrain is not built: terrainColliders is 0
+// and materials has no terrain cell materials but one shared terrain template.
 // No UnityEngine dependency.
 
 using System.Collections.Generic;
@@ -33,10 +41,14 @@ namespace Castlemist
         public int colliderParts;
         /// Foliage tree instances placed (in the PLAN line).
         public int foliageTrees;
-        /// Foliage records not placed (not in the PLAN line): layer type 1-2
-        /// (detail) records, which the patches will place; and records skipped
-        /// because their model failed or has no prefab.
-        public int foliageDeferred, foliageSkipped;
+        /// Patches, Terrain tiles, detail layers and cells, Terrain trees (in the PLAN line).
+        public int foliagePatches, terrains, detailPrototypes, detailCells, treeInstances;
+        /// Foliage records not placed (not in the PLAN line): skipped because their
+        /// model failed or has no prefab or mesh.
+        public int foliageSkipped;
+        /// The TERRAIN_CHECK line (the terrain frame check), or null when not run.
+        public string terrainCheckLine;
+        public bool terrainCheckOk = true;
         public List<string> warnings = new List<string>();
         public List<string> errors = new List<string>();
         /// The frame probe's PROBE line, or null when there was no probe.
@@ -49,7 +61,9 @@ namespace Castlemist
             return "PLAN materials=" + materials + " prefabs=" + prefabs + " controllers=" + controllers +
                    " cells=" + cells + " instances=" + instances + " colliders=" + colliders +
                    " terrainColliders=" + terrainColliders + " water=" + water + " lights=" + lights +
-                   " skybox=" + skybox + " foliageTrees=" + foliageTrees;
+                   " skybox=" + skybox + " foliageTrees=" + foliageTrees + " foliagePatches=" + foliagePatches +
+                   " terrains=" + terrains + " detailPrototypes=" + detailPrototypes + " detailCells=" + detailCells +
+                   " treeInstances=" + treeInstances;
         }
     }
 }

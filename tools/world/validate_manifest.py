@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 """Dependency-free validator and Unity dry run for a castlemist world export.
 
-    python -I tools/world/validate_manifest.py <exportDir> [--schema <path>] [--plan] [--self-test]
+    python -I tools/world/validate_manifest.py <exportDir> [--schema <path>] [--self-test]
+        [--plan [--mode mesh|terrain] [--foliage off|colliders|trees|all] [--foliage-density d] [--foliage-distance D]]
 
 Exit 0 when valid (prints "OK ..."), 1 with one "ERROR <path>: <message>" line
 per problem. Standard library only. The schema checker supports exactly:
@@ -25,8 +26,12 @@ trees file records x 24 bytes; prototype and model indices in range; the
 tiles' tree records equal the foliage records with flag bit 3; and every check
 point inside a tile's real chunks.
 
---plan ends with foliageTrees=<n>: the records the Unity importer places as
-tree prefab instances (plan_foliage_trees).
+--plan prints what the Unity importer builds with the given options (default
+mesh, all, density 1, distance 1; world-foliage D8, D9), ending with
+foliageTrees= foliagePatches= terrains= detailPrototypes= detailCells=
+treeInstances= (plan_foliage). Distance changes no count. In Terrain mode the
+cells' mesh terrain and its material are not built (terrainColliders=0) and one
+shared Nature/Terrain/Standard template material is.
 """
 import json
 import math
@@ -532,8 +537,45 @@ def _check_unity(inst, origin, p, errors):
 
 
 # ---------------------------------------------------------------- plan
-def plan(m, root):
-    """Returns (PLAN line, errors): what an importer would build."""
+PLAN_MODES = ("mesh", "terrain")
+PLAN_FOLIAGE = ("off", "colliders", "trees", "all")
+FOLIAGE_PATCH_UNITS = 1536.0      # foliagePatchUnits (castlemist's choice, world-foliage D8)
+FOLIAGE_PATCH_MAX_VERTICES = 65535
+FOLIAGE_FLAG_COLLIDER = 1
+FOLIAGE_FLAG_OUTSIDE_TERRAIN = 1 << 4
+FOLIAGE_NO_PLACEMENT = 0xFFFFFFFF
+DETAIL_MAX_COUNT = 255
+
+
+def fmix32(h):
+    """MurmurHash3's 32-bit finaliser (foliageThinHash, world-foliage D9)."""
+    h &= 0xFFFFFFFF
+    h ^= h >> 16
+    h = (h * 0x85EBCA6B) & 0xFFFFFFFF
+    h ^= h >> 13
+    h = (h * 0xC2B2AE35) & 0xFFFFFFFF
+    h ^= h >> 16
+    return h
+
+
+def foliage_keep(placement, flags, density):
+    """The Density knob's keep rule (D9; C# FoliageRecords.Keep): a collider (bit 0) and a geometry-only collider
+    (placement 0xFFFFFFFF) are always kept; otherwise fmix32(placement) < density * 2^32."""
+    if flags & FOLIAGE_FLAG_COLLIDER or placement == FOLIAGE_NO_PLACEMENT:
+        return True
+    return fmix32(placement) < density * 4294967296.0
+
+
+def patch_capacity(triangles):
+    """Records per patch (D8): at most 65535 vertices, bounded by 3 vertices a triangle of the model's
+    models[].triangles, so the dry run and the importer split alike: max(1, 65535 // (3 x triangles))."""
+    t = triangles if isinstance(triangles, int) and triangles > 0 else 1
+    return max(1, FOLIAGE_PATCH_MAX_VERTICES // (3 * t))
+
+
+def plan(m, root, mode="mesh", foliage="all", density=1.0, distance=1.0):
+    """Returns (PLAN line, errors): what the Unity importer would build with these options
+    (Terrain mode, Foliage, Density; Distance changes no count)."""
     errors = []
     models = m.get("models") or []
     ok = [mod for mod in models if mod.get("status") == "ok"]
@@ -548,7 +590,14 @@ def plan(m, root):
         except (OSError, ValueError, KeyError, TypeError) as e:
             errors.append("ERROR models[%d].materials: unreadable: %s" % (i, e))
     cells = m.get("cells") or []
+    ut = m.get("unityTerrain")
+    if mode == "terrain" and not isinstance(ut, dict):
+        errors.append("ERROR unityTerrain: missing: Terrain mode needs the export's unityTerrain block "
+                      "(world-export without --no-unity-terrain); mesh terrain is planned")
+        mode = "mesh"
     terrain = 1 if (m.get("terrain") or {}).get("present") else 0
+    mesh_terrain = terrain if mode == "mesh" else 0
+    tiles = len(ut.get("tiles") or []) if mode == "terrain" else 0
     water_cells = sum(1 for c in cells if c.get("water"))
     pairs = set()
     inst = 0
@@ -561,24 +610,75 @@ def plan(m, root):
                               % (ci, k, ci, k))
             elif i.get("clip"):
                 pairs.add((mi, i["clip"]))
+    fp = plan_foliage(m, root, mode, foliage, density)
     line = ("PLAN materials=%d prefabs=%d controllers=%d cells=%d instances=%d colliders=%d terrainColliders=%d "
-            "water=%d lights=1 skybox=%d foliageTrees=%d" % (
-                mats + terrain * len(cells) + water_cells, len(ok), len(pairs), len(cells), inst,
-                sum(1 for c in cells if c.get("colliderParts", 0) > 0), terrain * len(cells), water_cells,
-                1 if m.get("sky") else 0, plan_foliage_trees(m, root)))
+            "water=%d lights=1 skybox=%d foliageTrees=%d foliagePatches=%d terrains=%d detailPrototypes=%d "
+            "detailCells=%d treeInstances=%d" % (
+                mats + mesh_terrain * len(cells) + water_cells + (1 if tiles else 0), len(ok), len(pairs), len(cells),
+                inst, sum(1 for c in cells if c.get("colliderParts", 0) > 0), mesh_terrain * len(cells), water_cells,
+                1 if m.get("sky") else 0, fp["trees"], fp["patches"], tiles, fp["detailPrototypes"],
+                fp["detailCells"], fp["treeInstances"]))
     return line, errors
 
 
-def plan_foliage_trees(m, root):
-    """Tree records the Unity importer places as prefab instances (world-foliage D8,
-    mesh terrain): records whose layer has type 3, or layer 0xFFFF (a collider
-    linked by geometry only), and whose model has status ok. A missing or
-    unreadable bin counts nothing here (semantic() reports it)."""
+def foliage_shown(foliage, kind, flags):
+    """The Foliage knob (D9): Off; Collider trees = bit 0 only; Trees = type 3 and geometry-only colliders; All."""
+    if foliage == "off" or kind is None:
+        return False
+    if foliage == "colliders":
+        return bool(flags & FOLIAGE_FLAG_COLLIDER)
+    if foliage == "trees":
+        return kind == "tree"
+    return True
+
+
+def _terrain_tiles(ut):
+    """unityTerrain tiles by their north-west chunk, with the real rect, origin and detail resolution."""
+    out = {}
+    tc = ut.get("tileChunks") or 4
+    for t in ut.get("tiles") or []:
+        ch, pos, sz = t["chunks"], t["position"], t["size"]
+        cw, cd = sz[0] / tc, sz[2] / tc
+        x0, z1 = pos[0], pos[2] + sz[2]
+        real = (x0, z1 - (ch[3] - ch[1] + 1) * cd, x0 + (ch[2] - ch[0] + 1) * cw, z1)
+        out[(ch[0], ch[1])] = {"id": t["id"], "x0": x0, "y1": z1, "real": real}
+    return out
+
+
+def plan_foliage(m, root, mode, foliage, density):
+    """Foliage counts of the Unity importer (world-foliage D8, D9).
+
+    A record whose model has status ok is a tree when its layer has type 3 or is 0xFFFF (a collider linked by
+    geometry only), and a type-1/2 record when its layer has type 1 or 2; anything else is not placed. It is placed
+    when the Foliage knob shows it and the Density knob keeps it (foliage_keep). Then:
+    - Terrain mode: a tree with flag bit 3 in a cell with a tile is a Terrain tree (treeInstances); a type-1/2 record whose model is
+      foliage.models[].terrainDetail, without bit 4 and inside its cell's tile's real area, is a detail: one count in
+      the 48-unit cell (floor((x - tileX0)/48), floor((tileY1 - y)/48)) of its prototype's layer (detailPrototypes =
+      the (tile, prototype) layers with a count, detailCells = the cells with one);
+    - otherwise a tree is a prefab instance (foliageTrees), and type-1/2 records are grouped per (cell, model,
+      1536-unit square from the cell's rect x0, y0) and split in record order every patch_capacity(triangles)
+      records (foliagePatches).
+    A missing or unreadable bin counts nothing here (semantic() reports it)."""
+    out = {"trees": 0, "patches": 0, "detailPrototypes": 0, "detailCells": 0, "treeInstances": 0}
+    if foliage == "off":
+        return out
     models = m.get("models") or []
     fol = m.get("foliage")
     layers = (fol.get("layers") if isinstance(fol, dict) else None) or []
-    tree_layer = [isinstance(l, dict) and l.get("type") == 3 for l in layers]
-    n = 0
+    ltype = [l.get("type") if isinstance(l, dict) else None for l in layers]
+    detail_model = set()
+    for fm in (fol.get("models") or []) if isinstance(fol, dict) else []:
+        if fm.get("terrainDetail") is True and isinstance(fm.get("model"), int):
+            detail_model.add(fm["model"])
+    ut = m.get("unityTerrain") if mode == "terrain" else None
+    tiles = _terrain_tiles(ut) if isinstance(ut, dict) else {}
+    tc = (ut or {}).get("tileChunks") or 4
+    dres = (ut or {}).get("detailResolution") or 256
+    dcell = float((ut or {}).get("detailCellUnits") or 48)
+    dproto = {}
+    for k, p in enumerate((ut or {}).get("detailPrototypes") or []):
+        dproto.setdefault(p.get("model"), k)
+    detail_counts = {}   # (tile id, prototype) -> {(dx, dy): n}
     for c in m.get("cells") or []:
         f = c.get("foliage")
         if not isinstance(f, dict) or not isinstance(f.get("file"), str):
@@ -587,14 +687,49 @@ def plan_foliage_trees(m, root):
             recs = read_foliage_records(os.path.join(root, f["file"]))
         except OSError:
             continue
+        rect = c.get("rect") or [0.0, 0.0, 0.0, 0.0]
+        ch = c.get("chunks")
+        tile = tiles.get(((ch[0] // tc) * tc, (ch[1] // tc) * tc)) if ut is not None and ch else None
+        squares = {}   # (model, sx, sy) -> records
         for r in recs:
             mi = r["model"]
             if not (mi < len(models) and models[mi].get("status") == "ok"):
                 continue
             li = r["layer"]
-            if li == FOLIAGE_GEOMETRY_ONLY_LAYER or (li < len(tree_layer) and tree_layer[li]):
-                n += 1
-    return n
+            t = ltype[li] if li < len(ltype) else None
+            kind = "tree" if li == FOLIAGE_GEOMETRY_ONLY_LAYER or t == 3 else ("small" if t in (1, 2) else None)
+            if not foliage_shown(foliage, kind, r["flags"]) or not foliage_keep(r["placement"], r["flags"], density):
+                continue
+            x, y = r["m"][12], r["m"][13]
+            if ut is not None and tile is not None and kind == "tree" and r["flags"] & FOLIAGE_FLAG_TERRAIN_TREE:
+                out["treeInstances"] += 1
+                continue
+            if kind == "tree":
+                out["trees"] += 1
+                continue
+            if (ut is not None and tile is not None and mi in detail_model and mi in dproto
+                    and not r["flags"] & FOLIAGE_FLAG_OUTSIDE_TERRAIN):
+                rr = tile["real"]
+                if rr[0] <= x <= rr[2] and rr[1] <= y <= rr[3]:
+                    dx = min(max(int(math.floor((x - tile["x0"]) / dcell)), 0), dres - 1)
+                    dy = min(max(int(math.floor((tile["y1"] - y) / dcell)), 0), dres - 1)
+                    cellmap = detail_counts.setdefault((tile["id"], dproto[mi]), {})
+                    cellmap[(dx, dy)] = cellmap.get((dx, dy), 0) + 1
+                    continue
+            key = (mi, int(math.floor((x - rect[0]) / FOLIAGE_PATCH_UNITS)),
+                   int(math.floor((y - rect[1]) / FOLIAGE_PATCH_UNITS)))
+            squares[key] = squares.get(key, 0) + 1
+        for (mi, _, _), n in squares.items():
+            cap = patch_capacity(models[mi].get("triangles"))
+            out["patches"] += (n + cap - 1) // cap
+    out["detailPrototypes"] = len(detail_counts)
+    out["detailCells"] = sum(len(v) for v in detail_counts.values())
+    return out
+
+
+def plan_foliage_trees(m, root):
+    """Tree records the Unity importer places as prefab instances in mesh mode with Foliage All."""
+    return plan_foliage(m, root, "mesh", "all", 1.0)["trees"]
 
 
 # ---------------------------------------------------------------- driver
@@ -607,8 +742,8 @@ def load_json(path):
         return json.load(f, parse_constant=_no_constant)
 
 
-def validate(export_dir, schema_path, want_plan=False):
-    """Returns (lines, ok). Lines are OK / PLAN / ERROR output."""
+def validate(export_dir, schema_path, want_plan=False, plan_opts=None):
+    """Returns (lines, ok). Lines are OK / PLAN / ERROR output. plan_opts: plan()'s keyword options."""
     try:
         schema = load_json(schema_path)
     except (OSError, ValueError) as e:
@@ -639,7 +774,7 @@ def validate(export_dir, schema_path, want_plan=False):
         errors += semantic(m, export_dir)
     lines = list(errors)
     if want_plan and shape_ok:
-        pl, perr = plan(m, export_dir)
+        pl, perr = plan(m, export_dir, **(plan_opts or {}))
         lines.append(pl)
         for e in perr:
             if e not in lines:
@@ -729,7 +864,8 @@ def self_test(export_dir, schema_path):
     return 0
 
 
-USAGE = "usage: validate_manifest.py <exportDir> [--schema <path>] [--plan] [--self-test]"
+USAGE = ("usage: validate_manifest.py <exportDir> [--schema <path>] [--plan [--mode mesh|terrain] "
+         "[--foliage off|colliders|trees|all] [--foliage-density d] [--foliage-distance D]] [--self-test]")
 
 
 def main(argv):
@@ -737,6 +873,7 @@ def main(argv):
     args = argv[1:]
     want_plan = want_self = False
     export_dir = None
+    opts = {}
     i = 0
     while i < len(args):
         a = args[i]
@@ -747,6 +884,23 @@ def main(argv):
             want_plan = True
         elif a == "--self-test":
             want_self = True
+        elif a in ("--mode", "--foliage", "--foliage-density", "--foliage-distance") and i + 1 < len(args):
+            v = args[i + 1]
+            i += 1
+            try:
+                if a == "--mode" and v in PLAN_MODES:
+                    opts["mode"] = v
+                elif a == "--foliage" and v in PLAN_FOLIAGE:
+                    opts["foliage"] = v
+                elif a == "--foliage-density" and 0.0 <= float(v) <= 1.0:
+                    opts["density"] = float(v)
+                elif a == "--foliage-distance" and 0.1 <= float(v) <= 2.0:
+                    opts["distance"] = float(v)
+                else:
+                    raise ValueError(v)
+            except ValueError:
+                print(USAGE)
+                return 2
         elif a.startswith("--") or export_dir is not None:
             print(USAGE)
             return 2
@@ -758,7 +912,7 @@ def main(argv):
         return 2
     if want_self:
         return self_test(export_dir, schema)
-    lines, ok = validate(export_dir, schema, want_plan)
+    lines, ok = validate(export_dir, schema, want_plan, opts)
     for ln in lines:
         print(ln)
     return 0 if ok else 1
