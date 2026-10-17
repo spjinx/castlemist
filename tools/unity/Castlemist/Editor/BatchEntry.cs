@@ -238,10 +238,34 @@ namespace Castlemist
             return null;
         }
 
+        /// Every "<b>_LOD<k>" renderer under `root` has exactly its LOD0 "<b>" renderer's sharedMaterials
+        /// (the same .mat assets, never a copy per level); null when they all do.
+        static string SameMaterials(GameObject root)
+        {
+            Renderer[] rs = root.GetComponentsInChildren<Renderer>(true);
+            var lod0 = new Dictionary<string, Renderer>(StringComparer.Ordinal);
+            foreach (Renderer r in rs)
+            {
+                string b;
+                if (ModelLods.LevelOf(r.gameObject.name, out b) == 0 && !lod0.ContainsKey(b)) lod0[b] = r;
+            }
+            foreach (Renderer r in rs)
+            {
+                string b;
+                if (ModelLods.LevelOf(r.gameObject.name, out b) == 0) continue;
+                Renderer z;
+                if (!lod0.TryGetValue(b, out z)) continue;   // an orphan: warned at import
+                Material[] a = r.sharedMaterials, c = z.sharedMaterials;
+                if (a.Length != c.Length || a.Where((mat, i) => !ReferenceEquals(mat, c[i])).Any())
+                    return r.gameObject.name + " materials differ from " + z.gameObject.name + "'s";
+            }
+            return null;
+        }
+
         /// LODS (Task 15b): every model prefab whose model has lods.levels > 1 has a LODGroup with that
         /// many levels, strictly decreasing heights equal to ModelLods.TransitionHeights of its size and
-        /// the model's distances, every LOD with renderers, each level drawing as many renderers as LOD0
-        /// and every active renderer in some level; a model without LODs has no LODGroup. Each tree
+        /// the model's distances, every LOD with renderers, each level drawing as many renderers as LOD0,
+        /// every active renderer in some level and every LOD renderer with its LOD0's materials; a model without LODs has no LODGroup. Each tree
         /// prefab of such a model has the levels its cull leaves (TreeLevels); each instance with
         /// instances[].lod has the heights of its own distances.
         static bool CheckLods(string folder, WorldManifest m, GameObject root, ImportOptions opts)
@@ -269,6 +293,7 @@ namespace Castlemist
                         var inLod = new HashSet<Renderer>(lods.SelectMany(l => l.renderers));
                         if (lods.Any(l => l.renderers.Length != lods[0].renderers.Length)) why = "levels draw different renderer counts";
                         else if (p.GetComponentsInChildren<Renderer>(false).Any(r => !inLod.Contains(r))) why = "an active renderer in no level";
+                        else why = SameMaterials(p);
                     }
                     if (why != null) fails.Add(e.FileId + ": " + why);
                     ++prefabs;
@@ -286,6 +311,7 @@ namespace Castlemist
                     {
                         var inLod = new HashSet<Renderer>(tl.GetLODs().SelectMany(l => l.renderers));
                         if (tp.GetComponentsInChildren<Renderer>(false).Any(r => !inLod.Contains(r))) why = "an active renderer in no level";
+                        else why = SameMaterials(tp);
                     }
                     if (why != null) fails.Add("tree " + e.FileId + ": " + why);
                     ++trees;

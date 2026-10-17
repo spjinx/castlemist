@@ -1351,8 +1351,8 @@ def verify_foliage(foliage, S, fails):
 def verify_lods(entries, fails):
     """Task 15b: every model with lods.levels > 1 has its LOD meshes in hidden per-level collections, none of
     them in a collection that is instanced (the model's own or a clip copy), and no level >= levels."""
-    models = objects = 0
-    hidden = True
+    models = objects = shared = 0
+    hidden = materials_ok = True
     for e in (entries or {}).values():
         n = sum(len(c.objects) for c in e.lod_cols.values())
         if e.lod_levels > 1:
@@ -1364,10 +1364,20 @@ def verify_lods(entries, fails):
             if k >= e.lod_levels:
                 fails.append("model %s: LOD%d mesh beyond lods.levels %d" % (e.file_id, k, e.lod_levels))
             hidden = hidden and c.hide_render
+        lod0 = {base_name(o.name): o for o in e.col.objects if o.type == 'MESH'}
+        for c in e.lod_cols.values():
+            for o in c.objects:
+                z = lod0.get(_LOD_SUFFIX.sub("", base_name(o.name)))
+                # The LOD0 object's material datablocks, never a copy per level.
+                if z is not None and [m.name if m else None for m in o.data.materials] !=                         [m.name if m else None for m in z.data.materials]:
+                    fails.append("model %s: %s materials differ from %s" % (e.file_id, o.name, z.name))
+                    materials_ok = False
+                elif z is not None:
+                    shared += 1
         for c in [e.col] + list(e.clip_cols.values()):
             if any(lod_level(o.name) for o in c.objects if o.type == 'MESH'):
                 fails.append("model %s: a LOD mesh in an instanced collection" % e.file_id)
-    print("LODS models=%d objects=%d hidden=%d" % (models, objects, 1 if hidden else 0))
+    print("LODS models=%d objects=%d hidden=%d sameMaterials=%d/%d" % (models, objects, 1 if hidden else 0, shared, objects))
     if not hidden:
         fails.append("LOD collections render")
 

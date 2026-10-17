@@ -2558,6 +2558,18 @@ CM_TEST(world_lods, world_glb_has_lod_nodes) {
         CHECK_EQ(g["accessors"][p2["indices"].get<size_t>()]["count"].get<int>(), 12);
         CHECK((*nodes["101_mesh0_LOD2"]).contains("skin"));
     }
+    // Every LOD node draws its LOD0 primitive's material: the same glTF material index, never a copy.
+    const size_t materials = g["materials"].size();
+    for (const auto& [name, n] : nodes) {
+        const size_t cut = name.rfind("_LOD");
+        if (cut == std::string::npos || !nodes.count(name.substr(0, cut))) continue;
+        const json& lod = g["meshes"][(*n)["mesh"].get<size_t>()]["primitives"][0];
+        const json& base = g["meshes"][(*nodes[name.substr(0, cut)])["mesh"].get<size_t>()]["primitives"][0];
+        CHECK(lod.contains("material"));
+        CHECK(lod["material"] == base["material"]);
+    }
+    CHECK_EQ(g["materials"].size(), materials);
+    CHECK_EQ(materials, m.materials.size());   // no material written per level
 }
 
 CM_TEST(world_lods, manifest_lods_and_overrides) {
