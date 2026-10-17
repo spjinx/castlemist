@@ -49,6 +49,77 @@ CM_TEST(world_sky, parse_time_of_day) {
     CHECK_EQ(std::string(world_sky_time_name(WorldSkyTime::Night)), std::string("night"));
 }
 
+// GW2_MAPWIN_SKY: a time (day / night / off) and / or a kind (approx /
+// proven), comma or space separated, any order and case. What a text leaves
+// out stays as it was; anything unknown fails and changes nothing.
+CM_TEST(world_sky, parse_time_and_kind) {
+    WorldSkyTime t = WorldSkyTime::Day;
+    WorldSkyKind k = WorldSkyKind::Approx;
+    CHECK(parse_world_sky("proven", t, k));
+    CHECK(t == WorldSkyTime::Day);
+    CHECK(k == WorldSkyKind::Proven);
+    CHECK(parse_world_sky("Night,approx", t, k));
+    CHECK(t == WorldSkyTime::Night);
+    CHECK(k == WorldSkyKind::Approx);
+    CHECK(parse_world_sky("proven off", t, k));
+    CHECK(t == WorldSkyTime::Off);
+    CHECK(k == WorldSkyKind::Proven);
+    CHECK(parse_world_sky("day", t, k));
+    CHECK(t == WorldSkyTime::Day);
+    CHECK(k == WorldSkyKind::Proven);
+    CHECK_FALSE(parse_world_sky("day,dusk", t, k));
+    CHECK_FALSE(parse_world_sky("", t, k));
+    CHECK(t == WorldSkyTime::Day);
+    CHECK_EQ(std::string(world_sky_kind_name(WorldSkyKind::Approx)), std::string("approx"));
+    CHECK_EQ(std::string(world_sky_kind_name(WorldSkyKind::Proven)), std::string("proven"));
+}
+
+namespace {
+
+/// A one-colour hemicube sky, haze to green at the horizon (approx only).
+castlemist::exportgltf::sky::SkyInputs hazy_inputs() {
+    castlemist::exportgltf::sky::SkyInputs in;
+    auto& s = in.sky;
+    s.present = true;
+    castlemist::model::Extractor::MapSkyMode m;
+    m.ne = 1; m.sw = 2; m.top = 3;
+    s.modes = {m, m};
+    s.params.dayBrightness = s.params.nightBrightness = 0;
+    s.params.dayHazeDensity = s.params.nightHazeDensity = 1;
+    s.params.dayHazeBottom = s.params.nightHazeBottom = 0.1f;
+    s.params.dayHazeFalloff = s.params.nightHazeFalloff = 0.2f;
+    castlemist::model::Extractor::MapHaze h;
+    h.farColor[1] = 1; h.farColor[3] = 1;
+    s.haze = {h, h};
+    for (uint32_t id : {1u, 2u, 3u}) {
+        castlemist::exportgltf::sky::Image img;
+        img.width = img.height = 8;
+        img.rgba.assign(8 * 8 * 4, 255);
+        in.textures[id] = img;
+    }
+    return in;
+}
+
+} // namespace
+
+// The approximate bake draws the haze; the proven one leaves it out (black).
+CM_TEST(world_sky, approximate_bake_draws_the_haze) {
+    auto in = hazy_inputs();
+    std::vector<std::string> wp, wa;
+    auto proven = bake_world_sky(in, 64, wp);
+    auto approx = bake_world_sky(in, 64, wa, true);
+    CHECK_EQ(proven.size(), size_t(2));
+    CHECK_EQ(approx.size(), size_t(2));
+    float hp[3], ha[3];
+    world_sky_horizon(proven[0], 0.05f, hp);
+    world_sky_horizon(approx[0], 0.05f, ha);
+    CHECK_NEAR(hp[1], 0.0f, 1e-6f);
+    CHECK_NEAR(ha[1], 1.0f, 1e-2f);
+    bool labelled = false;
+    for (const auto& w : wa) labelled = labelled || w.find("approx input: FogColorFar") != std::string::npos;
+    CHECK(labelled);
+}
+
 CM_TEST(world_sky, no_sky_bakes_nothing) {
     castlemist::exportgltf::sky::SkyInputs in;   // sky.present = false
     std::vector<std::string> w;

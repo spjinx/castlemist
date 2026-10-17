@@ -83,6 +83,10 @@ struct WorldModelLoad {
 ///        Night mode 1 (docs/research/gw2-sky.md §3; modes 2 and 3 are
 ///        UNPROVEN and not shown), Off the flat background.
 enum class WorldSkyTime { Day, Night, Off };
+/// @brief Which sky bake the Map window shows: the approximate sky (haze,
+///        sun glow, clouds, material cards with labelled inputs; gw2-sky.md
+///        amendment 2026-10-17) or the proven-only one.
+enum class WorldSkyKind { Approx, Proven };
 
 /// @brief One baked sky mode for WorldView::set_sky: an equirect laid out
 ///        as exportgltf's render_equirect writes it (Unity Skybox/Panoramic:

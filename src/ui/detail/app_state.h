@@ -327,6 +327,8 @@ constexpr UINT_PTR ID_MW_SKY = 2224;
 constexpr UINT_PTR ID_MW_FOLIAGE = 2225;
 constexpr UINT_PTR ID_MW_FOLIAGE_COLLIDERS = 2226;
 constexpr UINT_PTR ID_MW_FOLIAGE_ALL = 2227;
+/// The Map window's approximate-sky toggle (on: the approximate sky; off: proven-only).
+constexpr UINT_PTR ID_MW_SKY_APPROX = 2228;
 /// Map window timers (on the map window, not the main one): the 16 ms frame
 /// pump and the ~4 Hz status line.
 constexpr UINT_PTR TIMER_MW_FRAME = 6;

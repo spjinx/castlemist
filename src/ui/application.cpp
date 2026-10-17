@@ -791,8 +791,9 @@ int run(HINSTANCE hInstance, int cmd_show) {
         h.geometry = castlemist::ui::mapwin_shading_is_geometry(castlemist::core::env::text("GW2_MAPWIN_SHADING"));
         h.shader = castlemist::ui::mapwin_shading_from_text(castlemist::core::env::text("GW2_MAPWIN_SHADING")) ==
                    castlemist::render::WorldShading::Shader;
-        // GW2_MAPWIN_SKY=day|night|off: the sky's time of day (Day otherwise).
-        castlemist::render::parse_world_sky_time(castlemist::core::env::text("GW2_MAPWIN_SKY"), h.sky);
+        // GW2_MAPWIN_SKY=day|night|off and/or approx|proven, e.g. "night,proven":
+        // the sky's time of day (Day otherwise) and bake (the approximate sky otherwise).
+        castlemist::render::parse_world_sky(castlemist::core::env::text("GW2_MAPWIN_SKY"), h.sky, h.skyKind);
         // Minimum below 0 so that GW2_MAPWIN_TIME=0 is honoured (real() ignores values <= minimum).
         if (castlemist::core::env::is_set("GW2_MAPWIN_TIME")) {
             h.fixedTime = true;
