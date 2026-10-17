@@ -116,7 +116,8 @@ WorldScene load_world(Gw2Dat& dat, uint32_t mapFileId, const nlohmann::json& tpl
 ///        chunks:[x, y], resolvedMaterials}, models, props, animatedProps,
 ///        collision:{meshes, instances}, zones:{present, placementsByType:
 ///        [t1, t2, t3], colliders:{entries, anchor, geometry, unlinked},
-///        propCrossChecks, propDisagreements, scatter ("colliders" | "exact" |
+///        propCrossChecks, propDisagreements, instances: [collider, scatter,
+///        density], scatter ("colliders" | "exact" |
 ///        "densityMatched")}, water:{plane, planeZ (null without
 ///        a plane), surfaces, rivers}, sky:{present, modes, clouds,
 ///        lightPresent}, warnings}. Counts only: no per-chunk materials and

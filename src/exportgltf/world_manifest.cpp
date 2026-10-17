@@ -282,28 +282,61 @@ std::vector<ManifestSetting> world_export_settings(const WorldFolderOptions& o, 
     const char* scatter = mode == cw::ZoneScatterMode::Exact            ? "exact"
                           : mode == cw::ZoneScatterMode::DensityMatched ? "densityMatched"
                                                                         : "colliders";
-    // The D5 rule rows: phase 1 places the collider entries only, each at its own stored
-    // transform, so no scatter rule is in force yet (D5 steps 3-4 set them in phase 2).
-    const std::string ruleValue = colliders ? "the collider entry's own transform (no scatter rule in force)"
-                                            : "the D5 rule in force";
-    const std::string ruleStatus = colliders ? kM : kU;
-    const std::string ruleSource = F + (colliders ? "D5; phase 1 places the havk zoneModels entries only"
-                                                  : "D5 steps 3-4");
+    // The D5 rule rows. Colliders (phase 1): each collider entry at its own stored transform.
+    // exact: the client's rule (docs/research/gw2-terrain-to-unity.md §1.3, 2026-10-16); its
+    // single-instance path (type 3) reproduces 4750 / 4750 colliders, so those rows are
+    // measured, and the tiling path's rows are UNPROVEN (ruling S3). densityMatched: UNPROVEN.
+    const bool exact = mode == cw::ZoneScatterMode::Exact;
+    const std::string R = "docs/research/gw2-terrain-to-unity.md Â§" "1.3 (2026-10-16), ";
+    auto rule = [&](const char* name, const std::string& exactValue, const std::string& exactSource) {
+        if (colliders)
+            return ManifestSetting{name, "the collider entry's own transform (no scatter rule in force)", kM,
+                                   F + "D5; phase 1 places the havk zoneModels entries only"};
+        if (exact) return ManifestSetting{name, exactValue, kM, R + exactSource + "; 4750 / 4750 colliders"};
+        return ManifestSetting{name, "the D5 step 4 rule (castlemist's own)", kU, F + "D5 step 4"};
+    };
     const std::vector<ManifestSetting> foliage = {
-        {"zoneGrid", "48 units, origin parm (x0, y0), rows north, anchor column c - 1", kM, F + "M2"},
+        {"zoneGrid", "48 units, origin parm (x0, y0), rows north; cell p of vertRect at vertex (vr0 + p mod w, vr1 + p / w)",
+         kM, F + "M2, with " + R + "the client decode (0x140cd0410 / 0x140cd0660, 0x140cc8150)"},
         {"zoneModelSlot", "(flag >> 1) & 7 into modelArray", kM, F + "M3"},
-        {"zoneFlagBit0", "as stored, not used", kU, F + "M4"},
-        {"zoneTreeLink", "anchor \xc2\xb1" "24, then geometry vote", kM,
+        {"zoneFlagBit0", "selects the path: 1 = tiling (0x140cc1900), 0 = single instance (0x140cc1f50)", kM,
+         R + "read in the code (0x140cc23c0); set on every type-1/2 cell, clear on every type-3 cell"},
+        {"zoneTreeLink", "anchor Â±" "24, then geometry vote", kM,
          F + "D3 (anchor candidates are type-3 placements, ruling S1)"},
         {"zoneVisualTransform", "client_world_matrix(translate, rotate, scale)", kU, F + "D4"},
-        {"zoneScatter", scatter, mode == cw::ZoneScatterMode::DensityMatched ? kU : kM, F + "D5"},
-        {"zonePlacementMultiplicity", "1 instance per placement", kU,
-         F + "M2 (measured for type 3; UNPROVEN for types 1-2)"},
-        {"zoneJitter", ruleValue, ruleStatus, ruleSource},
-        {"zoneYaw", ruleValue, ruleStatus, ruleSource},
-        {"zoneScale", ruleValue, ruleStatus, ruleSource},
-        {"zoneTilt", ruleValue, ruleStatus, ruleSource},
-        {"zoneZ", ruleValue, ruleStatus, ruleSource},
+        {"zoneScatter", scatter, mode == cw::ZoneScatterMode::DensityMatched ? kU : kM,
+         exact ? R + "reproduces 4750 / 4750 colliders (single-instance path); the tiling path is UNPROVEN, "
+                     "see zoneTiling"
+               : F + "D5"},
+        {"zonePlacementMultiplicity",
+         exact ? "type 3: 1, plus the subModel instance; types 1-2: irange(1, T) by the tiling path"
+               : "1 instance per placement",
+         kU, F + "M2 (measured for type 3; UNPROVEN for types 1-2 and the subModel)"},
+        rule("zoneJitter", "P + (24 - 48 fB(), 24 - 48 fB()) unless pack flag 0x1; Park-Miller 48271 reseeded per cell",
+             "0x140cc2880, seed table 0x142592280"),
+        rule("zoneYaw", "(rotRange.z0 + fB() (z1 - z0)) * pi / 180", "0x140cc2af0"),
+        rule("zoneScale", "scaleRange[0] + roundEven((s - s0) / (99/1280)) (99/1280), s uniform", "0x140cc1f50, 0x141e449c4"),
+        rule("zoneTilt",
+             "per model flag: random from rotRange x/y, or the ground normal (terrain plane NW,NE,SW when fx <= fy, else "
+             "NE,SW,SE; collideData under zoneFlags bit 1), x0.35 with pack flag 0x4; else upright",
+             "0x140cc2af0"),
+        rule("zoneZ", "terrain triangle (split NE-SW) + zOffset; collideData.zPos under zoneFlags bit 1",
+             "0x140cc2880, 0x140cbc110"),
+    };
+    std::vector<ManifestSetting> exactRows;
+    if (exact)
+        exactRows = {
+            {"zoneTiling", "types 1-2: pattern irange(0, 24), count irange(1, T), offsets from the 2/3/4 tables, "
+                           "no jitter when count > 1",
+             kU, R + "transcribed from 0x140cc1900 (tables 0x141e44210 / 0x141e443a0 / 0x141e44600); no collider checks it"},
+            {"zoneGraphicsQuality", 2, kU, R + "the tiling count and subModel input (getter 0x140c58c10 not read); ruling S3"},
+            {"zoneGroundcoverOffset", "+(24, 24) from the vertex on the tiling path", kU, R + "0x140cc1900; ruling S3"},
+            {"zoneUnprovenBranches",
+             "clamp to parm rect inset 1, zone matrix = identity, water test (pack 0x1000), random z (0x10 + 0x800), "
+             "yaw from normal (0x200), 90Â° snap (0x200000), subModel second instance",
+             kU, R + "transcribed; none of the 4750 colliders takes them"},
+        };
+    const std::vector<ManifestSetting> foliageTail = {
         {"zoneProbability", "applied offline (not re-applied)", kU, F + "D5"},
         {"zoneTint", "hslRanges / hslOffset not applied", kC, F + "D11"},
         {"zoneFade", "fadeRange = camera distance, map units", kU, F + "D6"},
@@ -316,6 +349,8 @@ std::vector<ManifestSetting> world_export_settings(const WorldFolderOptions& o, 
         {"lodCullFovDeg", 60, kC, F + "D11; the VRChat FOV is UNPROVEN"},
     };
     v.insert(v.end(), foliage.begin(), foliage.end());
+    v.insert(v.end(), exactRows.begin(), exactRows.end());
+    v.insert(v.end(), foliageTail.begin(), foliageTail.end());
     return v;
 }
 

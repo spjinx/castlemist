@@ -13,6 +13,7 @@
 #include "castlemist/world/props.h"
 #include "castlemist/world/terrain.h"
 #include "castlemist/world/zones.h"
+#include "castlemist/world/zone_scatter.h"
 
 #include <algorithm>
 #include <exception>
@@ -283,7 +284,11 @@ WorldScene load_world(Gw2Dat& dat, uint32_t mapFileId, const nlohmann::json& tpl
         if (has("havk") && !havok.present) w.warnings.push_back("collision: havk chunk present but not read");
         build_collision(havok, w);
     });
-    section("zones", [&] { build_zones(ex->parseZon2(), havok, props, w); });
+    section("zones", [&] {
+        build_zones(ex->parseZon2(), havok, props, w);
+        // Phase 2 (world foliage spec D5): the placements without a collider, by the rule in force.
+        scatter_instances(w, zone_scatter_rule_in_force());
+    });
     section("water", [&] { attach_water(*ex, w); });
     section("environment", [&] { attach_environment(*ex, w); });
 
@@ -317,6 +322,9 @@ nlohmann::json world_summary(const WorldScene& w) {
         for (const ZonePlacement& p : z.placements)
             if (p.layer < z.layers.size() && z.layers[p.layer].type >= 1 && z.layers[p.layer].type <= 3)
                 ++byType[z.layers[p.layer].type - 1];
+        size_t bySource[3] = {0, 0, 0};   // Collider, Scatter, Density
+        for (const ZoneInstance& i : z.instances)
+            if (size_t(i.source) < 3) ++bySource[size_t(i.source)];
         const char* scatter = z.mode == ZoneScatterMode::Exact            ? "exact"
                               : z.mode == ZoneScatterMode::DensityMatched ? "densityMatched"
                                                                           : "colliders";
@@ -329,6 +337,7 @@ nlohmann::json world_summary(const WorldScene& w) {
                         {"unlinked", z.collidersUnlinked}}},
                       {"propCrossChecks", z.propCrossChecks},
                       {"propDisagreements", z.propDisagreements},
+                      {"instances", json::array({bySource[0], bySource[1], bySource[2]})},
                       {"scatter", scatter}};
     }
     j["water"] = {{"plane", w.water.hasPlane},

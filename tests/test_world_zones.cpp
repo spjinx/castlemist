@@ -11,10 +11,12 @@
 #include "castlemist/world/load_world.h"
 #include "castlemist/world/props.h"
 #include "castlemist/world/stream.h"
+#include "castlemist/world/zone_scatter.h"
 #include "castlemist/world/zones.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -417,4 +419,377 @@ CM_TEST(zones, hashes_known_vectors) {
 
 CM_TEST(world, unread_chunks_include_zon2) {
     CHECK(unread_chunk_warnings({{"zon2", 22}}).empty());
+}
+
+// ---- phase 2: the zone scatter (world foliage spec D5; docs/research/gw2-terrain-to-unity.md
+// §1.3, 2026-10-16) ----
+
+namespace {
+
+/// One measured collider (zone_samples.csv, Task 9) and its inputs. `p` is the cell index (the
+/// old walk's k - 1).
+struct Sample {
+    const char* what;
+    float x0, y0;
+    uint8_t seed; uint32_t p; int32_t vr[4]; uint8_t flag;
+    float scale[2], rot[3][2]; uint32_t modelFlags; float zOff[2];
+    float u, v, rx, ry, rz, s;
+};
+
+const Sample kSamples[] = {
+    {"Queensdale entry 3356 (random tilt)", -43008, -27648, 22, 958, {41, 787, 162, 829}, 0x10, {0.819999993f, 1.19000006f},
+     {{0, 5}, {0, 5}, {0, 360}}, 0x100008, {128, 128}, 16.8476562f, 18.1279297f, 0.0438350476f, -0.00121980917f,
+     1.85244048f, 0.819999993f},
+    {"Queensdale entry 0", -43008, -27648, 232, 1205, {1336, 837, 1499, 958}, 0x12, {0.600000024f, 1.5f},
+     {{0, 90}, {0, 90}, {0, 360}}, 0x100000, {128, 128}, -1.20703125f, 7.09863281f, 0, 0, 0.560152411f, 0.986718774f},
+    {"Queensdale entry 3609", -43008, -27648, 0, 1437, {1023, 349, 1133, 455}, 0x30, {0.879999995f, 1.5f},
+     {{-20, 20}, {-20, 20}, {0, 360}}, 0x2000, {128, 128}, 11.6933594f, -18.4902344f, 0, 0, 2.07459569f, 1.03468752f},
+    {"Lion's Arch entry 0", -27648, -18432, 0, 940, {725, 491, 778, 530}, 0x14, {0.5f, 1.5f},
+     {{0, 90}, {0, 90}, {0, 360}}, 0x100000, {128, 128}, 14.1347656f, 13.3007812f, 0, 0, 3.95966625f, 0.88671875f},
+    {"Spirit Vale entry 0 (random tilt, no sign)", -15360, -36864, 0, 665, {277, 240, 343, 323}, 0x10,
+     {0.5f, 1.02999997f}, {{-41.2900009f, -26.2900009f}, {-101.290001f, 47.0999985f}, {0, 360}}, 0x120000,
+     {108, 108}, 2.68579102f, -2.34375f, -0.484763503f, -0.49871698f, 5.37188816f, 0.654687524f},
+};
+
+/// A one-zone scene holding sample @p S's cell (raw flags, no terrain, no havk).
+WorldScene sample_scene(const Sample& S) {
+    WorldScene s;
+    s.hasBounds = true;
+    s.bounds[0] = S.x0; s.bounds[1] = S.y0; s.bounds[2] = S.x0 + 200000; s.bounds[3] = S.y0 + 200000;
+    Ex::MapZon2 z;
+    z.present = z.hasRect = true;
+    for (int k = 0; k < 4; ++k) z.rect[k] = s.bounds[k];
+    Ex::Zon2Def d;
+    d.token = 1;
+    d.layers.resize((S.flag >> 4));
+    Ex::Zon2Layer& L = d.layers.back();
+    L.type = 3;
+    L.scaleRange[0] = S.scale[0]; L.scaleRange[1] = S.scale[1];
+    for (int a = 0; a < 3; ++a) for (int k = 0; k < 2; ++k) L.rotRange[a][k] = S.rot[a][k];
+    L.models.resize(((S.flag >> 1) & 7) + 1);
+    Ex::Zon2LayerModel& M = L.models.back();
+    M.fileId = 900;
+    M.flags = S.modelFlags;
+    M.zOffsets[0] = S.zOff[0]; M.zOffsets[1] = S.zOff[1];
+    z.defs.push_back(d);
+    Ex::Zon2Zone zone;
+    zone.defToken = 1;
+    zone.seed = S.seed;
+    for (int k = 0; k < 4; ++k) zone.vertRect[k] = S.vr[k];
+    zone.flags.assign(size_t(S.vr[2] - S.vr[0]) * size_t(S.vr[3] - S.vr[1]), 0);   // raw: no encodeData
+    zone.flags[S.p] = S.flag;
+    z.zones.push_back(zone);
+    build_zones(z, Ex::MapHavok{}, {}, s);
+    return s;
+}
+
+double angle_error(double a, double b) {
+    const double twoPi = 6.283185307179586;
+    double d = std::fmod(std::fabs(a - b), twoPi);
+    return std::min(d, twoPi - d);
+}
+
+/// A scene of @p n type-3 single-instance placements (layer 0 slot 1 = model B) over a 40-wide zone at the origin, with
+/// rotRange.z [10, 200] and scaleRange [0.5, 1.5]; the first @p collided get a collider.
+WorldScene many_scene(int n, int collided) {
+    std::vector<std::pair<std::pair<int, int>, uint8_t>> pts;
+    for (int i = 0; i < n; ++i) pts.push_back({{i % 40, i / 40}, uint8_t(0x12)});   // layer 1, slot 1, bit 0 clear
+    Ex::MapZon2 z = make_zon2({});
+    z.zones[0].vertRect[2] = 40;
+    z.zones[0].vertRect[3] = (n + 39) / 40;
+    z.zones[0].flags = rle_flags(pts, 40);
+    z.zones[0].encodeData.resize(z.zones[0].vertRect[3]);
+    Ex::Zon2Layer& L = z.defs[0].layers[0];
+    L.rotRange[2][0] = 10; L.rotRange[2][1] = 200;
+    L.scaleRange[0] = 0.5f; L.scaleRange[1] = 1.5f;
+    std::vector<Ex::HavokPlacement> es;
+    for (int i = 0; i < collided; ++i) es.push_back(zone_entry(i % 40, i / 40, 0, 0, 1));
+    WorldScene s = make_scene();
+    s.mapFileId = 192711;
+    build_zones(z, havok(es), {}, s);
+    return s;
+}
+
+bool same_instances(const std::vector<ZoneInstance>& a, const std::vector<ZoneInstance>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (a[i].model != b[i].model || a[i].layer != b[i].layer || a[i].placement != b[i].placement ||
+            a[i].collider != b[i].collider || a[i].source != b[i].source ||
+            std::memcmp(a[i].world, b[i].world, sizeof a[i].world) != 0)
+            return false;
+    return true;
+}
+
+ZoneScatterRule density_rule() {
+    ZoneScatterRule r;
+    r.mode = ZoneScatterMode::DensityMatched;
+    return r;
+}
+
+} // namespace
+
+// Park-Miller 48271 with the client's fix-up (0x140e24b10): the minimal-standard sequence.
+CM_TEST(scatter, rng_vectors) {
+    ZoneRng a(1);
+    CHECK_EQ(a.next(), 48271u);
+    CHECK_EQ(a.next(), 182605794u);
+    CHECK_EQ(a.next(), 1291394886u);
+    ZoneRng zero(0);   // a zero seed takes 0x075BD924
+    CHECK_EQ(zero.state, 0x075BD924u);
+    CHECK_EQ(zero.next(), 264553971u);
+    ZoneRng top(0x7FFFFFFF);
+    CHECK_EQ(top.next(), 123459876u);
+    ZoneRng r(5);
+    for (int i = 0; i < 1000; ++i) {
+        const float f = r.fA(), g = r.fB();
+        CHECK(f > 0 && f <= 1);
+        CHECK(g > 0 && g < 1.0001f);
+        const uint32_t k = r.irange(1, 4);
+        CHECK(k >= 1 && k <= 4);
+    }
+}
+
+CM_TEST(scatter, runtime_flags_and_tiling_bound) {
+    CHECK_EQ(zone_runtime_flags(0x1), 0x1u);
+    CHECK_EQ(zone_runtime_flags(0x200000), 0x4u);
+    CHECK_EQ(zone_runtime_flags(0x4), 0x8u);
+    CHECK_EQ(zone_runtime_flags(0x100008), 0x40010u);
+    CHECK_EQ(zone_runtime_flags(0x120000), 0x40020u);
+    CHECK_EQ(zone_runtime_flags(0x10 | 0x800), 0x4040u);
+    CHECK_EQ(zone_runtime_flags(0x1000), 0x8000u);
+    CHECK_EQ(zone_runtime_flags(0x200), 0x100u);
+    CHECK_EQ(zone_runtime_flags(0x800000), 0x100000u);
+    CHECK_EQ(zone_tiling_max(4, 2), 4u);
+    CHECK_EQ(zone_tiling_max(4, 1), 3u);
+    CHECK_EQ(zone_tiling_max(4, 0), 2u);
+    CHECK_EQ(zone_tiling_max(3, 0), 2u);
+    CHECK_EQ(zone_tiling_max(3, 1), 3u);
+    CHECK_EQ(zone_tiling_max(1, 0), 1u);
+    // the seed: (seed << 8) ^ T[...] ^ (((4 ly) ^ lx) << 14); T[0] = 0x35A9260D (0x142592280)
+    CHECK_EQ(zone_cell_seed(0, 0, 0, 10), 0x35A9260Du);
+    CHECK_EQ(zone_cell_seed(1, 0, 0, 10), 0x35A9260Du ^ 0x100u);
+}
+
+// Five measured colliders (3 Queensdale, 1 Lion's Arch, 1 Spirit Vale) reproduced by the exact rule
+// to spec D5 step 2's tolerances.
+CM_TEST(scatter, exact_unit_vectors) {
+    for (const Sample& S : kSamples) {
+        const WorldScene s = sample_scene(S);
+        CHECK_EQ(s.zones.placements.size(), size_t(1));
+        if (s.zones.placements.size() != 1) continue;
+        std::vector<ZoneScatterDraw> d;
+        zone_scatter_exact(s, 0, zone_scatter_rule_in_force(), {}, d);
+        CHECK_EQ(d.size(), size_t(1));
+        if (d.empty()) continue;
+        float P[2];
+        zone_anchor(S.x0, S.y0, s.zones.placements[0].c, s.zones.placements[0].r, P);
+        std::printf("    %s: u %.4f v %.4f rx %.6f ry %.6f rz %.6f s %.6f\n", S.what, d[0].pos[0] - P[0],
+                    d[0].pos[1] - P[1], d[0].rot[0], d[0].rot[1], d[0].rot[2], d[0].scale);
+        CHECK_EQ(d[0].fileId, 900u);
+        CHECK(std::fabs(d[0].pos[0] - P[0] - S.u) <= 0.01f);
+        CHECK(std::fabs(d[0].pos[1] - P[1] - S.v) <= 0.01f);
+        CHECK(angle_error(d[0].rot[2], S.rz) <= 1e-4);
+        CHECK(angle_error(d[0].rot[0], S.rx) <= 1e-4);
+        CHECK(angle_error(d[0].rot[1], S.ry) <= 1e-4);
+        CHECK(std::fabs(d[0].scale - S.s) <= 1e-5f);
+    }
+}
+
+// zOffsets 128 / 128 give 36 - 128/255 * 72 = -0.14 (0x140cbc110), on ground 0 (no terrain).
+CM_TEST(scatter, exact_z_offset) {
+    const WorldScene s = sample_scene(kSamples[1]);
+    std::vector<ZoneScatterDraw> d;
+    zone_scatter_exact(s, 0, zone_scatter_rule_in_force(), {}, d);
+    CHECK_EQ(d.size(), size_t(1));
+    if (!d.empty()) CHECK_NEAR(d[0].pos[2], 36.0f - 128.0f / 255.0f * 72.0f, 1e-4);
+}
+
+// zoneFlags bit 1: z and the normal come from collideData[offsetData[chunk] + order in chunk].
+CM_TEST(scatter, exact_collide_data) {
+    Sample S = kSamples[1];
+    S.modelFlags = 0x2;   // ground-aligned
+    S.vr[0] = 30; S.vr[1] = 0; S.vr[2] = 70; S.vr[3] = 2;   // chunk columns: 30-31 | 32-63 | 64-69
+    S.p = 0;
+    WorldScene s = sample_scene(S);
+    // Cells: (30, 0) chunk 0 first; (33, 0) chunk 1 first; (31, 1) chunk 0 second; (34, 1) chunk 1 second.
+    ZoneScatter& z = s.zones;
+    Zone& Z = z.zones[0];
+    const ZonePlacement tmpl = z.placements[0];
+    z.placements.clear();
+    for (auto [c, r] : std::vector<std::pair<int, int>>{{30, 0}, {33, 0}, {31, 1}, {34, 1}}) {
+        ZonePlacement p = tmpl;
+        p.c = c; p.r = r;
+        z.placements.push_back(p);
+    }
+    Z.placementCount = 4;
+    Z.zoneFlags = 2;
+    Z.offsetData = {10, 0, 99};
+    Z.collideData.assign(3 * 12, 0.0f);
+    Z.collideData[3 * 11 + 2] = -500;   // chunk 0's second cell -> index 11
+    Z.collideData[3 * 11 + 0] = 0.6f;   // its normal x
+    Z.collideData[3 * 1 + 2] = -700;    // chunk 1's second cell -> index 1
+    const std::vector<uint32_t> ci = zone_collide_index(z, 0);
+    CHECK_EQ(ci.size(), size_t(4));
+    if (ci.size() == 4) {
+        CHECK_EQ(ci[0], 10u);
+        CHECK_EQ(ci[1], 0u);
+        CHECK_EQ(ci[2], 11u);
+        CHECK_EQ(ci[3], 1u);
+    }
+    std::vector<ZoneScatterDraw> d;
+    zone_scatter_exact(s, 2, zone_scatter_rule_in_force(), ci, d);
+    CHECK_EQ(d.size(), size_t(1));
+    if (!d.empty()) {
+        CHECK_NEAR(d[0].pos[2], -500.0f + (36.0f - 128.0f / 255.0f * 72.0f), 1e-3);
+        // n = (0.6, 0, 0.8): ry = atan2(0.6, 0.8), rx = 0
+        CHECK_NEAR(d[0].rot[1], std::atan2(0.6, 0.8), 1e-5);
+        CHECK_NEAR(d[0].rot[0], 0.0, 1e-6);
+    }
+    d.clear();
+    zone_scatter_exact(s, 3, zone_scatter_rule_in_force(), ci, d);
+    CHECK_EQ(d.size(), size_t(1));
+    if (!d.empty()) CHECK_NEAR(d[0].pos[2], -700.0f + (36.0f - 128.0f / 255.0f * 72.0f), 1e-3);
+    // an index past collideData: the client skips the cell
+    Z.offsetData = {100, 100, 100};
+    d.clear();
+    zone_scatter_exact(s, 0, zone_scatter_rule_in_force(), zone_collide_index(z, 0), d);
+    CHECK(d.empty());
+}
+
+// The tiling path (flag bit 0): 1-T instances around P + (24, 24); none with pack 0x800000 at quality 0.
+CM_TEST(scatter, exact_tiling_path) {
+    Sample S = kSamples[1];
+    S.flag = 0x13;   // layer 0, slot 1, bit 0
+    size_t total = 0, multi = 0;
+    for (uint32_t p = 0; p < 200; ++p) {
+        S.p = p;
+        WorldScene s = sample_scene(S);
+        s.zones.layers[0].tiling = 4;
+        std::vector<ZoneScatterDraw> d;
+        zone_scatter_exact(s, 0, zone_scatter_rule_in_force(), {}, d);
+        CHECK(d.size() >= 1 && d.size() <= 4);
+        total += d.size();
+        multi += d.size() > 1;
+        float P[2];
+        zone_anchor(S.x0, S.y0, s.zones.placements[0].c, s.zones.placements[0].r, P);
+        for (const ZoneScatterDraw& e : d) {
+            CHECK(std::fabs(e.pos[0] - (P[0] + 24)) <= 91.0f);   // the tables span -90.7 .. 85.3
+            CHECK(std::fabs(e.pos[1] - (P[1] + 24)) <= 91.0f);
+        }
+        if (p == 0) {   // quality 0 with pack flag 0x800000: skipped
+            s.zones.layers[0].models[1].flags |= 0x800000;
+            ZoneScatterRule q0 = zone_scatter_rule_in_force();
+            q0.graphicsQuality = 0;
+            d.clear();
+            zone_scatter_exact(s, 0, q0, {}, d);
+            CHECK(d.empty());
+        }
+    }
+    std::printf("    200 tiling cells (tiling 4, quality 2): %zu instances, %zu cells with more than one\n", total, multi);
+    CHECK(multi > 0);
+    CHECK(total > 200 && total < 800);
+}
+
+// subModel (0x140cbc210): probability 1 always adds a second instance at the same transform; -1 never does.
+CM_TEST(scatter, exact_submodel) {
+    WorldScene s = sample_scene(kSamples[2]);
+    ZoneLayer& L = s.zones.layers[s.zones.placements[0].layer];
+    L.hasSubModel = true;
+    L.subModel.fileId = 901;
+    L.subModel.probability = 1;
+    std::vector<ZoneScatterDraw> d;
+    zone_scatter_exact(s, 0, zone_scatter_rule_in_force(), {}, d);
+    CHECK_EQ(d.size(), size_t(2));
+    if (d.size() == 2) {
+        CHECK_EQ(d[1].fileId, 901u);
+        CHECK(d[1].subModel);
+        CHECK(std::memcmp(d[0].pos, d[1].pos, sizeof d[0].pos) == 0);
+        CHECK(std::memcmp(d[0].rot, d[1].rot, sizeof d[0].rot) == 0);
+        CHECK_EQ(d[0].scale, d[1].scale);
+    }
+    L.subModel.probability = -1;
+    d.clear();
+    zone_scatter_exact(s, 0, zone_scatter_rule_in_force(), {}, d);
+    CHECK_EQ(d.size(), size_t(1));
+}
+
+CM_TEST(scatter, density_deterministic) {
+    WorldScene a = many_scene(60, 5), b = many_scene(60, 5);
+    CHECK_EQ(scatter_instances(a, density_rule()), size_t(55));
+    CHECK_EQ(scatter_instances(b, density_rule()), size_t(55));
+    CHECK(same_instances(a.zones.instances, b.zones.instances));
+    CHECK(a.zones.mode == ZoneScatterMode::DensityMatched);
+    WorldScene e1 = many_scene(60, 5), e2 = many_scene(60, 5);
+    scatter_instances(e1, zone_scatter_rule_in_force());
+    scatter_instances(e2, zone_scatter_rule_in_force());
+    CHECK(same_instances(e1.zones.instances, e2.zones.instances));
+}
+
+CM_TEST(scatter, density_ranges) {
+    WorldScene s = many_scene(1000, 0);
+    CHECK_EQ(scatter_instances(s, density_rule()), size_t(1000));
+    const double pi = 3.14159265358979323846;
+    size_t bad = 0;
+    for (const ZoneInstance& i : s.zones.instances) {
+        CHECK(i.source == ZoneSource::Density);
+        const ZonePlacement& p = s.zones.placements[i.placement];
+        float a[2];
+        zone_anchor(kX0, kY0, p.c, p.r, a);
+        const double u = i.world[12] - a[0], v = i.world[13] - a[1];
+        const double scale = std::hypot(i.world[0], i.world[1], i.world[2]);
+        double yaw = std::atan2(i.world[4], i.world[0]);
+        if (yaw < 0) yaw += 2 * pi;
+        const bool ok = u >= -24.001 && u < 24.001 && v >= -24.001 && v < 24.001 && scale >= 0.5 - 1e-5 &&
+                        scale <= 1.5 + 1e-5 && yaw >= 10 * pi / 180 - 1e-4 && yaw <= 200 * pi / 180 + 1e-4;
+        bad += !ok;
+    }
+    CHECK_EQ(bad, size_t(0));
+    uint64_t st = 7;
+    for (int k = 0; k < 10000; ++k) {
+        const double d = zone_unit_draw(st);
+        CHECK(d >= 0 && d < 1);
+    }
+}
+
+// D5 step 5: a placement with a collider gets no Scatter or Density instance.
+CM_TEST(scatter, never_doubled) {
+    for (const ZoneScatterRule& r : {density_rule(), zone_scatter_rule_in_force()}) {
+        WorldScene s = many_scene(50, 20);
+        CHECK_EQ(s.zones.instances.size(), size_t(20));
+        const size_t added = scatter_instances(s, r);
+        CHECK_EQ(added, size_t(30));
+        std::vector<int> perPlacement(s.zones.placements.size(), 0);
+        for (const ZoneInstance& i : s.zones.instances)
+            if (i.placement < perPlacement.size()) ++perPlacement[i.placement];
+        for (size_t pi = 0; pi < perPlacement.size(); ++pi) CHECK_EQ(perPlacement[pi], 1);
+        for (const ZoneInstance& i : s.zones.instances)
+            if (i.source != ZoneSource::Collider) CHECK_EQ(s.zones.placements[i.placement].collider, UINT32_MAX);
+        // model B was already in the table (the collider trees): the scatter reuses its index
+        CHECK_EQ(s.models.size(), size_t(2));
+    }
+}
+
+CM_TEST(scatter, colliders_mode_adds_nothing) {
+    WorldScene s = many_scene(50, 20);
+    const size_t warnings = s.warnings.size();
+    CHECK_EQ(scatter_instances(s, ZoneScatterRule{}), size_t(0));
+    CHECK_EQ(s.zones.instances.size(), size_t(20));
+    CHECK(s.zones.mode == ZoneScatterMode::Colliders);
+    CHECK_EQ(s.warnings.size(), warnings);
+}
+
+// The exact rule's warnings name the UNPROVEN parts; the summary counts instances by source.
+CM_TEST(scatter, exact_warnings_and_summary) {
+    WorldScene s = many_scene(50, 20);
+    CHECK(zone_scatter_rule_in_force().mode == ZoneScatterMode::Exact);
+    CHECK_EQ(zone_scatter_rule_in_force().graphicsQuality, 2);
+    scatter_instances(s, zone_scatter_rule_in_force());
+    CHECK_EQ(zone_warnings_with(s, {"zoneScatter = exact"}), size_t(1));
+    CHECK_EQ(zone_warnings_with(s, {"UNPROVEN", "tiling path", "graphics quality 2", "(24, 24)"}), size_t(1));
+    CHECK_EQ(zone_warnings_with(s, {"UNPROVEN branches", "clamp", "water", "random z", "yaw from normal", "snap",
+                                    "subModel", "identity"}),
+             size_t(1));
+    const nlohmann::json j = world_summary(s)["zones"];
+    CHECK(j["instances"] == nlohmann::json::array({20, 30, 0}));
+    CHECK_EQ(j["scatter"].get<std::string>(), std::string("exact"));
 }

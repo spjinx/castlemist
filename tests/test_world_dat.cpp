@@ -10,7 +10,9 @@
 #include "castlemist/native/cmp_decompress_method0.hpp"
 #include "castlemist/native/gw2model.hpp"
 #include "castlemist/world/world_scene.h"
+#include "castlemist/world/zone_scatter.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -1941,4 +1943,160 @@ CM_TEST(world_dat, zones_hypotheses) {
     std::printf("    client variants (zones without collideData; %zu ground-aligned):\n", ground);
     line("z = NE-SW terrain triangle + the slot's zOffset range", zTriangleInOffsets, "units");
     line("tilt = client plane (fx <= fy: NW,NE,SW; else NE,SW,SE)", tiltGroundClient, "rad");
+}
+
+// ---- zones: phase 2, the exact scatter (world foliage spec D5; ruling S3) ----
+
+/// Spec D5 step 2 against the rule in force (`exact`, zone_scatter.h): every anchor-matched
+/// collider entry is reproduced by the client's rule on its placement, to the D5 tolerances
+/// (x, y 0.01; yaw and tilt 1e-4 rad; scale 1e-5; z 0.5). Queensdale's entries 3350-3352 (spec M2's
+/// "hand-placed", the three type-3 cells of zone 135 under the client decode) are listed apart: Task 9
+/// did not check their tilt and z. Also: every Scatter instance belongs to a placement without a
+/// collider (never doubled), every placement without a collider and with a model has one, and the
+/// hypotheses Task 9 settled are printed for the amendments.
+CM_TEST(world_dat, zones_phase2) {
+    namespace cw = castlemist::world;
+    Gw2Dat& dat = shared_dat();
+    if (!ensure_template()) SKIP("no struct template");
+    Tally tx, tyaw, ttilt, tscale, tz;
+    size_t matched = 0, apart = 0, apartOk = 0;
+    for (uint32_t id : kTestMaps) {
+        const auto t0 = std::chrono::steady_clock::now();
+        cw::WorldScene w = cw::load_world(dat, id, *castlemist::tpl::get());
+        const double loadS = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        const cw::ZoneScatter& z = w.zones;
+        CHECK(z.mode == cw::ZoneScatterMode::Exact);
+        std::vector<uint8_t> bytes = packfile_by_file_id(id);
+        castlemist::model::Extractor ex(bytes, *castlemist::tpl::get());
+        const auto h = ex.parseHavok();
+        std::vector<const castlemist::model::Extractor::HavokPlacement*> entries;
+        for (const auto& p : h.placements)
+            if (p.group == "zone") entries.push_back(&p);
+
+        std::map<uint32_t, std::vector<uint32_t>> collideIndex;   // zone -> zone_collide_index
+        const cw::ZoneScatterRule rule = cw::zone_scatter_rule_in_force();
+        std::vector<cw::ZoneScatterDraw> d;
+        size_t bySource[3] = {0, 0, 0};
+        for (const cw::ZoneInstance& i : z.instances) {
+            ++bySource[size_t(i.source) < 3 ? size_t(i.source) : 0];
+            if (i.source != cw::ZoneSource::Collider || i.placement == UINT32_MAX || i.collider >= entries.size())
+                continue;
+            const cw::ZonePlacement& p = z.placements[i.placement];
+            auto it = collideIndex.find(p.zone);
+            if (it == collideIndex.end())
+                it = collideIndex.emplace(p.zone, (z.zones[p.zone].zoneFlags & 2u) ? cw::zone_collide_index(z, p.zone)
+                                                                                    : std::vector<uint32_t>())
+                         .first;
+            d.clear();
+            cw::zone_scatter_exact(w, i.placement, rule, it->second, d);
+            const auto* e = entries[i.collider];
+            if (d.empty()) {
+                std::printf("    map %u entry %u: the rule makes no instance\n", id, i.collider);
+                tx.add(1e9, 0.01);
+                continue;
+            }
+            const cw::ZoneScatterDraw& q = d[0];
+            const double ex_ = std::max(std::fabs(q.pos[0] - e->translate[0]), std::fabs(q.pos[1] - e->translate[1]));
+            const double eyaw = angle_error(q.rot[2], e->rotate[2]);
+            const double etilt = std::max(angle_error(q.rot[0], e->rotate[0]), angle_error(q.rot[1], e->rotate[1]));
+            const double escale = std::fabs(q.scale - e->scale), ez = std::fabs(q.pos[2] - e->translate[2]);
+            if (id == 192711 && i.collider >= 3350 && i.collider <= 3352) {
+                ++apart;
+                const bool ok = ex_ <= 0.01 && eyaw <= 1e-4 && escale <= 1e-5;
+                apartOk += ok;
+                std::printf("    192711 entry %u (zone %u, cell %d,%d): xy err %.4g, yaw %.3g, scale %.3g (%s); "
+                            "tilt %.3g, z %.3g (not in the 4750)\n",
+                            i.collider, p.zone, p.c, p.r, ex_, eyaw, escale, ok ? "ok" : "FAIL", etilt, ez);
+                continue;
+            }
+            ++matched;
+            tx.add(ex_, 0.01);
+            tyaw.add(eyaw, 1e-4);
+            ttilt.add(etilt, 1e-4);
+            tscale.add(escale, 1e-5);
+            tz.add(ez, 0.5);
+        }
+
+        // Never doubled; every uncollided placement with a model has its instance(s).
+        std::vector<uint32_t> scatterOf(z.placements.size(), 0);
+        size_t doubled = 0, missing = 0, expected = 0, subModel = 0;
+        for (const cw::ZoneInstance& i : z.instances)
+            if (i.source == cw::ZoneSource::Scatter && i.placement < scatterOf.size()) {
+                ++scatterOf[i.placement];
+                doubled += z.placements[i.placement].collider != UINT32_MAX;
+            }
+        for (uint32_t pi = 0; pi < z.placements.size(); ++pi) {
+            const cw::ZonePlacement& p = z.placements[pi];
+            if (p.collider != UINT32_MAX || p.layer >= z.layers.size()) continue;
+            const auto& models = z.layers[p.layer].models;
+            const uint32_t slot = (p.flag >> 1) & 7u;
+            if (slot >= models.size() || !models[slot].fileId) continue;
+            ++expected;
+            missing += scatterOf[pi] == 0;
+        }
+        for (const cw::ZoneLayer& L : z.layers) subModel += L.hasSubModel;
+        // The scatter's own cost: re-run it on a copy holding the Collider instances only (they come first).
+        double scatterMs = 0;
+        {
+            cw::WorldScene c = w;
+            c.zones.instances.resize(bySource[0]);
+            const auto s0 = std::chrono::steady_clock::now();
+            const size_t again = cw::scatter_instances(c, rule);
+            scatterMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0).count();
+            CHECK_EQ(again, bySource[1]);
+        }
+        std::printf("    map %u: load_world %.2f s, of it scatter_instances %.0f ms; instances collider %zu, scatter %zu, "
+                    "density %zu (%.1f MB); placements without a collider %zu, of them without an instance %zu; "
+                    "collided with a Scatter instance %zu; layers with a subModel %zu; models %zu\n",
+                    id, loadS, scatterMs, bySource[0], bySource[1], bySource[2],
+                    double(z.instances.size() * sizeof(cw::ZoneInstance)) / 1048576.0, expected, missing, doubled,
+                    subModel, w.models.size());
+        {   // print only: Scatter models that do not load (the Map Window counts them as failed)
+            std::map<uint32_t, size_t> scatterModels;   // model -> instances
+            for (const cw::ZoneInstance& i : z.instances)
+                if (i.source == cw::ZoneSource::Scatter) ++scatterModels[i.model];
+            size_t noMesh = 0;
+            for (const auto& [m, n] : scatterModels) {
+                auto mp = load_model_by_fileid(dat, w.models.at(m).fileId, ModelLoadOptions{false, false});
+                bool ok = false;
+                if (mp)
+                    for (const auto& mesh : mp->meshes) ok = ok || (!mesh.indices.empty() && !mesh.vertices.empty());
+                if (!ok) {
+                    ++noMesh;
+                    std::printf("    map %u: Scatter model fileId %u has no mesh (%zu instances)\n", id,
+                                w.models.at(m).fileId, n);
+                }
+            }
+            std::printf("    map %u: %zu distinct Scatter models, %zu without a mesh\n", id, scatterModels.size(), noMesh);
+        }
+        for (const std::string& s : w.warnings)
+            if (s.find("UNPROVEN branches") != std::string::npos || s.find("tiling path") != std::string::npos ||
+                s.find("outside the terrain") != std::string::npos || s.find("water-tested") != std::string::npos ||
+                s.find("collideData entry") != std::string::npos || s.find("tiling outside") != std::string::npos)
+                std::printf("      %s\n", s.c_str());
+        CHECK(bySource[1] > 0);
+        CHECK_EQ(bySource[2], size_t(0));
+        CHECK_EQ(doubled, size_t(0));
+        CHECK_EQ(missing, size_t(0));
+        CHECK_EQ(bySource[0], size_t(kZoneAccept.at(id).colliders));
+    }
+    auto line = [](const char* what, const Tally& t, const char* unit) {
+        std::printf("    %-8s %4zu/%-4zu worst %.3g %s\n", what, t.pass, t.n, t.worst, unit);
+    };
+    std::printf("    D5 step 2, exact rule vs the anchor-matched colliders (%zu):\n", matched);
+    line("x, y", tx, "units");
+    line("yaw", tyaw, "rad");
+    line("tilt", ttilt, "rad");
+    line("scale", tscale, "");
+    line("z", tz, "units");
+    CHECK_EQ(matched, size_t(4750));
+    for (const Tally* t : {&tx, &tyaw, &ttilt, &tscale, &tz}) CHECK_EQ(t->pass, t->n);
+    CHECK_EQ(apart, size_t(3));
+    CHECK_EQ(apartOk, size_t(3));
+    // The D5 step 3 hypotheses Task 9 settled (live numbers: world_dat.zones_hypotheses).
+    std::printf("    hypotheses (Task 9, docs/research/gw2-terrain-to-unity.md \xc2\xa7" "1.3, 2026-10-16):\n"
+                "      tilt = terrain normal clamped to rotRange: UNPROVEN as phrased (tilt is per model flag)\n"
+                "      z = terrain_height_at: UNPROVEN as phrased (z = NE-SW triangle + zOffset: measured)\n"
+                "      scale = scaleRange[0] + (99/1280) k: measured\n"
+                "      collideData = the ground (z, normal): measured\n");
 }
