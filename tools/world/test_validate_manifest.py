@@ -137,6 +137,37 @@ class Export(unittest.TestCase):
         self.assertTrue(ok, lines)
         self.assertTrue(any(l.startswith("PLAN materials=5 ") for l in lines), lines)
 
+    def test_plan_lods(self):
+        # Task 15b: the three fixture models have LOD1/LOD2, the trees are model 0, prop 1 has its own distances.
+        lines, ok = self.run_copy(plan=True)
+        self.assertTrue(any(l.startswith("PLAN ") and l.endswith(" lodPrefabs=3 lodTreePrefabs=1 lodOverrides=1")
+                            for l in lines), lines)
+
+        def no_lods(j):
+            for mod in j["models"]:
+                mod["lods"]["levels"] = 1
+                mod["lods"]["triangles"] = mod["lods"]["triangles"][:1]
+        lines, ok = self.run_copy(edit=no_lods, plan=True)
+        self.assertTrue(ok, lines)
+        self.assertTrue(any(l.endswith(" lodPrefabs=0 lodTreePrefabs=0 lodOverrides=0") for l in lines), lines)
+
+    def test_lods_checked(self):
+        def short(j):
+            j["models"][0]["lods"]["triangles"] = [12, 8]
+        lines, ok = self.run_copy(edit=short)
+        self.assertFalse(ok)
+        self.assertTrue(any("models[0].lods.triangles: 2 entries for 3 levels" in l for l in lines), lines)
+
+        def rising(j):
+            j["models"][0]["lods"]["triangles"] = [12, 13, 4]
+        lines, ok = self.run_copy(edit=rising)
+        self.assertTrue(any("a coarser level has more triangles" in l for l in lines), lines)
+
+        def bad_lod(j):
+            j["cells"][0]["instances"][1]["lod"] = [1000]
+        lines, ok = self.run_copy(edit=bad_lod)
+        self.assertFalse(ok)
+
     def test_plan_foliage_trees(self):
         # Layer type 3 or layer 0xFFFF (world-foliage D8): the collider tree and the geometry-only one.
         lines, ok = self.run_copy(plan=True)

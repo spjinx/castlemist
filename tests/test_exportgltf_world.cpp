@@ -12,6 +12,7 @@
 #include "castlemist/exportgltf/world_probe.h"
 #include "castlemist/exportgltf/world_folder.h"
 #include "castlemist/exportgltf/world_foliage.h"
+#include "castlemist/exportgltf/world_lods.h"
 #include "castlemist/exportgltf/world_unity_terrain.h"
 #include "world_export_synthetic.h"
 #include "long_path.h"
@@ -2448,4 +2449,150 @@ CM_TEST(unity_terrain, one_chunk_tiles) {
         CHECK_EQ(file_bytes(out_dir("ut_one") / t["heights"].get<std::string>()).size(), size_t(33 * 33 * 2));
     }
     CHECK(man["counts"]["foliage"]["terrainTrees"] == json(1));
+}
+
+// ============================================================ Task 15b: model LODs
+
+CM_TEST(world_lods, distance_rules) {
+    float d[2];
+    bool file[2];
+    const float none[2] = {0, 0};
+    model_lod_distances(none, d, file);
+    CHECK(d[0] == 3500.f && d[1] == 7500.f && !file[0] && !file[1]);
+    const float some[2] = {1500, -3};
+    model_lod_distances(some, d, file);
+    CHECK(d[0] == 1500.f && file[0] && d[1] == 7500.f && !file[1]);
+    const float big[2] = {2e5f, std::numeric_limits<float>::quiet_NaN()};
+    model_lod_distances(big, d, file);
+    CHECK(d[0] == 100000.f && d[1] == 7500.f && !file[1]);
+
+    float o[2];
+    CHECK_FALSE(prop_lod_override(1000, 2000, 0, o));                     // no OVERRIDE_LOD
+    CHECK_FALSE(prop_lod_override(0, 0, kPropFlagOverrideLod, o));        // both 0: the model's
+    CHECK(prop_lod_override(1000, 2000, kPropFlagOverrideLod | 0x800000u, o));
+    CHECK(o[0] == 1000.f && o[1] == 2000.f);
+    CHECK(prop_lod_override(-5, 3e5f, kPropFlagOverrideLod, o));
+    CHECK(o[0] == 0.f && o[1] == 100000.f);
+    CHECK(prop_lod_override(0, 400, kPropFlagOverrideLod, o) && o[0] == 0.f && o[1] == 400.f);
+    CHECK_FALSE(prop_lod_override(std::numeric_limits<float>::infinity(), 1, kPropFlagOverrideLod, o));
+}
+
+CM_TEST(world_lods, levels_and_sources) {
+    ModelPreview m = tw::static_cube();                 // LOD1 8 triangles, LOD2 4
+    CHECK_EQ(model_lod_levels(m), 3);
+    CHECK(model_lod_triangles(m, 3) == std::vector<uint64_t>({12, 8, 4}));
+    ModelMeshCPU two = m.meshes[0];
+    two.lodIndices = {{}, {0, 1, 2}};                    // an empty LOD1 keeps the numbering
+    CHECK_EQ(mesh_lod_source(two, 0), -1);
+    CHECK_EQ(mesh_lod_source(two, 1), -1);              // repeats LOD0
+    CHECK_EQ(mesh_lod_source(two, 2), 1);
+    ModelMeshCPU plain = m.meshes[0];
+    plain.lodIndices.clear();
+    m.meshes.push_back(plain);                           // a mesh without LODs repeats LOD0
+    CHECK_EQ(model_lod_levels(m), 3);
+    CHECK(model_lod_triangles(m, 3) == std::vector<uint64_t>({24, 20, 16}));
+    m.meshes[0].lodIndices.push_back({0, 1, 2});         // a LOD3 is never selected by the client
+    CHECK_EQ(model_lod_levels(m), 3);
+    ModelPreview none = tw::static_cube();
+    none.meshes[0].lodIndices.clear();
+    CHECK_EQ(model_lod_levels(none), 1);
+    const json j = model_lods_json(tw::static_cube());
+    CHECK(j["levels"] == json(3));
+    CHECK(j["distances"] == json({1500.0, 7500.0}));
+    CHECK(j["distanceSource"] == json({"lodOverride", "default"}));
+    CHECK(j["lodOverride"] == json({1500.0, 0.0}));
+    CHECK(j["triangles"] == json({12, 8, 4}));
+}
+
+// The character, VRChat and model exports write LOD0 only, byte for byte as before:
+// a model with LODs exports exactly as the same model without them.
+CM_TEST(world_lods, other_exports_unchanged) {
+    ModelPreview with = tw::skinned_cube();
+    ModelPreview without = with;
+    for (ModelMeshCPU& mm : without.meshes) mm.lodIndices.clear();
+    const fs::path a = fresh_dir("lods_with"), b = fresh_dir("lods_without");
+    CHECK(write_vrchat_folder(with, a.string(), "M", 101).ok);
+    CHECK(write_vrchat_folder(without, b.string(), "M", 101).ok);
+    CHECK(!file_bytes(a / "M.glb").empty());
+    CHECK(file_bytes(a / "M.glb") == file_bytes(b / "M.glb"));
+    CHECK(file_bytes(a / "materials.json") == file_bytes(b / "materials.json"));
+    CHECK(export_model_gltf(with, (a / "plain.glb").string()).ok);
+    CHECK(export_model_gltf(without, (b / "plain.glb").string()).ok);
+    CHECK(file_bytes(a / "plain.glb") == file_bytes(b / "plain.glb"));
+    // exportLods off on a world-style call is unchanged too.
+    VrchatFolderOptions vo;
+    vo.gltf.rootMatrix = map_to_gltf_root(1.0);
+    const fs::path c = fresh_dir("lods_world_off"), d = fresh_dir("lods_world_off_b");
+    CHECK(write_vrchat_folder(with, c.string(), "M", 101, vo).ok);
+    CHECK(write_vrchat_folder(without, d.string(), "M", 101, vo).ok);
+    CHECK(file_bytes(c / "M.glb") == file_bytes(d / "M.glb"));
+}
+
+CM_TEST(world_lods, world_glb_has_lod_nodes) {
+    ModelPreview m = tw::skinned_cube();
+    ModelMeshCPU half = m.meshes[0];                     // a second mesh with LOD1 only
+    half.meshName = "half";
+    half.lodIndices = {std::vector<uint32_t>(half.indices.begin(), half.indices.begin() + 6)};
+    m.meshes.push_back(half);
+    ModelMeshCPU plain = m.meshes[0];                    // and one without LODs
+    plain.lodIndices.clear();
+    m.meshes.push_back(plain);
+    VrchatFolderOptions vo;
+    vo.gltf.rootMatrix = map_to_gltf_root(1.0);
+    vo.gltf.exportLods = true;
+    const fs::path dir = fresh_dir("lods_world_on");
+    CHECK(write_vrchat_folder(m, dir.string(), "101", 101, vo).ok);
+    const json g = glb_json(dir / "101.glb");
+    std::map<std::string, const json*> nodes;
+    for (const json& n : g["nodes"]) nodes[n.value("name", std::string())] = &n;
+    for (const char* n : {"101_mesh0", "half_1", "101_mesh2", "101_mesh0_LOD1", "101_mesh0_LOD2", "half_1_LOD1"})
+        if (!nodes.count(n)) ::castlemist::test::fail(__FILE__, __LINE__, std::string("no node ") + n);
+    CHECK_FALSE(nodes.count("half_1_LOD2"));            // repeats LOD1: no node of its own
+    CHECK_FALSE(nodes.count("101_mesh2_LOD1"));
+    if (nodes.count("101_mesh0") && nodes.count("101_mesh0_LOD2")) {
+        const json& p0 = g["meshes"][(*nodes["101_mesh0"])["mesh"].get<size_t>()]["primitives"][0];
+        const json& p2 = g["meshes"][(*nodes["101_mesh0_LOD2"])["mesh"].get<size_t>()]["primitives"][0];
+        CHECK(p0["attributes"] == p2["attributes"]);   // the vertex data is shared
+        CHECK(p0["material"] == p2["material"]);
+        CHECK(p0["indices"] != p2["indices"]);
+        CHECK_EQ(g["accessors"][p2["indices"].get<size_t>()]["count"].get<int>(), 12);
+        CHECK((*nodes["101_mesh0_LOD2"]).contains("skin"));
+    }
+    // Every LOD node draws its LOD0 primitive's material: the same glTF material index, never a copy.
+    const size_t materials = g["materials"].size();
+    for (const auto& [name, n] : nodes) {
+        const size_t cut = name.rfind("_LOD");
+        if (cut == std::string::npos || !nodes.count(name.substr(0, cut))) continue;
+        const json& lod = g["meshes"][(*n)["mesh"].get<size_t>()]["primitives"][0];
+        const json& base = g["meshes"][(*nodes[name.substr(0, cut)])["mesh"].get<size_t>()]["primitives"][0];
+        CHECK(lod.contains("material"));
+        CHECK(lod["material"] == base["material"]);
+    }
+    CHECK_EQ(g["materials"].size(), materials);
+    CHECK_EQ(materials, m.materials.size());   // no material written per level
+}
+
+CM_TEST(world_lods, manifest_lods_and_overrides) {
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource src;
+    const fs::path dir = fresh_dir("folder_lods");
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts());
+    CHECK(r.ok);
+    const json man = read_json(dir / "manifest.json");
+    check_valid(man, "lods export");
+    const json& l = man["models"][0]["lods"];
+    CHECK(l["levels"] == json(3));
+    CHECK(l["distances"] == json({1500.0, 7500.0}));
+    CHECK(l["triangles"] == json({12, 8, 4}));
+    CHECK_EQ(man["models"][0]["triangles"].get<int>(), 12);   // still LOD0
+    const json* p1 = instance_of_prop(man, 1);
+    const json* p2 = instance_of_prop(man, 2);
+    CHECK(p1 && (*p1)["lod"] == json({1000.0, 2000.0}));
+    CHECK(p2 && !p2->contains("lod"));                        // lod1 / lod2 stored, no OVERRIDE_LOD
+    CHECK(man["settings"]["lodDistances"]["status"] == json("measured"));
+    CHECK(man["settings"]["lodPropCullHeight"]["value"] == json(0));
+    const json g = glb_json(dir / "models" / "101" / "101.glb");
+    bool lod2 = false;
+    for (const json& n : g["nodes"]) lod2 = lod2 || n.value("name", std::string()) == "101_mesh0_LOD2";
+    CHECK(lod2);
 }

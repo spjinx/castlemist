@@ -11,6 +11,10 @@
 /// writes several GB and takes minutes, so it runs only with
 /// CM_WORLD_EXPORT_MEASURE=1.
 ///
+/// world_export_dat.lods (Task 15b) loads every prop model of the three test maps
+/// and checks the LOD levels, switch distances and per-placement overrides; it
+/// prints the coverage and triangle numbers the task reports.
+///
 /// world_export_dat.spirit_vale_smoke runs only when CM_WORLD_EXPORT_SMOKE_DIR
 /// names an output folder (replaced); CM_WORLD_EXPORT_SMOKE_WANTGAME=1 loads
 /// the models with the game shaders traced. It prints the report.
@@ -20,6 +24,7 @@
 #include "castlemist/exportgltf/sky_export.h"
 #include "castlemist/exportgltf/world_dat_source.h"
 #include "castlemist/exportgltf/world_folder.h"
+#include "castlemist/exportgltf/world_lods.h"
 #include "castlemist/extract/entry_extractor.h"
 #include "castlemist/format/struct_template.h"
 #include "castlemist/world/cells.h"
@@ -43,6 +48,9 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <atomic>
+#include <mutex>
+#include <thread>
 #include <string>
 #include <vector>
 
@@ -654,5 +662,111 @@ CM_TEST(world_export_dat, measure) {
                     L.presetIndex, L.sunDir[0], L.sunDir[1], L.sunDir[2],
                     man["light"].is_object() ? man["light"]["sun"]["unityForward"].dump().c_str() : "null");
         eg::remove_tree(dir, ec);
+    }
+}
+
+// Task 15b: the LOD levels and switch distances of every prop model on the three test
+// maps, and the placements with their own distances (OVERRIDE_LOD).
+CM_TEST(world_export_dat, lods) {
+    Gw2Dat& dat = shared_dat();
+    if (!ensure_template()) SKIP("no struct template (set GW2_TEST_TEMPLATE)");
+    const json& tpl = *castlemist::tpl::get();
+    {
+        // Measured with gw2dat_cli parse (docs/research/gw2-model-lods.md section 4).
+        auto src = eg::make_dat_model_source(dat, /*wantGame=*/false);
+        const struct { uint32_t id; uint64_t t[3]; float d[2]; } known[] = {
+            {1713091, {1781, 1034, 500}, {3500, 7500}}, {1792088, {2208, 1278, 566}, {1500, 3000}}};
+        for (const auto& k : known) {
+            std::shared_ptr<ModelPreview> m = src->load(0, k.id);
+            CHECK(m != nullptr);
+            if (!m) continue;
+            const std::vector<uint64_t> t = eg::model_lod_triangles(*m, 3);
+            std::printf("    LODS model=%u levels=%d triangles=%llu/%llu/%llu lodOverride=%g,%g\n", k.id,
+                        eg::model_lod_levels(*m), (unsigned long long)t[0], (unsigned long long)t[1],
+                        (unsigned long long)t[2], m->lodOverride[0], m->lodOverride[1]);
+            CHECK_EQ(eg::model_lod_levels(*m), 3);
+            CHECK(t[0] == k.t[0] && t[1] == k.t[1] && t[2] == k.t[2]);
+            CHECK(m->hasLodOverride && m->lodOverride[0] == k.d[0] && m->lodOverride[1] == k.d[1]);
+        }
+    }
+    for (const uint32_t mapId : {192711u, 191000u, 1151420u}) {
+        const cw::WorldScene s = cw::load_world(dat, mapId, tpl);
+        CHECK(!s.models.empty());
+        auto src = eg::make_dat_model_source(dat, /*wantGame=*/false);
+        std::vector<int> levels(s.models.size(), 0);   // 0 = did not load
+        std::vector<std::array<float, 2>> dist(s.models.size());
+        std::vector<std::array<bool, 2>> fromFile(s.models.size());
+        std::vector<std::vector<uint64_t>> tris(s.models.size());
+        std::atomic<size_t> next{0};
+        std::mutex mu;
+        auto work = [&] {
+            for (size_t i; (i = next.fetch_add(1)) < s.models.size();) {
+                std::shared_ptr<ModelPreview> m;
+                try { m = src->load(uint32_t(i), s.models[i].fileId); } catch (const std::exception&) { m = nullptr; }
+                if (!m || m->meshes.empty()) continue;
+                float d[2];
+                bool f[2];
+                eg::model_lod_distances(m->lodOverride, d, f);
+                const int n = eg::model_lod_levels(*m);
+                std::lock_guard<std::mutex> lk(mu);
+                levels[i] = n;
+                dist[i] = {d[0], d[1]};
+                fromFile[i] = {f[0], f[1]};
+                tris[i] = eg::model_lod_triangles(*m, 3);
+            }
+        };
+        std::vector<std::thread> pool;
+        for (unsigned t = 0; t < std::max(2u, std::thread::hardware_concurrency()); ++t) pool.emplace_back(work);
+        for (auto& t : pool) t.join();
+
+        size_t loaded = 0, withLods = 0, l3 = 0, fileD = 0, defaultPair = 0, overrides = 0, overridesLod = 0,
+               insts = 0, instsLod = 0, flagNoValues = 0, valuesNoFlag = 0;
+        uint64_t t0 = 0, t1 = 0, t2 = 0;          // over models with LODs, each counted once
+        uint64_t i0 = 0, i1 = 0, i2 = 0;          // over placements of those models
+        for (size_t i = 0; i < s.models.size(); ++i) {
+            if (!levels[i]) continue;
+            ++loaded;
+            CHECK(levels[i] >= 1 && levels[i] <= eg::kMaxLodLevels);
+            CHECK(dist[i][0] >= 0 && dist[i][0] <= eg::kLodMaxDistance && dist[i][1] >= 0 &&
+                  dist[i][1] <= eg::kLodMaxDistance);
+            if (fromFile[i][0] || fromFile[i][1]) ++fileD;
+            if (dist[i][0] == 3500.f && dist[i][1] == 7500.f) ++defaultPair;
+            CHECK(tris[i].size() == 3 && tris[i][0] >= tris[i][1] && tris[i][1] >= tris[i][2]);
+            if (levels[i] > 1) {
+                ++withLods;
+                if (levels[i] == 3) ++l3;
+                t0 += tris[i][0]; t1 += tris[i][1]; t2 += tris[i][2];
+            }
+        }
+        for (const cw::PropInstance& p : s.props) {
+            if (p.model >= levels.size() || !levels[p.model]) continue;
+            ++insts;
+            float o[2];
+            const bool ov = eg::prop_lod_override(p.lod1, p.lod2, p.flags, o);
+            if (ov) ++overrides;
+            if ((p.flags & eg::kPropFlagOverrideLod) && !ov) ++flagNoValues;
+            // The research note measured lod1 > 0 only with OVERRIDE_LOD on three other maps; counted here.
+            if ((p.lod1 != 0 || p.lod2 != 0) && !(p.flags & eg::kPropFlagOverrideLod)) ++valuesNoFlag;
+            if (levels[p.model] > 1) {
+                ++instsLod;
+                if (ov) ++overridesLod;
+                i0 += tris[p.model][0]; i1 += tris[p.model][1]; i2 += tris[p.model][2];
+            }
+        }
+        std::printf("    LODS map=%u models=%zu loaded=%zu withLods=%zu (%.1f%%) threeLevels=%zu lodOverrideInFile=%zu "
+                    "default3500_7500=%zu instances=%zu instancesWithLods=%zu (%.1f%%) overrides=%zu "
+                    "overridesOnLodModels=%zu flagWithoutValues=%zu valuesWithoutFlag=%zu\n",
+                    mapId, s.models.size(), loaded, withLods, loaded ? 100.0 * withLods / loaded : 0.0, l3, fileD,
+                    defaultPair, insts, instsLod, insts ? 100.0 * instsLod / insts : 0.0, overrides, overridesLod,
+                    flagNoValues, valuesNoFlag);
+        std::printf("    LODS_TRIS map=%u models: LOD0=%llu LOD1=%llu (-%.1f%%) LOD2=%llu (-%.1f%%); placements: "
+                    "LOD0=%llu LOD1=%llu (-%.1f%%) LOD2=%llu (-%.1f%%)\n",
+                    mapId, (unsigned long long)t0, (unsigned long long)t1, t0 ? 100.0 * (1.0 - double(t1) / t0) : 0.0,
+                    (unsigned long long)t2, t0 ? 100.0 * (1.0 - double(t2) / t0) : 0.0, (unsigned long long)i0,
+                    (unsigned long long)i1, i0 ? 100.0 * (1.0 - double(i1) / i0) : 0.0, (unsigned long long)i2,
+                    i0 ? 100.0 * (1.0 - double(i2) / i0) : 0.0);
+        CHECK(loaded > s.models.size() / 2);
+        CHECK(withLods > loaded / 50);   // a sample of 20 measured 40%; every map has some
+        CHECK(defaultPair > 0);
     }
 }

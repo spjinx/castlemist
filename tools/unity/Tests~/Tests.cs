@@ -43,7 +43,7 @@ namespace Castlemist.Tests
  ""light"":null,""water"":null,""frameProbe"":null,""sky"":null,""spawn"":null,
  ""warnings"":[]}";
 
-        const string MeshPlan = "PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2 foliagePatches=2 terrains=0 detailPrototypes=0 detailCells=0 treeInstances=0";
+        const string MeshPlan = "PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2 foliagePatches=2 terrains=0 detailPrototypes=0 detailCells=0 treeInstances=0 lodPrefabs=3 lodTreePrefabs=1 lodOverrides=1";
 
         static int Main(string[] args)
         {
@@ -96,9 +96,57 @@ namespace Castlemist.Tests
             });
             Run("summary.plan_line", () =>
             {
-                var s = new ImportSummary { materials = 5, prefabs = 3, controllers = 1, cells = 1, instances = 4, colliders = 1, terrainColliders = 1, water = 1, lights = 1, skybox = 0, foliageTrees = 2, foliagePatches = 2 };
+                var s = new ImportSummary { materials = 5, prefabs = 3, controllers = 1, cells = 1, instances = 4, colliders = 1, terrainColliders = 1, water = 1, lights = 1, skybox = 0, foliageTrees = 2, foliagePatches = 2, lodPrefabs = 3, lodTreePrefabs = 1, lodOverrides = 1 };
                 // The world_manifest_plan ctest's expected line for the fixture, verbatim.
                 Check(s.PlanLine() == MeshPlan, s.PlanLine());
+            });
+            Run("lods.screen_height", () =>
+            {
+                // h(d) = size / (2 d tan 30): 2 tan 30 = 1.1547; scale cancels (Task 15b).
+                double k = 2 * Math.Tan(Math.PI / 6);
+                Check(Math.Abs(ModelLods.ScreenHeight(100, 3500) - 100 / (3500 * k)) < 1e-12, "formula");
+                Check(double.IsPositiveInfinity(ModelLods.ScreenHeight(100, 0)) && ModelLods.ScreenHeight(0, 10) == 0, "edges");
+                double[] h = ModelLods.TransitionHeights(100, new[] { 1500.0, 7500.0 }, 3, ModelLods.PropCullHeight);
+                Check(h.Length == 3 && Math.Abs(h[0] - 100 / (1500 * k)) < 1e-12 && Math.Abs(h[1] - 100 / (7500 * k)) < 1e-12 && h[2] == 0, "props");
+                // A tree culled (fadeFar 5000) before its LOD2 switch (7500): LOD2 dropped.
+                double cull = FoliageRecords.CullHeight(100, 5000);
+                h = ModelLods.TransitionHeights(100, new[] { 1500.0, 7500.0 }, 3, cull);
+                Check(h.Length == 2 && h[1] == cull && h[0] > h[1], "tree drop");
+                // Culled before LOD1 too: LOD0 only.
+                h = ModelLods.TransitionHeights(100, new[] { 1500.0, 7500.0 }, 3, FoliageRecords.CullHeight(100, 1000));
+                Check(h.Length == 1, "LOD0 only");
+                // d1 = d2 and a 0 distance: strictly decreasing, clamped to 1.
+                h = ModelLods.TransitionHeights(100, new[] { 0.0, 0.0 }, 3, 0);
+                Check(h.Length == 3 && h[0] == 1.0 && h[1] < h[0] && h[1] > 0.99 && h[2] == 0, "clamp");
+                h = ModelLods.TransitionHeights(100, new[] { 2000.0, 2000.0 }, 3, 0);
+                Check(h[1] < h[0], "equal distances");
+                Check(ModelLods.TransitionHeights(100, null, 1, 0.01).Length == 1, "one level");
+            });
+            Run("lods.assign", () =>
+            {
+                string b;
+                Check(ModelLods.LevelOf("101_mesh0_LOD2", out b) == 2 && b == "101_mesh0", "suffix");
+                Check(ModelLods.LevelOf("101_mesh0", out b) == 0 && b == "101_mesh0", "plain");
+                Check(ModelLods.LevelOf("x_LOD0", out b) == 0, "LOD0 suffix is a name");
+                var orphans = new List<string>();
+                List<int>[] a = ModelLods.Assign(new[] { "a_0", "b_1", "a_0_LOD1", "a_0_LOD2", "b_1_LOD2", "c_2" }, 3, orphans);
+                Check(string.Join(",", a[0]) == "0,1,5", "LOD0");
+                Check(string.Join(",", a[1]) == "2,1,5", "LOD1: b repeats LOD0, c repeats LOD0");
+                Check(string.Join(",", a[2]) == "3,4,5", "LOD2");
+                Check(orphans.Count == 0, "no orphans");
+                ModelLods.Assign(new[] { "z_LOD1", "y_0_LOD3" }, 2, orphans);
+                Check(orphans.Count == 3, "orphans: z_LOD1 has no LOD0; y_0_LOD3 has none and is past the levels");
+            });
+            Run("manifest.lods", () =>
+            {
+                WorldManifest m = WorldManifest.Parse(Minimal.Replace("\"models\":[]",
+                    "\"models\":[{\"index\":0,\"fileId\":11,\"status\":\"ok\",\"lods\":{\"levels\":3,\"distances\":[1500,7500]," +
+                    "\"distanceSource\":[\"lodOverride\",\"default\"],\"lodOverride\":[1500,0],\"triangles\":[12,8,4]}}," +
+                    "{\"index\":1,\"fileId\":12,\"status\":\"ok\"}]"));
+                Check(m.Models[0].LodLevels == 3 && m.Models[0].LodDistances[1] == 7500, "lods");
+                Check(m.Models[1].LodLevels == 1 && m.Models[1].LodDistances == null, "absent");
+                Throws<ManifestException>(() => WorldManifest.Parse(Minimal.Replace("\"models\":[]",
+                    "\"models\":[{\"index\":0,\"fileId\":11,\"status\":\"ok\",\"lods\":{\"levels\":4,\"distances\":[1,2]}}]")), "levels");
             });
             Run("foliage.fmix32_keep", () =>
             {
@@ -171,6 +219,8 @@ namespace Castlemist.Tests
                     Check(m.Cells[0].ColliderParts == 1 && m.Cells[0].WaterTexture != null, "collider/water");
                     WorldManifest.InstanceEntry i = m.Cells[0].Instances[3];
                     Check(i.Model == 1 && i.Clip == "TestClip" && i.S == 3.0 && i.T[0] == 2288.0 && i.R.Length == 4, "instance");
+                    Check(m.Models[0].LodLevels == 3 && m.Models[0].LodDistances[0] == 1500 && m.Cells[0].Instances[1].Lod[1] == 2000 &&
+                          m.Cells[0].Instances[2].Lod == null, "lods");
                     // probe.fbx is recorded once world-fbx (Blender) has run on the export; the ctest fixture has none.
                     Check(m.Light != null && m.Light.Ambient.Length == 3 && m.Sky == null &&
                           (m.FrameProbe.Fbx == null || m.FrameProbe.Fbx == "probe.fbx"), "light/sky/probe");

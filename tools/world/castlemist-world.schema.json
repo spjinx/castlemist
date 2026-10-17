@@ -58,7 +58,7 @@
       }
     },
     "settings": {
-      "description": "Spec D3 'UNPROVEN settings that travel' plus the export's own settings; each UNPROVEN one is also a line in warnings. The zone* / foliage* rows and lodCullFovDeg are the world-foliage spec's D11 rows (optional); terrainTreeMaxTiltDeg, terrainTreeYawSign, detailPlacement, terrainHeightRowOrder and terrainColliderDiagonal come with the unityTerrain block.",
+      "description": "Spec D3 'UNPROVEN settings that travel' plus the export's own settings; each UNPROVEN one is also a line in warnings. The zone* / foliage* rows and lodCullFovDeg are the world-foliage spec's D11 rows (optional); the lod* rows other than lodCullFovDeg are Task 15b's model LOD rows (optional); terrainTreeMaxTiltDeg, terrainTreeYawSign, detailPlacement, terrainHeightRowOrder and terrainColliderDiagonal come with the unityTerrain block.",
       "type": "object",
       "additionalProperties": false,
       "required": ["groundRepeatsPerChunk", "srgbColourTextures", "pickerSolidByteOrder", "waterPresetPairing",
@@ -88,6 +88,10 @@
         "ambient": { "$ref": "#/$defs/setting" },
         "unityAxisConversion": { "$ref": "#/$defs/setting" },
         "skyApproximate": { "$ref": "#/$defs/setting" },
+        "lodDistances": { "$ref": "#/$defs/setting" },
+        "lodDistanceScale": { "$ref": "#/$defs/setting" },
+        "lodMissingLevel": { "$ref": "#/$defs/setting" },
+        "lodPropCullHeight": { "$ref": "#/$defs/setting" },
         "zoneGrid": { "$ref": "#/$defs/setting" },
         "zoneModelSlot": { "$ref": "#/$defs/setting" },
         "zoneFlagBit0": { "$ref": "#/$defs/setting" },
@@ -423,7 +427,20 @@
         "darkDecalMaterials": { "type": "array", "items": { "type": "string" } },
         "uvScroll": { "type": "array", "items": { "$ref": "#/$defs/uvScroll" } },
         "status": { "enum": ["ok", "failed"] },
-        "error": { "type": "string" }
+        "error": { "type": "string" },
+        "lods": {
+          "description": "Task 15b (optional; docs/research/gw2-model-lods.md amendment 2026-10-17). levels: LOD0..LOD(levels-1) in the glb, each mesh's own LOD1 / LOD2 index sets on nodes '<LOD0 node>_LOD<k>' (a mesh without its own level repeats its coarser one: settings.lodMissingLevel). distances: the model's switch distances in model units (lodOverride[k] when > 0, else the client's 3500 / 7500; settings.lodDistances); the client switches at distance x the instance's largest axis scale. lodOverride: ModelFileData.lodOverride as stored, null when the MODL version has none. triangles: drawn at each level.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["levels", "distances", "distanceSource", "lodOverride", "triangles"],
+          "properties": {
+            "levels": { "type": "integer", "minimum": 1, "maximum": 3 },
+            "distances": { "type": "array", "items": { "type": "number", "minimum": 0 }, "minItems": 2, "maxItems": 2 },
+            "distanceSource": { "type": "array", "items": { "enum": ["lodOverride", "default"] }, "minItems": 2, "maxItems": 2 },
+            "lodOverride": { "type": ["array", "null"], "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+            "triangles": { "type": "array", "items": { "$ref": "#/$defs/count" }, "minItems": 1, "maxItems": 3 }
+          }
+        }
       }
     },
     "cell": {
@@ -571,7 +588,11 @@
             "s": { "type": "number", "minimum": 0 }
           }
         },
-        "clip": { "type": ["string", "null"] }
+        "clip": { "type": ["string", "null"] },
+        "lod": {
+          "description": "Task 15b (optional): the placement's own switch distances, model units: prp2 lod1 / lod2 when its flags have bit 16 (OVERRIDE_LOD) and they are not both 0 (negatives 0, clamped to 100000). Absent: the model's lods.distances apply.",
+          "type": "array", "items": { "type": "number", "minimum": 0 }, "minItems": 2, "maxItems": 2
+        }
       }
     }
   }

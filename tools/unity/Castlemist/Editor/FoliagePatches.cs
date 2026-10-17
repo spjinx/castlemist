@@ -62,7 +62,8 @@ namespace Castlemist
             if (AssetDatabase.IsValidFolder(dir)) AssetDatabase.DeleteAsset(dir);
         }
 
-        /// The model prefab's static meshes, each with its transform to the prefab root; null when it has none.
+        /// The model prefab's static LOD0 meshes (not its "<name>_LOD<k>" objects, Task 15b), each with its
+        /// transform to the prefab root; null when it has none.
         Part[] PartsOf(int model)
         {
             Part[] ps;
@@ -76,6 +77,7 @@ namespace Castlemist
                 {
                     var mr = mf.GetComponent<MeshRenderer>();
                     if (mf.sharedMesh == null || mr == null) continue;
+                    if (LodGroups.IsLodObject(mf.gameObject)) continue;   // Task 15b: patches keep LOD0 only
                     list.Add(new Part { Mesh = mf.sharedMesh, ToRoot = toRoot * mf.transform.localToWorldMatrix, Materials = mr.sharedMaterials });
                 }
             }

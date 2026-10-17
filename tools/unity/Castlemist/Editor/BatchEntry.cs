@@ -25,7 +25,10 @@
 // FoliagePlan places them), FOLIAGE_PATCHES the patches (count, LODGroup,
 // at most 65 535 vertices unless one record, every record's position inside
 // its patch's bounds) and, in Terrain mode, TERRAIN_TREES (each TreeInstance's
-// position against its record's m). Exit 0 when there are no errors, the probe
+// position against its record's m), then LODS (Task 15b: every model prefab with
+// lods.levels > 1 has a LODGroup of those levels with strictly decreasing heights equal
+// to ModelLods.TransitionHeights, tree prefabs the levels their cull leaves, and each
+// instances[].lod instance its own heights; CheckLods). Exit 0 when there are no errors, the probe
 // and the terrain frame check passed (or did not run) and those checks passed.
 //
 //   ... -executeMethod Castlemist.BatchEntry.CheckSkinnedProbe -castlemistFile Assets/<dir>/skinned_probe.fbx
@@ -202,10 +205,138 @@ namespace Castlemist
             if (m.UnityTerrain == null) opts = new ImportOptions { terrain = TerrainMode.Mesh, foliage = opts.foliage, density = opts.density, distance = opts.distance };
             var errs = new List<string>();
             FoliagePlan plan = FoliagePlan.Build(m, c => FoliageRecords.Read(folder + "/" + c.FoliageFile), opts, errs);
-            bool foliageOk = CheckFoliage(m, root, plan);
+            bool foliageOk = CheckFoliage(m, root, plan, folder, opts);
             bool patchesOk = CheckPatches(m, root, plan);
             bool terrainOk = plan.Mode != TerrainMode.UnityTerrain || CheckTerrainTrees(m, plan);
-            return ok && instOk && foliageOk && patchesOk && terrainOk;
+            bool lodsOk = CheckLods(folder, m, root, opts);
+            return ok && instOk && foliageOk && patchesOk && terrainOk && lodsOk;
+        }
+
+        static double FadeFar(WorldManifest m, int model)
+        {
+            return (m.Foliage != null ? m.Foliage.FadeFar(model) : 0) * m.FadeQualityScale;
+        }
+
+        /// The tree prefab's expected level count: the model's levels less those its cull drops, or 1.
+        static int TreeLevels(WorldManifest m, int model, LODGroup lg, ImportOptions opts, out double[] want)
+        {
+            WorldManifest.ModelEntry e = m.Models[model];
+            want = null;
+            if (e.LodLevels <= 1 || lg == null) return 1;
+            want = ModelLods.TransitionHeights(lg.size, e.LodDistances, e.LodLevels,
+                                              FoliageRecords.CullHeight(lg.size, FadeFar(m, model), opts.distance));
+            return want.Length;
+        }
+
+        static string Heights(LODGroup lg, double[] want)
+        {
+            LOD[] lods = lg.GetLODs();
+            for (int k = 0; k < want.Length && k < lods.Length; ++k)
+                if (Math.Abs(lods[k].screenRelativeTransitionHeight - want[k]) > 1e-6 + 1e-5 * want[k])
+                    return "LOD" + k + " height " + lods[k].screenRelativeTransitionHeight.ToString("R", CultureInfo.InvariantCulture) +
+                           ", want " + want[k].ToString("R", CultureInfo.InvariantCulture);
+            return null;
+        }
+
+        /// Every "<b>_LOD<k>" renderer under `root` has exactly its LOD0 "<b>" renderer's sharedMaterials
+        /// (the same .mat assets, never a copy per level); null when they all do.
+        static string SameMaterials(GameObject root)
+        {
+            Renderer[] rs = root.GetComponentsInChildren<Renderer>(true);
+            var lod0 = new Dictionary<string, Renderer>(StringComparer.Ordinal);
+            foreach (Renderer r in rs)
+            {
+                string b;
+                if (ModelLods.LevelOf(r.gameObject.name, out b) == 0 && !lod0.ContainsKey(b)) lod0[b] = r;
+            }
+            foreach (Renderer r in rs)
+            {
+                string b;
+                if (ModelLods.LevelOf(r.gameObject.name, out b) == 0) continue;
+                Renderer z;
+                if (!lod0.TryGetValue(b, out z)) continue;   // an orphan: warned at import
+                Material[] a = r.sharedMaterials, c = z.sharedMaterials;
+                if (a.Length != c.Length || a.Where((mat, i) => !ReferenceEquals(mat, c[i])).Any())
+                    return r.gameObject.name + " materials differ from " + z.gameObject.name + "'s";
+            }
+            return null;
+        }
+
+        /// LODS (Task 15b): every model prefab whose model has lods.levels > 1 has a LODGroup with that
+        /// many levels, strictly decreasing heights equal to ModelLods.TransitionHeights of its size and
+        /// the model's distances, every LOD with renderers, each level drawing as many renderers as LOD0,
+        /// every active renderer in some level and every LOD renderer with its LOD0's materials; a model without LODs has no LODGroup. Each tree
+        /// prefab of such a model has the levels its cull leaves (TreeLevels); each instance with
+        /// instances[].lod has the heights of its own distances.
+        static bool CheckLods(string folder, WorldManifest m, GameObject root, ImportOptions opts)
+        {
+            var fails = new List<string>();
+            int prefabs = 0, plain = 0, trees = 0, overrides = 0, levelsSum = 0;
+            foreach (WorldManifest.ModelEntry e in m.Models)
+            {
+                if (!e.Ok) continue;
+                var p = AssetDatabase.LoadAssetAtPath<GameObject>(folder + "/Prefabs/" + e.FileId + ".prefab");
+                if (p == null) continue;
+                LODGroup lg = p.GetComponent<LODGroup>();
+                if (e.LodLevels <= 1)
+                {
+                    if (lg != null) fails.Add(e.FileId + ": a LODGroup on a model without LODs");
+                    ++plain;
+                }
+                else
+                {
+                    string why = LodGroups.Problem(lg, e.LodLevels);
+                    if (why == null) why = Heights(lg, ModelLods.TransitionHeights(lg.size, e.LodDistances, e.LodLevels, ModelLods.PropCullHeight));
+                    if (why == null)
+                    {
+                        LOD[] lods = lg.GetLODs();
+                        var inLod = new HashSet<Renderer>(lods.SelectMany(l => l.renderers));
+                        if (lods.Any(l => l.renderers.Length != lods[0].renderers.Length)) why = "levels draw different renderer counts";
+                        else if (p.GetComponentsInChildren<Renderer>(false).Any(r => !inLod.Contains(r))) why = "an active renderer in no level";
+                        else why = SameMaterials(p);
+                    }
+                    if (why != null) fails.Add(e.FileId + ": " + why);
+                    ++prefabs;
+                    levelsSum += e.LodLevels;
+                }
+                var tp = AssetDatabase.LoadAssetAtPath<GameObject>(folder + "/Prefabs/Foliage/" + e.FileId + ".prefab");
+                if (tp != null && e.LodLevels > 1)
+                {
+                    LODGroup tl = tp.GetComponent<LODGroup>();
+                    double[] want;
+                    int n = TreeLevels(m, e.Position, tl, opts, out want);
+                    string why = LodGroups.Problem(tl, n);
+                    if (why == null && want != null) why = Heights(tl, want);
+                    if (why == null)
+                    {
+                        var inLod = new HashSet<Renderer>(tl.GetLODs().SelectMany(l => l.renderers));
+                        if (tp.GetComponentsInChildren<Renderer>(false).Any(r => !inLod.Contains(r))) why = "an active renderer in no level";
+                        else why = SameMaterials(tp);
+                    }
+                    if (why != null) fails.Add("tree " + e.FileId + ": " + why);
+                    ++trees;
+                }
+            }
+            foreach (WorldManifest.CellEntry c in m.Cells)
+            {
+                Transform props = root.transform.Find("Cell_" + c.Id + "/Props");
+                if (props == null) continue;
+                foreach (WorldManifest.InstanceEntry i in c.Instances)
+                {
+                    if (i.Lod == null || i.Model < 0 || i.Model >= m.Models.Count || m.Models[i.Model].LodLevels <= 1) continue;
+                    Transform t = props.Find(m.Models[i.Model].FileId + "_" + i.Prop);
+                    if (t == null) continue;
+                    LODGroup lg = t.GetComponent<LODGroup>();
+                    string why = LodGroups.Problem(lg, m.Models[i.Model].LodLevels);
+                    if (why == null) why = Heights(lg, ModelLods.TransitionHeights(lg.size, i.Lod, m.Models[i.Model].LodLevels, ModelLods.PropCullHeight));
+                    if (why != null) fails.Add("instance " + t.name + ": " + why);
+                    ++overrides;
+                }
+            }
+            bool ok = fails.Count == 0;
+            Debug.Log("LODS prefabs=" + prefabs + " levels=" + levelsSum + " withoutLods=" + plain + " trees=" + trees +
+                      " overrides=" + overrides + (ok ? " OK" : " FAIL " + string.Join("; ", fails.Take(8))));
+            return ok;
         }
 
         /// The map-space translation of a record in Unity world space: root * C * t.
@@ -300,10 +431,22 @@ namespace Castlemist
         }
 
         /// World-foliage D8: Cell_<id>/Foliage/Trees holds one instance per tree
-        /// record the plan places, in record order, each with a LODGroup, and its
+        /// record the plan places, in record order, each with a LODGroup (LOD0 only, or
+        /// its model's levels less those its cull drops: Task 15b), and its
         /// world matrix equals root * C * m * C^-1 from the record's own m.
-        static bool CheckFoliage(WorldManifest m, GameObject root, FoliagePlan plan)
+        static bool CheckFoliage(WorldManifest m, GameObject root, FoliagePlan plan, string folder, ImportOptions opts)
         {
+            var treeLevels = new Dictionary<int, int>();   // model -> its tree prefab's levels (Task 15b)
+            Func<int, int> levelsOf = model =>
+            {
+                int n;
+                if (treeLevels.TryGetValue(model, out n)) return n;
+                var tp = AssetDatabase.LoadAssetAtPath<GameObject>(folder + "/Prefabs/Foliage/" + m.Models[model].FileId + ".prefab");
+                double[] want;
+                n = TreeLevels(m, model, tp != null ? tp.GetComponent<LODGroup>() : null, opts, out want);
+                treeLevels[model] = n;
+                return n;
+            };
             double maxErr = 0;
             int checkedTrees = 0, want = 0;
             var fails = new List<string>();
@@ -322,7 +465,8 @@ namespace Castlemist
                     FoliageRecord r = trees[k];
                     if (t.name != m.Models[(int)r.Model].FileId + "_" + r.Placement) fails.Add(c.Id + ": child " + k + " is " + t.name);
                     LODGroup lg = t.GetComponent<LODGroup>();
-                    if (lg == null || lg.lodCount != 1) fails.Add(t.name + ": no LOD0-only LODGroup");
+                    int wantLevels = levelsOf((int)r.Model);
+                    if (lg == null || lg.lodCount != wantLevels) fails.Add(t.name + ": no LODGroup of " + wantLevels + " level(s)");
                     Matrix4x4 got = root.transform.worldToLocalMatrix * t.localToWorldMatrix;
                     for (int i = 0; i < 3; ++i)
                         for (int k2 = 0; k2 < 4; ++k2)

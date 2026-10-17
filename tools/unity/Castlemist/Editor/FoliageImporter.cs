@@ -3,7 +3,10 @@
 // World-foliage spec D8 ("Mesh terrain: instances and patches", "Unity mapping
 // additions") with the D9 knobs (ImportOptions; what goes where is FoliagePlan):
 //   Prefabs/Foliage/<fileId>.prefab   a variant of Prefabs/<fileId>.prefab with a
-//                                     LODGroup holding LOD0 only, culled at
+//                                     LODGroup holding LOD0 only (a model with
+//                                     models[].lods.levels > 1: its levels, Task 15b,
+//                                     LodGroups.Build with this cull of the LODGroup's
+//                                     own size), culled at
 //                                     cullHeight = clamp(size / (2 fadeFar D tan(fov/2)), 1e-4, 1)
 //                                     (size: the prefab's bounds diagonal; fadeFar:
 //                                     the model's stored fadeFar x fadeQualityScale
@@ -120,11 +123,21 @@ namespace Castlemist
                     double fadeFar = FadeFar(model);
                     if (!(fadeFar > 0)) sum.warnings.Add("foliage model " + e.FileId + ": no fadeFar in the manifest: its LODGroup culls at 1e-4");
                     if (!any) sum.warnings.Add("foliage model " + e.FileId + ": no renderer: its LODGroup is empty");
-                    float cull = (float)FoliageRecords.CullHeight(b.size.magnitude, fadeFar, opts.distance);
-                    LODGroup lg = inst.GetComponent<LODGroup>();
-                    if (lg == null) lg = inst.AddComponent<LODGroup>();
-                    lg.SetLODs(new[] { new LOD(cull, rs) });
-                    lg.RecalculateBounds();
+                    if (e.LodLevels > 1)
+                    {
+                        // Task 15b: the model's levels, the last ending at the cull (of the LODGroup's own size).
+                        LodGroups.Build(inst, e.LodLevels, e.LodDistances,
+                                        size => FoliageRecords.CullHeight(size, fadeFar, opts.distance), sum.warnings, "foliage model " + e.FileId);
+                        sum.lodTreePrefabs++;
+                    }
+                    else
+                    {
+                        float cull = (float)FoliageRecords.CullHeight(b.size.magnitude, fadeFar, opts.distance);
+                        LODGroup lg = inst.GetComponent<LODGroup>();
+                        if (lg == null) lg = inst.AddComponent<LODGroup>();
+                        lg.SetLODs(new[] { new LOD(cull, rs) });
+                        lg.RecalculateBounds();
+                    }
                     string path = folder + "/" + e.FileId + ".prefab";
                     bool ok;
                     GameObject saved = PrefabUtility.SaveAsPrefabAsset(inst, path, out ok);

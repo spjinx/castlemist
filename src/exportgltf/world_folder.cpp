@@ -8,6 +8,7 @@
 #include "castlemist/exportgltf/world_cell.h"
 #include "castlemist/exportgltf/world_export.h"
 #include "castlemist/exportgltf/world_foliage.h"
+#include "castlemist/exportgltf/world_lods.h"
 #include "castlemist/exportgltf/world_probe.h"
 #include "castlemist/exportgltf/world_unity_terrain.h"
 #include "castlemist/world/anim.h"
@@ -160,6 +161,7 @@ void export_one_model(const cw::WorldScene& scene, uint32_t mi, ModelSource& src
         for (const auto& [id, b] : out.texBytes) mm.textureBytes += b;
 
         for (const ModelMeshCPU& mesh : m->meshes) mm.triangles += mesh.indices.size() / 3;
+        mm.lods = model_lods_json(*m);   // Task 15b: levels, switch distances, triangles per level
         for (const auto& clip : m->animClips) mm.clips.push_back(clip.name);
         out.clipTokens = m->animClipTokens;
         out.allTokens = m->animationTokens;
@@ -193,6 +195,7 @@ void export_one_model(const cw::WorldScene& scene, uint32_t mi, ModelSource& src
         vo.gltf.imageUriPrefix = "Images/";
         vo.gltf.sharedImages = pool;                      // dat textures: <out>/textures/<fileId>.png (W8)
         vo.gltf.sharedImageUriPrefix = "../../textures/"; // from models/<fileId>/<fileId>.glb
+        vo.gltf.exportLods = true;                        // Task 15b: <node>_LOD1 / _LOD2 (world_lods.h)
         const VrchatFolderResult r = write_vrchat_folder(*m, utf8(folder), id, fileId, vo);
         m.reset();   // the preview is released once written
         for (const std::string& w : r.warnings) out.warnings.push_back("models: " + id + ": " + w);
