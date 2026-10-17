@@ -293,7 +293,8 @@ if (CASTLEMIST_PYTHON)
              COMMAND "${CASTLEMIST_PYTHON}" -I "${PROJECT_SOURCE_DIR}/tools/world/test_validate_manifest.py"
                      "${CMAKE_BINARY_DIR}/world_fixture")
     # Unity Terrain mode (world-foliage D8): the cell's mesh terrain and its material are not built (terrainColliders=0,
-    # materials 5 - 1 + the shared Nature/Terrain/Standard template); one tile. The collider tree (bit 3) is a Terrain
+    # materials 4 - 1 + the shared Nature/Terrain/Standard template; Task 15d: models 102 and 103 share one material
+    # key, so 2 model materials, not 3); one tile. The collider tree (bit 3) is a Terrain
     # tree, the geometry-only collider stays a prefab instance. The two grass records (model 103, terrainDetail) are
     # details: (-13500, 36000) and (-10500, 35500) in tile t0_0 (x0 -15360, y1 39936) fall in the 48-unit cells
     # (floor(1860/48), floor(3936/48)) = (38, 82) and (floor(4860/48), floor(4436/48)) = (101, 92): 2 non-zero texels.
@@ -310,9 +311,9 @@ if (CASTLEMIST_PYTHON)
     # (Task 15b: the three models have LOD1/LOD2, the trees are model 101, prop 1 has OVERRIDE_LOD)
     # records are 1536-unit squares (1, 1) and (3, 1) of the cell (x0 -15360, y0 33792), so 2 patches.
     set_tests_properties(world_manifest_plan PROPERTIES PASS_REGULAR_EXPRESSION
-        "PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2 foliagePatches=2 terrains=0 detailPrototypes=0 detailCells=0 treeInstances=0 lodPrefabs=3 lodTreePrefabs=1 lodOverrides=1")
+        "PLAN materials=4 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2 foliagePatches=2 terrains=0 detailPrototypes=0 detailCells=0 treeInstances=0 lodPrefabs=3 lodTreePrefabs=1 lodOverrides=1")
     set_tests_properties(world_manifest_plan_terrain PROPERTIES PASS_REGULAR_EXPRESSION
-        "PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=0 water=1 lights=1 skybox=0 foliageTrees=1 foliagePatches=0 terrains=1 detailPrototypes=1 detailCells=2 treeInstances=1 lodPrefabs=3 lodTreePrefabs=1 lodOverrides=1")
+        "PLAN materials=4 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=0 water=1 lights=1 skybox=0 foliageTrees=1 foliagePatches=0 terrains=1 detailPrototypes=1 detailCells=2 treeInstances=1 lodPrefabs=3 lodTreePrefabs=1 lodOverrides=1")
     set_tests_properties(world_manifest_selftest PROPERTIES PASS_REGULAR_EXPRESSION "SELFTEST OK")
 endif()
 

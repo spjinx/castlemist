@@ -135,7 +135,92 @@ class Export(unittest.TestCase):
     def test_valid_and_plan(self):
         lines, ok = self.run_copy(plan=True)
         self.assertTrue(ok, lines)
+        # Task 15d: models 102 and 103 share one material key: 2 model materials + terrain + water.
+        self.assertTrue(any(l.startswith("PLAN materials=4 ") for l in lines), lines)
+
+    def test_shared_materials(self):
+        lines, ok = self.run_copy()
+        self.assertTrue(ok, lines)
+
+        def dup(j):
+            j["sharedMaterials"]["entries"].append(dict(j["sharedMaterials"]["entries"][1]))
+        lines, ok = self.run_copy(edit=dup)
+        self.assertFalse(ok)
+        self.assertTrue(any("sharedMaterials.entries[2].key: duplicate key" in l for l in lines), lines)
+
+        def unknown(j):
+            j["models"][0]["materialKeys"][0] = "f" * 40
+        lines, ok = self.run_copy(edit=unknown)
+        self.assertTrue(any("models[0].materialKeys[0]: key " + "f" * 40 + " is not in sharedMaterials" in l
+                            for l in lines), lines)
+
+        def not_hex(j):
+            j["sharedMaterials"]["entries"][0]["key"] = "Mat_58246"
+        lines, ok = self.run_copy(edit=not_hex)
+        self.assertTrue(any("entries[0].key: not 40 lower-case hex digits" in l for l in lines), lines)
+
+        def slots(j):
+            j["sharedMaterials"]["entries"][1]["slots"] = 1
+        lines, ok = self.run_copy(edit=slots)
+        self.assertTrue(any("entries[1].slots: 1, the models hold 2" in l for l in lines), lines)
+
+        def source(j):
+            j["sharedMaterials"]["entries"][1]["model"] = 0
+        lines, ok = self.run_copy(edit=source)
+        self.assertTrue(any("models[0].materialKeys[0] is not its key" in l for l in lines), lines)
+
+        def count(j):
+            j["sharedMaterials"]["generatedMaps"]["count"] += 1
+        lines, ok = self.run_copy(edit=count)
+        self.assertTrue(any("generatedMaps.count" in l for l in lines), lines)
+
+    def test_shared_material_files(self):
+        with open(os.path.join(EXPORT, "manifest.json")) as f:
+            man = json.load(f)
+        gen = man["sharedMaterials"]["generatedMaps"]["dir"]
+        name = sorted(os.listdir(os.path.join(EXPORT, gen)))[0]
+
+        def tamper(dst):
+            with open(os.path.join(dst, gen, name), "ab") as f:
+                f.write(b"!")
+        lines, ok = self.run_copy(prep=tamper)
+        self.assertFalse(ok)
+        self.assertTrue(any("not named by the SHA-1 of its bytes" in l for l in lines), lines)
+        lines, ok = self.run_copy(remove=gen + "/" + name)
+        self.assertFalse(ok)
+        self.assertTrue(any("missing file: textures/gen/" + name in l for l in lines), lines)
+
+        def wrong_entry_key(dst):
+            p = os.path.join(dst, man["models"][0]["materials"])
+            with open(p, encoding="utf-8") as f:
+                j = json.load(f)
+            j["materials"][0]["key"] = "0" * 40
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(j, f)
+        lines, ok = self.run_copy(prep=wrong_entry_key)
+        self.assertTrue(any("models[0].materialKeys[0]: models/101/materials.json says key" in l for l in lines),
+                        lines)
+
+    def test_plan_material_variants(self):
+        # The importers apply the manifest's dark decal and uvScroll per model: a key whose slots differ
+        # there is one material per variant; a key-less entry (an older export) is its own.
+        def dark(j):
+            j["models"][2]["darkDecalMaterials"] = ["Mat_58247"]
+        lines, ok = self.run_copy(edit=dark, plan=True)
         self.assertTrue(any(l.startswith("PLAN materials=5 ") for l in lines), lines)
+
+        def rule_off(j):
+            dark(j)
+            j["settings"]["darkDecalRule"]["value"] = False
+        lines, ok = self.run_copy(edit=rule_off, plan=True)
+        self.assertTrue(any(l.startswith("PLAN materials=4 ") for l in lines), lines)
+
+        def scroll(j):
+            for k in (1, 2):
+                j["models"][k]["uvScroll"] = [{"material": "Mat_58247", "uvIndex": 0, "scroll": [0, 0.5],
+                                              "unit": "per second, UNPROVEN"}]
+        lines, ok = self.run_copy(edit=scroll, plan=True)
+        self.assertTrue(any(l.startswith("PLAN materials=4 ") for l in lines), lines)
 
     def test_plan_lods(self):
         # Task 15b: the three fixture models have LOD1/LOD2, the trees are model 0, prop 1 has its own distances.
@@ -211,7 +296,7 @@ class Export(unittest.TestCase):
         # Terrain: the collider tree is a Terrain tree, the grass are details in 2 cells; no mesh terrain.
         f = self.fields(self.plan_line(mode="terrain"))
         self.assertEqual((f["foliageTrees"], f["foliagePatches"], f["terrains"], f["detailPrototypes"], f["detailCells"],
-                          f["treeInstances"], f["terrainColliders"], f["materials"]), ("1", "0", "1", "1", "2", "1", "0", "5"))
+                          f["treeInstances"], f["terrainColliders"], f["materials"]), ("1", "0", "1", "1", "2", "1", "0", "4"))
         f = self.fields(self.plan_line(mode="terrain", density=0.5))
         self.assertEqual((f["detailPrototypes"], f["detailCells"], f["treeInstances"]), ("1", "1", "1"))
         f = self.fields(self.plan_line(mode="terrain", foliage="colliders"))
