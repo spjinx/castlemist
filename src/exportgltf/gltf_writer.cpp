@@ -83,6 +83,24 @@ int GltfWriter::add_or_reuse_texture(uint32_t fileId, const std::vector<uint8_t>
     auto found = fileId ? textureByFileId_.find(fileId) : textureByFileId_.end();
     if (found != textureByFileId_.end()) return found->second;
 
+    if (generatedPool_) {   // world export (Task 15d): content-named, once per export
+        std::string err;
+        const std::string leaf = generatedPool_->ensure_content(pngBytes, "", &err);
+        if (leaf.empty()) {
+            if (imageError_.empty()) imageError_ = err.empty() ? "Could not write a generated image." : err;
+            return -1;
+        }
+        const std::string uri = generatedPrefix_ + leaf;
+        const auto same = textureByUri_.find(uri);
+        if (same != textureByUri_.end()) {
+            if (fileId) textureByFileId_[fileId] = same->second;
+            return same->second;
+        }
+        const int t = add_texture_uri(fileId, uri, name);
+        textureByUri_[uri] = t;
+        return t;
+    }
+
     if (!imageDir_.empty()) {
         namespace fs = std::filesystem;
         // The image name (a dat texture's is its fileId) as a file name that
@@ -152,6 +170,22 @@ int GltfWriter::add_texture_uri(uint32_t fileId, const std::string& uri, const s
 void GltfWriter::set_image_output(const std::string& dirUtf8, const std::string& uriPrefix) {
     imageDir_ = dirUtf8;
     imageUriPrefix_ = uriPrefix;
+}
+
+void GltfWriter::set_generated_pool(SharedImagePool* pool, const std::string& uriPrefix) {
+    generatedPool_ = pool;
+    generatedPrefix_ = uriPrefix;
+}
+
+std::string GltfWriter::texture_uri(int textureIndex) const {
+    if (textureIndex < 0 || !doc_.contains("textures") || static_cast<size_t>(textureIndex) >= doc_["textures"].size())
+        return {};
+    const json& t = doc_["textures"][static_cast<size_t>(textureIndex)];
+    if (!t.contains("source") || !t["source"].is_number_integer()) return {};
+    const size_t img = t["source"].get<size_t>();
+    if (!doc_.contains("images") || img >= doc_["images"].size()) return {};
+    const json& im = doc_["images"][img];
+    return im.contains("uri") && im["uri"].is_string() ? im["uri"].get<std::string>() : std::string();
 }
 
 int GltfWriter::add_node(json node) {

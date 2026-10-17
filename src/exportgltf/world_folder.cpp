@@ -115,13 +115,20 @@ struct ModelOut {
     std::unordered_map<uint32_t, uint64_t> texBytes;   ///< RGBA8 + mips at the cap
     std::vector<uint64_t> clipTokens, allTokens;       ///< animClipTokens, animationTokens
     bool empty = false;                                ///< loaded, but no drawable meshes
+    std::vector<VrchatFolderResult::MaterialKey> materialKeys;   ///< per materials.json entry (Task 15d)
+};
+
+/// The pools of one export: dat textures by fileId (W8) and generated images
+/// and Poiyomi maps by content (Task 15d), both under textures/.
+struct Pools {
+    std::shared_ptr<SharedImagePool> dat, generated;
 };
 
 /// Fills the preview's textures from the capped decode, measures it, writes
 /// models/<fileId>/ and releases it. A null load or a failed write fails the
 /// model only; world::DatIoError reaches the pool (fatal).
 void export_one_model(const cw::WorldScene& scene, uint32_t mi, ModelSource& src, const fs::path& dir,
-                      const WorldFolderOptions& opts, const std::shared_ptr<SharedImagePool>& pool, ModelOut& out) {
+                      const WorldFolderOptions& opts, const Pools& pools, ModelOut& out) {
     const uint32_t fileId = scene.models[mi].fileId;
     ManifestModel& mm = out.mm;
     mm.index = mi;
@@ -186,6 +193,22 @@ void export_one_model(const cw::WorldScene& scene, uint32_t mi, ModelSource& src
                 break;
             }
         }
+        // Task 15d: per material, the key input the importers act on beside materials.json:
+        // its dark-decal switch and its uvScroll entry. Both go by material name
+        // (models[].darkDecalMaterials, uvScroll), so every material of that name has them.
+        std::vector<json> keyExtras;
+        for (const ModelMaterialCPU& mat : m->materials) {
+            const std::string name = material_name(mat);
+            json x{{"darkDecal", std::find(mm.darkDecalMaterials.begin(), mm.darkDecalMaterials.end(), name) !=
+                                     mm.darkDecalMaterials.end()},
+                   {"uvScroll", nullptr}};
+            for (const json& u : mm.uvScroll)
+                if (u["material"] == name) {
+                    x["uvScroll"] = {{"uvIndex", u["uvIndex"]}, {"scroll", u["scroll"]}};
+                    break;
+                }
+            keyExtras.push_back(std::move(x));
+        }
 
         const std::string id = std::to_string(fileId);
         const fs::path folder = dir / "models" / id;
@@ -193,9 +216,17 @@ void export_one_model(const cw::WorldScene& scene, uint32_t mi, ModelSource& src
         vo.gltf.rootMatrix = map_to_gltf_root(1.0);
         vo.gltf.imageDirUtf8 = utf8(folder / "Images");   // generated images (bakes) only
         vo.gltf.imageUriPrefix = "Images/";
-        vo.gltf.sharedImages = pool;                      // dat textures: <out>/textures/<fileId>.png (W8)
+        vo.gltf.sharedImages = pools.dat;                 // dat textures: <out>/textures/<fileId>.png (W8)
         vo.gltf.sharedImageUriPrefix = "../../textures/"; // from models/<fileId>/<fileId>.glb
         vo.gltf.exportLods = true;                        // Task 15b: <node>_LOD1 / _LOD2 (world_lods.h)
+        // Task 15d: generated images and Poiyomi maps once per content in textures/gen/,
+        // and every material keyed by its content (materials.json "key", glTF extras).
+        vo.gltf.generatedImages = pools.generated;
+        vo.gltf.generatedImageUriPrefix = "../../textures/gen/";
+        vo.generatedMaps = pools.generated;
+        vo.generatedMapsPrefix = "../../textures/gen/";
+        vo.materialKeys = true;
+        vo.materialKeyExtras = std::move(keyExtras);
         const VrchatFolderResult r = write_vrchat_folder(*m, utf8(folder), id, fileId, vo);
         m.reset();   // the preview is released once written
         for (const std::string& w : r.warnings) out.warnings.push_back("models: " + id + ": " + w);
@@ -207,6 +238,8 @@ void export_one_model(const cw::WorldScene& scene, uint32_t mi, ModelSource& src
         mm.folder = "models/" + id;
         mm.glb = mm.folder + "/" + id + ".glb";
         mm.materials = mm.folder + "/materials.json";
+        out.materialKeys = r.materialKeys;
+        for (const auto& k : r.materialKeys) mm.materialKeys.push_back(k.key);
     } catch (const cw::DatIoError&) {
         throw;
     } catch (const std::exception& e) {
@@ -435,6 +468,48 @@ json sky_block(const fs::path& dir) {
     return nullptr;
 }
 
+/// Task 15d: the manifest's sharedMaterials block -- one entry per material key,
+/// in first-use order over models[] (position, then materials.json order).
+/// name: the most common display name of the key's slots, the smallest on a tie;
+/// model / material: the first slot with usedByMeshes (else the first slot),
+/// which the Unity importer builds the shared material from.
+json shared_materials_json(const std::vector<ModelOut>& mouts, const SharedImagePool& gen) {
+    struct Agg {
+        std::map<std::string, size_t> names;
+        size_t model = 0, material = 0, slots = 0;
+        std::set<size_t> models;
+        bool used = false;
+    };
+    std::vector<std::string> order;
+    std::map<std::string, Agg> agg;
+    for (size_t p = 0; p < mouts.size(); ++p) {
+        if (!mouts[p].mm.ok) continue;
+        const auto& keys = mouts[p].materialKeys;
+        for (size_t j = 0; j < keys.size(); ++j) {
+            auto [it, fresh] = agg.try_emplace(keys[j].key);
+            Agg& a = it->second;
+            if (fresh) { order.push_back(keys[j].key); a.model = p; a.material = j; }
+            if (keys[j].usedByMeshes && !a.used) { a.used = true; a.model = p; a.material = j; }
+            ++a.names[keys[j].name];
+            ++a.slots;
+            a.models.insert(p);
+        }
+    }
+    json entries = json::array();
+    for (const std::string& k : order) {
+        const Agg& a = agg.at(k);
+        std::string name;
+        size_t best = 0;
+        for (const auto& [n, c] : a.names)   // std::map: ascending, so the first of the most common wins
+            if (c > best) { best = c; name = n; }
+        entries.push_back({{"key", k}, {"name", name}, {"model", a.model}, {"material", a.material},
+                           {"slots", a.slots}, {"models", a.models.size()}, {"usedByMeshes", a.used}});
+    }
+    return {{"generatedMaps", {{"dir", "textures/gen"}, {"count", gen.written()}, {"bytes", gen.bytes_written()},
+                               {"bytesRequested", gen.bytes_requested()}}},
+            {"entries", std::move(entries)}};
+}
+
 } // namespace
 
 namespace {
@@ -496,10 +571,13 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
     lap("world-cells");
 
     // 2. The model stage; dat textures go once into the shared pool (W8).
-    const auto pool = std::make_shared<SharedImagePool>(utf8(dir / "textures"));
+    Pools pools;
+    pools.dat = std::make_shared<SharedImagePool>(utf8(dir / "textures"));
+    pools.generated = std::make_shared<SharedImagePool>(utf8(dir / "textures" / "gen"));   // Task 15d
+    const auto& pool = pools.dat;
     std::vector<ModelOut> mouts(needed.size());
     run_pool(needed.size(), threads, fatal,
-             [&](size_t k) { export_one_model(scene, needed[k], src, dir, opts, pool, mouts[k]); });
+             [&](size_t k) { export_one_model(scene, needed[k], src, dir, opts, pools, mouts[k]); });
     src.release_textures();   // W9: the models are written; their textures are not needed again
     lap("models");
     if (fatal.stopped()) { rep.error = fatal.error; return rep; }
@@ -738,6 +816,7 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
     in.unityTerrain = unityTerrain;
     in.warnings = warnings;
     in.textures = {{"dir", "textures"}, {"count", pool->written()}};
+    in.sharedMaterials = shared_materials_json(mouts, *pools.generated);
     in.clipOf = [&clipOf](uint32_t pi) {
         const auto it = clipOf.find(pi);
         return it == clipOf.end() ? std::string() : it->second;
@@ -775,6 +854,10 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
     rep.warnings = man["warnings"].get<std::vector<std::string>>();
     if (cn.contains("foliage")) rep.foliage = cn["foliage"];
     rep.bytes = folder_bytes(dir);
+    // Task 15d: the generated images and Poiyomi maps as written once each, and as
+    // they would have been written per material (the bytes the content pool saved).
+    rep.bytes["generated-maps"] = pools.generated->bytes_written();
+    rep.bytes["generated-maps-requested"] = pools.generated->bytes_requested();
     return rep;
 }
 

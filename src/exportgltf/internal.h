@@ -122,6 +122,16 @@ public:
     ///        unique (case-insensitive) file name, else the fileId.
     ///        An empty `dirUtf8` switches back to embedding.
     void set_image_output(const std::string& dirUtf8, const std::string& uriPrefix);
+    /// @brief From now on (world export, Task 15d), ::add_or_reuse_texture puts
+    ///        the PNG into @p pool by content ("<sha1>.png") and references it as
+    ///        `<uriPrefix><sha1>.png`; an image already referenced by that URI in
+    ///        this file is reused. Wins over ::set_image_output. Null switches it off.
+    void set_generated_pool(SharedImagePool* pool, const std::string& uriPrefix);
+    /// @brief Material @p i as added (Task 15d: the key reads it, then adds its extras).
+    nlohmann::json& material_json(int i) { return doc_["materials"][static_cast<size_t>(i)]; }
+    /// @brief The image URI texture @p textureIndex samples; empty for an embedded
+    ///        image or a bad index.
+    std::string texture_uri(int textureIndex) const;
     /// @brief The first image file write failure since construction; empty when none.
     const std::string& image_error() const { return imageError_; }
     /// @brief Records @p e as ::image_error unless one is already recorded.
@@ -152,6 +162,9 @@ private:
     std::map<uint32_t, int> textureByFileId_; // fileId -> texture index, for dedup
     std::string imageDir_, imageUriPrefix_;   // set_image_output; empty = embed
     std::set<std::string> imageStems_;        // lower-case file stems written, for unique names
+    SharedImagePool* generatedPool_ = nullptr; // set_generated_pool
+    std::string generatedPrefix_;
+    std::map<std::string, int> textureByUri_; // generated-pool URI -> texture index
     std::string imageError_;
 };
 

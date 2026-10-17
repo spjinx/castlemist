@@ -136,6 +136,7 @@ json model_json(const ManifestModel& m, std::vector<std::string>& warnings) {
               {"uvScroll", uv_scroll_json(m, warnings)},
               {"status", m.ok ? "ok" : "failed"}};
     if (m.lods.is_object()) j["lods"] = m.lods;
+    if (!m.materialKeys.empty()) j["materialKeys"] = m.materialKeys;   // Task 15d
     if (!m.ok || !m.error.empty()) j["error"] = m.error;
     return j;
 }
@@ -590,6 +591,8 @@ json world_manifest_json(const WorldManifestInput& in) {
         else
             notes.push_back("manifest: textures lacks a string dir / count; textures left out");
     }
+    // sharedMaterials (optional, Task 15d): as the writer built it.
+    if (in.sharedMaterials.is_object()) man["sharedMaterials"] = in.sharedMaterials;
     man["light"] = finite_or_null(in.light.is_object() ? in.light : world_light_json(s.environment.light), "light", notes);
 
     // spawn: only map (three finite numbers) and unity = map_to_unity(map), always recomputed.

@@ -26,6 +26,14 @@ trees file records x 24 bytes; prototype and model indices in range; the
 tiles' tree records equal the foliage records with flag bit 3; and every check
 point inside a tile's real chunks.
 
+sharedMaterials (Task 15d): every key is 40 lower-case hex digits and listed
+once; each models[].materialKeys has one key per materials.json entry, equal to
+that entry's "key", and every key it names is in the table; each entry's model,
+material, slots and models agree with the models; every file of
+generatedMaps.dir is named by the SHA-1 of its bytes (<sha1>[_<Role>].png) and
+their count and bytes are generatedMaps.count and .bytes; and every map file a
+keyed materials.json names exists.
+
 --plan prints what the Unity importer builds with the given options (default
 mesh, all, density 1, distance 1; world-foliage D8, D9), ending with
 foliageTrees= foliagePatches= terrains= detailPrototypes= detailCells=
@@ -33,6 +41,7 @@ treeInstances= (plan_foliage). Distance changes no count. In Terrain mode the
 cells' mesh terrain and its material are not built (terrainColliders=0) and one
 shared Nature/Terrain/Standard template material is.
 """
+import hashlib
 import json
 import math
 import os
@@ -322,6 +331,7 @@ def semantic(m, root):
 
     _check_foliage(m, root, models, cells, errors)
     _check_unity_terrain(m, root, models, cells, errors)
+    _check_shared_materials(m, root, models, errors)
 
     cnt = m.get("counts") or {}
     try:
@@ -333,6 +343,142 @@ def semantic(m, root):
     except (KeyError, TypeError):
         pass
     return errors
+
+
+HEX = set("0123456789abcdef")
+
+
+def _is_key(k):
+    return isinstance(k, str) and len(k) == 40 and set(k) <= HEX
+
+
+def _read_materials_json(root, mod):
+    """The materials list of a model's materials.json, or None when it has none or it does not parse."""
+    rel = mod.get("materials") if isinstance(mod, dict) else None
+    if not isinstance(rel, str):
+        return None
+    try:
+        with open(os.path.join(root, rel), encoding="utf-8") as f:
+            j = json.load(f)
+        mats = j["materials"]
+        return mats if isinstance(mats, list) else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _map_files(entry):
+    """Every map file a materials.json entry names (maps.*, maps.extras[], rim.mask, projector)."""
+    out = []
+    maps = entry.get("maps") if isinstance(entry, dict) else None
+    if isinstance(maps, dict):
+        for k, v in maps.items():
+            if isinstance(v, dict) and isinstance(v.get("file"), str):
+                out.append(v["file"])
+            elif k == "extras" and isinstance(v, list):
+                out += [x["file"] for x in v if isinstance(x, dict) and isinstance(x.get("file"), str)]
+    for blk, sub in (("rim", "mask"), ("projector", None)):
+        b = entry.get(blk) if isinstance(entry, dict) else None
+        if isinstance(b, dict) and sub:
+            b = b.get(sub)
+        if isinstance(b, dict) and isinstance(b.get("file"), str):
+            out.append(b["file"])
+    return out
+
+
+def _check_shared_materials(m, root, models, errors):
+    """sharedMaterials and models[].materialKeys (Task 15d; see the module docstring)."""
+    sm = m.get("sharedMaterials")
+    keyed = [i for i, mod in enumerate(models) if isinstance(mod.get("materialKeys"), list)]
+    if not isinstance(sm, dict):
+        if keyed:
+            errors.append("ERROR models[%d].materialKeys: no sharedMaterials table" % keyed[0])
+        return
+    table = {}
+    for k, e in enumerate(sm.get("entries") or []):
+        key = e.get("key")
+        p = "sharedMaterials.entries[%d]" % k
+        if not _is_key(key):
+            errors.append("ERROR %s.key: not 40 lower-case hex digits: %r" % (p, key))
+        elif key in table:
+            errors.append("ERROR %s.key: duplicate key %s (also entries[%d])" % (p, key, table[key][0]))
+        else:
+            table[key] = (k, e)
+    gm = sm.get("generatedMaps") or {}
+    gdir = gm.get("dir") if isinstance(gm.get("dir"), str) else ""
+    try:   # the exact spellings: Windows finds "x_projector.png" for "x_Projector.png", Unity's paths do not
+        gnames = set(os.listdir(os.path.join(root, gdir))) if gdir else set()
+    except OSError:
+        gnames = set()
+    slots, users = {}, {}
+    for i in keyed:
+        mod, p = models[i], "models[%d].materialKeys" % i
+        keys = mod["materialKeys"]
+        for j, key in enumerate(keys):
+            if key not in table:
+                errors.append("ERROR %s[%d]: key %s is not in sharedMaterials" % (p, j, key))
+                continue
+            slots[key] = slots.get(key, 0) + 1
+            users.setdefault(key, set()).add(i)
+        mats = _read_materials_json(root, mod)
+        if mats is None:
+            continue
+        if len(mats) != len(keys):
+            errors.append("ERROR %s: %d keys for %d materials in %s" % (p, len(keys), len(mats), mod["materials"]))
+        folder = posixpath.dirname(mod["materials"])
+        for j, (e, key) in enumerate(zip(mats, keys)):
+            if e.get("key") != key:
+                errors.append("ERROR %s[%d]: %s says key %r" % (p, j, mod["materials"], e.get("key")))
+            for f in _map_files(e):
+                rel = posixpath.normpath(posixpath.join(folder, f))
+                if not _exists(root, rel) or (gdir and posixpath.dirname(rel) == gdir and
+                                              posixpath.basename(rel) not in gnames):
+                    errors.append("ERROR %s: missing file: %s (material %d)" % (mod["materials"], rel, j))
+    for key, (k, e) in table.items():
+        p = "sharedMaterials.entries[%d]" % k
+        mi, mj = e.get("model"), e.get("material")
+        if not (isinstance(mi, int) and 0 <= mi < len(models)):
+            errors.append("ERROR %s.model: index out of range: %r (models has %d)" % (p, mi, len(models)))
+        else:
+            mk = models[mi].get("materialKeys")
+            if not (isinstance(mk, list) and isinstance(mj, int) and 0 <= mj < len(mk) and mk[mj] == key):
+                errors.append("ERROR %s: models[%d].materialKeys[%r] is not its key" % (p, mi, mj))
+        if e.get("slots") != slots.get(key, 0):
+            errors.append("ERROR %s.slots: %r, the models hold %d" % (p, e.get("slots"), slots.get(key, 0)))
+        if e.get("models") != len(users.get(key, ())):
+            errors.append("ERROR %s.models: %r, %d models hold it" % (p, e.get("models"), len(users.get(key, ()))))
+    d = os.path.join(root, gm.get("dir", ""))
+    if not os.path.isdir(d):
+        errors.append("ERROR sharedMaterials.generatedMaps.dir: missing file: %s" % gm.get("dir"))
+        return
+    n = size = 0
+    for f in sorted(os.listdir(d)):
+        fp = os.path.join(d, f)
+        if not os.path.isfile(fp):
+            continue
+        n += 1
+        size += os.path.getsize(fp)
+        h = hashlib.sha1()
+        with open(fp, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        if not (f.endswith(".png") and f[:40] == h.hexdigest() and (len(f) == 44 or f[40] == "_")):
+            errors.append("ERROR %s/%s: not named by the SHA-1 of its bytes (%s)" % (gm.get("dir"), f, h.hexdigest()))
+    if gm.get("count") != n:
+        errors.append("ERROR sharedMaterials.generatedMaps.count: %r declared, %d files in %s" % (gm.get("count"), n, gm.get("dir")))
+    if gm.get("bytes") != size:
+        errors.append("ERROR sharedMaterials.generatedMaps.bytes: %r declared, %d bytes in %s" % (gm.get("bytes"), size, gm.get("dir")))
+
+
+def material_variant(m, mod, entry, key):
+    """What the importers build one material asset for (Task 15d): the key, and the model's dark-decal
+    switch (settings.darkDecalRule) and uvScroll for that material's name, which they apply from the
+    manifest. An entry without a key is its own material (an export before Task 15d)."""
+    name = entry.get("name")
+    rule = (((m.get("settings") or {}).get("darkDecalRule") or {}).get("value", True)) is not False
+    dark = bool(rule and name in (mod.get("darkDecalMaterials") or []))
+    sc = next(((u.get("uvIndex", 0), tuple(u.get("scroll") or ())) for u in (mod.get("uvScroll") or [])
+               if isinstance(u, dict) and u.get("material") == name), None)
+    return (key, dark, sc)
 
 
 def read_foliage_records(path):
@@ -612,16 +758,23 @@ def plan_lines(m, root, mode="mesh", foliage="all", density=1.0, distance=1.0):
     errors = []
     models = m.get("models") or []
     ok = [mod for mod in models if mod.get("status") == "ok"]
-    mats = 0
+    # Model materials: one per distinct (key, dark decal, uvScroll) of the used entries (Task 15d,
+    # material_variant); an entry without a key counts alone.
+    variants = set()
     for i, mod in enumerate(models):
         if mod.get("status") != "ok" or not mod.get("materials"):
             continue
         try:
             with open(os.path.join(root, mod["materials"]), encoding="utf-8") as f:
                 j = json.load(f)
-            mats += sum(1 for x in j["materials"] if x.get("usedByMeshes") is not False)
+            for k, x in enumerate(j["materials"]):
+                if x.get("usedByMeshes") is False:
+                    continue
+                key = x.get("key")
+                variants.add(material_variant(m, mod, x, key) if isinstance(key, str) else ("entry", i, k))
         except (OSError, ValueError, KeyError, TypeError) as e:
             errors.append("ERROR models[%d].materials: unreadable: %s" % (i, e))
+    mats = len(variants)
     cells = m.get("cells") or []
     ut = m.get("unityTerrain")
     if mode == "terrain" and not isinstance(ut, dict):
@@ -866,6 +1019,23 @@ def self_test(export_dir, schema_path):
              lambda d: edit(d, lambda j: j["cells"][0]["instances"][0].__setitem__("model", 9999)))
         case("extra", "unexpected property: map.extra",
              lambda d: edit(d, lambda j: j["map"].__setitem__("extra", 1)))
+
+        # Shared materials (Task 15d), when the export has them.
+        sm = base.get("sharedMaterials")
+        if isinstance(sm, dict) and sm.get("entries"):
+            def dup_key(j):
+                j["sharedMaterials"]["entries"].append(dict(j["sharedMaterials"]["entries"][0]))
+            case("material_dup", "duplicate key", lambda d: edit(d, dup_key))
+            case("material_unknown", "is not in sharedMaterials",
+                 lambda d: edit(d, lambda j: j["models"][0]["materialKeys"].__setitem__(0, "0" * 40)))
+            gen = os.listdir(os.path.join(export_dir, sm["generatedMaps"]["dir"]))
+            if gen:
+                rel = posixpath.join(sm["generatedMaps"]["dir"], sorted(gen)[0])
+
+                def flip(d):
+                    with open(os.path.join(d, rel), "ab") as f:
+                        f.write(b"x")
+                case("material_hash", "not named by the SHA-1 of its bytes", flip)
 
         # Foliage (world-foliage spec D7), when the export has any.
         fcell = next((c["foliage"] for c in base["cells"] if isinstance(c.get("foliage"), dict)), None)

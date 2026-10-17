@@ -3,8 +3,11 @@
 // PlanLine() has the format of tools/world/validate_manifest.py --plan, and
 // each count follows the same rule, so the two lines can be compared as text
 // (CHECKLIST item 1):
-//   materials        model materials built (usedByMeshes != false) + one per
-//                    terrain cell + one per water cell
+//   materials        model materials built (usedByMeshes != false): one per
+//                    distinct (key, dark decal, uvScroll) -- Task 15d, the
+//                    shared Materials/Shared/<key>.mat; an entry without a key
+//                    (an older export) is its own -- + one per terrain cell +
+//                    one per water cell
 //   prefabs          prefabs saved, one per model with status ok
 //   controllers      AnimatorControllers, one per distinct (model, clip) used
 //   cells            Cell_<id> objects

@@ -68,12 +68,15 @@ the manifest changes.
 1. **The summary equals the dry run.** The importer's `PLAN …` line must equal
    `python tools/world/validate_manifest.py <export> --plan` character for
    character. For the fixture (`cm_world_export_fixture`), that line is
-   `PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2 foliagePatches=2 terrains=0 detailPrototypes=0 detailCells=0 treeInstances=0 lodPrefabs=3 lodTreePrefabs=1 lodOverrides=1`
+   `PLAN materials=4 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2 foliagePatches=2 terrains=0 detailPrototypes=0 detailCells=0 treeInstances=0 lodPrefabs=3 lodTreePrefabs=1 lodOverrides=1`
    in mesh mode, and with `--mode terrain` / `-castlemistTerrain terrain`
-   `PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=0 water=1 lights=1 skybox=0 foliageTrees=1 foliagePatches=0 terrains=1 detailPrototypes=1 detailCells=2 treeInstances=1 lodPrefabs=3 lodTreePrefabs=1 lodOverrides=1`
+   `PLAN materials=4 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=0 water=1 lights=1 skybox=0 foliageTrees=1 foliagePatches=0 terrains=1 detailPrototypes=1 detailCells=2 treeInstances=1 lodPrefabs=3 lodTreePrefabs=1 lodOverrides=1`
    (before the world-foliage work the line ended at `skybox`; Task 8 added
-   `foliageTrees`; Task 15b added the three `lod` counts). `LODS ... OK` checks
-   every model prefab, tree prefab and `instances[].lod` instance's LODGroup. Compare the line for the same options on both sides. In
+   `foliageTrees`; Task 15b added the three `lod` counts; Task 15d made
+   `materials` one per material key, so the fixture's 5 became 4). `LODS ... OK` checks
+   every model prefab, tree prefab and `instances[].lod` instance's LODGroup, and
+   `MATERIALS ... OK` (Task 15d) one `Materials/Shared/<key>.mat` per key and
+   variant, never two, with every prefab renderer on its model's shared material. Compare the line for the same options on both sides. In
    batchmode, `FOLIAGE_TREES checked=<n> ... OK` also checks every foliage tree
    instance against its record's `m`, `FOLIAGE_PATCHES` the patches, and in
    Terrain mode `TERRAIN_TREES` every TreeInstance against its record and
@@ -155,3 +158,4 @@ the manifest changes.
 | 2026-10-17 | 2022.3.22f1 batchmode, no Poiyomi | Queensdale region 8,4,15,11 (4 cells, 4 tiles) | 1-3, 12-13 | PASS. Mesh: `materials=846 prefabs=431 controllers=29 cells=4 instances=1385 … foliageTrees=1090 foliagePatches=1506 …`; terrain: `materials=843 … foliageTrees=98 foliagePatches=0 terrains=4 detailPrototypes=100 detailCells=31685 treeInstances=992`; density 0.5: mesh trees 704 / patches 1285, terrain trees 80 + 624 Terrain trees, detail layers 97 / cells 16322; Quest preset: `foliageTrees=318` (the 318 collider trees) and nothing else. All equal to the dry run. `TERRAIN_CHECK points=32 tiles=4 maxErr=0.003709 tol=0.0127 OK`, `TERRAIN_FILES checked=104 OK`, `TERRAIN_TREES checked=992 maxRelErr=1.39E-007 OK`. Importer 99 s mesh (239 s wall, first import), 63 s mesh re-import, 50 s terrain, 37-60 s for the variants. A region export's `models[].index` is not its position: the importer now keys prefabs by position (before, 1010 of 1385 props had no prefab) |
 | — | VRChat 2022.3 + Poiyomi 10, editor | Spirit Vale, Queensdale | 14-18 | not tried (no editor session) |
 | — | VRChat 2022.3 + Poiyomi 10, editor | Spirit Vale | 4-11 | not tried (no editor session; items 4 to 11 need one). Poiyomi 10 is not on this machine; only Pro 9.0.α18 was tried |
+| 2026-10-17 | 2022.3.22f1 batchmode, no Poiyomi | fixture, Spirit Vale, Queensdale region 8,4,15,11 (world-foliage Task 15d, shared materials) | 1-3 | PASS. Fixture `PLAN materials=4 …` (mesh and terrain) equal to the dry run, `MATERIALS keyed=3 keys=2 shared=2 … OK`, Shared .mat GUIDs unchanged on re-import. Spirit Vale `materials=1063` → `754`, `MATERIALS keyed=383 keys=688 shared=688 … OK`, importer 85 → 60 s first import (242 → 162 s wall), 40 → 34 s re-import. Queensdale region `materials=846` → `482`, `MATERIALS … keys=474 … OK`, importer 103 → 78 s (233 → 158 s wall), 58 → 56 s re-import. Every prefab renderer's resolved material identical before and after (1294 and 1199 slots) |

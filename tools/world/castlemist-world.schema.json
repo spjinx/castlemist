@@ -177,6 +177,42 @@
         "count": { "type": "integer", "minimum": 0 }
       }
     },
+    "sharedMaterials": {
+      "description": "Optional (Task 15d, world-foliage spec amendment 2026-10-17). One entry per material key, in first-use order over models[] (position, then materials.json order). A key is the SHA-1 (40 lower-case hex digits) of a canonical text of the material's look: its glTF material less its name, each texture as its image URI (textures/<fileId>.png or textures/gen/<sha1>.png, both content-named), and its materials.json entry less name, fileName, usedByMeshes and warnings (each map file a textures/gen name) with the model's dark-decal flag and uvScroll entry for it. The display name is not part of it. models[].materialKeys lists each materials.json entry's key, the same as that entry's key and its glTF material's extras.castlemistMaterialKey. name: the most common display name of the key's slots (the smallest on a tie); model, material: the first slot with usedByMeshes (else the first), the materials.json entry importers build the shared material from; slots: material slots with the key; models: models with it. generatedMaps: the content pool every generated image and Poiyomi map is written to once, as <sha1 of the PNG bytes>[_<Role>].png; bytes as written, bytesRequested as every material asked for them.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generatedMaps", "entries"],
+      "properties": {
+        "generatedMaps": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["dir", "count", "bytes", "bytesRequested"],
+          "properties": {
+            "dir": { "type": "string" },
+            "count": { "$ref": "#/$defs/count" },
+            "bytes": { "$ref": "#/$defs/count" },
+            "bytesRequested": { "$ref": "#/$defs/count" }
+          }
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "name", "model", "material", "slots", "models", "usedByMeshes"],
+            "properties": {
+              "key": { "type": "string" },
+              "name": { "type": "string" },
+              "model": { "description": "Position in models[].", "type": "integer", "minimum": 0 },
+              "material": { "description": "Index in that model's materials.json materials.", "type": "integer", "minimum": 0 },
+              "slots": { "type": "integer", "minimum": 1 },
+              "models": { "type": "integer", "minimum": 1 },
+              "usedByMeshes": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
     "foliage": {
       "description": "Optional (world-foliage spec D7, 'manifest.json additions'). Zone scatter foliage. Each cell's records are in cells[].foliage.file, layout castlemist-foliage-1: recordBytes (100) bytes per record, little-endian, no padding, sorted by (model, placement): offset 0 u32 model (index into models[]); 4 u16 layer (index into foliage.layers[], 0xFFFF for a collider linked by geometry only); 6 u16 flags (bit 0 has a collider; bits 1-2 source: 0 collider, 1 scatter, 2 density; bit 3 Unity Terrain tree; bit 4 outside the terrain, bucketed by clamping as props are); 8 u32 placement (index into the map's zone placements, 0xFFFFFFFF for a geometry-only collider; the thinning key fmix32(placement)); 12 f32[12] m (map-space 3 x 4, column-major, absolute: columns 0-2 the 3 x 3, column 3 the translation); 60 f32[3] unity.t (local to the cell node, map units, before unityScale); 72 f32[4] unity.r (quaternion x, y, z, w); 88 f32 unity.s (uniform scale); 92 f32 unityYaw (radians about Unity +Y, sign UNPROVEN: terrainTreeYawSign); 96 f32 tiltDeg (degrees between the instance's up and map up).",
       "type": "object",
@@ -428,6 +464,10 @@
         "uvScroll": { "type": "array", "items": { "$ref": "#/$defs/uvScroll" } },
         "status": { "enum": ["ok", "failed"] },
         "error": { "type": "string" },
+        "materialKeys": {
+          "description": "Task 15d (optional): the key (sharedMaterials) of each materials.json entry, in order.",
+          "type": "array", "items": { "type": "string" }
+        },
         "lods": {
           "description": "Task 15b (optional; docs/research/gw2-model-lods.md amendment 2026-10-17). levels: LOD0..LOD(levels-1) in the glb, each mesh's own LOD1 / LOD2 index sets on nodes '<LOD0 node>_LOD<k>' (a mesh without its own level repeats its coarser one: settings.lodMissingLevel). distances: the model's switch distances in model units (lodOverride[k] when > 0, else the client's 3500 / 7500; settings.lodDistances); the client switches at distance x the instance's largest axis scale. lodOverride: ModelFileData.lodOverride as stored, null when the MODL version has none. triangles: drawn at each level.",
           "type": "object",

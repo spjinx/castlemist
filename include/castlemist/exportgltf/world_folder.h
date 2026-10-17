@@ -13,8 +13,10 @@
 ///     (triangles, textures, clips, dark decals, uv scroll) and released -- on
 ///     a bounded pool. Dat textures go once into the shared pool textures/
 ///     (<fileId>.png, referenced as ../../textures/<fileId>.png; ruling W8);
-///     generated images stay in models/<fileId>/Images/. The source's texture
-///     cache is then released (ruling W9);
+///     generated images and the Poiyomi maps go once per content into
+///     textures/gen/ (<sha1 of the PNG>[_<Role>].png), and every material
+///     gets a content key (Task 15d; the manifest's sharedMaterials). The
+///     source's texture cache is then released (ruling W9);
 ///  3. partition_cells with those measurements;
 ///  4. the kept cells' terrain textures, on the pool;
 ///  5. each cell baked (albedo, water) and written (cells/<id>.glb), on the

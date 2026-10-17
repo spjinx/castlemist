@@ -8,6 +8,9 @@
 //   AlphaMask, RimMask                             -> sRGB off (data maps)
 //   BaseColor                                      -> sRGB, alphaIsTransparency
 //   EmissionMap, Emission, Decal, Projector        -> sRGB (colour maps)
+// The world export's shared map pool (Task 15d, textures/gen/ under a world root)
+// names the same roles "<sha1>_<Role>.png"; a pool file without a role (a
+// generated glb image) gets the world defaults only.
 // World files (an ancestor folder holds a castlemist-world manifest.json):
 //   cells/<id>_albedo.png, cells/<id>_water.png    -> clamp (cell edges); water alphaIsTransparency
 //   sky/**/equirect.png                            -> no mips, clamp V (Skybox/Panoramic)
@@ -42,7 +45,12 @@ namespace Castlemist
             string name = Path.GetFileNameWithoutExtension(path);
 
             bool ours = false;
-            if (Path.GetFileName(dir) == "Textures" && File.Exists(Path.GetDirectoryName(dir) + "/materials.json"))
+            if (Path.GetFileName(dir) == "gen" && Path.GetFileName(Path.GetDirectoryName(dir)) == "textures" && WorldRoot(dir) != null)
+            {
+                ours = true;
+                ApplyRole(ti, RoleOfPooled(name));
+            }
+            else if (Path.GetFileName(dir) == "Textures" && File.Exists(Path.GetDirectoryName(dir) + "/materials.json"))
             {
                 ours = true;
                 ApplyRole(ti, RoleOf(name));
@@ -113,6 +121,15 @@ namespace Castlemist
                 case "EmissionMap": case "Emission": case "Decal": case "Projector": return Role.Colour;
                 default: return Role.Unknown;
             }
+        }
+
+        /// The role of a pooled map "<40 hex>_<Role>" (Task 15d); Unknown without one.
+        public static Role RoleOfPooled(string fileStem)
+        {
+            if (fileStem.Length < 42 || fileStem[40] != '_') return Role.Unknown;
+            for (int i = 0; i < 40; ++i)
+                if (!Uri.IsHexDigit(fileStem[i])) return Role.Unknown;
+            return RoleOf("x - " + fileStem.Substring(41));
         }
 
         static void ApplyRole(TextureImporter ti, Role r)

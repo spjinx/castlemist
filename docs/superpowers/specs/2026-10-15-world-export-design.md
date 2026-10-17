@@ -912,7 +912,9 @@ throws and never yields a silently empty export.
   in `Textures/` are built. Task 8 (W8) then moved dat textures to a shared `textures/<fileId>.png` pool, written once,
   with relative URIs from the model glbs; generated images stay per model. Spirit Vale went from 2.14 to 1.66 GB; the
   pool is 1154 files, 246 MB. The per-material Poiyomi maps in `models/*/Textures/` are about 959 MB, often a diffuse
-  copy; content-hash pooling is later work.
+  copy; content-hash pooling is later work. Done in world-foliage Task 15d (2026-10-17): generated
+  maps and images go once per content into `textures/gen/`, and materials are shared by content key (see the
+  world-foliage spec's amendment).
 - **Instance positions (Task 7, W7).** Instance positions are in map units relative to the cell origin; the importer
   applies `unityScale` on the map root. `instance.model` is an index into the manifest's `models[]`, not the scene's
   models.

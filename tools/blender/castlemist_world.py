@@ -877,6 +877,61 @@ def make_dark_decal(mat):
         mat.surface_render_method = 'BLENDED'
 
 
+MATERIAL_KEY = "castlemistMaterialKey"   # glTF material extras (Task 15d): the material's content key
+MATERIAL_VARIANT = "castlemist_variant"   # set on the one Blender material kept per variant
+
+
+def material_variant(key, name, dark_names, scrolls):
+    """What one shared Blender material is (Task 15d): the key, and the dark decal and uvScroll the
+    manifest gives that material's name in this model, which the import applies on top (as
+    validate_manifest.py material_variant and the Unity importer)."""
+    sc = scrolls.get(name)
+    tail = ""
+    if name in dark_names:
+        tail += "|dark"
+    if sc is not None:
+        tail += "|scroll:%d:%r:%r" % (int(sc.get("uvIndex", 0)), float(sc["scroll"][0]), float(sc["scroll"][1]))
+    return key + tail
+
+
+def share_materials(objs, shared, dark_names, scrolls, names):
+    """Task 15d: every material of `objs` (a model's LOD0 and LOD objects) with a key whose variant
+    is already in `shared` is replaced by that one in every slot, and removed; the others are
+    registered, tagged with their variant and named by the manifest's table (`names`: key -> the
+    most common name). Returns (kept materials, replaced count)."""
+    kept, replaced = [], 0
+    for mat in materials_of(objs):
+        key = mat.get(MATERIAL_KEY)
+        if not isinstance(key, str) or not key:
+            kept.append(mat)   # an export before Task 15d: one material per model, as before
+            continue
+        variant = material_variant(key, base_name(mat.name), dark_names, scrolls)
+        have = shared.get(variant)
+        if have is None:
+            shared[variant] = mat
+            mat[MATERIAL_VARIANT] = variant
+            kept.append(mat)
+            continue
+        for o in objs:
+            if o.type != 'MESH':
+                continue
+            for i, m in enumerate(o.data.materials):
+                if m == mat:
+                    o.data.materials[i] = have
+        replaced += 1
+        if mat.users == 0:
+            bpy.data.materials.remove(mat)
+    return kept, replaced
+
+
+def name_shared(kept, names):
+    """The kept keyed materials get the manifest table's name (after the per-name switches ran)."""
+    for mat in kept:
+        key = mat.get(MATERIAL_KEY)
+        if isinstance(key, str) and names.get(key) and base_name(mat.name) != names[key]:
+            mat.name = names[key]
+
+
 def loop_action(act):
     for fc in curves_of(act):
         if not any(m.type == 'CYCLES' for m in fc.modifiers):
@@ -1046,6 +1101,9 @@ def import_world(export_dir, colliders=True, dark_decal=True, scale=1.0, verify=
         and counted.
         Frame Probe (probe.glb at frameProbe.map), Spawn, Sun
       World: sky.equirect as an Environment Texture, else the ambient colour.
+    Materials (Task 15d): one per material key (glTF extras castlemistMaterialKey) and per
+    dark-decal / uvScroll variant, shared by every model and LOD level that uses it and named
+    by the manifest's sharedMaterials table; an export without keys keeps one per model.
     Dark-decal materials get blend_method 'BLEND' (unless dark_decal is off);
     uvScroll entries get a Mapping-node driver frame / fps * scroll. Returns
     True, or with verify the verification's result."""
@@ -1062,9 +1120,13 @@ def import_world(export_dir, colliders=True, dark_decal=True, scale=1.0, verify=
     models_col = new_collection("Models", root)
     cells_col = new_collection("Cells", root)
 
-    # Models, baked once each.
+    # Models, baked once each. Task 15d: one Blender material per material key (and variant), shared
+    # by every model and LOD level that uses it.
     entries = {}
-    n_decal = n_scroll = n_lod = 0
+    n_decal = n_scroll = n_lod = n_replaced = 0
+    shared_mats = {}
+    key_names = {e.get("key"): e.get("name") for e in ((man.get("sharedMaterials") or {}).get("entries") or [])
+                 if isinstance(e, dict)}
     for k, m in enumerate(man.get("models") or []):
         if m.get("status") != "ok" or not m.get("glb"):
             continue
@@ -1100,9 +1162,16 @@ def import_world(export_dir, colliders=True, dark_decal=True, scale=1.0, verify=
         entries[k] = ModelEntry(k, m.get("fileId"), col, {base_name(a.name): a for a in acts})
         entries[k].lod_cols = lod_cols
         entries[k].lod_levels = int((m.get("lods") or {}).get("levels") or 1)
-        mats = materials_of(objs)
+        dark_names = set(m.get("darkDecalMaterials") or []) if dark_decal else set()
+        scrolls = {}
+        for sc in m.get("uvScroll") or []:
+            if isinstance(sc, dict) and sc.get("material") not in scrolls and len(sc.get("scroll") or ()) == 2:
+                scrolls[sc.get("material")] = sc
+        # Only this model's new materials get the switches below; a shared one already has them.
+        mats, replaced = share_materials(objs, shared_mats, dark_names, scrolls, key_names)
+        n_replaced += replaced
         if dark_decal:
-            names = set(m.get("darkDecalMaterials") or [])
+            names = dark_names
             for mat in mats:
                 if base_name(mat.name) in names:
                     make_dark_decal(mat)
@@ -1116,6 +1185,7 @@ def import_world(export_dir, colliders=True, dark_decal=True, scale=1.0, verify=
                 layers = users[0].data.uv_layers if users else []
                 uv_name = layers[uv_index].name if uv_index < len(layers) else ""
                 n_scroll += add_uv_scroll(mat, uv_index, sc.get("scroll", [0, 0]), uv_name)
+        name_shared(mats, key_names)
 
     # Cells.
     cell_info = []
@@ -1283,9 +1353,10 @@ def import_world(export_dir, colliders=True, dark_decal=True, scale=1.0, verify=
     for e in errors:
         print("IMPORT_ERROR " + e)
     print("IMPORT models=%d cells=%d instances=%d skipped=%d foliageObjects=%d foliageRecords=%d "
-          "foliageSkipped=%d darkDecal=%d uvScroll=%d lodObjects=%d seconds=%.1f" % (
+          "foliageSkipped=%d darkDecal=%d uvScroll=%d lodObjects=%d sharedMaterials=%d materialsReplaced=%d "
+          "seconds=%.1f" % (
               len(entries), len(cell_info), len(placed), skipped, len(foliage), sum(len(f[1]) for f in foliage),
-              fol_skipped, n_decal, n_scroll, n_lod, time.time() - t0))
+              fol_skipped, n_decal, n_scroll, n_lod, len(shared_mats), n_replaced, time.time() - t0))
     if not verify:
         return not errors
     return verify_world(man, placed, cell_info, probe_result, colliders, S, foliage, errors, entries)
@@ -1382,6 +1453,32 @@ def verify_lods(entries, fails):
         fails.append("LOD collections render")
 
 
+def verify_materials(entries, fails):
+    """Task 15d: one Blender material per variant (MATERIAL_VARIANT unique), and every keyed material
+    any model object (LOD levels and clip copies included) draws is that kept one."""
+    seen, keys = {}, set()
+    for mat in bpy.data.materials:
+        v = mat.get(MATERIAL_VARIANT)
+        if isinstance(v, str):
+            if v in seen:
+                fails.append("materials %s and %s are both %s" % (seen[v], mat.name, v))
+            seen[v] = mat.name
+            keys.add(mat.get(MATERIAL_KEY))
+    slots = 0
+    for e in (entries or {}).values():
+        for c in [e.col] + list(e.lod_cols.values()) + list(e.clip_cols.values()):
+            for o in c.objects:
+                if o.type != 'MESH':
+                    continue
+                for m in o.data.materials:
+                    if m is None or not isinstance(m.get(MATERIAL_KEY), str):
+                        continue
+                    slots += 1
+                    if not isinstance(m.get(MATERIAL_VARIANT), str):
+                        fails.append("model %s: %s draws %s, not its shared material" % (e.file_id, o.name, m.name))
+    print("MATERIALS keys=%d materials=%d slots=%d" % (len(keys), len(seen), slots))
+
+
 def verify_world(man, placed, cell_info, probe_result, colliders, S, foliage=(), errors=(), entries=None):
     """The headless checks of spec "Testing" (Blender). The instance matrices are
     checked against the manifest's other form of each placement, its Unity TRS
@@ -1440,6 +1537,7 @@ def verify_world(man, placed, cell_info, probe_result, colliders, S, foliage=(),
         fails.append("colliders %d != %d" % (len(cols), want_c))
     verify_foliage(foliage, S[0][0], fails)
     verify_lods(entries, fails)
+    verify_materials(entries, fails)
     fails.extend(errors)
     print("VERIFY OK" if not fails else "VERIFY FAIL " + "; ".join(fails))
     return not fails

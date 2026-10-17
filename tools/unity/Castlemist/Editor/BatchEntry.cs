@@ -28,7 +28,9 @@
 // position against its record's m), then LODS (Task 15b: every model prefab with
 // lods.levels > 1 has a LODGroup of those levels with strictly decreasing heights equal
 // to ModelLods.TransitionHeights, tree prefabs the levels their cull leaves, and each
-// instances[].lod instance its own heights; CheckLods). Exit 0 when there are no errors, the probe
+// instances[].lod instance its own heights; CheckLods), then MATERIALS (Task 15d: one Shared .mat
+// per key and variant, never two; every prefab renderer draws its model's shared .mat; CheckMaterials).
+// Exit 0 when there are no errors, the probe
 // and the terrain frame check passed (or did not run) and those checks passed.
 //
 //   ... -executeMethod Castlemist.BatchEntry.CheckSkinnedProbe -castlemistFile Assets/<dir>/skinned_probe.fbx
@@ -209,7 +211,85 @@ namespace Castlemist
             bool patchesOk = CheckPatches(m, root, plan);
             bool terrainOk = plan.Mode != TerrainMode.UnityTerrain || CheckTerrainTrees(m, plan);
             bool lodsOk = CheckLods(folder, m, root, opts);
-            return ok && instOk && foliageOk && patchesOk && terrainOk && lodsOk;
+            bool materialsOk = CheckMaterials(folder, m);
+            return ok && instOk && foliageOk && patchesOk && terrainOk && lodsOk && materialsOk;
+        }
+
+        /// MATERIALS (Task 15d): one .mat per (key, dark decal, uvScroll) in Materials/Shared,
+        /// never two for one: per key, the .mat files named for it ("<key>.mat",
+        /// "<key>_<8 hex>.mat") are exactly its variants the models use; and every renderer of
+        /// every model prefab and foliage tree prefab (LOD levels included) draws a Shared .mat
+        /// whose key is one of that model's materialKeys. Skipped (with the line) for an export
+        /// without keys.
+        static bool CheckMaterials(string folder, WorldManifest m)
+        {
+            var fails = new List<string>();
+            var variantsOfKey = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+            int keyed = 0, renderers = 0;
+            var drawn = new HashSet<Material>();
+            string sharedDir = folder + "/Materials/Shared/";
+            foreach (WorldManifest.ModelEntry e in m.Models)
+            {
+                if (!e.Ok || e.Materials == null || e.MaterialKeys.Count == 0) continue;
+                ++keyed;
+                MaterialsFile f = MaterialsFile.Parse(System.IO.File.ReadAllText(folder + "/" + e.Materials), e.Materials);
+                if (f.Materials.Count != e.MaterialKeys.Count) fails.Add(e.FileId + ": " + f.Materials.Count + " materials, " + e.MaterialKeys.Count + " keys");
+                foreach (MaterialsFile.MaterialEntry me in f.Materials)
+                {
+                    if (!me.UsedByMeshes || me.Key == null) continue;
+                    bool dark = m.DarkDecalRule && e.DarkDecalMaterials.Contains(me.Name);
+                    WorldManifest.UvScroll sc = e.UvScroll.FirstOrDefault(u => u.Material == me.Name);
+                    HashSet<string> vs;
+                    if (!variantsOfKey.TryGetValue(me.Key, out vs)) variantsOfKey[me.Key] = vs = new HashSet<string>(StringComparer.Ordinal);
+                    vs.Add(WorldImporter.SharedMaterialFile(me.Key, WorldImporter.SharedMaterialVariant(me.Key, dark, sc)));
+                }
+                var keys = new HashSet<string>(e.MaterialKeys, StringComparer.Ordinal);
+                foreach (string pp in new[] { folder + "/Prefabs/" + e.FileId + ".prefab", folder + "/Prefabs/Foliage/" + e.FileId + ".prefab" })
+                {
+                    var p = AssetDatabase.LoadAssetAtPath<GameObject>(pp);
+                    if (p == null) continue;
+                    foreach (Renderer r in p.GetComponentsInChildren<Renderer>(true))
+                        foreach (Material sm in r.sharedMaterials)
+                        {
+                            if (sm == null || sm.name == "Default-Material") continue;   // warned at import
+                            ++renderers;
+                            string path = AssetDatabase.GetAssetPath(sm);
+                            string stem = System.IO.Path.GetFileNameWithoutExtension(path);
+                            if (!path.StartsWith(sharedDir, StringComparison.Ordinal) || stem.Length < 40 || !keys.Contains(stem.Substring(0, 40)))
+                                fails.Add(r.gameObject.name + " in " + pp + ": " + path + " is not one of the model's shared materials");
+                            else drawn.Add(sm);
+                        }
+                }
+            }
+            if (keyed == 0)
+            {
+                Debug.Log("MATERIALS keyed=0 (an export without material keys): skipped");
+                return true;
+            }
+            var onDisk = new Dictionary<string, List<string>>(StringComparer.Ordinal);   // key -> .mat stems
+            foreach (string guid in AssetDatabase.FindAssets("t:Material", new[] { folder + "/Materials/Shared" }))
+            {
+                string stem = System.IO.Path.GetFileNameWithoutExtension(AssetDatabase.GUIDToAssetPath(guid));
+                if (stem.Length < 40) { fails.Add("Materials/Shared/" + stem + ".mat: not named by a key"); continue; }
+                string key = stem.Substring(0, 40);
+                List<string> l;
+                if (!onDisk.TryGetValue(key, out l)) onDisk[key] = l = new List<string>();
+                l.Add(stem);
+            }
+            int variants = 0;
+            foreach (KeyValuePair<string, HashSet<string>> kv in variantsOfKey)
+            {
+                variants += kv.Value.Count;
+                List<string> have;
+                onDisk.TryGetValue(kv.Key, out have);
+                var got = new HashSet<string>(have ?? new List<string>(), StringComparer.Ordinal);
+                if ((have == null ? 0 : have.Count) != kv.Value.Count || !got.SetEquals(kv.Value))
+                    fails.Add("key " + kv.Key + ": " + (have == null ? 0 : have.Count) + " .mat files, " + kv.Value.Count + " variants used");
+            }
+            bool ok = fails.Count == 0;
+            Debug.Log("MATERIALS keyed=" + keyed + " keys=" + variantsOfKey.Count + " shared=" + variants + " drawn=" + drawn.Count +
+                      " renderers=" + renderers + (ok ? " OK" : " FAIL " + string.Join("; ", fails.Take(8))));
+            return ok;
         }
 
         static double FadeFar(WorldManifest m, int model)

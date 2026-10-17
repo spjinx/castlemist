@@ -43,7 +43,7 @@ namespace Castlemist.Tests
  ""light"":null,""water"":null,""frameProbe"":null,""sky"":null,""spawn"":null,
  ""warnings"":[]}";
 
-        const string MeshPlan = "PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2 foliagePatches=2 terrains=0 detailPrototypes=0 detailCells=0 treeInstances=0 lodPrefabs=3 lodTreePrefabs=1 lodOverrides=1";
+        const string MeshPlan = "PLAN materials=4 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2 foliagePatches=2 terrains=0 detailPrototypes=0 detailCells=0 treeInstances=0 lodPrefabs=3 lodTreePrefabs=1 lodOverrides=1";
 
         static int Main(string[] args)
         {
@@ -96,7 +96,7 @@ namespace Castlemist.Tests
             });
             Run("summary.plan_line", () =>
             {
-                var s = new ImportSummary { materials = 5, prefabs = 3, controllers = 1, cells = 1, instances = 4, colliders = 1, terrainColliders = 1, water = 1, lights = 1, skybox = 0, foliageTrees = 2, foliagePatches = 2, lodPrefabs = 3, lodTreePrefabs = 1, lodOverrides = 1 };
+                var s = new ImportSummary { materials = 4, prefabs = 3, controllers = 1, cells = 1, instances = 4, colliders = 1, terrainColliders = 1, water = 1, lights = 1, skybox = 0, foliageTrees = 2, foliagePatches = 2, lodPrefabs = 3, lodTreePrefabs = 1, lodOverrides = 1 };
                 // The world_manifest_plan ctest's expected line for the fixture, verbatim.
                 Check(s.PlanLine() == MeshPlan, s.PlanLine());
             });
@@ -283,9 +283,25 @@ namespace Castlemist.Tests
                 });
                 Run("fixture.materials", () =>
                 {
+                    // Task 15d: the maps are in the shared pool, named by content and role.
                     MaterialsFile f = MaterialsFile.Parse(File.ReadAllText(Path.Combine(dir, "models/102/materials.json")), "102");
-                    Check(f.Materials.Count == 1 && f.Materials[0].Map("baseColor").File == "Textures/Mat_58247 - BaseColor.png", "baseColor");
+                    string bc = f.Materials.Count == 1 ? f.Materials[0].Map("baseColor").File : "";
+                    Check(bc.StartsWith("../../textures/gen/") && bc.EndsWith("_BaseColor.png") && bc.Length == "../../textures/gen/".Length + 40 + "_BaseColor.png".Length, "baseColor " + bc);
+                    Check(File.Exists(Path.Combine(dir, "models/102", bc)), "pooled file");
                     Check(f.Materials[0].Map("packed") != null && f.Materials[0].Blend == null, "packed/blend");
+                    Check(f.Materials[0].Key != null && f.Materials[0].Key.Length == 40, "key");
+                });
+                Run("fixture.shared_materials", () =>
+                {
+                    // Models 102 and 103 have equal materials: one key, one table entry.
+                    WorldManifest m = WorldManifest.Parse(File.ReadAllText(Path.Combine(dir, "manifest.json")));
+                    Check(m.SharedMaterials.Count == 2, "entries " + m.SharedMaterials.Count);
+                    Check(m.Models[1].MaterialKeys.Count == 1 && m.Models[1].MaterialKeys[0] == m.Models[2].MaterialKeys[0], "102 = 103");
+                    Check(m.Models[0].MaterialKeys[0] != m.Models[1].MaterialKeys[0], "101 differs");
+                    WorldManifest.SharedMaterial e = m.SharedMaterials[1];
+                    Check(e.Key == m.Models[1].MaterialKeys[0] && e.Model == 1 && e.Material == 0 && e.Slots == 2 && e.Name == "Mat_58247", "entry");
+                    MaterialsFile f = MaterialsFile.Parse(File.ReadAllText(Path.Combine(dir, "models/103/materials.json")), "103");
+                    Check(f.Materials[0].Key == e.Key, "materials.json key");
                 });
             }
             Console.WriteLine(passed + " passed, " + failed + " failed");

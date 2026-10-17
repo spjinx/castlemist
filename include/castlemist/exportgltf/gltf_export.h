@@ -63,10 +63,24 @@ public:
                 std::string* error = nullptr);
     /// @brief The pool's file name of @p fileId: "<fileId>.png".
     static std::string file_name(uint32_t fileId);
+
+    /// @brief Content-named images (Task 15d, the world export's `textures/gen/`):
+    ///        @p png is written once as "<sha1(png)><suffix>.png", the SHA-1 of the
+    ///        PNG bytes in lower-case hex, with the same claim, wait and temp-rename
+    ///        as ensure(). Returns that file name, or "" (with @p error) when @p png
+    ///        is empty or the write failed. Every call adds png.size() to
+    ///        bytes_requested(); the one that writes a name adds it to bytes_written().
+    ///        @p suffix (e.g. "_BaseColor") must be a legal file-name part.
+    std::string ensure_content(const std::vector<uint8_t>& png, const std::string& suffix = {},
+                               std::string* error = nullptr);
     const std::string& dir() const;
-    size_t written() const;   ///< fileIds written successfully so far
+    size_t written() const;   ///< files written successfully so far
+    uint64_t bytes_requested() const;   ///< ensure_content: the bytes every call asked for
+    uint64_t bytes_written() const;     ///< ensure_content: the bytes written once each
 
 private:
+    bool ensure_file(const std::string& name, const std::function<std::vector<uint8_t>()>& encodePng,
+                     std::string* error, uint64_t* bytes);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
@@ -123,6 +137,23 @@ struct GltfExportOptions {
     ///        named "<LOD0 node name>_LOD<k>" after the LOD0 nodes. False (the
     ///        default) writes LOD0 only, byte for byte as before.
     bool exportLods = false;
+
+    /// @brief Set (world export only, Task 15d): generated images (the emissive
+    ///        bake, the metal-rough map) go into this content pool once each, as
+    ///        "<sha1 of the PNG>.png" (SharedImagePool::ensure_content), referenced
+    ///        as @ref generatedImageUriPrefix + that name, instead of into
+    ///        @ref imageDirUtf8. Null (the default) changes nothing.
+    std::shared_ptr<SharedImagePool> generatedImages;
+    /// @brief The content pool folder relative to the .glb, e.g. "../../textures/gen/".
+    std::string generatedImageUriPrefix;
+
+    /// @brief World export only (Task 15d): one key input per model material (the
+    ///        caller's side of the key, e.g. its materials.json entry). When it has
+    ///        exactly ModelPreview::materials.size() entries, each glTF material gets
+    ///        `extras.castlemistMaterialKey` = SHA-1 of {gltf: the material without
+    ///        its name, every texture as its image URI, vrchat: the input}, and
+    ///        GltfExportResult::materialKeys lists them. Empty (the default) writes no key.
+    std::vector<std::string> materialKeyInputs;
 };
 
 /// @brief Result of one export call.
@@ -135,6 +166,9 @@ struct GltfExportResult {
     ///        exportgltf's particle_export.cpp). Empty when the model has
     ///        none -- not an error, just nothing to export.
     std::string particlesJsonPath;
+    /// @brief Per model material, its key (GltfExportOptions::materialKeyInputs);
+    ///        empty when no inputs were given.
+    std::vector<std::string> materialKeys;
 };
 
 /// @brief Export one model (as shown in the Model preview tab) to a .glb.
