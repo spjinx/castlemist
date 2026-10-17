@@ -1553,3 +1553,390 @@ CM_TEST(world_dat, zones_hull_in_model) {
     CHECK(median(shares) >= 0.95);
     CHECK(*std::min_element(shares.begin(), shares.end()) >= 0.8);
 }
+
+// ---- zones: phase-2 measurements (world foliage spec D5; print only, never fail) ----
+
+namespace {
+
+/// One anchor-matched zone collider and everything D5 lists as an input.
+struct ZoneSample {
+    uint32_t map = 0, entry = 0, zone = 0, placement = 0, k = 0;
+    const castlemist::world::Zone* z = nullptr;
+    const castlemist::world::ZonePlacement* p = nullptr;
+    const castlemist::world::ZoneLayer* L = nullptr;
+    const castlemist::model::Extractor::HavokPlacement* e = nullptr;
+    float u = 0, v = 0;
+};
+
+/// The anchor-matched collider samples of one loaded map, in instance order.
+/// `k` comes from re-walking the zone's flags (the placements are in walk order).
+std::vector<ZoneSample> zone_samples(uint32_t id, const castlemist::world::WorldScene& w,
+                                     const castlemist::model::Extractor::MapHavok& h,
+                                     const castlemist::model::Extractor::MapZon2& raw) {
+    namespace cw = castlemist::world;
+    std::vector<const castlemist::model::Extractor::HavokPlacement*> entries;
+    for (const auto& p : h.placements)
+        if (p.group == "zone") entries.push_back(&p);
+    std::vector<uint32_t> kOf(w.zones.placements.size(), UINT32_MAX);
+    for (uint32_t zi = 0; zi < raw.zones.size() && zi < w.zones.zones.size(); ++zi) {
+        uint32_t idx = w.zones.zones[zi].firstPlacement;
+        castlemist::model::Extractor::walkZoneFlags(raw.zones[zi], [&](uint32_t k, int32_t, int32_t, uint8_t) {
+            if (idx < kOf.size()) kOf[idx] = k;
+            ++idx;
+        });
+    }
+    std::vector<ZoneSample> out;
+    for (const cw::ZoneInstance& i : w.zones.instances) {
+        if (i.placement == UINT32_MAX || i.collider >= entries.size()) continue;
+        ZoneSample s;
+        s.map = id; s.entry = i.collider; s.placement = i.placement; s.k = kOf[i.placement];
+        s.p = &w.zones.placements[i.placement];
+        s.zone = s.p->zone; s.z = &w.zones.zones[s.zone]; s.L = &w.zones.layers[s.p->layer];
+        s.e = entries[i.collider];
+        float a[2];
+        cw::zone_anchor(w.bounds[0], w.bounds[1], s.p->c, s.p->r, a);
+        s.u = s.e->translate[0] - a[0];
+        s.v = s.e->translate[1] - a[1];
+        out.push_back(s);
+    }
+    return out;
+}
+
+/// The terrain gradient (dz/dx, dz/dy) at (x, y): central differences of terrain_height_at over +-h.
+bool terrain_gradient(const castlemist::world::Terrain& t, float x, float y, float h, float g[2]) {
+    bool a = false, b = false, c = false, d = false;
+    const float zx1 = castlemist::world::terrain_height_at(t, x + h, y, &a);
+    const float zx0 = castlemist::world::terrain_height_at(t, x - h, y, &b);
+    const float zy1 = castlemist::world::terrain_height_at(t, x, y + h, &c);
+    const float zy0 = castlemist::world::terrain_height_at(t, x, y - h, &d);
+    if (!(a && b && c && d)) return false;
+    g[0] = (zx1 - zx0) / (2 * h);
+    g[1] = (zy1 - zy0) / (2 * h);
+    return true;
+}
+
+} // namespace
+
+/// Writes the 4750 anchor-matched collider samples as CSV to $CM_ZONE_SAMPLES (spec D5 step 1's
+/// data fit). The task-9 columns come first; after them: the slot's model flags and zOffsets
+/// bytes as stored, the layer's layerFlags and tiling, the zone's vertRect, and the terrain
+/// height and gradient (dz/dx, dz/dy, +-1 unit) at (tx, ty). Beside it, for the fits in
+/// docs/research/gw2-terrain-to-unity.md §1.3 (2026-10-16): <path>.terrain.csv (4 x 4 terrain
+/// samples per sample), <path>.zones.csv (every zone's raw flags, encodeData, offsetData,
+/// collideData), <path>.layers.csv (every layer and its models) and <path>.unmatched.csv (the
+/// colliders with no anchor match). Never fails.
+CM_TEST(world_dat, zones_scatter_samples) {
+    const char* path = std::getenv("CM_ZONE_SAMPLES");
+    if (!path || !*path) SKIP("CM_ZONE_SAMPLES not set");
+    Gw2Dat& dat = shared_dat();
+    if (!ensure_template()) SKIP("no struct template");
+    FILE* f = std::fopen(path, "w");
+    if (!f) SKIP("cannot write CM_ZONE_SAMPLES");
+    std::fprintf(f, "map,entry,zone,seed,placementIndex,k,c,r,flag,layerType,scale0,scale1,rot0,rot1,rot2,rot3,rot4,"
+                    "rot5,jitter,range0,range1,zPos,zoneFlags,encodeIndex,encodeOffset,tx,ty,tz,rx,ry,rz,scale,u,v,"
+                    "modelFlags,zOff0,zOff1,layerFlags,tiling,vr0,vr1,vr2,vr3,terrainZ,dzdx,dzdy\n");
+    // <path>.terrain.csv: the 4 x 4 terrain samples around each sample's (tx, ty), for normal fits.
+    FILE* ft = std::fopen((std::string(path) + ".terrain.csv").c_str(), "w");
+    if (ft) std::fprintf(ft, "map,entry,X0,Y1,dx,dy,i0,j0,h00..h33 (row j, column i)\n");
+    size_t rows = 0;
+    for (uint32_t id : kTestMaps) {
+        castlemist::world::WorldScene w = castlemist::world::load_world(dat, id, *castlemist::tpl::get());
+        std::vector<uint8_t> bytes = packfile_by_file_id(id);
+        castlemist::model::Extractor ex(bytes, *castlemist::tpl::get());
+        const auto h = ex.parseHavok();
+        const auto raw = ex.parseZon2();
+        // <path>.zones.csv, one row per zone: map, zone, defToken, seed, zoneFlags, vertRect, then the
+        // counted lists flags (raw bytes), encodeData (index, offset pairs), offsetData and collideData
+        // (triples), for the walk, collideData-index and density fits.
+        if (FILE* fc = std::fopen((std::string(path) + ".zones.csv").c_str(), id == kTestMaps[0] ? "w" : "a")) {
+            for (uint32_t zi = 0; zi < raw.zones.size(); ++zi) {
+                const auto& Z = raw.zones[zi];
+                std::fprintf(fc, "%u,%u,%u,%u,%u,%d,%d,%d,%d", id, zi, Z.defToken, (unsigned)Z.seed, Z.zoneFlags,
+                             Z.vertRect[0], Z.vertRect[1], Z.vertRect[2], Z.vertRect[3]);
+                std::fprintf(fc, ",%zu", Z.flags.size());
+                for (uint8_t b : Z.flags) std::fprintf(fc, ",%u", (unsigned)b);
+                std::fprintf(fc, ",%zu", Z.encodeData.size());
+                for (const auto& e : Z.encodeData) std::fprintf(fc, ",%u,%u", (unsigned)e.index, (unsigned)e.offset);
+                std::fprintf(fc, ",%zu", Z.offsetData.size());
+                for (uint16_t o : Z.offsetData) std::fprintf(fc, ",%u", (unsigned)o);
+                std::fprintf(fc, ",%zu", Z.collideData.size() / 3);
+                for (float c : Z.collideData) std::fprintf(fc, ",%.9g", c);
+                std::fprintf(fc, "\n");
+            }
+            std::fclose(fc);
+        }
+        // <path>.layers.csv, one row per layer: map, defToken, layer (0-based), type, tiling, scaleRange,
+        // rotRange, layerFlags, then per model: fileId, flags, zOffsets[0], zOffsets[1].
+        if (FILE* fl = std::fopen((std::string(path) + ".layers.csv").c_str(), id == kTestMaps[0] ? "w" : "a")) {
+            for (const auto& d : raw.defs)
+                for (size_t li = 0; li < d.layers.size(); ++li) {
+                    const auto& L = d.layers[li];
+                    std::fprintf(fl, "%u,%u,%zu,%u,%u,%.9g,%.9g", id, d.token, li, (unsigned)L.type,
+                                 (unsigned)L.tiling, L.scaleRange[0], L.scaleRange[1]);
+                    for (int a = 0; a < 3; ++a) std::fprintf(fl, ",%.9g,%.9g", L.rotRange[a][0], L.rotRange[a][1]);
+                    std::fprintf(fl, ",%u,%zu", L.layerFlags, L.models.size());
+                    for (const auto& M : L.models)
+                        std::fprintf(fl, ",%u,%u,%g,%g", M.fileId, M.flags, M.zOffsets[0], M.zOffsets[1]);
+                    std::fprintf(fl, "\n");
+                }
+            std::fclose(fl);
+        }
+        // <path>.unmatched.csv: the zone colliders with no anchor match (linked by geometry only).
+        if (FILE* fu = std::fopen((std::string(path) + ".unmatched.csv").c_str(), id == kTestMaps[0] ? "w" : "a")) {
+            std::vector<const castlemist::model::Extractor::HavokPlacement*> entries;
+            for (const auto& p : h.placements)
+                if (p.group == "zone") entries.push_back(&p);
+            for (const auto& i : w.zones.instances)
+                if (i.placement == UINT32_MAX && i.collider < entries.size()) {
+                    const auto* e = entries[i.collider];
+                    std::fprintf(fu, "%u,%u,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%u\n", id, i.collider, e->translate[0],
+                                 e->translate[1], e->translate[2], e->rotate[0], e->rotate[1], e->rotate[2], e->scale,
+                                 w.models.at(i.model).fileId);
+                }
+            std::fclose(fu);
+        }
+        for (const ZoneSample& s : zone_samples(id, w, h, raw)) {
+            if (ft && w.terrain.present && !w.terrain.chunks.empty()) {
+                const auto& c0 = w.terrain.chunks.front();
+                const float X0 = c0.rect[0], Y1 = c0.rect[3];
+                const float dx = (c0.rect[2] - c0.rect[0]) / float(c0.samples - 1);
+                const float dy = (c0.rect[3] - c0.rect[1]) / float(c0.samples - 1);
+                const int i0 = (int)std::floor((s.e->translate[0] - X0) / dx);
+                const int j0 = (int)std::floor((Y1 - s.e->translate[1]) / dy);
+                std::fprintf(ft, "%u,%u,%.9g,%.9g,%.9g,%.9g,%d,%d", s.map, s.entry, X0, Y1, dx, dy, i0, j0);
+                for (int j = j0 - 1; j <= j0 + 2; ++j)
+                    for (int i = i0 - 1; i <= i0 + 2; ++i) {
+                        bool in = false;
+                        const float hz = castlemist::world::terrain_height_at(w.terrain, X0 + i * dx, Y1 - j * dy, &in);
+                        std::fprintf(ft, ",%.9g", in ? hz : NAN);
+                    }
+                std::fprintf(ft, "\n");
+            }
+            const uint32_t row = uint32_t(s.p->r - s.z->vertRect[1]);
+            const auto& enc = raw.zones[s.zone].encodeData;
+            const int encIndex = row < enc.size() ? enc[row].index : -1;
+            const int encOffset = row < enc.size() ? enc[row].offset : -1;
+            const uint32_t slot = (s.p->flag >> 1) & 7;
+            const castlemist::world::ZoneLayerModel* m = slot < s.L->models.size() ? &s.L->models[slot] : nullptr;
+            bool in = false;
+            const float tz = castlemist::world::terrain_height_at(w.terrain, s.e->translate[0], s.e->translate[1], &in);
+            float g[2] = {NAN, NAN};
+            terrain_gradient(w.terrain, s.e->translate[0], s.e->translate[1], 1.0f, g);
+            std::fprintf(f, "%u,%u,%u,%u,%u,%u,%d,%d,%u,%u,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,"
+                            "%u,%d,%d,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%u,%g,%g,%u,%u,%d,%d,%d,%d,%.9g,%.9g,"
+                            "%.9g\n",
+                         s.map, s.entry, s.zone, (unsigned)s.z->seed, s.placement, s.k, s.p->c, s.p->r,
+                         (unsigned)s.p->flag, (unsigned)s.L->type, s.L->scaleRange[0], s.L->scaleRange[1],
+                         s.L->rotRange[0][0], s.L->rotRange[0][1], s.L->rotRange[1][0], s.L->rotRange[1][1],
+                         s.L->rotRange[2][0], s.L->rotRange[2][1], s.L->instanceScaleJitter, s.z->range[0],
+                         s.z->range[1], s.z->zPos, s.z->zoneFlags, encIndex, encOffset, s.e->translate[0],
+                         s.e->translate[1], s.e->translate[2], s.e->rotate[0], s.e->rotate[1], s.e->rotate[2],
+                         s.e->scale, s.u, s.v, m ? m->flags : 0u, m ? m->zOffsets[0] : 0.0f,
+                         m ? m->zOffsets[1] : 0.0f, s.L->layerFlags, (unsigned)s.L->tiling, s.z->vertRect[0],
+                         s.z->vertRect[1], s.z->vertRect[2], s.z->vertRect[3], in ? tz : NAN, g[0], g[1]);
+            ++rows;
+        }
+    }
+    std::fclose(f);
+    std::printf("    %zu samples -> %s\n", rows, path);
+}
+
+namespace {
+
+/// The client's decode of a zone's `flags` (Gw2-64.exe 0x140cd0660 / 0x140cd0410, ZnCompress.cpp):
+/// with encodeData, (count, value) run-length pairs, `count` cells of `value`; without, one raw
+/// byte per vertex. Returns the value per vertex position (row-major over vertRect), 0 = empty.
+std::vector<uint8_t> zone_cells_client(const castlemist::model::Extractor::Zon2Zone& z) {
+    const int32_t w = z.vertRect[2] - z.vertRect[0], h = z.vertRect[3] - z.vertRect[1];
+    std::vector<uint8_t> out(w > 0 && h > 0 ? size_t(w) * h : 0, 0);
+    if (z.encodeData.empty()) {
+        for (size_t p = 0; p < out.size() && p < z.flags.size(); ++p) out[p] = z.flags[p];
+        return out;
+    }
+    size_t pos = 0;
+    for (size_t i = 0; i + 1 < z.flags.size(); i += 2)
+        for (uint32_t n = 0; n < z.flags[i] && pos < out.size(); ++n) out[pos++] = z.flags[i + 1];
+    return out;
+}
+
+/// collideData index of each cell (Gw2-64.exe 0x140cc23c0): offsetData[chunk] for the 32 x 32-vertex
+/// chunk, plus the cell's order among the chunk's non-empty cells, rows then columns. UINT32_MAX: none.
+std::vector<uint32_t> zone_collide_index(const castlemist::model::Extractor::Zon2Zone& z,
+                                         const std::vector<uint8_t>& cells) {
+    const int32_t* vr = z.vertRect;
+    const int32_t w = vr[2] - vr[0];
+    std::vector<uint32_t> out(cells.size(), UINT32_MAX);
+    if (w <= 0 || vr[3] <= vr[1]) return out;
+    const int32_t cx0 = vr[0] >> 5, cy0 = vr[1] >> 5, cx1 = ((vr[2] - 1) >> 5) + 1, cy1 = ((vr[3] - 1) >> 5) + 1;
+    for (int32_t cy = cy0; cy < cy1; ++cy)
+        for (int32_t cx = cx0; cx < cx1; ++cx) {
+            const size_t ci = size_t(cx - cx0) + size_t(cy - cy0) * size_t(cx1 - cx0);
+            if (ci >= z.offsetData.size()) continue;
+            uint32_t n = z.offsetData[ci];
+            for (int32_t row = std::max(vr[1], 32 * cy); row < std::min(vr[3], 32 * cy + 32); ++row)
+                for (int32_t col = std::max(vr[0], 32 * cx); col < std::min(vr[2], 32 * cx + 32); ++col) {
+                    const size_t p = size_t(row - vr[1]) * w + size_t(col - vr[0]);
+                    if (p < cells.size() && cells[p]) out[p] = n++;
+                }
+        }
+    return out;
+}
+
+/// Tilt angles of a ground normal as the client takes them (Gw2-64.exe 0x140cc2af0):
+/// rx = -atan2(ny, |(nx, nz)|), ry = atan2(nx, |(ny, nz)|).
+void tilt_from_normal(double nx, double ny, double nz, double out[2]) {
+    const double l = std::sqrt(nx * nx + ny * ny + nz * nz);
+    nx /= l; ny /= l; nz /= l;
+    out[0] = -std::atan2(ny, std::sqrt(nz * nz + nx * nx));
+    out[1] = std::atan2(nx, std::sqrt(nz * nz + ny * ny));
+}
+
+double angle_error(double a, double b) {
+    const double twoPi = 6.283185307179586;
+    const double d = std::fmod(std::fabs(a - b), twoPi);
+    return std::min(d, twoPi - d);
+}
+
+/// The terrain quad around (x, y): corner heights q = NW, NE, SW, SE, fractions fx (east) and fy
+/// (south), and the sample spacing. False outside the terrain.
+bool terrain_quad(const castlemist::world::Terrain& t, float x, float y, float q[4], float& fx, float& fy,
+                  float& dx, float& dy) {
+    if (!t.present || t.chunks.empty()) return false;
+    const auto& c0 = t.chunks.front();
+    const float X0 = c0.rect[0], Y1 = c0.rect[3];
+    dx = (c0.rect[2] - c0.rect[0]) / float(c0.samples - 1);
+    dy = (c0.rect[3] - c0.rect[1]) / float(c0.samples - 1);
+    const int i0 = (int)std::floor((x - X0) / dx), j0 = (int)std::floor((Y1 - y) / dy);
+    bool in[4] = {};
+    q[0] = castlemist::world::terrain_height_at(t, X0 + i0 * dx, Y1 - j0 * dy, &in[0]);
+    q[1] = castlemist::world::terrain_height_at(t, X0 + (i0 + 1) * dx, Y1 - j0 * dy, &in[1]);
+    q[2] = castlemist::world::terrain_height_at(t, X0 + i0 * dx, Y1 - (j0 + 1) * dy, &in[2]);
+    q[3] = castlemist::world::terrain_height_at(t, X0 + (i0 + 1) * dx, Y1 - (j0 + 1) * dy, &in[3]);
+    fx = (x - (X0 + i0 * dx)) / dx;
+    fy = ((Y1 - j0 * dy) - y) / dy;
+    return in[0] && in[1] && in[2] && in[3];
+}
+
+struct Tally {
+    size_t n = 0, pass = 0;
+    double worst = 0;
+    void add(double err, double tol) { ++n; pass += err <= tol; worst = std::max(worst, err); }
+    const char* status() const { return n && pass == n ? "measured" : "UNPROVEN"; }
+};
+
+} // namespace
+
+/// Prints spec D5 step 3's hypotheses on the 4750 anchor-matched colliders, each with its pass count,
+/// worst error and status (`measured` only if every entry passes), plus the client-code variants the
+/// static search found (docs/research/gw2-terrain-to-unity.md §1.3, 2026-10-16 amendment). Never fails.
+CM_TEST(world_dat, zones_hypotheses) {
+    Gw2Dat& dat = shared_dat();
+    if (!ensure_template()) SKIP("no struct template");
+    constexpr double kDeg = 3.14159265358979323846 / 180.0;
+    constexpr float kStep = 0.07734375f;   // 99/1280, Gw2-64.exe 0x141e449c4
+    Tally tiltAsPhrased, tiltGroundClient, zTerrain, zTriangleInOffsets, zCollide, scaleStep, collideNormal;
+    size_t ground = 0, collideSamples = 0;
+    for (uint32_t id : kTestMaps) {
+        castlemist::world::WorldScene w = castlemist::world::load_world(dat, id, *castlemist::tpl::get());
+        std::vector<uint8_t> bytes = packfile_by_file_id(id);
+        castlemist::model::Extractor ex(bytes, *castlemist::tpl::get());
+        const auto h = ex.parseHavok();
+        const auto raw = ex.parseZon2();
+        std::map<uint32_t, std::pair<std::vector<uint8_t>, std::vector<uint32_t>>> decoded;
+        for (const ZoneSample& s : zone_samples(id, w, h, raw)) {
+            const float x = s.e->translate[0], y = s.e->translate[1], tz = s.e->translate[2];
+            const double rx = s.e->rotate[0], ry = s.e->rotate[1];
+            const uint32_t slot = (s.p->flag >> 1) & 7;
+            const bool hasSlot = slot < s.L->models.size();
+            const uint32_t mf = hasSlot ? s.L->models[slot].flags : 0;
+            const float z0 = hasSlot ? s.L->models[slot].zOffsets[0] : 0;
+            const float z1 = hasSlot ? s.L->models[slot].zOffsets[1] : 0;
+            // zOffset = 36 - (z0 + r (z1 - z0)) / 255 * 72, r in [0, 1) (Gw2-64.exe 0x140cbc110)
+            const float zoffA = 36.0f - z0 / 255.0f * 72.0f, zoffB = 36.0f - z1 / 255.0f * 72.0f;
+            auto zoffError = [&](float dz) {
+                const float lo = std::min(zoffA, zoffB), hi = std::max(zoffA, zoffB);
+                return dz < lo ? lo - dz : (dz > hi ? dz - hi : 0.0f);
+            };
+            // Pack model flag bits (remapped by Gw2-64.exe 0x140c8b9b0): 0x2 / 0x200000 / 0x4 align to
+            // the ground, 0x8 / 0x20000 draw the tilt from rotRange (and win); 0x4 scales the tilt by 0.35.
+            const bool randomTilt = (mf & (0x8u | 0x20000u)) != 0;
+            const bool groundTilt = !randomTilt && (mf & (0x2u | 0x200000u | 0x4u)) != 0;
+            const double tiltScale = (mf & 0x4u) ? 0.35 : 1.0;
+            const bool collide = (s.z->zoneFlags & 2) != 0;
+
+            // H1 as phrased: tilt = terrain normal (bilinear gradient), clamped to rotRange x/y.
+            float g[2];
+            if (terrain_gradient(w.terrain, x, y, 1.0f, g)) {
+                double t[2];
+                tilt_from_normal(g[0], g[1], 1.0, t);
+                for (int a = 0; a < 2; ++a)
+                    t[a] = std::clamp(t[a], (double)s.L->rotRange[a][0] * kDeg, (double)s.L->rotRange[a][1] * kDeg);
+                tiltAsPhrased.add(std::max(angle_error(rx, t[0]), angle_error(ry, t[1])), 1e-4);
+            } else tiltAsPhrased.add(1e9, 1e-4);
+
+            // H2 as phrased: z = terrain_height_at.
+            bool in = false;
+            const float th = castlemist::world::terrain_height_at(w.terrain, x, y, &in);
+            zTerrain.add(in ? std::fabs(tz - th) : 1e9, 0.5);
+
+            // H3: scale = scaleRange[0] + (99/1280) k for an integer k.
+            {
+                const double q = (s.e->scale - s.L->scaleRange[0]) / kStep;
+                scaleStep.add(std::fabs(q - std::round(q)) * kStep, 1e-5);
+            }
+
+            // H4 (collideData) and the client variants.
+            if (collide) {
+                ++collideSamples;
+                auto& dc = decoded[s.zone];
+                if (dc.first.empty()) {
+                    dc.first = zone_cells_client(raw.zones[s.zone]);
+                    dc.second = zone_collide_index(raw.zones[s.zone], dc.first);
+                }
+                // the sample's cell is the old walk's k - 1 (spec M2's column c - 1)
+                const uint32_t ci = s.k >= 1 && s.k - 1 < dc.second.size() ? dc.second[s.k - 1] : UINT32_MAX;
+                const auto& cd = raw.zones[s.zone].collideData;
+                if (ci != UINT32_MAX && 3ull * ci + 2 < cd.size()) {
+                    const float nx = cd[3ull * ci], ny = cd[3ull * ci + 1], cz = cd[3ull * ci + 2];
+                    zCollide.add(zoffError(tz - cz), 0.5);
+                    if (groundTilt) {
+                        double t[2];
+                        tilt_from_normal(nx, ny, std::sqrt(std::max(0.0f, 1 - nx * nx - ny * ny)), t);
+                        collideNormal.add(
+                            std::max(angle_error(rx, t[0] * tiltScale), angle_error(ry, t[1] * tiltScale)), 1e-4);
+                    }
+                } else zCollide.add(1e9, 0.5);
+                continue;
+            }
+            float q[4], fx, fy, dx, dy;
+            if (!terrain_quad(w.terrain, x, y, q, fx, fy, dx, dy)) { zTriangleInOffsets.add(1e9, 0.5); continue; }
+            // height: the NE-SW triangle that holds the point
+            const float tri = fx + fy <= 1 ? q[0] + (q[1] - q[0]) * fx + (q[2] - q[0]) * fy
+                                           : q[3] + (q[2] - q[3]) * (1 - fx) + (q[1] - q[3]) * (1 - fy);
+            zTriangleInOffsets.add(zoffError(tz - tri), 0.5);
+            if (groundTilt) {
+                ++ground;
+                // normal: the plane through (NW, NE, SW) when fx <= fy, else through (NE, SW, SE)
+                const double gx = fx <= fy ? (q[1] - q[0]) / dx : (q[3] - q[2]) / dx;
+                const double gy = fx <= fy ? -(q[2] - q[0]) / dy : -(q[3] - q[1]) / dy;
+                double t[2];
+                tilt_from_normal(gx, gy, 1.0, t);
+                tiltGroundClient.add(std::max(angle_error(rx, t[0] * tiltScale), angle_error(ry, t[1] * tiltScale)),
+                                     1e-4);
+            }
+        }
+    }
+    auto line = [](const char* what, const Tally& t, const char* unit) {
+        std::printf("    %-60s %4zu/%-4zu worst %.3g %s  %s\n", what, t.pass, t.n, t.worst, unit, t.status());
+    };
+    std::printf("    D5 step 3, as phrased (all anchor-matched colliders):\n");
+    line("tilt = terrain normal, clamped to rotRange x/y", tiltAsPhrased, "rad");
+    line("z = terrain_height_at", zTerrain, "units");
+    line("scale = scaleRange[0] + (99/1280) k", scaleStep, "");
+    std::printf("    collideData = the ground (zoneFlags bit 1; %zu samples):\n", collideSamples);
+    line("z = collideData.zPos + the slot's zOffset range", zCollide, "units");
+    line("tilt = collideData normal (ground-aligned models)", collideNormal, "rad");
+    std::printf("    client variants (zones without collideData; %zu ground-aligned):\n", ground);
+    line("z = NE-SW terrain triangle + the slot's zOffset range", zTriangleInOffsets, "units");
+    line("tilt = client plane (fx <= fy: NW,NE,SW; else NE,SW,SE)", tiltGroundClient, "rad");
+}
