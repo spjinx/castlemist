@@ -100,6 +100,18 @@ _SUFFIX = re.compile(r"\.\d{3,}$")
 # castlemist-foliage-1 (world-foliage spec D7): 100 bytes, little-endian.
 FOLIAGE_RECORD = struct.Struct("<IHHI12f3f4f3f")
 FOLIAGE_GROUP = "CM_Foliage"
+FOLIAGE_MODES = ("off", "colliders", "trees", "all")
+
+
+def _validator():
+    """tools/world/validate_manifest.py: the keep rule (fmix32 thinning, colliders always kept) and the Foliage
+    mode filter are shared with the validator's plan and the Unity importer, so the counts agree."""
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "world", "validate_manifest.py")
+    spec = importlib.util.spec_from_file_location("castlemist_validate_manifest", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def base_name(name):
@@ -1004,7 +1016,8 @@ def foliage_object(name, col, records, S, collection):
     return ob
 
 
-def import_world(export_dir, colliders=True, dark_decal=True, scale=1.0, verify=False):
+def import_world(export_dir, colliders=True, dark_decal=True, scale=1.0, verify=False, foliage_mode="all",
+                 foliage_density=1.0):
     """Builds the scene from <export_dir>/manifest.json (spec D6 "Blender"):
       GW2 <fileId>
         Models (excluded from the view layer): <fileId> per model from its .glb,
@@ -1083,6 +1096,9 @@ def import_world(export_dir, colliders=True, dark_decal=True, scale=1.0, verify=
     skipped = 0
     errors = []
     foliage = []          # (object, records, cell)
+    vm = _validator()
+    ltype = [l.get("type") if isinstance(l, dict) else None
+             for l in ((man.get("foliage") or {}).get("layers") or [])]
     fol_skipped = 0
     for cell in man.get("cells") or []:
         cid = cell["id"]
@@ -1149,10 +1165,14 @@ def import_world(export_dir, colliders=True, dark_decal=True, scale=1.0, verify=
                                   % (cid, fol["file"], len(recs), fol.get("records")))
             by_model = {}
             for r in recs or []:
-                if r["model"] in entries:
-                    by_model.setdefault(r["model"], []).append(r)
-                else:
+                if r["model"] not in entries:
                     fol_skipped += 1
+                    continue
+                li = r["layer"]
+                t = ltype[li] if li < len(ltype) else None
+                kind = "tree" if li == vm.FOLIAGE_GEOMETRY_ONLY_LAYER or t == 3 else ("small" if t in (1, 2) else None)
+                if vm.foliage_shown(foliage_mode, kind, r["flags"]) and                         vm.foliage_keep(r["placement"], r["flags"], foliage_density):
+                    by_model.setdefault(r["model"], []).append(r)
             if by_model:
                 fcol = new_collection(cid + " Foliage", ccol)
                 for mi in sorted(by_model):
@@ -1251,6 +1271,7 @@ def verify_foliage(foliage, S, fails):
     props are checked: 3x3 within 1e-4, translation within 1e-4 max(1, |t|).
     Each record must be matched by exactly one instance."""
     print("FOLIAGE_OBJECTS %d" % len(foliage))
+    print("FOLIAGE_KEPT %d" % sum(len(f[1]) for f in foliage))
     by_ob = {}
     for ob, recs, cell in foliage:
         col = ob.modifiers[FOLIAGE_GROUP][foliage_collection_key()]
@@ -1295,7 +1316,7 @@ def verify_foliage(foliage, S, fails):
         if any(h != 1 for h in hit):
             fails.append("foliage %s: %d records not matched by exactly one instance"
                          % (name, sum(1 for h in hit if h != 1)))
-    print("FOLIAGE_MATRIX_MAX_ERR rot=%.3g t=%.3g" % (err_r, err_t))
+    print("FOLIAGE_MATRIX_MAX_ERR %.3g" % max(err_r, err_t))
     if not (err_r < 1e-4 and err_t < 1e-4):
         fails.append("foliage matrix error rot=%.3g t=%.3g" % (err_r, err_t))
 
@@ -1385,11 +1406,13 @@ def main():
             ok = check_skinned_probe(args[i + 1]) and ok
             i += 2
         elif cmd == "--import":
-            opts = {"colliders": True, "dark_decal": True, "scale": 1.0, "verify": False}
+            opts = {"colliders": True, "dark_decal": True, "scale": 1.0, "verify": False,
+                    "foliage_mode": "all", "foliage_density": 1.0}
             save = None
             export_dir = args[i + 1]
             i += 2
-            while i < len(args) and args[i] in ("--no-colliders", "--no-dark-decal", "--scale", "--verify", "--save"):
+            while i < len(args) and args[i] in ("--no-colliders", "--no-dark-decal", "--scale", "--verify", "--save",
+                                         "--foliage", "--foliage-density"):
                 a = args[i]
                 if a == "--no-colliders":
                     opts["colliders"] = False
@@ -1397,13 +1420,21 @@ def main():
                     opts["dark_decal"] = False
                 elif a == "--verify":
                     opts["verify"] = True
-                elif a in ("--scale", "--save"):
+                elif a in ("--scale", "--save", "--foliage", "--foliage-density"):
                     if i + 1 >= len(args):
                         raise SystemExit(a + " needs a value")
                     if a == "--scale":
                         opts["scale"] = float(args[i + 1])
                         if not opts["scale"] > 0 or not math.isfinite(opts["scale"]):
                             raise SystemExit("--scale must be positive")
+                    elif a == "--foliage":
+                        if args[i + 1] not in FOLIAGE_MODES:
+                            raise SystemExit("--foliage must be one of " + "|".join(FOLIAGE_MODES))
+                        opts["foliage_mode"] = args[i + 1]
+                    elif a == "--foliage-density":
+                        opts["foliage_density"] = float(args[i + 1])
+                        if not 0.0 <= opts["foliage_density"] <= 1.0:
+                            raise SystemExit("--foliage-density must be in 0..1")
                     else:
                         save = args[i + 1]
                     i += 1

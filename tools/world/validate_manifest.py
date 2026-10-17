@@ -573,8 +573,14 @@ def patch_capacity(triangles):
     return max(1, FOLIAGE_PATCH_MAX_VERTICES // (3 * t))
 
 
-def plan(m, root, mode="mesh", foliage="all", density=1.0, distance=1.0):
-    """Returns (PLAN line, errors): what the Unity importer would build with these options
+def plan(m, root, **kw):
+    """Returns (PLAN line, errors): see plan_lines."""
+    lines, errors = plan_lines(m, root, **kw)
+    return lines[0], errors
+
+
+def plan_lines(m, root, mode="mesh", foliage="all", density=1.0, distance=1.0):
+    """Returns ([PLAN line, FOLIAGE line], errors): what the Unity importer would build with these options
     (Terrain mode, Foliage, Density; Distance changes no count)."""
     errors = []
     models = m.get("models") or []
@@ -618,7 +624,7 @@ def plan(m, root, mode="mesh", foliage="all", density=1.0, distance=1.0):
                 inst, sum(1 for c in cells if c.get("colliderParts", 0) > 0), mesh_terrain * len(cells), water_cells,
                 1 if m.get("sky") else 0, fp["trees"], fp["patches"], tiles, fp["detailPrototypes"],
                 fp["detailCells"], fp["treeInstances"]))
-    return line, errors
+    return [line, "FOLIAGE records=%d kept=%d colliders=%d" % (fp["records"], fp["kept"], fp["colliders"])], errors
 
 
 def foliage_shown(foliage, kind, flags):
@@ -658,10 +664,11 @@ def plan_foliage(m, root, mode, foliage, density):
     - otherwise a tree is a prefab instance (foliageTrees), and type-1/2 records are grouped per (cell, model,
       1536-unit square from the cell's rect x0, y0) and split in record order every patch_capacity(triangles)
       records (foliagePatches).
+    records = all records of the bins; kept = those placed (model ok, layer typed, shown, kept by Density);
+    colliders = kept records that are colliders (bit 0 or geometry-only).
     A missing or unreadable bin counts nothing here (semantic() reports it)."""
-    out = {"trees": 0, "patches": 0, "detailPrototypes": 0, "detailCells": 0, "treeInstances": 0}
-    if foliage == "off":
-        return out
+    out = {"trees": 0, "patches": 0, "detailPrototypes": 0, "detailCells": 0, "treeInstances": 0,
+           "records": 0, "kept": 0, "colliders": 0}
     models = m.get("models") or []
     fol = m.get("foliage")
     layers = (fol.get("layers") if isinstance(fol, dict) else None) or []
@@ -691,6 +698,7 @@ def plan_foliage(m, root, mode, foliage, density):
         ch = c.get("chunks")
         tile = tiles.get(((ch[0] // tc) * tc, (ch[1] // tc) * tc)) if ut is not None and ch else None
         squares = {}   # (model, sx, sy) -> records
+        out["records"] += len(recs)
         for r in recs:
             mi = r["model"]
             if not (mi < len(models) and models[mi].get("status") == "ok"):
@@ -700,6 +708,9 @@ def plan_foliage(m, root, mode, foliage, density):
             kind = "tree" if li == FOLIAGE_GEOMETRY_ONLY_LAYER or t == 3 else ("small" if t in (1, 2) else None)
             if not foliage_shown(foliage, kind, r["flags"]) or not foliage_keep(r["placement"], r["flags"], density):
                 continue
+            out["kept"] += 1
+            if r["flags"] & FOLIAGE_FLAG_COLLIDER or r["placement"] == FOLIAGE_NO_PLACEMENT:
+                out["colliders"] += 1
             x, y = r["m"][12], r["m"][13]
             if ut is not None and tile is not None and kind == "tree" and r["flags"] & FOLIAGE_FLAG_TERRAIN_TREE:
                 out["treeInstances"] += 1
@@ -774,8 +785,8 @@ def validate(export_dir, schema_path, want_plan=False, plan_opts=None):
         errors += semantic(m, export_dir)
     lines = list(errors)
     if want_plan and shape_ok:
-        pl, perr = plan(m, export_dir, **(plan_opts or {}))
-        lines.append(pl)
+        pl, perr = plan_lines(m, export_dir, **(plan_opts or {}))
+        lines.extend(pl)
         for e in perr:
             if e not in lines:
                 lines.append(e)

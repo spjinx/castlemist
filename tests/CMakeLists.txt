@@ -211,8 +211,21 @@ if (_cm_blender_ok)
              COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${_cm_world_py}"
                      -- --import "${CMAKE_BINARY_DIR}/world_fixture" --scale 0.0254 --no-colliders --verify)
     # 4 props; foliage (world-foliage D8): one geometry-nodes object per (cell, model), 4 records.
+    # FOLIAGE_MATRIX_MAX_ERR below 1e-4 (%.3g prints 0, or d.dde-05 and smaller).
     set_tests_properties(blender_world_import blender_world_import_scaled PROPERTIES
-        PASS_REGULAR_EXPRESSION "INSTANCES 4.*FOLIAGE_OBJECTS 2.*FOLIAGE_INSTANCES 4.*VERIFY OK")
+        PASS_REGULAR_EXPRESSION "INSTANCES 4.*FOLIAGE_OBJECTS 2.*FOLIAGE_KEPT 4.*FOLIAGE_INSTANCES 4.*FOLIAGE_MATRIX_MAX_ERR (0|[0-9.]+e-(0[5-9]|[1-9][0-9]))[^0-9.e].*VERIFY OK")
+    # Density 0.5 keeps 3 of the 4 records (both colliders and grass placement 1; the validator's plan says the same);
+    # Foliage "colliders" draws only the 2 collider records.
+    add_test(NAME blender_world_import_density
+             COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${_cm_world_py}"
+                     -- --import "${CMAKE_BINARY_DIR}/world_fixture" --foliage-density 0.5 --verify)
+    set_tests_properties(blender_world_import_density PROPERTIES
+        PASS_REGULAR_EXPRESSION "FOLIAGE_KEPT 3.*VERIFY OK")
+    add_test(NAME blender_world_import_colliders
+             COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${_cm_world_py}"
+                     -- --import "${CMAKE_BINARY_DIR}/world_fixture" --foliage colliders --verify)
+    set_tests_properties(blender_world_import_colliders PROPERTIES
+        PASS_REGULAR_EXPRESSION "FOLIAGE_INSTANCES 2.*VERIFY OK")
     add_test(NAME blender_world_import_extras
              COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${PROJECT_SOURCE_DIR}/tests/blender/check_world_extras.py"
                      -- "${_cm_world_py}" "${CMAKE_BINARY_DIR}/world_fixture" "${CMAKE_BINARY_DIR}/world_extras")
@@ -224,6 +237,7 @@ if (_cm_blender_ok)
     set_tests_properties(blender_to_fbx_manifest PROPERTIES
         PASS_REGULAR_EXPRESSION "TO_FBX_MANIFEST fbxSet=5")   # probe, cell, models 101, 102, 103
     set_tests_properties(blender_world_import blender_world_import_scaled blender_world_import_extras
+                         blender_world_import_density blender_world_import_colliders
                          blender_to_fbx_manifest PROPERTIES
         FIXTURES_REQUIRED world_fixture
         FAIL_REGULAR_EXPRESSION "VERIFY FAIL|EXTRAS FAIL|Traceback"
@@ -285,7 +299,11 @@ if (CASTLEMIST_PYTHON)
     # (floor(1860/48), floor(3936/48)) = (38, 82) and (floor(4860/48), floor(4436/48)) = (101, 92): 2 non-zero texels.
     add_test(NAME world_manifest_plan_terrain
              COMMAND "${CASTLEMIST_PYTHON}" -I "${_cm_vm}" "${CMAKE_BINARY_DIR}/world_fixture" --plan --mode terrain)
-    set_tests_properties(world_manifest_validate world_manifest_plan world_manifest_plan_terrain world_manifest_selftest
+    add_test(NAME world_manifest_plan_density
+             COMMAND "${CASTLEMIST_PYTHON}" -I "${_cm_vm}" "${CMAKE_BINARY_DIR}/world_fixture" --plan --foliage-density 0.5)
+    set_tests_properties(world_manifest_plan_density PROPERTIES PASS_REGULAR_EXPRESSION
+        "FOLIAGE records=4 kept=3 colliders=2")
+    set_tests_properties(world_manifest_validate world_manifest_plan world_manifest_plan_terrain world_manifest_plan_density world_manifest_selftest
         world_manifest_unit PROPERTIES FIXTURES_REQUIRED world_fixture RESOURCE_LOCK world_fixture TIMEOUT 120)
     set_tests_properties(world_manifest_validate PROPERTIES PASS_REGULAR_EXPRESSION "^OK")
     # Mesh mode, Foliage All, density 1: trees are the collider tree and the geometry-only collider; the two grass
