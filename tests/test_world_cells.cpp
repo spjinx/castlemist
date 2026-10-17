@@ -4,8 +4,10 @@
 #include "test_framework.h"
 
 #include "castlemist/world/cells.h"
+#include "castlemist/world/terrain.h"
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -231,4 +233,71 @@ CM_TEST(cells, region_snaps_to_blocks) {
     p = partition_cells(s, {}, {}, r);
     CHECK(p.cells.empty());
     CHECK_FALSE(p.region.whole());
+}
+
+namespace {
+
+/// Distinct heights per global sample: z(I, J) = 0.5 I - 0.25 J + 0.001 I J (I east, J south).
+void fill_heights(WorldScene& s) {
+    for (TerrainChunk& c : s.terrain.chunks) {
+        c.heights.resize(size_t(c.samples) * c.samples);
+        for (int j = 0; j < c.samples; ++j)
+            for (int i = 0; i < c.samples; ++i) {
+                const float I = float(c.cx * 32 + i), J = float(c.cy * 32 + j);
+                c.heights[size_t(j) * c.samples + i] = 0.5f * I - 0.25f * J + 0.001f * I * J;
+            }
+    }
+}
+
+} // namespace
+
+CM_TEST(cells, heightfield_row0_south) {
+    WorldScene s = grid(4, 4);
+    fill_heights(s);
+    const TerrainHeightfield h = terrain_heightfield(s.terrain, 0, 0);
+    CHECK_EQ(h.n, 129);
+    CHECK_EQ(h.up.size(), size_t(129 * 129));
+    CHECK_EQ(h.real.size(), size_t(128 * 128));
+    if (h.up.size() != size_t(129 * 129)) return;
+    const TerrainChunk& sw = s.terrain.chunks[3 * 4 + 0];   // chunk (0, 3): the block's south-west
+    const TerrainChunk& nw = s.terrain.chunks[0];           // chunk (0, 0): its north-west
+    CHECK_EQ(h.up[0], -sw.heights[size_t(32) * 33 + 0]);    // its south row, west column
+    CHECK_EQ(h.up[size_t(128) * 129], -nw.heights[0]);      // row 128 = the north edge
+    CHECK_EQ(h.up[128], -s.terrain.chunks[3 * 4 + 3].heights[size_t(32) * 33 + 32]);   // south-east
+    CHECK_NEAR(h.rect[0], kX0, 1e-3); CHECK_NEAR(h.rect[3], kY1, 1e-3);
+    CHECK_NEAR(h.rect[2], kX0 + 4 * kC, 1e-3); CHECK_NEAR(h.rect[1], kY1 - 4 * kC, 1e-3);
+    for (uint8_t r : h.real) CHECK_EQ(int(r), 1);
+    float lo = 0, hi = 0;
+    terrain_up_range(s.terrain, lo, hi);
+    // -z over I, J in [0, 128]: max at I = 0, J = 128 (32); min at I = 128, J = 0 (-64).
+    CHECK_NEAR(hi, 32.0, 1e-4);
+    CHECK_NEAR(lo, -64.0, 1e-4);
+}
+
+CM_TEST(cells, heightfield_edge_padded) {
+    WorldScene s = grid(10, 25);
+    fill_heights(s);
+    const TerrainHeightfield h = terrain_heightfield(s.terrain, 8, 0);
+    CHECK_EQ(h.n, 129);
+    if (h.up.size() != size_t(129 * 129) || h.real.size() != size_t(128 * 128)) return;
+    CHECK_NEAR(h.rect[0], kX0 + 8 * kC, 1e-3);
+    CHECK_NEAR(h.rect[2], kX0 + 12 * kC, 1e-3);   // the full (padded) block
+    bool realOk = true, padOk = true;
+    for (int r = 0; r < 128; ++r)
+        for (int q = 0; q < 128; ++q)
+            if (int(h.real[size_t(r) * 128 + q]) != (q < 64 ? 1 : 0)) realOk = false;
+    for (int r = 0; r < 129; ++r)
+        for (int c = 65; c < 129; ++c)
+            if (h.up[size_t(r) * 129 + c] != h.up[size_t(r) * 129 + 64]) padOk = false;
+    CHECK(realOk);
+    CHECK(padOk);
+    // Column 64 is the map's east edge: chunk (9, 7)'s east column, row 0 = its south edge.
+    CHECK_EQ(h.up[64], -s.terrain.chunks[3 * 10 + 9].heights[size_t(32) * 33 + 32]);
+    // The last block row (cy0 = 24) has one real chunk row: rows 0..95 pad, clamped to its south edge.
+    const TerrainHeightfield b = terrain_heightfield(s.terrain, 0, 24);
+    if (b.up.size() != size_t(129 * 129)) return;
+    CHECK_EQ(b.up[0], b.up[size_t(96) * 129]);
+    CHECK_EQ(int(b.real[size_t(95) * 128]), 0);
+    CHECK_EQ(int(b.real[size_t(96) * 128]), 1);
+    CHECK_EQ(b.up[size_t(96) * 129], -s.terrain.chunks[24 * 10].heights[size_t(32) * 33]);
 }

@@ -68,6 +68,8 @@ struct WorldFolderOptions {
     bool sky = true, collision = true, overwrite = false;
     /// Foliage records (world-foliage spec D7). All is also File > Export World (Map)...'s choice.
     FoliageExport foliage = FoliageExport::All;
+    /// The unityTerrain tiles (world-foliage spec D7, world_unity_terrain.h); CLI --no-unity-terrain clears it.
+    bool unityTerrain = true;
     /// When set and it becomes true, export_world_folder stops at the next
     /// model, cell or stage with error "export cancelled" and no manifest.json
     /// (review I5: the GUI sets it when the app is closed during an export).
@@ -122,6 +124,10 @@ struct WorldManifestInput {
     std::vector<ManifestModel> models; std::vector<ManifestCell> cells;
     nlohmann::json sky, light, spawn, counts; std::vector<std::string> warnings;
     nlohmann::json foliage;
+    /// write_unity_terrain's block (world_unity_terrain.h), or null = left out. When it is an
+    /// object, the settings gain unity_terrain_settings()'s rows and counts.foliage (with the
+    /// foliage block) gains terrainTrees and detailRecords, the tiles' sums.
+    nlohmann::json unityTerrain;
     nlohmann::json textures;   ///< {dir: string, count: integer >= 0} (ruling W8) or null = left out
     std::function<std::string(uint32_t propIndex)> clipOf;   ///< "" = null
 };

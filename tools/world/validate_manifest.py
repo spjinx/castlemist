@@ -18,6 +18,13 @@ placement), the bit-0 count equal to colliderTrees, and each record's unity
 TRS must reproduce its m relative to the cell origin within 1e-4. The cells'
 sums must equal counts.foliage.
 
+unityTerrain (world-foliage spec D7): every tile's heights file must be
+heightmapResolution^2 x 2 bytes, its holes PNG (heightmapResolution - 1)
+square, its albedo PNG albedoSize, its detail PNGs detailResolution square, its
+trees file records x 24 bytes; prototype and model indices in range; the
+tiles' tree records equal the foliage records with flag bit 3; and every check
+point inside a tile's real chunks.
+
 --plan ends with foliageTrees=<n>: the records the Unity importer places as
 tree prefab instances (plan_foliage_trees).
 """
@@ -282,6 +289,7 @@ def semantic(m, root):
                     errors.append("ERROR cells: chunk (%d, %d) of the terrain region is in no cell" % (cx, cy))
 
     _check_foliage(m, root, models, cells, errors)
+    _check_unity_terrain(m, root, models, cells, errors)
 
     cnt = m.get("counts") or {}
     try:
@@ -384,6 +392,116 @@ def _check_foliage(m, root, models, cells, errors):
             errors.append("ERROR counts.foliage.colliderTrees: %s but cells hold %d" % (cf.get("colliderTrees"), colliders))
     elif any_cell:
         errors.append("ERROR counts.foliage: missing, but cells hold foliage")
+
+
+TERRAIN_TREE_RECORD = 24
+FOLIAGE_FLAG_TERRAIN_TREE = 1 << 3
+
+
+def png_size(path):
+    """(width, height) from a PNG's IHDR, or None when it is not a PNG."""
+    with open(path, "rb") as f:
+        head = f.read(24)
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n" or head[12:16] != b"IHDR":
+        return None
+    return struct.unpack(">II", head[16:24])
+
+
+def _check_unity_terrain(m, root, models, cells, errors):
+    """The unityTerrain block's files, indices and check points (module docstring)."""
+    ut = m.get("unityTerrain")
+    if not isinstance(ut, dict):
+        return
+    n = ut.get("heightmapResolution")
+    dres = ut.get("detailResolution")
+    nd = len(ut.get("detailPrototypes") or [])
+    nt = len(ut.get("treePrototypes") or [])
+    for key in ("detailPrototypes", "treePrototypes"):
+        for k, pr in enumerate(ut.get(key) or []):
+            mi = pr.get("model")
+            if isinstance(mi, int) and not (0 <= mi < len(models)):
+                errors.append("ERROR unityTerrain.%s[%d].model: index out of range: unityTerrain.%s[%d].model "
+                              "(%d, models has %d)" % (key, k, key, k, mi, len(models)))
+
+    def png_is(rel, p, w, h):
+        path = os.path.join(root, rel)
+        if not os.path.isfile(path):
+            errors.append("ERROR %s: missing file: %s" % (p, rel))
+            return
+        got = png_size(path)
+        if got != (w, h):
+            errors.append("ERROR %s: tile file size: %s is %s, expected %d x %d" % (p, rel, got, w, h))
+
+    tree_records = 0
+    reals = []
+    for ti, t in enumerate(ut.get("tiles") or []):
+        p = "unityTerrain.tiles[%d]" % ti
+        rel = t.get("heights")
+        if isinstance(rel, str) and isinstance(n, int):
+            path = os.path.join(root, rel)
+            if not os.path.isfile(path):
+                errors.append("ERROR %s.heights: missing file: %s" % (p, rel))
+            elif os.path.getsize(path) != n * n * 2:
+                errors.append("ERROR %s.heights: tile file size: %s (%d bytes, %d x %d x 2)"
+                              % (p, rel, os.path.getsize(path), n, n))
+        if isinstance(t.get("holes"), str) and isinstance(n, int):
+            png_is(t["holes"], p + ".holes", n - 1, n - 1)
+        size = t.get("albedoSize")
+        if isinstance(t.get("albedo"), str) and isinstance(size, list) and len(size) == 2:
+            png_is(t["albedo"], p + ".albedo", size[0], size[1])
+        for k, d in enumerate(t.get("details") or []):
+            dp = "%s.details[%d]" % (p, k)
+            if isinstance(d.get("prototype"), int) and not d["prototype"] < nd:
+                errors.append("ERROR %s.prototype: index out of range: %s.prototype (%d, detailPrototypes has %d)"
+                              % (dp, dp, d["prototype"], nd))
+            if isinstance(d.get("counts"), str) and isinstance(dres, int):
+                png_is(d["counts"], dp + ".counts", dres, dres)
+        tr = t.get("trees")
+        if isinstance(tr, dict) and isinstance(tr.get("file"), str) and isinstance(tr.get("records"), int):
+            tree_records += tr["records"]
+            path = os.path.join(root, tr["file"])
+            if not os.path.isfile(path):
+                errors.append("ERROR %s.trees.file: missing file: %s" % (p, tr["file"]))
+            elif os.path.getsize(path) != tr["records"] * TERRAIN_TREE_RECORD:
+                errors.append("ERROR %s.trees.file: tile file size: %s (%d bytes, %d records x %d)"
+                              % (p, tr["file"], os.path.getsize(path), tr["records"], TERRAIN_TREE_RECORD))
+            else:
+                with open(path, "rb") as f:
+                    data = f.read()
+                for i in range(tr["records"]):
+                    proto = struct.unpack_from("<I", data, i * TERRAIN_TREE_RECORD)[0]
+                    if not proto < nt:
+                        errors.append("ERROR %s[%d]: index out of range: prototype %d (treePrototypes has %d)"
+                                      % (tr["file"], i, proto, nt))
+                        break
+        pos, sz, ch = t.get("position"), t.get("size"), t.get("chunks")
+        if isinstance(pos, list) and isinstance(sz, list) and isinstance(ch, list) and len(ch) == 4:
+            tc = ut.get("tileChunks")
+            if isinstance(tc, int) and tc > 0:
+                cw, cd = sz[0] / tc, sz[2] / tc
+                x0 = pos[0]
+                z1 = pos[2] + sz[2]
+                reals.append((x0, z1 - (ch[3] - ch[1] + 1) * cd, x0 + (ch[2] - ch[0] + 1) * cw, z1))
+    # Terrain trees = the foliage records with bit 3.
+    bit3 = 0
+    for c in cells:
+        f = c.get("foliage")
+        if isinstance(f, dict) and isinstance(f.get("file"), str):
+            path = os.path.join(root, f["file"])
+            if os.path.isfile(path) and isinstance(f.get("records"), int) and \
+                    os.path.getsize(path) == f["records"] * FOLIAGE_RECORD.size:
+                bit3 += sum(1 for r in read_foliage_records(path) if r["flags"] & FOLIAGE_FLAG_TERRAIN_TREE)
+    if bit3 != tree_records:
+        errors.append("ERROR unityTerrain.tiles: %d Terrain tree records, but %d foliage records have bit 3"
+                      % (tree_records, bit3))
+    eps = 1e-3
+    for k, pt in enumerate(ut.get("check") or []):
+        u = pt.get("unity")
+        if not (isinstance(u, list) and len(u) == 2):
+            continue
+        x, z = u
+        if not any(r[0] - eps <= x <= r[2] + eps and r[1] - eps <= z <= r[3] + eps for r in reals):
+            errors.append("ERROR unityTerrain.check[%d]: point (%s, %s) is inside no tile" % (k, x, z))
 
 
 def _check_unity(inst, origin, p, errors):
@@ -583,6 +701,24 @@ def self_test(export_dir, schema_path):
             case("foliage_range", "index out of range: %s[0].model" % rel, bad_model)
             case("foliage_extra", "unexpected property: foliage.extra",
                  lambda d: edit(d, lambda j: j["foliage"].__setitem__("extra", 1)))
+
+        # unityTerrain (world-foliage spec D7), when the export has it.
+        ut = base.get("unityTerrain")
+        if isinstance(ut, dict) and ut.get("tiles"):
+            heights = ut["tiles"][0]["heights"]
+            case("terrain_missing", "missing file: " + heights, lambda d: os.remove(os.path.join(d, heights)))
+
+            def short_heights(d):
+                p = os.path.join(d, heights)
+                with open(p, "rb") as f:
+                    b = f.read()
+                with open(p, "wb") as f:
+                    f.write(b[:-2])
+
+            case("terrain_size", "tile file size: " + heights, short_heights)
+            if ut.get("check"):
+                case("terrain_check", "unityTerrain.check[0]: point",
+                     lambda d: edit(d, lambda j: j["unityTerrain"]["check"][0].__setitem__("unity", [1e7, 1e7])))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     if failures:

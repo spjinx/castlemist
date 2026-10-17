@@ -12,11 +12,13 @@
 #include "castlemist/exportgltf/world_probe.h"
 #include "castlemist/exportgltf/world_folder.h"
 #include "castlemist/exportgltf/world_foliage.h"
+#include "castlemist/exportgltf/world_unity_terrain.h"
 #include "world_export_synthetic.h"
 #include "long_path.h"
 #include "castlemist/world/frame.h"
 #include "castlemist/world/props.h"
 #include "castlemist/world/surface_rules.h"
+#include "castlemist/world/terrain.h"
 #include "castlemist/world/walk.h"
 #include "castlemist/world/zones.h"
 #include "castlemist/extract/model_types.h"
@@ -45,6 +47,12 @@
 #include <vector>
 
 #include "nlohmann/json.hpp"
+
+// Static so this decoder never clashes with the copies other translation units
+// build (test_exportgltf_sky.cpp does the same).
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 
 using namespace castlemist::exportgltf;
 
@@ -2143,4 +2151,282 @@ CM_TEST(world_foliage, failed_write_leaves_no_manifest) {
     CHECK(r.error.find("cannot write") != std::string::npos);
     CHECK(r.error.find("c0_0_2x2.bin") != std::string::npos);
     CHECK_FALSE(fs::exists(dir / "manifest.json"));
+}
+
+// ---------------------------------------------------------------- unityTerrain (world-foliage spec D7)
+
+namespace {
+
+/// A PNG decoded to @p channels per texel; empty when it does not load.
+struct Png { int w = 0, h = 0; std::vector<uint8_t> px; };
+Png load_png(const fs::path& p, int channels) {
+    Png out;
+    const std::vector<uint8_t> b = file_bytes(p);
+    if (b.empty()) return out;
+    int w = 0, h = 0, comp = 0;
+    stbi_uc* d = stbi_load_from_memory(b.data(), int(b.size()), &w, &h, &comp, channels);
+    if (!d) return out;
+    out.w = w; out.h = h;
+    out.px.assign(d, d + size_t(w) * h * channels);
+    stbi_image_free(d);
+    return out;
+}
+
+uint16_t u16_at(const std::vector<uint8_t>& b, size_t i) { return uint16_t(b[2 * i] | (b[2 * i + 1] << 8)); }
+
+float f32_at(const std::vector<uint8_t>& b, size_t off) {
+    float f;
+    std::memcpy(&f, b.data() + off, 4);
+    return f;
+}
+
+/// Rotates instance @p k of @p s by @p deg about map +X (as the fixture tilts its placement-3 grass).
+void tilt_instance(cw::WorldScene& s, size_t k, float deg) {
+    const float a = deg * 3.14159265f / 180.0f, ca = std::cos(a), sa = std::sin(a);
+    float* w = s.zones.instances[k].world;
+    const float rx[16] = {1, 0, 0, 0, 0, ca, sa, 0, 0, -sa, ca, 0, 0, 0, 0, 1};
+    float out[16] = {};
+    for (int col = 0; col < 4; ++col)
+        for (int row = 0; row < 4; ++row)
+            for (int q = 0; q < 4; ++q) out[col * 4 + row] += w[q * 4 + row] * rx[col * 4 + q];
+    std::copy(out, out + 16, w);
+}
+
+size_t warnings_naming(const json& man, const std::string& needle) {
+    size_t n = 0;
+    for (const json& w : man["warnings"])
+        if (w.is_string() && w.get<std::string>().find(needle) != std::string::npos) ++n;
+    return n;
+}
+
+} // namespace
+
+CM_TEST(unity_terrain, synthetic_tile) {
+    const cw::WorldScene s = tw::synthetic_world();
+    const json man = export_synthetic(s, "ut_tile", synthetic_opts());
+    check_valid(man, "unity terrain tile");
+    const fs::path dir = out_dir("ut_tile");
+    CHECK(man.contains("unityTerrain"));
+    if (!man.contains("unityTerrain")) return;
+    const json& ut = man["unityTerrain"];
+    CHECK(ut["tileChunks"] == json(4));
+    CHECK(ut["heightmapResolution"] == json(129));
+    CHECK(ut["detailResolution"] == json(256));
+    CHECK(ut["detailCellUnits"] == json(48));
+    // Map range of up = -z: z = 10 + 0.5 I - 0.25 J over I, J in [0, 64] -> up in [-42, 6].
+    const double hMin = ut["heightRange"]["min"].get<double>(), hMax = ut["heightRange"]["max"].get<double>();
+    CHECK_NEAR(hMin, -42.0, 1e-4);
+    CHECK_NEAR(hMax, 6.0, 1e-4);
+    CHECK_EQ(ut["tiles"].size(), size_t(1));
+    if (ut["tiles"].size() != 1) return;
+    const json& t = ut["tiles"][0];
+    CHECK(t["id"] == json("t0_0"));
+    CHECK(t["chunks"] == json({0, 0, 1, 1}));
+    CHECK_NEAR(t["position"][0].get<double>(), tw::kSynX0, 1e-3);
+    CHECK_NEAR(t["position"][1].get<double>(), hMin, 1e-4);
+    CHECK_NEAR(t["position"][2].get<double>(), tw::kSynY1 - 4 * tw::kSynChunk, 1e-3);
+    CHECK_NEAR(t["size"][0].get<double>(), 12288.0, 1e-3);
+    CHECK_NEAR(t["size"][1].get<double>(), hMax - hMin, 1e-4);
+    CHECK(t["heights"] == json("terrain/t0_0.r16"));
+    CHECK(t["holes"] == json("terrain/t0_0_holes.png"));
+    CHECK(t["albedo"] == json("terrain/t0_0_albedo.png"));
+    CHECK(t["albedoSize"] == json({64, 64}));
+
+    // .r16: 129 x 129 uint16 LE, row 0 south, normalised by the map range.
+    const std::vector<uint8_t> r16 = file_bytes(dir / "terrain" / "t0_0.r16");
+    CHECK_EQ(r16.size(), size_t(129 * 129 * 2));
+    if (r16.size() == size_t(129 * 129 * 2)) {
+        // Row 0 is the block's south edge, clamped to the map's south row (J = 64): chunk (0, 1) row 32.
+        const cw::TerrainChunk& sw = s.terrain.chunks[2];
+        for (int c : {0, 1, 7, 32}) {
+            const double up = -sw.heights[size_t(32) * 33 + size_t(c)];
+            CHECK_EQ(int(u16_at(r16, size_t(c))), int(std::lround((up - hMin) / (hMax - hMin) * 65535.0)));
+        }
+        // Every sample against the heightfield.
+        const cw::TerrainHeightfield hf = cw::terrain_heightfield(s.terrain, 0, 0, 4);
+        bool all = hf.up.size() == size_t(129 * 129);
+        for (size_t i = 0; all && i < hf.up.size(); ++i)
+            all = int(u16_at(r16, i)) == int(std::lround((hf.up[i] - hMin) / (hMax - hMin) * 65535.0));
+        CHECK(all);
+        // The north-west sample (row 128, column 0) is chunk (0, 0)'s first.
+        const double nw = -s.terrain.chunks[0].heights[0];
+        CHECK_EQ(int(u16_at(r16, size_t(128) * 129)), int(std::lround((nw - hMin) / (hMax - hMin) * 65535.0)));
+    }
+
+    // Holes: 128 x 128, white = surface, row 0 north; the quads beyond the 2 x 2 chunks are black.
+    const Png holes = load_png(dir / "terrain" / "t0_0_holes.png", 1);
+    CHECK_EQ(holes.w, 128);
+    CHECK_EQ(holes.h, 128);
+    if (holes.w == 128 && holes.h == 128) {
+        bool ok = true;
+        for (int y = 0; y < 128; ++y)
+            for (int x = 0; x < 128; ++x)
+                if (holes.px[size_t(y) * 128 + x] != ((x < 64 && y < 64) ? 255 : 0)) ok = false;
+        CHECK(ok);
+    }
+
+    // Albedo: the cell's texels at the same place, the padding mid-grey.
+    const Png cell = load_png(dir / "cells" / "c0_0_2x2_albedo.png", 3);
+    const Png alb = load_png(dir / "terrain" / "t0_0_albedo.png", 3);
+    CHECK_EQ(cell.w, 32);
+    CHECK_EQ(alb.w, 64);
+    CHECK_EQ(alb.h, 64);
+    if (cell.w == 32 && cell.h == 32 && alb.w == 64 && alb.h == 64) {
+        bool same = true, grey = true;
+        for (int y = 0; y < 64; ++y)
+            for (int x = 0; x < 64; ++x)
+                for (int k = 0; k < 3; ++k) {
+                    const uint8_t a = alb.px[(size_t(y) * 64 + x) * 3 + k];
+                    if (x < 32 && y < 32) { if (a != cell.px[(size_t(y) * 32 + x) * 3 + k]) same = false; }
+                    else if (a != 128) grey = false;
+                }
+        CHECK(same);
+        CHECK(grey);
+    }
+
+    // Details: one prototype (the grass, model 2), its two records.
+    CHECK_EQ(ut["detailPrototypes"].size(), size_t(1));
+    if (ut["detailPrototypes"].size() == 1) {
+        const json& dp = ut["detailPrototypes"][0];
+        CHECK(dp["model"] == json(2));
+        CHECK_NEAR(dp["fadeFar"].get<double>(), 3000.0, 1e-6);
+        CHECK_NEAR(dp["minScale"].get<double>(), 0.8, 1e-5);
+        CHECK_NEAR(dp["maxScale"].get<double>(), 1.1, 1e-5);
+    }
+    CHECK_EQ(t["details"].size(), size_t(1));
+    if (t["details"].size() == 1) {
+        CHECK(t["details"][0]["prototype"] == json(0));
+        CHECK(t["details"][0]["counts"] == json("terrain/t0_0_d0.png"));
+        CHECK(t["details"][0]["records"] == json(2));
+    }
+    const Png d0 = load_png(dir / "terrain" / "t0_0_d0.png", 1);
+    CHECK_EQ(d0.w, 256);
+    CHECK_EQ(d0.h, 256);
+    uint64_t sum = 0;
+    for (uint8_t v : d0.px) sum += v;
+    CHECK_EQ(sum, uint64_t(2));
+    if (d0.w == 256) {   // grass at (-13500, 36000): cell (floor(1860 / 48), floor(3936 / 48)) = (38, 82)
+        CHECK_EQ(int(d0.px[size_t(82) * 256 + 38]), 1);
+    }
+
+    // Trees: the collider tree only (the geometry-only collider has no layer type).
+    CHECK_EQ(ut["treePrototypes"].size(), size_t(1));
+    if (ut["treePrototypes"].size() == 1) {
+        CHECK(ut["treePrototypes"][0]["model"] == json(0));
+        CHECK_NEAR(ut["treePrototypes"][0]["fadeFar"].get<double>(), 7500.0, 1e-6);
+    }
+    CHECK(t["trees"]["file"] == json("terrain/t0_0_trees.bin"));
+    CHECK(t["trees"]["records"] == json(1));
+    const std::vector<uint8_t> tb = file_bytes(dir / "terrain" / "t0_0_trees.bin");
+    CHECK_EQ(tb.size(), size_t(24));
+    const std::vector<FoliageRecord> rs = read_records(dir / "foliage" / "c0_0_2x2.bin");
+    CHECK_EQ(rs.size(), size_t(4));
+    if (tb.size() == 24 && rs.size() == 4) {
+        uint32_t proto;
+        std::memcpy(&proto, tb.data(), 4);
+        CHECK_EQ(proto, 0u);
+        const double x0 = tw::kSynX0, y0 = tw::kSynY1 - 4 * tw::kSynChunk;
+        const double u = f32_at(tb, 4), v = f32_at(tb, 8), h = f32_at(tb, 12);
+        CHECK_NEAR(u, (-14500.0 - x0) / 12288.0, 1e-4);
+        CHECK_NEAR(v, (39000.0 - y0) / 12288.0, 1e-4);
+        CHECK_NEAR(h, (15.0 - hMin) / (hMax - hMin), 1e-4);   // z = -15
+        CHECK_NEAR(u * 12288.0 + x0, -14500.0, 1e-4 * 12288.0);
+        CHECK_NEAR(v * 12288.0 + y0, 39000.0, 1e-4 * 12288.0);
+        CHECK_NEAR(h * (hMax - hMin) + hMin, 15.0, 1e-4 * (hMax - hMin));
+        CHECK_EQ(f32_at(tb, 16), rs[0].unityYaw);
+        CHECK_EQ(f32_at(tb, 20), rs[0].unity.s);
+        // Bit 3 on the collider tree only.
+        CHECK((rs[0].flags & kFoliageFlagTerrainTree) != 0);
+        for (size_t k = 1; k < 4; ++k) CHECK((rs[k].flags & kFoliageFlagTerrainTree) == 0);
+    }
+    CHECK(man["counts"]["foliage"]["terrainTrees"] == json(1));
+    CHECK(man["counts"]["foliage"]["detailRecords"] == json(2));
+
+    // Check points: 32, inside the tile's real area, height = -terrain_height_at.
+    CHECK_EQ(ut["check"].size(), size_t(32));
+    for (const json& p : ut["check"]) {
+        const float x = p["unity"][0].get<float>(), y = p["unity"][1].get<float>();
+        CHECK(x >= tw::kSynX0 && x <= tw::kSynX0 + 2 * tw::kSynChunk);
+        CHECK(y >= tw::kSynY1 - 2 * tw::kSynChunk && y <= tw::kSynY1);
+        CHECK_NEAR(p["height"].get<double>(), -cw::terrain_height_at(s.terrain, x, y), 1e-3);
+    }
+    // Deterministic: the same map gives the same points.
+    const json again = export_synthetic(s, "ut_tile2", synthetic_opts());
+    CHECK(again["unityTerrain"]["check"] == ut["check"]);
+    // S5: the importer's default fade factor travels with the block.
+    CHECK(ut["fadeQualityScale"] == man["settings"]["zoneFadeQualityScale"]["value"]);
+    // The settings rows that come with the block.
+    for (const char* k : {"terrainTreeMaxTiltDeg", "terrainTreeYawSign", "detailPlacement", "terrainHeightRowOrder",
+                          "terrainColliderDiagonal"})
+        CHECK(man["settings"].contains(k));
+    CHECK(man["settings"]["terrainTreeMaxTiltDeg"]["value"] == json(5));
+    CHECK(man["settings"]["terrainColliderDiagonal"]["status"] == json("UNPROVEN"));
+    CHECK_EQ(warnings_naming(man, "vertex samples"), size_t(1));   // the diagonal note
+}
+
+CM_TEST(unity_terrain, detail_count_clamps_255) {
+    cw::WorldScene s = tw::synthetic_world();
+    cw::ZoneInstance g = s.zones.instances[2];   // the grass at (-13500, 36000): detail cell (38, 82)
+    g.world[12] += 48;                           // one 48-unit cell east: (39, 82)
+    for (uint32_t k = 0; k < 300; ++k) {
+        g.placement = 1000 + k;
+        s.zones.instances.push_back(g);
+    }
+    const json man = export_synthetic(s, "ut_clamp", synthetic_opts());
+    check_valid(man, "unity terrain clamp");
+    const Png d0 = load_png(out_dir("ut_clamp") / "terrain" / "t0_0_d0.png", 1);
+    CHECK_EQ(d0.w, 256);
+    if (d0.w != 256) return;
+    CHECK_EQ(int(d0.px[size_t(82) * 256 + 39]), 255);
+    CHECK_EQ(int(d0.px[size_t(82) * 256 + 38]), 1);   // the neighbour is unaffected
+    CHECK_EQ(warnings_naming(man, "t0_0"), size_t(1));
+    CHECK(man["unityTerrain"]["tiles"][0]["details"][0]["records"] == json(302));
+}
+
+CM_TEST(unity_terrain, steep_tree_not_terrain) {
+    cw::WorldScene s = tw::synthetic_world();
+    tilt_instance(s, 0, 10.0f);   // the collider tree leans 10 degrees: over terrainTreeMaxTiltDeg
+    const json man = export_synthetic(s, "ut_steep", synthetic_opts());
+    check_valid(man, "unity terrain steep");
+    const std::vector<FoliageRecord> rs = read_records(out_dir("ut_steep") / "foliage" / "c0_0_2x2.bin");
+    CHECK_EQ(rs.size(), size_t(4));
+    if (rs.size() != 4) return;
+    CHECK_NEAR(rs[0].tiltDeg, 10.0, 1e-3);
+    for (const FoliageRecord& r : rs) CHECK((r.flags & kFoliageFlagTerrainTree) == 0);
+    CHECK(man["unityTerrain"]["tiles"][0]["trees"].is_null());
+    CHECK_FALSE(fs::exists(out_dir("ut_steep") / "terrain" / "t0_0_trees.bin"));
+    CHECK(man["unityTerrain"]["treePrototypes"] == json::array());
+    CHECK(man["counts"]["foliage"]["terrainTrees"] == json(0));
+}
+
+CM_TEST(unity_terrain, off_writes_nothing) {
+    const cw::WorldScene s = tw::synthetic_world();
+    WorldFolderOptions o = synthetic_opts();
+    o.unityTerrain = false;
+    const json man = export_synthetic(s, "ut_off", o);
+    check_valid(man, "unity terrain off");
+    CHECK_FALSE(man.contains("unityTerrain"));
+    CHECK_FALSE(fs::exists(out_dir("ut_off") / "terrain"));
+    CHECK_FALSE(man["settings"].contains("terrainColliderDiagonal"));
+    const std::vector<FoliageRecord> rs = read_records(out_dir("ut_off") / "foliage" / "c0_0_2x2.bin");
+    CHECK_EQ(rs.size(), size_t(4));
+    for (const FoliageRecord& r : rs) CHECK((r.flags & kFoliageFlagTerrainTree) == 0);
+}
+
+CM_TEST(unity_terrain, one_chunk_tiles) {
+    // budget.maxChunks 1: one tile per chunk (n = 33), none padded.
+    const cw::WorldScene s = tw::synthetic_world();
+    WorldFolderOptions o = synthetic_opts();
+    o.budget.maxChunks = 1;
+    const json man = export_synthetic(s, "ut_one", o);
+    check_valid(man, "unity terrain 1x1");
+    const json& ut = man["unityTerrain"];
+    CHECK(ut["heightmapResolution"] == json(33));
+    CHECK(ut["detailResolution"] == json(64));
+    CHECK_EQ(ut["tiles"].size(), size_t(4));
+    for (const json& t : ut["tiles"]) {
+        CHECK(t["holes"].is_null());
+        CHECK_EQ(file_bytes(out_dir("ut_one") / t["heights"].get<std::string>()).size(), size_t(33 * 33 * 2));
+    }
+    CHECK(man["counts"]["foliage"]["terrainTrees"] == json(1));
 }

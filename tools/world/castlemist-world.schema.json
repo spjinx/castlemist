@@ -58,7 +58,7 @@
       }
     },
     "settings": {
-      "description": "Spec D3 'UNPROVEN settings that travel' plus the export's own settings; each UNPROVEN one is also a line in warnings. The zone* / foliage* rows and lodCullFovDeg are the world-foliage spec's D11 rows (optional).",
+      "description": "Spec D3 'UNPROVEN settings that travel' plus the export's own settings; each UNPROVEN one is also a line in warnings. The zone* / foliage* rows and lodCullFovDeg are the world-foliage spec's D11 rows (optional); terrainTreeMaxTiltDeg, terrainTreeYawSign, detailPlacement, terrainHeightRowOrder and terrainColliderDiagonal come with the unityTerrain block.",
       "type": "object",
       "additionalProperties": false,
       "required": ["groundRepeatsPerChunk", "srgbColourTextures", "pickerSolidByteOrder", "waterPresetPairing",
@@ -112,7 +112,12 @@
         "foliagePatchUnits": { "$ref": "#/$defs/setting" },
         "foliageTileUnits": { "$ref": "#/$defs/setting" },
         "foliageThinHash": { "$ref": "#/$defs/setting" },
-        "lodCullFovDeg": { "$ref": "#/$defs/setting" }
+        "lodCullFovDeg": { "$ref": "#/$defs/setting" },
+        "terrainTreeMaxTiltDeg": { "$ref": "#/$defs/setting" },
+        "terrainTreeYawSign": { "$ref": "#/$defs/setting" },
+        "detailPlacement": { "$ref": "#/$defs/setting" },
+        "terrainHeightRowOrder": { "$ref": "#/$defs/setting" },
+        "terrainColliderDiagonal": { "$ref": "#/$defs/setting" }
       }
     },
     "terrain": {
@@ -296,6 +301,67 @@
         }
       }
     },
+    "unityTerrain": {
+      "description": "Optional (world-foliage spec D7, 'manifest.json additions'; CLI --no-unity-terrain leaves it out). One Unity Terrain tile per block of tileChunks x tileChunks chunks, baked-layer mode. Positions, sizes, heights and check points are Unity axes (east +X, up +Y, north +Z) in map units before unityScale. Files: heights = heightmapResolution^2 uint16 LE, row 0 south, column 0 west, round((up - min) / (max - min) * 65535) with up = -z (vertex samples, no triangle split: terrainColliderDiagonal); holes = (heightmapResolution - 1)^2 8-bit PNG, white = surface, row 0 north, edge tiles only; albedo = the block's cell albedos assembled pixel-exact, row 0 north; details[].counts = detailResolution^2 8-bit PNG, row 0 north, the number of that prototype's records in each detailCellUnits cell (floor((x - x0) / 48), floor((y1 - y) / 48)), clamped to 255; trees.file = 24-byte records, u32 prototype (treePrototypes index), f32 u, v (0..1 along +X and +Z from the tile's south-west corner), f32 h ((up - min) / (max - min)), f32 yaw (unityYaw), f32 scale (unity.s). A Terrain tree's foliage record has flag bit 3.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tileChunks", "heightmapResolution", "detailResolution", "detailCellUnits", "heightRange",
+                   "fadeQualityScale", "tiles", "detailPrototypes", "treePrototypes", "check"],
+      "properties": {
+        "tileChunks": { "type": "integer", "minimum": 1 },
+        "heightmapResolution": { "type": "integer", "minimum": 3 },
+        "detailResolution": { "type": "integer", "minimum": 1 },
+        "detailCellUnits": { "type": "number", "minimum": 0 },
+        "heightRange": {
+          "description": "Map-wide min and max of up = -z over every terrain sample, map units.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["min", "max"],
+          "properties": { "min": { "type": "number" }, "max": { "type": "number" } }
+        },
+        "fadeQualityScale": { "description": "settings.zoneFadeQualityScale, copied (ruling S5): the importers multiply the prototypes' stored fadeFar by it by default.", "type": "number", "minimum": 0 },
+        "tiles": { "type": "array", "items": { "$ref": "#/$defs/unityTerrainTile" } },
+        "detailPrototypes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["model", "minScale", "maxScale", "fadeFar"],
+            "properties": {
+              "model": { "description": "Position in models[].", "type": "integer", "minimum": 0 },
+              "minScale": { "description": "The smallest unity.s of its records.", "type": ["number", "null"] },
+              "maxScale": { "description": "The largest unity.s of its records.", "type": ["number", "null"] },
+              "fadeFar": { "description": "The largest stored fadeRange[1] of its records' layers (not scaled by fadeQualityScale).", "type": ["number", "null"] }
+            }
+          }
+        },
+        "treePrototypes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["model", "fadeFar"],
+            "properties": {
+              "model": { "description": "Position in models[].", "type": "integer", "minimum": 0 },
+              "fadeFar": { "description": "The largest stored fadeRange[1] of its records' layers (not scaled by fadeQualityScale).", "type": ["number", "null"] }
+            }
+          }
+        },
+        "check": {
+          "description": "The terrain frame check: points xz-uniform in the tiles' real area, height = -terrain_height_at (bilinear over the chunk's samples), absolute Unity y.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["unity", "height"],
+            "properties": {
+              "unity": { "description": "Unity x, z (= map x, y).", "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+              "height": { "type": "number" }
+            }
+          }
+        }
+      }
+    },
     "warnings": { "type": "array", "items": { "type": "string" } }
   },
   "$defs": {
@@ -410,6 +476,41 @@
             "colliderTrees": { "description": "Records with flag bit 0.", "$ref": "#/$defs/count" },
             "triangles": { "description": "LOD0 triangles of the records' models; not in budget.triangles.", "$ref": "#/$defs/count" }
           }
+        }
+      }
+    },
+    "unityTerrainTile": {
+      "description": "One Unity Terrain tile: the block whose north-west chunk is (cx0, cy0), id t<cx0>_<cy0>.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "chunks", "position", "size", "heights", "holes", "albedo", "albedoSize", "details", "trees"],
+      "properties": {
+        "id": { "type": "string" },
+        "chunks": { "description": "The real chunks, inclusive cx0, cy0, cx1, cy1 (an edge tile is padded past them).", "$ref": "#/$defs/int4" },
+        "position": { "description": "The south-west corner: map x, min, map y of the padded block.", "$ref": "#/$defs/vec3" },
+        "size": { "description": "The padded block's width, max - min, its height (north-south).", "$ref": "#/$defs/vec3" },
+        "heights": { "type": "string" },
+        "holes": { "type": ["string", "null"] },
+        "albedo": { "type": "string" },
+        "albedoSize": { "type": "array", "items": { "type": "integer", "minimum": 1 }, "minItems": 2, "maxItems": 2 },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["prototype", "counts", "records"],
+            "properties": {
+              "prototype": { "description": "detailPrototypes index.", "type": "integer", "minimum": 0 },
+              "counts": { "type": "string" },
+              "records": { "description": "The records counted, before the clamp to 255.", "$ref": "#/$defs/count" }
+            }
+          }
+        },
+        "trees": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["file", "records"],
+          "properties": { "file": { "type": "string" }, "records": { "$ref": "#/$defs/count" } }
         }
       }
     },

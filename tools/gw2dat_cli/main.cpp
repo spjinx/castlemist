@@ -22,9 +22,10 @@
 //            [--size <face px>] [--equirect <width px>]
 //            -- a map's sky as Unity skybox images in <out>/<name> (default map_<fileId>)
 //   world-export --dat <path> --file-id N --template <json> (--out <file.glb> | --out-dir <dir>)
-//            [--foliage off|colliders|all] [--region cx0,cy0,cx1,cy1] [--no-fbx] ...
+//            [--foliage off|colliders|all] [--no-unity-terrain] [--region cx0,cy0,cx1,cy1] [--no-fbx] ...
 //            -- a map as one .glb, or as the world export folder (flags: cmd_world_export_folder);
-//            --foliage (default all) picks the zone foliage records written
+//            --foliage (default all) picks the zone foliage records written;
+//            --no-unity-terrain leaves out the unityTerrain tiles (terrain/)
 //   character (--key-name NAME | --key KEY) [--character NAME] [--tab N]
 //            [--out <json>] [--cmap <content_map.bin>]
 //            -- lists an account's characters, or resolves one character's
@@ -2463,10 +2464,12 @@ void cmd_world(const Args& a) {
 ///   --out-dir <dir> [--texels-per-chunk 64|128|256|512] [--max-texture <n>]
 ///   [--region cx0,cy0,cx1,cy1] [--cell-max-chunks <n>] [--cell-max-tris <n>]
 ///   [--cell-max-texture-mb <mb>] [--no-sky] [--no-collision] [--overwrite]
-///   [--foliage off|colliders|all] [--threads <n>] [--no-fbx] [--blender <exe>]
+///   [--foliage off|colliders|all] [--no-unity-terrain] [--threads <n>] [--no-fbx] [--blender <exe>]
 /// --foliage (world-foliage spec D7, default all): which zone instances become
 /// foliage/<cell>.bin records -- none, the collider trees only, or every one the
 /// world build made.
+/// --no-unity-terrain (world-foliage spec D7): no terrain/ tiles and no
+/// unityTerrain block (the Unity importer's Terrain mode then has nothing to build).
 /// Task 11: then, unless --no-fbx, ripper::convert_world_to_fbx (Blender found, or
 /// --blender <exe>); its result is the report's "fbx" block. Blender missing or
 /// failing leaves the export ok, with fbx.ok false and the folder valid.
@@ -2513,6 +2516,7 @@ void cmd_world_export_folder(const Args& a) {
     opts.sky = !has(a, "no-sky");
     opts.collision = !has(a, "no-collision");
     opts.overwrite = has(a, "overwrite");
+    opts.unityTerrain = !has(a, "no-unity-terrain");
     if (has(a, "foliage")) {   // world-foliage spec D7: zone foliage records, default all
         const std::string& f = a.at("foliage");
         if (f == "off") opts.foliage = eg::FoliageExport::Off;

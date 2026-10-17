@@ -8,6 +8,7 @@
 #include "castlemist/exportgltf/world_cell.h"
 #include "castlemist/exportgltf/world_export.h"
 #include "castlemist/exportgltf/world_probe.h"
+#include "castlemist/exportgltf/world_unity_terrain.h"
 #include "castlemist/world/frame.h"
 #include "castlemist/world/surface_rules.h"
 #include "castlemist/world/terrain_bake.h"
@@ -424,7 +425,12 @@ json world_manifest_json(const WorldManifestInput& in) {
 
     std::vector<std::string> settingWarnings;
     json settings = json::object();
-    for (const ManifestSetting& st : world_export_settings(o, &s)) {
+    std::vector<ManifestSetting> settingRows = world_export_settings(o, &s);
+    if (in.unityTerrain.is_object()) {   // the terrain rows come with the block (world-foliage spec D11)
+        const std::vector<ManifestSetting> ut = unity_terrain_settings();
+        settingRows.insert(settingRows.end(), ut.begin(), ut.end());
+    }
+    for (const ManifestSetting& st : settingRows) {
         assert(first_non_finite(st.value, st.name).empty());   // code constants and the finite options above
         settings[st.name] = {{"value", st.value}, {"status", st.status}, {"source", st.source}};
         if (st.status == "UNPROVEN")
@@ -535,6 +541,10 @@ json world_manifest_json(const WorldManifestInput& in) {
     // null when a stored layer value is not finite (ruling W6, warned).
     json foliageBlock = foliageOn ? finite_or_null(in.foliage, "foliage", notes) : json(nullptr);
     if (foliageBlock.is_object()) man["foliage"] = foliageBlock;
+    // unityTerrain (world-foliage spec D7): the block as given, left out when not finite (warned).
+    const json unityTerrain =
+        in.unityTerrain.is_object() ? finite_or_null(in.unityTerrain, "unityTerrain", notes) : json(nullptr);
+    if (unityTerrain.is_object()) man["unityTerrain"] = unityTerrain;
     man["water"] = finite_or_null(water_json(s), "water", notes);
 
     // sky: only the schema's keys (json, default: strings; equirect: string or null).
@@ -629,6 +639,15 @@ json world_manifest_json(const WorldManifestInput& in) {
                                     {"modelsFoliageOnly", foliageOnly},
                                     {"skipped", fgiven("skipped")},
                                     {"failedModel", fgiven("failedModel")}};
+        if (unityTerrain.is_object()) {
+            uint64_t terrainTrees = 0, detailRecords = 0;
+            for (const json& t : unityTerrain["tiles"]) {
+                if (t["trees"].is_object()) terrainTrees += t["trees"]["records"].get<uint64_t>();
+                for (const json& d : t["details"]) detailRecords += d["records"].get<uint64_t>();
+            }
+            man["counts"]["foliage"]["terrainTrees"] = terrainTrees;
+            man["counts"]["foliage"]["detailRecords"] = detailRecords;
+        }
     }
 
     std::vector<std::string> warnings = s.warnings;

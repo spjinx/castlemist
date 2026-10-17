@@ -185,6 +185,91 @@ float terrain_height_at(const Terrain& t, float x, float y, bool* inside) {
 
 namespace {
 
+/// True when the terrain's chunk grid is complete (chunk index = cy * chunksX + cx).
+bool terrain_grid_ok(const Terrain& t) {
+    return t.present && t.chunksX > 0 && t.chunksY > 0 && t.chunks.size() == (size_t)t.chunksX * t.chunksY;
+}
+
+bool chunk_heights_ok(const TerrainChunk& c) {
+    return c.samples >= 2 && c.heights.size() == (size_t)c.samples * c.samples;
+}
+
+} // namespace
+
+TerrainHeightfield terrain_heightfield(const Terrain& t, int cx0, int cy0, int blockChunks) {
+    TerrainHeightfield h;
+    h.cx0 = cx0;
+    h.cy0 = cy0;
+    h.blockChunks = blockChunks;
+    h.n = 0;
+    if (!terrain_grid_ok(t) || blockChunks < 1) return h;
+    int seg = 0;
+    for (const TerrainChunk& c : t.chunks)
+        if (chunk_heights_ok(c)) { seg = c.samples - 1; break; }
+    if (seg < 1) return h;
+    const int n = blockChunks * seg + 1;
+    h.n = n;
+
+    // The block rect: chunk (0, 0)'s size, from the map's north-west corner (§5.1).
+    const TerrainChunk& nw = t.chunks.front();
+    const float cw = nw.rect[2] - nw.rect[0], ch = nw.rect[3] - nw.rect[1];
+    h.rect[0] = nw.rect[0] + (float)cx0 * cw;
+    h.rect[3] = nw.rect[3] - (float)cy0 * ch;
+    h.rect[2] = h.rect[0] + (float)blockChunks * cw;
+    h.rect[1] = h.rect[3] - (float)blockChunks * ch;
+
+    // Global sample (I, J): I from the west edge, J from the north edge (§5.2).
+    const int maxI = seg * t.chunksX, maxJ = seg * t.chunksY;
+    const int I0 = cx0 * seg, J0 = cy0 * seg;
+    auto chunk_at = [&](int cx, int cy) -> const TerrainChunk* {
+        if (cx < 0 || cy < 0 || cx >= t.chunksX || cy >= t.chunksY) return nullptr;
+        const TerrainChunk& c = t.chunks[(size_t)cy * t.chunksX + cx];
+        return chunk_heights_ok(c) && c.samples == seg + 1 ? &c : nullptr;
+    };
+    // -z at (I, J), clamped to the grid; 0 for a chunk with no heights.
+    auto sample = [&](int I, int J) -> float {
+        I = std::clamp(I, 0, maxI);
+        J = std::clamp(J, 0, maxJ);
+        const int cx = std::min(I / seg, t.chunksX - 1), cy = std::min(J / seg, t.chunksY - 1);
+        const TerrainChunk* c = chunk_at(cx, cy);
+        if (!c) return 0.0f;
+        return -c->heights[(size_t)(J - cy * seg) * (seg + 1) + (I - cx * seg)];
+    };
+    h.up.resize((size_t)n * n);
+    for (int r = 0; r < n; ++r) {   // row 0 south: J = J0 + (n - 1) - r
+        const int J = J0 + (n - 1) - r;
+        for (int c = 0; c < n; ++c) h.up[(size_t)r * n + c] = sample(I0 + c, J);
+    }
+    const int q = n - 1;
+    h.real.assign((size_t)q * q, 0);
+    for (int r = 0; r < q; ++r) {   // quad row r spans J = Jn .. Jn + 1 with Jn its north row
+        const int Jn = J0 + (q - 1) - r;
+        for (int c = 0; c < q; ++c) {
+            const int I = I0 + c;
+            if (I < 0 || Jn < 0 || I >= maxI || Jn >= maxJ) continue;
+            if (chunk_at(I / seg, Jn / seg)) h.real[(size_t)r * q + c] = 1;
+        }
+    }
+    return h;
+}
+
+void terrain_up_range(const Terrain& t, float& hMin, float& hMax) {
+    hMin = hMax = 0;
+    bool any = false;
+    for (const TerrainChunk& c : t.chunks) {
+        if (!chunk_heights_ok(c)) continue;
+        for (float z : c.heights) {
+            if (!std::isfinite(z)) continue;
+            const float u = -z;
+            if (!any) { hMin = hMax = u; any = true; }
+            hMin = std::min(hMin, u);
+            hMax = std::max(hMax, u);
+        }
+    }
+}
+
+namespace {
+
 /// GW2 Token decode: base-23 over "abcdefghiklmnopvrstuwxy" after subtracting
 /// 0x30000000 (the rule src/extract/game_shader.cpp decode_token documents,
 /// verified there against the client). §4.1: the terrain texture tokens

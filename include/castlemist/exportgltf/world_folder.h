@@ -17,9 +17,11 @@
 ///     cache is then released (ruling W9);
 ///  3. partition_cells with those measurements;
 ///  4. the kept cells' terrain textures, on the pool;
-///  5. each cell baked (albedo, water) and written (cells/<id>.glb), with its
-///     foliage records (foliage/<id>.bin, world_foliage.h; only when it has any
-///     and opts.foliage is not Off), on the pool;
+///  5. each cell baked (albedo, water) and written (cells/<id>.glb), on the
+///     pool; then, unless opts.unityTerrain is false, the unityTerrain tiles
+///     (terrain/, world_unity_terrain.h), which set the Terrain trees' flag
+///     bit 3; then each cell's foliage records (foliage/<id>.bin,
+///     world_foliage.h; only when it has any and opts.foliage is not Off);
 ///  6. write_skybox into sky/;
 ///  7. probe.glb and the spawn (a ray down through CollisionIndex);
 ///  8. manifest.json, written last (manifest.json.tmp, then renamed).
@@ -71,8 +73,8 @@ struct WorldFolderReport {
     /// (review M2). They stay `status: failed` in the manifest.
     size_t modelsEmpty = 0;
     nlohmann::json foliage;                   ///< the manifest's counts.foliage, or null (no foliage written)
-    std::map<std::string, double> seconds;    ///< world-cells, models, terrain-textures, cells, sky, manifest
-    std::map<std::string, uint64_t> bytes;    ///< prop-textures, terrain, geometry, sky, foliage
+    std::map<std::string, double> seconds;    ///< world-cells, models, terrain-textures, cells, unity-terrain, sky, manifest
+    std::map<std::string, uint64_t> bytes;    ///< prop-textures, terrain, geometry, sky, foliage, unity-terrain
     std::vector<std::string> warnings;        ///< the manifest's warnings
 };
 
