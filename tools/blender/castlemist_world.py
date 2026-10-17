@@ -119,6 +119,15 @@ def base_name(name):
     return _SUFFIX.sub("", name)
 
 
+_LOD_SUFFIX = re.compile(r"_LOD(\d+)$")
+
+
+def lod_level(name):
+    """Task 15b: k for a world model's "<LOD0 node>_LOD<k>" object, else 0 (LOD0)."""
+    m = _LOD_SUFFIX.search(base_name(name))
+    return int(m.group(1)) if m else 0
+
+
 def empty_scene():
     bpy.ops.wm.read_factory_settings(use_empty=True)
 
@@ -878,6 +887,8 @@ class ModelEntry:
     def __init__(self, index, file_id, col, actions):
         self.index, self.file_id, self.col, self.actions = index, file_id, col, actions
         self.clip_cols = {}
+        self.lod_cols = {}      # level -> collection of its LOD meshes (Task 15b)
+        self.lod_levels = 1     # models[].lods.levels
 
 
 def clip_collection(entry, clip, models_col, warnings):
@@ -1021,7 +1032,9 @@ def import_world(export_dir, colliders=True, dark_decal=True, scale=1.0, verify=
     """Builds the scene from <export_dir>/manifest.json (spec D6 "Blender"):
       GW2 <fileId>
         Models (excluded from the view layer): <fileId> per model from its .glb,
-               baked (bake_objects), and <fileId>_<clip> per clip placed
+               baked (bake_objects), and <fileId>_<clip> per clip placed; a model's
+               "<node>_LOD<k>" meshes (Task 15b) go to "<fileId> LOD<k>", hidden
+               and never instanced, so the scene shows LOD0
         Cells/<id>: <id> Terrain, <id> Water, <id> Props (collection-instance
                empties, matrix_world = S C_b M C_b^-1, C_b = diag(1, 1, -1),
                S = scale), <id> Colliders (hidden) and <id> Foliage: one
@@ -1051,7 +1064,7 @@ def import_world(export_dir, colliders=True, dark_decal=True, scale=1.0, verify=
 
     # Models, baked once each.
     entries = {}
-    n_decal = n_scroll = 0
+    n_decal = n_scroll = n_lod = 0
     for k, m in enumerate(man.get("models") or []):
         if m.get("status") != "ok" or not m.get("glb"):
             continue
@@ -1063,8 +1076,20 @@ def import_world(export_dir, colliders=True, dark_decal=True, scale=1.0, verify=
         arms = bake_objects(alive(names), acts)
         objs = alive(names)
         col = new_collection(str(m.get("fileId")), models_col)
+        lod_cols = {}
         for o in objs:
-            move_to(o, col)
+            lv = lod_level(o.name) if o.type == 'MESH' else 0
+            if lv:
+                # Task 15b: LOD1/LOD2 meshes, one collection per level beside the model's, never
+                # instanced and hidden for render: the scene shows LOD0, as before.
+                if lv not in lod_cols:
+                    lod_cols[lv] = new_collection("%s LOD%d" % (m.get("fileId"), lv), models_col)
+                    lod_cols[lv].hide_render = True
+                    lod_cols[lv].hide_viewport = True
+                move_to(o, lod_cols[lv])
+                n_lod += 1
+            else:
+                move_to(o, col)
         for a in acts:
             a.use_fake_user = True
         for a in arms:   # the base collection stands at rest; clip copies play
@@ -1073,6 +1098,8 @@ def import_world(export_dir, colliders=True, dark_decal=True, scale=1.0, verify=
                 for t in list(a.animation_data.nla_tracks):
                     a.animation_data.nla_tracks.remove(t)
         entries[k] = ModelEntry(k, m.get("fileId"), col, {base_name(a.name): a for a in acts})
+        entries[k].lod_cols = lod_cols
+        entries[k].lod_levels = int((m.get("lods") or {}).get("levels") or 1)
         mats = materials_of(objs)
         if dark_decal:
             names = set(m.get("darkDecalMaterials") or [])
@@ -1256,12 +1283,12 @@ def import_world(export_dir, colliders=True, dark_decal=True, scale=1.0, verify=
     for e in errors:
         print("IMPORT_ERROR " + e)
     print("IMPORT models=%d cells=%d instances=%d skipped=%d foliageObjects=%d foliageRecords=%d "
-          "foliageSkipped=%d darkDecal=%d uvScroll=%d seconds=%.1f" % (
+          "foliageSkipped=%d darkDecal=%d uvScroll=%d lodObjects=%d seconds=%.1f" % (
               len(entries), len(cell_info), len(placed), skipped, len(foliage), sum(len(f[1]) for f in foliage),
-              fol_skipped, n_decal, n_scroll, time.time() - t0))
+              fol_skipped, n_decal, n_scroll, n_lod, time.time() - t0))
     if not verify:
         return not errors
-    return verify_world(man, placed, cell_info, probe_result, colliders, S, foliage, errors)
+    return verify_world(man, placed, cell_info, probe_result, colliders, S, foliage, errors, entries)
 
 
 def verify_foliage(foliage, S, fails):
@@ -1321,7 +1348,31 @@ def verify_foliage(foliage, S, fails):
         fails.append("foliage matrix error rot=%.3g t=%.3g" % (err_r, err_t))
 
 
-def verify_world(man, placed, cell_info, probe_result, colliders, S, foliage=(), errors=()):
+def verify_lods(entries, fails):
+    """Task 15b: every model with lods.levels > 1 has its LOD meshes in hidden per-level collections, none of
+    them in a collection that is instanced (the model's own or a clip copy), and no level >= levels."""
+    models = objects = 0
+    hidden = True
+    for e in (entries or {}).values():
+        n = sum(len(c.objects) for c in e.lod_cols.values())
+        if e.lod_levels > 1:
+            models += 1
+            if n == 0:
+                fails.append("model %s: lods.levels %d but no LOD meshes" % (e.file_id, e.lod_levels))
+        objects += n
+        for k, c in e.lod_cols.items():
+            if k >= e.lod_levels:
+                fails.append("model %s: LOD%d mesh beyond lods.levels %d" % (e.file_id, k, e.lod_levels))
+            hidden = hidden and c.hide_render
+        for c in [e.col] + list(e.clip_cols.values()):
+            if any(lod_level(o.name) for o in c.objects if o.type == 'MESH'):
+                fails.append("model %s: a LOD mesh in an instanced collection" % e.file_id)
+    print("LODS models=%d objects=%d hidden=%d" % (models, objects, 1 if hidden else 0))
+    if not hidden:
+        fails.append("LOD collections render")
+
+
+def verify_world(man, placed, cell_info, probe_result, colliders, S, foliage=(), errors=(), entries=None):
     """The headless checks of spec "Testing" (Blender). The instance matrices are
     checked against the manifest's other form of each placement, its Unity TRS
     under the cell origin (t, r, s; map_to_unity frame): S T(C_b origin) P U P,
@@ -1378,6 +1429,7 @@ def verify_world(man, placed, cell_info, probe_result, colliders, S, foliage=(),
     if len(cols) != want_c:
         fails.append("colliders %d != %d" % (len(cols), want_c))
     verify_foliage(foliage, S[0][0], fails)
+    verify_lods(entries, fails)
     fails.extend(errors)
     print("VERIFY OK" if not fails else "VERIFY FAIL " + "; ".join(fails))
     return not fails
