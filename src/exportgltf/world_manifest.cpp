@@ -4,6 +4,7 @@
 ///        "manifest.json (version 1)", D3, D5, D7).
 
 #include "castlemist/exportgltf/world_manifest.h"
+#include "castlemist/exportgltf/world_lods.h"
 
 #include "castlemist/exportgltf/world_cell.h"
 #include "castlemist/exportgltf/world_export.h"
@@ -134,6 +135,7 @@ json model_json(const ManifestModel& m, std::vector<std::string>& warnings) {
               {"darkDecalMaterials", m.darkDecalMaterials},
               {"uvScroll", uv_scroll_json(m, warnings)},
               {"status", m.ok ? "ok" : "failed"}};
+    if (m.lods.is_object()) j["lods"] = m.lods;
     if (!m.ok || !m.error.empty()) j["error"] = m.error;
     return j;
 }
@@ -275,6 +277,17 @@ std::vector<ManifestSetting> world_export_settings(const WorldFolderOptions& o, 
         {"ambient", "fillColor * min(fillIntensity, 1)", kC, "spec D5 (raw intensities, flat ambient)"},
         {"unityAxisConversion", "ModelImporter.bakeAxisConversion = true: east +X, north +Z, up +Y", kM,
          "frame probe on Unity 6000.0.42f1 (world export Task 1) and 2022.3.22f1 (Task 12); bake off fails it, on passes"},
+        {"lodDistances",
+         "models[].lods.distances = lodOverride[k] when > 0 (clamped to 100000), else 3500 / 7500; instances[].lod = "
+         "prp2 lod1 / lod2 when flag bit 16 (OVERRIDE_LOD) is set and they are not both 0 (negatives 0, clamped)",
+         kM, "docs/research/gw2-model-lods.md amendment 2026-10-17: static disassembly of Gw2-64.exe (0x140cf8184, 0x140cf7b50, 0x140cb3f05, 0x140cfa0e0)"},
+        {"lodDistanceScale", "switch at distance x the instance's largest axis scale x a client global (1.0 at start)",
+         kU, "docs/research/gw2-model-lods.md amendment 2026-10-17: Gw2-64.exe 0x140cf9010; the global (.data 0x1425927f8) may be a quality setting, its runtime "
+             "value is not read; the client's 75-unit hysteresis has no Unity counterpart"},
+        {"lodMissingLevel", "a mesh without its own LOD1 / LOD2 repeats its coarser level", kU,
+         "docs/research/gw2-model-lods.md amendment 2026-10-17; the map renderer's flatten does the same, whether the client hides the mesh is not traced"},
+        {"lodPropCullHeight", 0, kC,
+         "docs/research/gw2-model-lods.md amendment 2026-10-17: a prop's LODGroup never culls (props were never culled before); GW2's prop fade distance is not traced"},
         {"skyApproximate", o.skyApproximate, o.skyApproximate ? kU : kC,
          o.skyApproximate ? "docs/research/gw2-sky.md amendment 2026-10-17: haze, sun glow, haze-dominated and "
                             "material cards and clouds baked with the labelled inputs in sky/sky.json approxInputs"
@@ -514,6 +527,9 @@ json world_manifest_json(const WorldManifestInput& in) {
                                  {"m", vec(p.world, 16)},
                                  {"unity", {{"t", vec(u.t, 3)}, {"r", vec(u.r, 4)}, {"s", u.s}}},
                                  {"clip", str_or_null(clip)}});
+            // Task 15b: the placement's own LOD distances (OVERRIDE_LOD), model units.
+            float lod[2];
+            if (prop_lod_override(p.lod1, p.lod2, p.flags, lod)) instances.back()["lod"] = {lod[0], lod[1]};
             ++written;
         }
         json foliage = nullptr;

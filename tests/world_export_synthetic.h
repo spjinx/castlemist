@@ -73,10 +73,16 @@ inline ModelPreview static_cube() {
         }
         for (uint32_t i : {0u, 1u, 2u, 0u, 2u, 3u}) mesh.indices.push_back(base + i);
     }
+    // Task 15b: LOD1 = the first four faces (8 triangles), LOD2 = the first two (4).
+    mesh.lodIndices = {std::vector<uint32_t>(mesh.indices.begin(), mesh.indices.begin() + 24),
+                       std::vector<uint32_t>(mesh.indices.begin(), mesh.indices.begin() + 12)};
     mesh.vertexCount = static_cast<uint32_t>(mesh.vertices.size());
     mesh.hasTangents = true;
     mesh.materialIndex = 0;
     mp.meshes.push_back(mesh);
+    mp.hasLodOverride = true;
+    mp.lodOverride[0] = 1500;   // LOD1 from the file; LOD2 0: the client's 7500
+    mp.lodOverride[1] = 0;
 
     ModelTextureCPU tex;   // header-only, as ModelLoadOptions{.., decodeTextures = false}
     tex.fileId = 42;
@@ -292,6 +298,8 @@ inline castlemist::world::WorldScene synthetic_world() {
         p.scale = 1.5f + 0.5f * float(k);
         p.group = k < 3 ? "propArray" : "propAnimArray";
         if (k == 3) p.animSequence = kSynClipToken;
+        if (k == 1) { p.flags = 1u << 16; p.lod1 = 1000; p.lod2 = 2000; }   // OVERRIDE_LOD (Task 15b)
+        if (k == 2) { p.flags = 0; p.lod1 = 900; p.lod2 = 1800; }          // stored, but no OVERRIDE_LOD
         s.props.push_back(p);
     }
 

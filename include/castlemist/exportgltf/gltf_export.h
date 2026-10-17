@@ -116,6 +116,13 @@ struct GltfExportOptions {
     std::shared_ptr<SharedImagePool> sharedImages;
     /// @brief The pool folder relative to the .glb, e.g. "../../textures/".
     std::string sharedImageUriPrefix;
+
+    /// @brief World export only (Task 15b): every mesh's own LOD1/LOD2 index sets
+    ///        (ModelMeshCPU::lodIndices, at most world_lods.h kMaxLodLevels levels)
+    ///        are written as extra meshes sharing the LOD0 vertex accessors, on nodes
+    ///        named "<LOD0 node name>_LOD<k>" after the LOD0 nodes. False (the
+    ///        default) writes LOD0 only, byte for byte as before.
+    bool exportLods = false;
 };
 
 /// @brief Result of one export call.
