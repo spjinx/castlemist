@@ -174,7 +174,7 @@ int InstancedBatch::cull_into(const std::vector<InstCPU>& insts, const std::vect
             buckets_.push_back(std::move(nb));
         }
         Bucket& bk = buckets_[static_cast<size_t>(*slot)];
-        bk.worlds.push_back(&in.world);
+        bk.worlds.push_back(in.world.m);
         bk.nearD2 = std::min(bk.nearD2, d2);
         ++visible;
     }
@@ -215,10 +215,9 @@ bool InstancedBatch::upload(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
     uint32_t off = 0;
     for (size_t b = 0; b < buckets_.size(); ++b) {
         first_[b] = off;
-        for (const Mat4* w : buckets_[b].worlds) {
+        for (const float* m : buckets_[b].worlds) {
             // Column c of the row-vector W (W[r][c] = m[r*4+c]), so that
             // world_c = dot((p,1), column c) -- the fly view's pack_inst.
-            const float* m = w->m;
             InstGPU& o = dst[off++];
             float* cols[3] = {o.r0, o.r1, o.r2};
             for (int c = 0; c < 3; ++c)
@@ -432,13 +431,13 @@ int InstancedBatch::draw_materials(ID3D11DeviceContext* ctx, const PropMatPipeli
 }
 
 int FoliageBatch::cull_into(const std::vector<FoliageVisible>& vis, const FoliageGrid& g,
-                            const std::vector<Mat4>& worlds, const std::vector<uint32_t>& meshOf,
                             const std::vector<MeshGPU>& meshes, const WorldCamera& cam) {
+    const std::vector<uint32_t>& meshOf = g.mesh;
     bucketOf_.assign(meshes.size() * 4, -1);
     int n = 0;
     for (const FoliageVisible& v : vis) {
         const uint32_t i = v.instance;
-        if (i >= worlds.size() || i >= meshOf.size() || static_cast<size_t>(i) * 4 + 3 >= g.sphere.size()) continue;
+        if (static_cast<size_t>(i) * 16 + 15 >= g.world.size() || i >= meshOf.size() || static_cast<size_t>(i) * 4 + 3 >= g.sphere.size()) continue;
         const uint32_t mi = meshOf[i];
         if (mi >= meshes.size() || !meshes[mi].ok) continue;
         const MeshGPU& m = meshes[mi];
@@ -454,7 +453,7 @@ int FoliageBatch::cull_into(const std::vector<FoliageVisible>& vis, const Foliag
             buckets_.push_back(std::move(nb));
         }
         Bucket& bk = buckets_[static_cast<size_t>(slot)];
-        bk.worlds.push_back(&worlds[i]);
+        bk.worlds.push_back(&g.world[static_cast<size_t>(i) * 16]);
         bk.fade.push_back(v.fade);
         bk.nearD2 = std::min(bk.nearD2, d2);
         ++n;
@@ -476,7 +475,7 @@ bool FoliageBatch::upload(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
         first_[b] = off;
         const Bucket& bk = buckets_[b];
         for (size_t k = 0; k < bk.worlds.size(); ++k) {
-            const float* m = bk.worlds[k]->m;   // columns of the row-vector W, as InstancedBatch::upload
+            const float* m = bk.worlds[k];   // columns of the row-vector W, as InstancedBatch::upload
             FoliageInstGPU& o = dst[off++];
             float* cols[3] = {o.r0, o.r1, o.r2};
             for (int c = 0; c < 3; ++c)

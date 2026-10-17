@@ -185,7 +185,7 @@ protected:
         int lod;
         const float* tint;   ///< props: the AO look's albedo; null for foliage
         float alpha;
-        std::vector<const Mat4*> worlds;   ///< each instance's row-vector world
+        std::vector<const float*> worlds;  ///< each instance's row-vector world (16 floats, Mat4::m layout)
         std::vector<float> fade;           ///< FoliageBatch only: per instance, aligned with worlds
         float nearD2;   ///< squared distance of the nearest instance's centre
         int clip = -1;               ///< skinned buckets: the clip; -1 static
@@ -225,12 +225,12 @@ static_assert(sizeof(FoliageInstGPU) == 64, "the foliage input layout hardcodes 
 class FoliageBatch : public InstancedBatch {
 public:
     /// Buckets the survivors of foliage_cull by (mesh, LOD), the LOD by
-    /// screen size as the props' rule. @p worlds and @p meshOf are per zone
-    /// instance (the view's CPU copy); @p centre and radius come from the
-    /// grid's spheres. An instance whose mesh is not uploaded is skipped.
+    /// screen size as the props' rule. The world and mesh of each instance
+    /// are the grid's draw data (`world`, `mesh`); the centre and radius its
+    /// spheres. An instance whose mesh is not uploaded is skipped.
     /// Returns how many were bucketed.
-    int cull_into(const std::vector<FoliageVisible>& vis, const FoliageGrid& g, const std::vector<Mat4>& worlds,
-                  const std::vector<uint32_t>& meshOf, const std::vector<MeshGPU>& meshes, const WorldCamera& cam);
+    int cull_into(const std::vector<FoliageVisible>& vis, const FoliageGrid& g, const std::vector<MeshGPU>& meshes,
+                  const WorldCamera& cam);
     /// Writes every bucketed instance (FoliageInstGPU) in one Map. False with
     /// nothing to draw or on failure.
     bool upload(ID3D11Device* dev, ID3D11DeviceContext* ctx);

@@ -69,6 +69,11 @@ uint32_t zone_runtime_flags(uint32_t packFlags);
 /// The tiling count bound T for a layer's `tiling` at @p quality (0x140cbc0d0).
 uint32_t zone_tiling_max(uint8_t tiling, int quality);
 
+/// The client's factor on a layer's `fadeRange` at graphics quality @p quality:
+/// {0.85, 1, 1.5, 2}[quality] (0x140cbc0b0 / 0x140cbc090, docs/research/gw2-terrain-to-unity.md
+/// §1.3 table); 1 out of range. At the quality in force (2) it is 1.5.
+float zone_fade_quality_scale(int quality);
+
 /// collideData index of every placement of zone @p zone (0x140cc23c0): offsetData[chunk] for its
 /// 32 x 32-vertex chunk plus its order among the chunk's non-empty cells, rows then columns.
 /// Indexed by placement - firstPlacement; UINT32_MAX where the chunk has no offsetData entry.

@@ -1175,3 +1175,62 @@ shared with a prop.
 5. **Phase 2 fallback.** If neither the static code nor a data fit gives a
    rule that reproduces the colliders, ship `densityMatched`, labelled UNPROVEN. Default:
    yes, rather than stop at phase 1.
+
+## Amendments (after implementation)
+
+### 2026-10-16, Task 11: Map Window budgets at full density (Queensdale)
+
+**Inputs.** Queensdale 192711 holds 369 184 zone instances (4 381 Collider,
+364 803 exact Scatter; 369 061 placed, the rest are of the one model without a
+mesh), not the ~217 k / ~250 k estimated above: the tiling path at graphics
+quality 2 makes about 1.5 instances per type-1/2 cell (Task 10).
+
+**What changed.**
+
+- **set_world.** The per-instance work it still did (each instance's
+  row-vector matrix, its model and the counting sort by model) moved into
+  `build_foliage_grid` on the world worker: `FoliageGrid` gains `world`,
+  `mesh`, `models`, `modelStart` / `byModel` and `colliders`. `set_world` only
+  takes the grid over (a grid that does not match the scene is still rebuilt
+  there). Measured in release, the foliage part of `set_world` is now under
+  0.05 ms; the rest is the terrain chunk upload (about 30 ms), the props
+  (about 1 ms), the collision copy (about 1.5 ms) and the water height grid
+  (about 2 ms).
+- **Fade at graphics quality 2.** The client multiplies every layer's
+  `fadeRange` by {0.85, 1, 1.5, 2}[quality] (research §1.3). The Map Window
+  now applies the factor for the quality in force (2, as `zoneGraphicsQuality`):
+  the cull's distance scale is `foliageDistanceScale` × 1.5
+  (`castlemist::world::zone_fade_quality_scale`,
+  `WorldView::foliage_fade_quality_scale`, `foliageFadeQuality` on the
+  headless stats line). The manifest gains the setting `zoneFadeQualityScale`
+  (1.5, UNPROVEN as `zoneFade` is). The export's `fadeRange` and `fadeFar`
+  values stay the stored ones; applying the factor in the importers is left
+  open.
+- **Headless.** `GW2_MAPWIN_FOCUS=foliage` stands 150 units above the ground
+  in the tile at the 90th percentile of placed zone instances, looking 8°
+  down along the densest of eight headings (`foliage_focus_view`);
+  `foliagemax` takes the densest tile and `forest` the densest tile of
+  Collider instances. `GW2_MAPWIN_FOLIAGE_SCALE` sets `foliageDistanceScale`.
+
+**Measured** (release build `build/release`, `GW2_MAPWIN_SHADING=materials`,
+time 0, 30 bench frames, two runs each, NVIDIA GeForce RTX 4090; all-against-off
+is the same run's `bench_nofoliage_*` re-bench):
+
+| item | target | measured |
+|---|---|---|
+| `set_world`, UI thread | < 50 ms | 32.5-41.4 ms with Foliage All, 33.6-48.2 ms with it off (14 runs; base 8a7c177: 38.6-55.8 ms) |
+| `add_ms_max` | < 50 ms | 7.9-34.1 ms |
+| `foliageCullMs` at the p90 view (`foliage`) | ≤ 2 ms | 0.22-0.44 ms (densest: 0.29-0.34; forest: 0.22-0.38) |
+| whole-frame CPU, All against off, bench median | ≤ +3 ms | p90 view +0.11 / +0.44 ms; densest +0.21 / +0.15; forest +0.11 / +0.71; props +0.10 / +0.13 |
+| foliage GPU, bench median | ≤ 4 ms | p90 view +0.02 / +0.05 ms; densest +0.03; forest +0.02 / +0.07 |
+| `foliageVisible` | ≤ 20 000 | p90 view 4 019 (90 tiles); densest 3 999; forest 3 036; `foliageCapped` 0 in every run |
+| peak private memory (sampled every 250 ms) | (about 17 MB for instances and grid) | 1 975-2 026 MB for the whole process, unchanged from Task 10's ~2.0 GB; the grid's draw data is the matrices the view held before (23.6 MB) |
+
+The whole-map views draw no foliage (everything is past its fade range); their
+all-against-off figures are noise. **Budgets held; no lever taken** (tile size
+1536, cap 20 000, per-frame stream).
+
+**Look** (shots `foliage`, `forest` with fade ×1 and ×1.5): grass, flowers and
+plants stand on the terrain, none floating or buried; tree trunks reach the
+ground; with ×1.5 more grass shows on the far slopes and more trees on the
+horizon.

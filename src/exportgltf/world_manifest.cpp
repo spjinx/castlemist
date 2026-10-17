@@ -11,6 +11,7 @@
 #include "castlemist/world/frame.h"
 #include "castlemist/world/surface_rules.h"
 #include "castlemist/world/terrain_bake.h"
+#include "castlemist/world/zone_scatter.h"
 #include "long_path.h"
 
 #include <algorithm>
@@ -340,6 +341,9 @@ std::vector<ManifestSetting> world_export_settings(const WorldFolderOptions& o, 
         {"zoneProbability", "applied offline (not re-applied)", kU, F + "D5"},
         {"zoneTint", "hslRanges / hslOffset not applied", kC, F + "D11"},
         {"zoneFade", "fadeRange = camera distance, map units", kU, F + "D6"},
+        {"zoneFadeQualityScale", cw::zone_fade_quality_scale(cw::zone_scatter_rule_in_force().graphicsQuality), kU,
+         R + "the client's fadeRange x {0.85, 1, 1.5, 2}[quality] at the quality of zoneGraphicsQuality (2); the Map "
+             "Window applies it, the layers' fadeRange and the models' fadeFar here are the stored values"},
         {"zoneLayerTypeTarget", "1-2 detail, 3 tree", kC,
          F + "D11, from measured sizes (docs/research/gw2-terrain-to-unity.md \xc2\xa7" "1.3)"},
         {"foliageWind", "none", kC, F + "D10"},

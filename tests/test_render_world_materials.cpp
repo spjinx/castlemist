@@ -1191,7 +1191,8 @@ CM_TEST(world_materials, textured_foliage_draws_and_dithers) {
     const std::string full = temp_path("cm_wm_foliage_full.bmp");
     CHECK(v.save_screenshot(full.c_str()));
 
-    // fade 0.5: the range [d - 500, d + 500].
+    // fade 0.5: the range [d - 500, d + 500], with the quality factor undone.
+    v.set_foliage_distance_scale(1.0f / v.foliage_fade_quality_scale());
     v.set_world(zone_cube_scene(d - 500, d + 500));
     v.add_models({{0u, split_cube()}});
     v.add_textures(cube_textures());

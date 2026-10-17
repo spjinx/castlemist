@@ -245,8 +245,13 @@ public:
     /// @brief Which zone instances the Foliage layer draws (Colliders after create()).
     void set_foliage_show(FoliageShow s);
     /// @brief `foliageDistanceScale` (1 after create(); <= 0 or non-finite
-    ///        reads as 1): every fade range is multiplied by it.
+    ///        reads as 1): every fade range is multiplied by it (and by
+    ///        foliage_fade_quality_scale()).
     void set_foliage_distance_scale(float scale);
+    /// @brief The client's factor on every layer's fadeRange at the graphics
+    ///        quality in force (2): 1.5 (castlemist::world::zone_fade_quality_scale).
+    ///        The cull's distance scale is foliageDistanceScale times it.
+    float foliage_fade_quality_scale() const;
     /// @brief Verification hook (spec D6 "Headless"): moves @p cam to frame
     ///        the placed Collider instance whose world sphere centre is
     ///        nearest @p cam's position, from 4x its radius back along @p
@@ -256,6 +261,12 @@ public:
     ///        off the surface) to @p rect. False, @p cam and the layers
     ///        untouched, when no Collider instance is placed.
     bool focus_zone_tree(WorldCamera& cam, int rect[4]);
+    /// @brief Verification hook (GW2_MAPWIN_FOCUS=foliage / foliagemax /
+    ///        forest): moves @p cam to foliage_focus_view's ground-level view
+    ///        of the tile at @p quantile of placed density (of Collider
+    ///        instances only with @p collidersOnly; up kept level). False,
+    ///        @p cam untouched, when nothing that counts is placed.
+    bool focus_foliage(WorldCamera& cam, float quantile, bool collidersOnly = false) const;
 
     /// @brief Geometry, Materials or Shader (Materials after create()); takes effect next frame.
     void set_shading(WorldShading s);

@@ -91,6 +91,14 @@ struct MapWinHeadless {
     /// the start camera (WorldView::focus_zone_tree), Collision on, and log
     /// its screen rect as `treeRect`.
     bool focusZoneTree = false;
+    /// GW2_MAPWIN_FOCUS=foliage (0.9) / foliagemax (1) / forest (1, Collider
+    /// instances only): a ground-level view into the foliage tile at that
+    /// quantile of placed density (WorldView::focus_foliage); < 0 = not asked.
+    float focusFoliage = -1;
+    bool focusForest = false;
+    /// GW2_MAPWIN_FOLIAGE_SCALE: WorldView::set_foliage_distance_scale (the
+    /// `foliageDistanceScale` view setting); <= 0 = unset (1).
+    float foliageScale = 0;
 };
 
 /// @brief GW2_MAPWIN_FOLIAGE's value (any case): "off" -> 0, "colliders" -> 1,

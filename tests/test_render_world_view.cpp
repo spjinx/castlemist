@@ -932,6 +932,88 @@ CM_TEST(foliage_grid, aabb_from_spheres) {
     CHECK_EQ(g.sphere[3], 3.0f);
 }
 
+CM_TEST(foliage_grid, draw_data_by_model) {
+    // The draw data is built with the grid (on the worker): per instance its
+    // row-vector world (the scene's column-major bytes) and model, UINT32_MAX
+    // when it is never drawn; the instances by model (a counting sort); the
+    // Collider count.
+    auto s = foliage_scene();
+    s.models.push_back({4322});
+    add_zone(s, 10, 10, 0);                                            // 0: model 0, Collider
+    add_zone(s, 20, 10, 0, castlemist::world::ZoneSource::Scatter);    // 1: model 1
+    add_zone(s, 30, 10, 0, castlemist::world::ZoneSource::Scatter);    // 2: model 0
+    add_zone(s, 40, 10, 0, castlemist::world::ZoneSource::Scatter);    // 3: non-finite
+    add_zone(s, 50, 10, 0, castlemist::world::ZoneSource::Scatter);    // 4: model out of range
+    add_zone(s, 60, 10, 0, castlemist::world::ZoneSource::Scatter);    // 5: model 1
+    s.zones.instances[1].model = 1;
+    s.zones.instances[5].model = 1;
+    s.zones.instances[3].world[7] = std::nanf("");
+    s.zones.instances[4].model = 2;
+    const FoliageGrid g = build_foliage_grid(s);
+    CHECK_EQ(g.mesh.size(), size_t(6));
+    CHECK_EQ(g.mesh[0], 0u);
+    CHECK_EQ(g.mesh[1], 1u);
+    CHECK_EQ(g.mesh[2], 0u);
+    CHECK_EQ(g.mesh[3], UINT32_MAX);
+    CHECK_EQ(g.mesh[4], UINT32_MAX);
+    CHECK_EQ(g.mesh[5], 1u);
+    CHECK_EQ(g.world.size(), size_t(6 * 16));
+    CHECK_EQ(std::memcmp(&g.world[5 * 16], s.zones.instances[5].world, 64), 0);
+    CHECK_EQ(g.world[2 * 16 + 12], 30.0f);
+    CHECK_EQ(g.modelStart.size(), size_t(3));
+    CHECK_EQ(g.modelStart[0], 0u);
+    CHECK_EQ(g.modelStart[1], 2u);
+    CHECK_EQ(g.modelStart[2], 4u);
+    CHECK_EQ(g.byModel.size(), size_t(4));
+    CHECK_EQ(g.byModel[0], 0u);
+    CHECK_EQ(g.byModel[1], 2u);
+    CHECK_EQ(g.byModel[2], 1u);
+    CHECK_EQ(g.byModel[3], 5u);
+    CHECK_EQ(g.colliders, 1u);
+    CHECK_EQ(g.models, 2u);
+}
+
+CM_TEST(foliage_grid, focus_view_by_density) {
+    // Tile 0 holds four placed instances, tile 5 (1536..3072 squared) one;
+    // tile 2's instance is never placed.
+    auto s = foliage_scene();
+    add_zone(s, 100, 100, -40);
+    add_zone(s, 600, 120, -60);
+    add_zone(s, 900, 80, -70);
+    add_zone(s, 50, 150, -40);
+    add_zone(s, 2000, 2000, -10);
+    add_zone(s, 3200, 10, 0);
+    FoliageGrid g = build_foliage_grid(s);
+    for (uint32_t i = 0; i < 5; ++i) foliage_set_sphere(g, i, s.zones.instances[i].world + 12, 5);
+    float pos[3] = {7, 7, 7}, fwd[3] = {7, 7, 7};
+    CHECK(foliage_focus_view(g, 1.0f, false, pos, fwd));
+    // The mean is (412.5, 112.5): (600, 120) is the nearest; two of the rest lie west of it,
+    // one east and one north-east.
+    CHECK_EQ(pos[0], 600.0f);
+    CHECK_EQ(pos[1], 120.0f);
+    CHECK_EQ(pos[2], -60.0f - kFoliageFocusEye);
+    CHECK(fwd[0] < -0.9f);
+    CHECK(fwd[2] > 0.0f);   // below the horizon (+Z is down)
+    CHECK_NEAR(fwd[0] * fwd[0] + fwd[1] * fwd[1] + fwd[2] * fwd[2], 1.0f, 1e-5f);
+    CHECK(foliage_focus_view(g, 0.0f, false, pos, fwd));
+    CHECK_EQ(pos[0], 2000.0f);
+    CHECK_EQ(pos[1], 2000.0f);
+    // Nothing placed: false, untouched.
+    FoliageGrid none = build_foliage_grid(s);
+    pos[0] = 7;
+    CHECK_FALSE(foliage_focus_view(none, 0.9f, false, pos, fwd));
+    CHECK_EQ(pos[0], 7.0f);
+    // Colliders only: add_zone's default source is Collider, so make all but
+    // the tile-5 instance Scatter; the densest collider tile is then tile 5.
+    for (uint32_t i = 0; i < 4; ++i) g.collider[i] = 0;
+    CHECK(foliage_focus_view(g, 1.0f, true, pos, fwd));
+    CHECK_EQ(pos[0], 2000.0f);
+    for (uint32_t i = 0; i < 5; ++i) g.collider[i] = 0;
+    pos[0] = 7;
+    CHECK_FALSE(foliage_focus_view(g, 1.0f, true, pos, fwd));
+    CHECK_EQ(pos[0], 7.0f);
+}
+
 CM_TEST(foliage_grid, far_tile_culled) {
     auto s = foliage_scene();
     add_zone(s, 10, 10, 0);
@@ -1149,9 +1231,16 @@ CM_TEST(world_view, foliage_draws_zone_instances) {
     v.render(cam);
     CHECK_EQ(v.stats().foliageVisible, 0);
     // Half faded: the collider 1500 units away with [50000, 60000] x 1500/55000
-    // = [1363.6, 1636.4] has fade 0.5, so the screen door drops about half its pixels.
+    // (with the quality 1.5) = [1363.6, 1636.4] has fade 0.5, so the screen door drops about half its pixels.
+    // The fade ranges are also scaled by the client's factor at graphics
+    // quality 2 (zone_fade_quality_scale, 1.5): 0.025 x 1.5 x [50000, 60000]
+    // = [1875, 2250] keeps the collider 1500 units away, 0.025 alone would not.
+    CHECK_EQ(v.foliage_fade_quality_scale(), 1.5f);
     v.set_foliage_show(FoliageShow::Colliders);
-    v.set_foliage_distance_scale(1500.0f / 55000.0f);
+    v.set_foliage_distance_scale(0.025f);
+    v.render(cam);
+    CHECK_EQ(v.stats().foliageVisible, 1);
+    v.set_foliage_distance_scale(1500.0f / 55000.0f / 1.5f);
     v.render(cam);
     CHECK_EQ(v.stats().foliageVisible, 1);
     const std::string halfPath = std::string(tmp) + "cm_world_view_foliage_half.bmp";
@@ -1180,6 +1269,16 @@ CM_TEST(world_view, foliage_draws_zone_instances) {
     down.fwd[0] = 0; down.fwd[1] = 0; down.fwd[2] = 1;
     down.up[0] = 1; down.up[1] = 0; down.up[2] = 0;
     CHECK_EQ(v.pick(160, 120, down), -1);
+
+    // focus_foliage: one tile holds both; the first of the two nearest the
+    // mean, 150 above it, looking east at the other.
+    WorldCamera ff = cam;
+    CHECK(v.focus_foliage(ff, 0.9f));
+    CHECK_EQ(ff.pos[0], 3300.0f);
+    CHECK_EQ(ff.pos[1], 3000.0f);
+    CHECK_EQ(ff.pos[2], -650.0f);
+    CHECK(ff.fwd[0] > 0.9f);
+    CHECK(ff.up[2] < 0.0f);   // up is -Z
 
     // focus_zone_tree: the Collider instance nearest the camera, from 4x its
     // radius, with the Collision layer on and its screen rect.

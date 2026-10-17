@@ -617,6 +617,7 @@ void headless_capture(MapWin& m) {
         castlemist::render::WorldCamera cam = m.view.frame_all(&hint);
         if (m.headless->focusAnimated) m.view.focus_animated(cam);
         if (m.headless->focusProps) m.view.focus_props(cam);
+        if (m.headless->focusFoliage >= 0) m.view.focus_foliage(cam, m.headless->focusFoliage, m.headless->focusForest);
         if (m.headless->focusZoneTree && focus_zone_tree_shot(m.view, m.coll.get(), cam, treeRect))
             SendMessageW(m.bColl, BM_SETCHECK, BST_CHECKED, 0);   // focus_zone_tree turned the layer on
         set_camera(m, cam);
@@ -687,13 +688,13 @@ void headless_capture(MapWin& m) {
     std::snprintf(fol, sizeof fol,
                   "foliageInstances=%d foliagePlaced=%d foliageVisible=%d foliageDraws=%d foliageKtris=%d "
                   "foliageTiles=%d foliageCapped=%d foliageCullMs=%.2f zoneTrees=%d zoneUnlinked=%d shaderFoliage=%d "
-                  "treeRect=%d,%d,%d,%d foliage=%s set_world_ms=%.2f foliage_grid_s=%.3f "
+                  "treeRect=%d,%d,%d,%d foliage=%s foliageFadeQuality=%.2f set_world_ms=%.2f foliage_grid_s=%.3f "
                   "bench_nofoliage_cpu_ms=%.2f/%.2f bench_nofoliage_gpu_ms=%.2f/%.2f ",
                   st.foliageInstances, st.foliagePlaced, st.foliageVisible, st.foliageDraws, st.foliageKtris,
                   st.foliageTiles, st.foliageCapped, st.foliageCullMs, st.zoneTrees, st.zoneUnlinked, st.shaderFoliage,
                   treeRect[0], treeRect[1], treeRect[2], treeRect[3],
                   !m.foliageOn ? "off" : m.foliageShow == castlemist::render::FoliageShow::All ? "all" : "colliders",
-                  m.setWorldMs, m.foliageGridSeconds, benchedNoFol ? benchNoFol.cpuMedian : 0.0f,
+                  m.view.foliage_fade_quality_scale(), m.setWorldMs, m.foliageGridSeconds, benchedNoFol ? benchNoFol.cpuMedian : 0.0f,
                   benchedNoFol ? benchNoFol.cpuMax : 0.0f, benchedNoFol ? benchNoFol.gpuMedian : 0.0f,
                   benchedNoFol ? benchNoFol.gpuMax : 0.0f);
     char line[5120];
@@ -1337,6 +1338,8 @@ void open_map_window(HWND owner, uint32_t mapFileId, const MapWinHeadless* headl
     layout(*m);
 
     m->viewOk = m->view.create(m->surface);
+    if (m->viewOk && m->headless && m->headless->foliageScale > 0)
+        m->view.set_foliage_distance_scale(m->headless->foliageScale);
     if (!m->viewOk) {
         if (!m->headless)
             MessageBoxW(owner, L"Could not create a Direct3D 11 device for the Map window.", L"Map Window", MB_ICONERROR);

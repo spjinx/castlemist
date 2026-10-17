@@ -565,6 +565,14 @@ CM_TEST(scatter, runtime_flags_and_tiling_bound) {
     CHECK_EQ(zone_tiling_max(3, 0), 2u);
     CHECK_EQ(zone_tiling_max(3, 1), 3u);
     CHECK_EQ(zone_tiling_max(1, 0), 1u);
+    // fadeRange x {0.85, 1, 1.5, 2}[quality] (research §1.3); out of range: 1
+    CHECK_EQ(zone_fade_quality_scale(0), 0.85f);
+    CHECK_EQ(zone_fade_quality_scale(1), 1.0f);
+    CHECK_EQ(zone_fade_quality_scale(2), 1.5f);
+    CHECK_EQ(zone_fade_quality_scale(3), 2.0f);
+    CHECK_EQ(zone_fade_quality_scale(-1), 1.0f);
+    CHECK_EQ(zone_fade_quality_scale(4), 1.0f);
+    CHECK_EQ(zone_fade_quality_scale(zone_scatter_rule_in_force().graphicsQuality), 1.5f);
     // the seed: (seed << 8) ^ T[...] ^ (((4 ly) ^ lx) << 14); T[0] = 0x35A9260D (0x142592280)
     CHECK_EQ(zone_cell_seed(0, 0, 0, 10), 0x35A9260Du);
     CHECK_EQ(zone_cell_seed(1, 0, 0, 10), 0x35A9260Du ^ 0x100u);

@@ -59,12 +59,23 @@ struct FoliageGrid {
     std::vector<float> fadeNear, fadeFar;
     std::vector<float> sphere;         ///< 4 per instance (cx, cy, cz, r); r < 0 until its model arrives
     std::vector<uint8_t> collider;     ///< per instance: 1 when its source is ZoneSource::Collider
+    uint32_t colliders = 0;            ///< how many instances have collider == 1
+
+    // The draw data, built here (on the worker) so WorldView::set_world only
+    // takes it over (spec Performance: set_world < 50 ms at full density).
+    /// 16 per instance: its row-vector world, the scene's column-major bytes
+    /// as they are (colmajor_to_rowvec is the same bytes).
+    std::vector<float> world;
+    std::vector<uint32_t> mesh;        ///< per instance: its model; UINT32_MAX = never drawn (bad model or matrix)
+    uint32_t models = 0;               ///< the scene's model count the draw data was built for
+    /// Model m's drawable instances, ascending: byModel[modelStart[m] .. modelStart[m + 1]).
+    std::vector<uint32_t> modelStart, byModel;
 };
 
 /// @brief Builds the grid over @p s.zones.instances, tiles of @p tileUnits
 ///        (<= 0: kFoliageTileUnits) over `s.bounds` (no bounds: over the
-///        instances' translations). Every sphere starts unset (r = -1).
-///        Pure; safe on any thread.
+///        instances' translations), and the draw data (world, mesh, byModel).
+///        Every sphere starts unset (r = -1). Pure; safe on any thread.
 FoliageGrid build_foliage_grid(const castlemist::world::WorldScene& s, float tileUnits = kFoliageTileUnits);
 
 /// @brief Sets instance @p i's world sphere and grows its tile's AABB by it;
@@ -96,6 +107,25 @@ struct FoliageCullStats {
 ///        rest are counted in `st.capped`. @p collidersOnly keeps collider == 1 only.
 void foliage_cull(const FoliageGrid& g, const float cam[3], const float planes[6][4], float distanceScale,
                   bool collidersOnly, uint32_t maxVisible, std::vector<FoliageVisible>& out, FoliageCullStats& st);
+
+/// @brief Verification hook (GW2_MAPWIN_FOCUS=foliage): a ground-level view
+///        into the foliage. The tiles holding a placed (sphere set) and
+///        drawable instance are ranked by how many they hold; the one at
+///        @p quantile (0 = sparsest, 1 = densest, nearest rank) is taken. The
+///        camera stands kFoliageFocusEye units above the translation of that
+///        tile's placed instance nearest the tile's mean placed translation
+///        (up is -Z), and looks kFoliageFocusPitch radians below the
+///        horizon along the one of eight headings (east first, then
+///        counter-clockwise by 45 degrees) whose 60-degree wedge holds the
+///        most placed instances within 3000 units (the first on a tie).
+///        @p collidersOnly counts (and stands on) Collider instances only: a
+///        view into the trees. False, @p pos and @p fwd untouched, when
+///        nothing (that counts) is placed.
+bool foliage_focus_view(const FoliageGrid& g, float quantile, bool collidersOnly, float pos[3], float fwd[3]);
+/// castlemist's choice: the focus camera's height over the ground, map units.
+inline constexpr float kFoliageFocusEye = 150.0f;
+/// castlemist's choice: the focus camera's pitch below the horizon, radians (about 8 degrees).
+inline constexpr float kFoliageFocusPitch = 0.14f;
 
 /// @brief Which zone instances the Foliage layer shows: the Collider ones only, or all.
 enum class FoliageShow : uint8_t { Colliders, All };

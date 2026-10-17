@@ -106,6 +106,7 @@
         "zoneProbability": { "$ref": "#/$defs/setting" },
         "zoneTint": { "$ref": "#/$defs/setting" },
         "zoneFade": { "$ref": "#/$defs/setting" },
+        "zoneFadeQualityScale": { "$ref": "#/$defs/setting" },
         "zoneLayerTypeTarget": { "$ref": "#/$defs/setting" },
         "foliageWind": { "$ref": "#/$defs/setting" },
         "foliagePatchUnits": { "$ref": "#/$defs/setting" },

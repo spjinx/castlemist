@@ -487,6 +487,11 @@ uint32_t zone_tiling_max(uint8_t tiling, int quality) {
     return t;
 }
 
+float zone_fade_quality_scale(int quality) {
+    static constexpr float kScale[4] = {0.85f, 1.0f, 1.5f, 2.0f};   // 0x140cbc0b0 / 0x140cbc090 (research §1.3)
+    return quality >= 0 && quality < 4 ? kScale[quality] : 1.0f;
+}
+
 std::vector<uint32_t> zone_collide_index(const ZoneScatter& z, uint32_t zone) {
     std::vector<uint32_t> out;
     if (zone >= z.zones.size()) return out;

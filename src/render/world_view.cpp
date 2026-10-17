@@ -12,6 +12,7 @@
 #include "castlemist/extract/model_types.h"
 #include "castlemist/world/anim.h"
 #include "castlemist/world/terrain_mesh.h"
+#include "castlemist/world/zone_scatter.h"
 #include "castlemist/render/world_sky.h"
 
 #include "detail/light_calib.h"
@@ -287,15 +288,18 @@ struct WorldView::Impl {
     ComPtr<ID3D11ShaderResourceView> heightSrv;   ///< build_height_grid's R32F; null without terrain
     HeightGrid heightGrid;                          ///< its placement (z released after upload)
 
-    // Foliage: the zone instances (spec D6). set_world takes the grid and
-    // records each instance's matrix and model; add_models fills the grid's
-    // spheres; draw() culls through the grid into folBatch.
+    // Foliage: the zone instances (spec D6). set_world takes the grid with
+    // its draw data (each instance's matrix and model, by model; built on the
+    // worker); add_models fills the grid's spheres; draw() culls through the
+    // grid into folBatch.
     std::unique_ptr<FoliageGrid> fol;
-    std::vector<Mat4> folWorld;                 ///< per zone instance: row-vector world
-    std::vector<uint32_t> folMesh;              ///< per zone instance: model, UINT32_MAX = never drawn
-    std::vector<uint32_t> folStart, folIdx;     ///< model m's instances: folIdx[folStart[m] .. folStart[m+1])
     FoliageShow folShow = FoliageShow::Colliders;
     float folScale = 1;                         ///< foliageDistanceScale
+    /// The client's fadeRange factor at the graphics quality in force (2):
+    /// 1.5 (zone_fade_quality_scale; castlemist applies it with the quality-2
+    /// tiling, manifest `zoneFadeQualityScale`). Multiplies folScale.
+    float folQuality = castlemist::world::zone_fade_quality_scale(
+        castlemist::world::zone_scatter_rule_in_force().graphicsQuality);
     FoliageBatch folBatch;
     std::vector<FoliageVisible> folVis;         ///< this frame's foliage_cull survivors
 
@@ -1347,9 +1351,9 @@ struct WorldView::Impl {
             LARGE_INTEGER f0, f1;
             QueryPerformanceCounter(&f0);
             FoliageCullStats fst;
-            foliage_cull(*fol, cam.pos, planes, folScale, folShow == FoliageShow::Colliders, kFoliageMaxVisible, folVis,
-                         fst);
-            st.foliageVisible = folBatch.cull_into(folVis, *fol, folWorld, folMesh, models, cam);
+            foliage_cull(*fol, cam.pos, planes, folScale * folQuality, folShow == FoliageShow::Colliders,
+                         kFoliageMaxVisible, folVis, fst);
+            st.foliageVisible = folBatch.cull_into(folVis, *fol, models, cam);
             st.foliageTiles = fst.tiles;
             st.foliageCapped = fst.capped;
             QueryPerformanceCounter(&f1);
@@ -1566,34 +1570,20 @@ void WorldView::set_world(const castlemist::world::WorldScene& s, std::unique_pt
         d->hasExtent = true;
     }
 
-    // Foliage (spec D6): the worker-built grid, and each zone instance's
-    // matrix and model (by model: folStart / folIdx, a counting sort), placed
-    // by add_models. Only a missing or mismatched grid is built here.
+    // Foliage (spec D6): the worker-built grid with its draw data (each zone
+    // instance's matrix and model, by model), placed by add_models. The UI
+    // thread only takes it over (spec Performance); only a missing or
+    // mismatched grid is built here.
     {
-        const auto& zi = s.zones.instances;
-        const size_t n = zi.size();
-        if (!grid || grid->tileOf.size() != n || grid->sphere.size() != n * 4)
+        const size_t n = s.zones.instances.size();
+        if (!grid || grid->tileOf.size() != n || grid->sphere.size() != n * 4 || grid->mesh.size() != n ||
+            grid->world.size() != n * 16 || grid->models != s.models.size() ||
+            grid->modelStart.size() != s.models.size() + 1)
             grid = std::make_unique<FoliageGrid>(build_foliage_grid(s));
         d->fol = std::move(grid);
         d->folVis.clear();
-        d->folWorld.resize(n);
-        d->folMesh.assign(n, UINT32_MAX);
-        d->folStart.assign(s.models.size() + 1, 0);
-        int trees = 0;
-        for (size_t i = 0; i < n; ++i) {
-            if (zi[i].source == castlemist::world::ZoneSource::Collider) ++trees;
-            if (zi[i].model >= s.models.size() || !finite16(zi[i].world)) continue;
-            d->folWorld[i] = colmajor_to_rowvec(zi[i].world);
-            d->folMesh[i] = zi[i].model;
-            ++d->folStart[zi[i].model + 1];
-        }
-        for (size_t m = 0; m < s.models.size(); ++m) d->folStart[m + 1] += d->folStart[m];
-        d->folIdx.assign(d->folStart.back(), 0);
-        std::vector<uint32_t> at(d->folStart.begin(), d->folStart.end() - 1);
-        for (size_t i = 0; i < n; ++i)
-            if (d->folMesh[i] != UINT32_MAX) d->folIdx[at[d->folMesh[i]]++] = static_cast<uint32_t>(i);
         d->st.foliageInstances = static_cast<int>(n);
-        d->st.zoneTrees = trees;
+        d->st.zoneTrees = static_cast<int>(d->fol->colliders);
         d->st.zoneUnlinked = static_cast<int>(s.zones.collidersUnlinked);
     }
 
@@ -1656,11 +1646,12 @@ void WorldView::add_models(const std::vector<WorldModelLoad>& batch) {
         d->previews[m] = l.preview;
         // Its zone instances: world spheres into the foliage grid (one
         // MeshGPU serves the model's props and zone instances alike).
-        if (d->fol && m + 1 < d->folStart.size()) {
+        if (d->fol && m + 1 < d->fol->modelStart.size()) {
             const MeshGPU& mg = d->models[m];
-            for (uint32_t k = d->folStart[m]; k < d->folStart[m + 1]; ++k) {
-                const uint32_t zi = d->folIdx[k];
-                const Mat4& W = d->folWorld[zi];
+            for (uint32_t k = d->fol->modelStart[m]; k < d->fol->modelStart[m + 1]; ++k) {
+                const uint32_t zi = d->fol->byModel[k];
+                Mat4 W;
+                std::memcpy(W.m, &d->fol->world[static_cast<size_t>(zi) * 16], sizeof W.m);
                 const Vec3 c = transformPoint({mg.center[0], mg.center[1], mg.center[2]}, W);
                 const float cw[3] = {c.x, c.y, c.z};
                 foliage_set_sphere(*d->fol, zi, cw, mg.radius * max_column_length(W.m));
@@ -2063,6 +2054,18 @@ bool WorldView::animated_screen_rect(const WorldCamera& cam, int rect[4]) const 
 void WorldView::set_foliage_show(FoliageShow s) { d->folShow = s; }
 void WorldView::set_foliage_distance_scale(float scale) {
     d->folScale = (scale > 0 && std::isfinite(scale)) ? scale : 1.0f;
+}
+float WorldView::foliage_fade_quality_scale() const { return d->folQuality; }
+
+bool WorldView::focus_foliage(WorldCamera& cam, float quantile, bool collidersOnly) const {
+    float pos[3], fwd[3];
+    if (!d->fol || !foliage_focus_view(*d->fol, quantile, collidersOnly, pos, fwd)) return false;
+    const Vec3 f{fwd[0], fwd[1], fwd[2]};
+    const Vec3 right = norm(cross(kWorldUp, f));
+    const Vec3 up = norm(cross(f, right));
+    for (int k = 0; k < 3; ++k) { cam.pos[k] = pos[k]; cam.fwd[k] = fwd[k]; }
+    cam.up[0] = up.x; cam.up[1] = up.y; cam.up[2] = up.z;
+    return true;
 }
 
 bool WorldView::focus_zone_tree(WorldCamera& cam, int rect[4]) {

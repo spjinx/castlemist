@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <utility>
 
@@ -103,6 +104,29 @@ FoliageGrid build_foliage_grid(const castlemist::world::WorldScene& s, float til
     for (FoliageTile& tile : g.tiles)
         std::stable_sort(tile.instances.begin(), tile.instances.end(),
                          [&](uint32_t a, uint32_t b) { return zi[a].model < zi[b].model; });
+
+    // The draw data: each instance's world and model (a model out of range or
+    // a non-finite matrix is never drawn), then the instances by model.
+    const size_t models = s.models.size();
+    g.models = static_cast<uint32_t>(models);
+    g.world.resize(n * 16);
+    g.mesh.assign(n, UINT32_MAX);
+    g.modelStart.assign(models + 1, 0);
+    for (size_t i = 0; i < n; ++i) {
+        const ZoneInstance& z = zi[i];
+        if (g.collider[i]) ++g.colliders;
+        std::memcpy(&g.world[i * 16], z.world, sizeof z.world);   // row-vector = the column-major bytes
+        bool finite = true;
+        for (int k = 0; k < 16 && finite; ++k) finite = std::isfinite(z.world[k]);
+        if (z.model >= models || !finite) continue;
+        g.mesh[i] = z.model;
+        ++g.modelStart[z.model + 1];
+    }
+    for (size_t m = 0; m < models; ++m) g.modelStart[m + 1] += g.modelStart[m];
+    g.byModel.assign(g.modelStart.back(), 0);
+    std::vector<uint32_t> at(g.modelStart.begin(), g.modelStart.end() - 1);
+    for (size_t i = 0; i < n; ++i)
+        if (g.mesh[i] != UINT32_MAX) g.byModel[at[g.mesh[i]]++] = static_cast<uint32_t>(i);
     return g;
 }
 
@@ -177,6 +201,71 @@ void foliage_cull(const FoliageGrid& g, const float cam[3], const float planes[6
             out.push_back({i, fade});
         }
     }
+}
+
+bool foliage_focus_view(const FoliageGrid& g, float quantile, bool collidersOnly, float pos[3], float fwd[3]) {
+    const size_t n = g.tileOf.size();
+    if (g.sphere.size() < n * 4 || g.world.size() < n * 16 || g.mesh.size() < n || g.collider.size() < n) return false;
+    auto placed = [&](uint32_t i) {
+        return i < n && g.mesh[i] != UINT32_MAX && g.sphere[static_cast<size_t>(i) * 4 + 3] >= 0 &&
+               (!collidersOnly || g.collider[i]);
+    };
+    std::vector<std::pair<uint32_t, uint32_t>> ranked;   // (placed count, tile)
+    for (uint32_t t = 0; t < g.tiles.size(); ++t) {
+        uint32_t c = 0;
+        for (uint32_t i : g.tiles[t].instances) c += placed(i) ? 1u : 0u;
+        if (c) ranked.emplace_back(c, t);
+    }
+    if (ranked.empty()) return false;
+    std::sort(ranked.begin(), ranked.end());
+    const float q = std::isfinite(quantile) ? std::clamp(quantile, 0.0f, 1.0f) : 1.0f;
+    const size_t pick = static_cast<size_t>(std::lround(q * static_cast<float>(ranked.size() - 1)));
+    const FoliageTile& tile = g.tiles[ranked[pick].second];
+    auto at = [&](uint32_t i) { return &g.world[static_cast<size_t>(i) * 16 + 12]; };   // the translation
+    double mx = 0, my = 0;
+    for (uint32_t i : tile.instances)
+        if (placed(i)) { mx += at(i)[0]; my += at(i)[1]; }
+    mx /= ranked[pick].first;
+    my /= ranked[pick].first;
+    uint32_t anchor = UINT32_MAX;
+    double best = 0;
+    for (uint32_t i : tile.instances) {
+        if (!placed(i)) continue;
+        const double dx = at(i)[0] - mx, dy = at(i)[1] - my, d2 = dx * dx + dy * dy;
+        if (anchor == UINT32_MAX || d2 < best) { anchor = i; best = d2; }
+    }
+    const float* a = at(anchor);
+    // The heading: the 60-degree wedge (within 3000 units) holding the most
+    // placed instances, over the tiles that reach can touch.
+    constexpr float kReach = 3000.0f, kPi = 3.14159265f;
+    const int tx = static_cast<int>(ranked[pick].second % static_cast<uint32_t>(g.tilesX));
+    const int ty = static_cast<int>(ranked[pick].second / static_cast<uint32_t>(g.tilesX));
+    const int span = static_cast<int>(std::ceil(kReach / std::max(g.tileUnits, 1.0f)));
+    int score[8] = {};
+    for (int y = std::max(0, ty - span); y <= std::min(g.tilesY - 1, ty + span); ++y)
+        for (int x = std::max(0, tx - span); x <= std::min(g.tilesX - 1, tx + span); ++x)
+            for (uint32_t i : g.tiles[static_cast<size_t>(y) * g.tilesX + x].instances) {
+                if (!placed(i) || i == anchor) continue;
+                const float dx = at(i)[0] - a[0], dy = at(i)[1] - a[1], d2 = dx * dx + dy * dy;
+                if (d2 > kReach * kReach || d2 <= 0) continue;
+                const float ang = std::atan2(dy, dx);
+                for (int h = 0; h < 8; ++h) {
+                    float diff = std::fabs(ang - static_cast<float>(h) * kPi / 4.0f);
+                    if (diff > kPi) diff = 2.0f * kPi - diff;
+                    if (diff <= kPi / 6.0f) ++score[h];
+                }
+            }
+    int bestH = 0;
+    for (int h = 1; h < 8; ++h)
+        if (score[h] > score[bestH]) bestH = h;
+    const float yaw = static_cast<float>(bestH) * kPi / 4.0f;
+    pos[0] = a[0];
+    pos[1] = a[1];
+    pos[2] = a[2] - kFoliageFocusEye;   // up is -Z
+    fwd[0] = std::cos(yaw) * std::cos(kFoliageFocusPitch);
+    fwd[1] = std::sin(yaw) * std::cos(kFoliageFocusPitch);
+    fwd[2] = std::sin(kFoliageFocusPitch);   // +Z is down
+    return true;
 }
 
 } // namespace castlemist::render
