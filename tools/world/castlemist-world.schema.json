@@ -87,6 +87,7 @@
         "cellMaxTextureMB": { "$ref": "#/$defs/setting" },
         "ambient": { "$ref": "#/$defs/setting" },
         "unityAxisConversion": { "$ref": "#/$defs/setting" },
+        "skyApproximate": { "$ref": "#/$defs/setting" },
         "zoneGrid": { "$ref": "#/$defs/setting" },
         "zoneModelSlot": { "$ref": "#/$defs/setting" },
         "zoneFlagBit0": { "$ref": "#/$defs/setting" },

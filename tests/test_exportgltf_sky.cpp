@@ -1529,3 +1529,130 @@ CM_TEST(skyexport, report_json_fields) {
     r.error = "no sky";
     CHECK_EQ(report_json(r)["error"].get<std::string>(), std::string("no sky"));
 }
+
+// ---------------------------------------------------------------------------
+// Approximate sky, export side (gw2-sky.md amendment 2026-10-17)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using MapHaze = castlemist::model::Extractor::MapHaze;
+using MapEnvZone = castlemist::model::Extractor::MapEnvZone;
+
+MapHaze haze_far(float r, float g, float b) {
+    MapHaze h;
+    h.farColor[0] = r; h.farColor[1] = g; h.farColor[2] = b; h.farColor[3] = 1;
+    return h;
+}
+
+MapEnvZone square_zone(float half, MapHaze h) {
+    MapEnvZone z;
+    z.shapes.push_back({{-half, -half}, {half, -half}, {half, half}, {-half, half}});
+    z.area = 4 * half * half;
+    z.haze = {h, h, h};
+    return z;
+}
+
+const InputLabel* find_label(const ApproxInputs& a, const std::string& input) {
+    for (const InputLabel& l : a.labels)
+        if (l.input == input) return &l;
+    return nullptr;
+}
+
+} // namespace
+
+// dataGlobal unless a zone's shapes cover more of parm.rect than the rest.
+CM_TEST(skyexport, env_block_is_the_one_covering_most_of_the_map) {
+    MapSky s = one_mode_sky();
+    s.mapRect[0] = s.mapRect[1] = -100;
+    s.mapRect[2] = s.mapRect[3] = 100;   // 40000
+    CHECK_EQ(choose_env_block(s).zone, -1);
+    s.zones.push_back(square_zone(50, haze_far(1, 0, 0)));   // 10000: global keeps 30000
+    s.zones.push_back(square_zone(30, haze_far(0, 1, 0)));
+    EnvBlockChoice c = choose_env_block(s);
+    CHECK_EQ(c.zone, -1);
+    CHECK(c.note.find("dataGlobal") != std::string::npos);
+    s.zones[0] = square_zone(90, haze_far(1, 0, 0));        // 32400 > 40000 - 32400 - 3600
+    c = choose_env_block(s);
+    CHECK_EQ(c.zone, 0);
+    CHECK(c.note.find("dataLocalArray[0]") != std::string::npos);
+    CHECK(c.note.find("UNPROVEN") != std::string::npos);
+}
+
+// FogColorFar is haze[slot].farColor of the chosen block (slot 0 day, 1
+// night), dataGlobal's when that zone has no haze; the light colour is taken
+// in the client's byte order; every input is labelled.
+CM_TEST(skyexport, approx_inputs_take_haze_slots_and_label_them) {
+    SkyInputs in = panorama_inputs();
+    in.sky.haze = {haze_far(0.1f, 0.2f, 0.3f), haze_far(0.4f, 0.5f, 0.6f), haze_far(0.7f, 0.8f, 0.9f)};
+    castlemist::model::Extractor::MapEnvLight l;
+    l.present = true;
+    l.sunColor[0] = 0.25f; l.sunColor[1] = 0.5f; l.sunColor[2] = 1.0f;   // bytes 0, 1, 2 as castlemist reads them
+    l.sunDir[0] = 0; l.sunDir[1] = 0; l.sunDir[2] = 2;
+    in.sky.lighting = {l, l, l};
+    in.sky.hasGroundZ = true;
+    in.sky.groundZ = -7000;
+    ApproxInputs day = approx_inputs(in, 0), night = approx_inputs(in, 1), m2 = approx_inputs(in, 2);
+    CHECK(day.haveFog);
+    CHECK_NEAR(day.fogFar[2], 0.3f, 1e-6f);
+    CHECK_NEAR(night.fogFar[0], 0.4f, 1e-6f);
+    CHECK_NEAR(m2.fogFar[0], 0.1f, 1e-6f);   // mode 2 reads the day slot
+    CHECK(day.haveSun);
+    CHECK_NEAR(day.sunColor[0], 1.0f, 1e-6f);   // byte 2 first (0x140c88dbe)
+    CHECK_NEAR(day.sunColor[2], 0.25f, 1e-6f);
+    CHECK_NEAR(day.sunDir[2], 1.0f, 1e-6f);     // normalized
+    CHECK_EQ(day.cameraZ, -7000.0f);
+    const InputLabel* fog = find_label(day, "FogColorFar");
+    CHECK(fog != nullptr);
+    if (fog) CHECK(fog->source == InputSource::Derived);
+    const InputLabel* sun = find_label(day, "sunClr.rgb");
+    CHECK(sun != nullptr);
+    if (sun) CHECK(sun->source == InputSource::Guess);
+    CHECK(find_label(day, "camera z") != nullptr);
+    CHECK(find_label(day, "env block") != nullptr);
+    // A zone that covers most of the map gives its own haze.
+    in.sky.mapRect[0] = in.sky.mapRect[1] = -100;
+    in.sky.mapRect[2] = in.sky.mapRect[3] = 100;
+    in.sky.zones.push_back(square_zone(95, haze_far(0.9f, 0.0f, 0.0f)));
+    CHECK_NEAR(approx_inputs(in, 0).fogFar[0], 0.9f, 1e-6f);
+    in.sky.zones[0].haze.clear();   // no haze of its own: dataGlobal's
+    CHECK_NEAR(approx_inputs(in, 0).fogFar[0], 0.1f, 1e-6f);
+    // No haze anywhere: no fog, labelled.
+    in.sky.haze.clear();
+    ApproxInputs none = approx_inputs(in, 0);
+    CHECK_FALSE(none.haveFog);
+    const InputLabel* nf = find_label(none, "FogColorFar");
+    CHECK(nf != nullptr);
+    if (nf) CHECK(nf->source == InputSource::Guess);
+}
+
+// sky.json records whether the bake is approximate, and the approximate one
+// lists every mode's labelled inputs; the proven bake's images are unchanged.
+CM_TEST(skyexport, approximate_flag_and_labels_in_sky_json) {
+    SkyInputs in = panorama_inputs();
+    in.sky.params.dayHazeDensity = 1;
+    in.sky.params.dayHazeFalloff = 0.2f;
+    in.sky.haze = {haze_far(0, 1, 0), haze_far(0, 1, 0)};
+    SkyExportOptions opt;
+    opt.faceSize = 8;
+    opt.equirectWidth = 32;
+    fs::path parent = export_parent("approx_flag");
+    CHECK(write_skybox(in, parent.string(), "P", opt).ok);
+    nlohmann::json p = read_json(parent / "P" / "sky.json");
+    CHECK(p["approximate"] == false);
+    CHECK_FALSE(p["modes"][0].contains("approxInputs"));
+    CHECK(any_contains(p["modes"][0]["warnings"], "haze: inputs UNPROVEN"));
+    opt.approximate = true;
+    CHECK(write_skybox(in, parent.string(), "A", opt).ok);
+    nlohmann::json a = read_json(parent / "A" / "sky.json");
+    CHECK(a["approximate"] == true);
+    const auto& m = a["modes"][0];
+    CHECK(m["approxInputs"].is_array());
+    bool fogDerived = false;
+    for (const auto& l : m["approxInputs"])
+        if (l["input"] == "FogColorFar" && l["source"] == "derived from static code") fogDerived = true;
+    CHECK(fogDerived);
+    CHECK(m["layers"] == nlohmann::json::array({"base", "haze"}));
+    CHECK(any_contains(a["warnings"], "approximate sky"));
+    fs::remove_all(parent);
+}

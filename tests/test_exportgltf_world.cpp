@@ -1188,6 +1188,14 @@ CM_TEST(world_manifest, settings_labelled) {
     bool saw = false;
     for (const auto& s : set) if (s.name == "texelsPerChunk") { saw = true; CHECK(s.value == 128); }
     CHECK(saw);
+    // The sky bake kind travels too: proven-only by default, the approximate one UNPROVEN.
+    CHECK(man["settings"]["skyApproximate"]["value"] == false);
+    CHECK(man["settings"]["skyApproximate"]["status"] == "castlemist's choice");
+    o.skyApproximate = true;
+    bool sawSky = false;
+    for (const auto& s : world_export_settings(o))
+        if (s.name == "skyApproximate") { sawSky = true; CHECK(s.value == true); CHECK(s.status == "UNPROVEN"); }
+    CHECK(sawSky);
 }
 
 CM_TEST(world_manifest, validator_sees_mismatches) {
