@@ -31,6 +31,36 @@ const char* world_sky_time_name(WorldSkyTime t) {
     }
 }
 
+const char* world_sky_kind_name(WorldSkyKind k) { return k == WorldSkyKind::Proven ? "proven" : "approx"; }
+
+bool parse_world_sky(const std::string& text, WorldSkyTime& time, WorldSkyKind& kind) {
+    WorldSkyTime t = time;
+    WorldSkyKind k = kind;
+    std::string word;
+    int words = 0;
+    auto take = [&]() {
+        if (word.empty()) return true;
+        ++words;
+        bool ok = true;
+        if (word == "approx") k = WorldSkyKind::Approx;
+        else if (word == "proven") k = WorldSkyKind::Proven;
+        else ok = parse_world_sky_time(word, t);
+        word.clear();
+        return ok;
+    };
+    for (char c : text) {
+        if (c == ',' || c == ' ' || c == ';' || c == '+') {
+            if (!take()) return false;
+        } else {
+            word.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        }
+    }
+    if (!take() || words == 0) return false;
+    time = t;
+    kind = k;
+    return true;
+}
+
 int world_sky_mode(const std::vector<int>& baked, WorldSkyTime t, bool* fellBack) {
     if (fellBack) *fellBack = false;
     if (t == WorldSkyTime::Off) return -1;
@@ -44,7 +74,8 @@ int world_sky_mode(const std::vector<int>& baked, WorldSkyTime t, bool* fellBack
     return -1;
 }
 
-std::vector<WorldSkyImage> bake_world_sky(const sky::SkyInputs& in, int width, std::vector<std::string>& warnings) {
+std::vector<WorldSkyImage> bake_world_sky(const sky::SkyInputs& in, int width, std::vector<std::string>& warnings,
+                                          bool approximate) {
     std::vector<WorldSkyImage> out;
     if (!in.sky.present) {
         warnings.push_back("sky: the map has no sky (no env chunk or no dataGlobal)");
@@ -56,19 +87,26 @@ std::vector<WorldSkyImage> bake_world_sky(const sky::SkyInputs& in, int width, s
             warnings.push_back("sky: no " + sky::mode_name(mode) + " mode in the map's sky");
             continue;
         }
-        if (mode == 1 && !out.empty() && out[0].mode == 0 && sky::same_sky_mode(in.sky, 0, 1)) {
+        if (!approximate && mode == 1 && !out.empty() && out[0].mode == 0 && sky::same_sky_mode(in.sky, 0, 1)) {
             WorldSkyImage copy = out[0];
             copy.mode = 1;
             out.push_back(std::move(copy));
             continue;
         }
-        const sky::BakeResult b =
-            sky::make_sky_sampler(in.sky, mode, in.textures, in.stars.present ? &in.stars : nullptr);
-        for (const std::string& w : b.warnings) warnings.push_back("sky " + sky::mode_name(mode) + ": " + w);
+        sky::ApproxInputs ai;
+        if (approximate) ai = sky::approx_inputs(in, mode);
+        const sky::BakeResult b = sky::make_sky_sampler(in.sky, mode, in.textures, in.stars.present ? &in.stars : nullptr,
+                                                        approximate ? &ai : nullptr);
+        const std::string tag = "sky " + sky::mode_name(mode) + (approximate ? " (approx): " : ": ");
+        for (const std::string& w : b.warnings) warnings.push_back(tag + w);
         if (!b.ok) continue;
         sky::Image img = sky::render_equirect(b.radiance, width, width / 2);
         WorldSkyImage w;
         w.mode = static_cast<int>(mode);
+        if (approximate && ai.haveFog) {   // the game's fog colour, not the band around the horizon
+            w.hasHorizon = true;
+            for (int k = 0; k < 3; ++k) w.horizon[k] = std::clamp(ai.fogFar[k], 0.0f, 1.0f);
+        }
         w.width = img.width;
         w.height = img.height;
         w.rgba = std::move(img.rgba);

@@ -201,7 +201,7 @@ const wchar_t* kSurfaceClass = L"Gw2MapWindowSurface";
 struct MapWin {
     HWND wnd = nullptr, surface = nullptr, status = nullptr, warnEdit = nullptr;
     HWND bWalk = nullptr, bFly = nullptr, bTerrain = nullptr, bProps = nullptr, bColl = nullptr, bWater = nullptr, bMaterials = nullptr, bMotion = nullptr,
-         bReset = nullptr, bWarn = nullptr, bShader = nullptr, bSky = nullptr, bFoliage = nullptr;
+         bReset = nullptr, bWarn = nullptr, bShader = nullptr, bSky = nullptr, bSkyApprox = nullptr, bFoliage = nullptr;
     uint64_t gen = 0;
     uint32_t mapFileId = 0;
     std::string datPath;
@@ -231,8 +231,12 @@ struct MapWin {
     // Sky: baked once per map on its thread (mapwin_start_sky), kept to
     // re-upload after a lost device.
     castlemist::render::WorldSkyTime skyTime = castlemist::render::WorldSkyTime::Day;
-    std::vector<castlemist::render::WorldSkyImage> sky;
+    /// Which bake is shown: the approximate sky by default (gw2-sky.md amendment 2026-10-17).
+    castlemist::render::WorldSkyKind skyKind = castlemist::render::WorldSkyKind::Approx;
+    std::vector<castlemist::render::WorldSkyImage> sky;        ///< proven-only bake
     std::vector<std::string> skyWarnings;
+    std::vector<castlemist::render::WorldSkyImage> skyApprox;  ///< approximate bake
+    std::vector<std::string> skyApproxWarnings;
     bool skyStarted = false, skyDone = false;
     double skySeconds = 0;
     float skyUploadMs = 0;
@@ -413,7 +417,8 @@ void refresh_warnings(MapWin& m) {
     for (const std::string& w : m.scene->warnings) warn += widen(w) + L"\r\n";
     if (m.viewOk)
         for (const std::string& w : m.view.warnings()) warn += widen(w) + L"\r\n";
-    for (const std::string& w : m.skyWarnings) warn += widen(w) + L"\r\n";
+    const bool approx = m.skyKind == castlemist::render::WorldSkyKind::Approx;
+    for (const std::string& w : approx ? m.skyApproxWarnings : m.skyWarnings) warn += widen(w) + L"\r\n";
     if (warn.empty()) warn = L"(no warnings)";
     SetWindowTextW(m.warnEdit, warn.c_str());
 }
@@ -427,6 +432,11 @@ void start_shader_pool(MapWin& m) {
     m.shaderWorkers = mapwin_start_shader_models(m.wnd, m.gen, m.dat, m.shaderQueue, m.claims);
 }
 
+/// The baked modes of the bake the Approx sky toggle selects.
+const std::vector<castlemist::render::WorldSkyImage>& current_sky(const MapWin& m) {
+    return m.skyKind == castlemist::render::WorldSkyKind::Approx ? m.skyApprox : m.sky;
+}
+
 void sync_sky_button(MapWin& m) {
     std::wstring t = L"Sky: ";
     switch (m.skyTime) {
@@ -435,6 +445,8 @@ void sync_sky_button(MapWin& m) {
     default: t += L"Off"; break;
     }
     SetWindowTextW(m.bSky, t.c_str());
+    SendMessageW(m.bSkyApprox, BM_SETCHECK,
+                 m.skyKind == castlemist::render::WorldSkyKind::Approx ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 
 void apply_shading_buttons(MapWin& m) {
@@ -540,7 +552,7 @@ void recover_device(MapWin& m) {
         if (!m.models.empty()) m.view.add_models(m.models);
         if (!m.gameLoads.empty()) m.view.add_game_materials(m.gameLoads);
     }
-    if (!m.sky.empty()) m.view.set_sky(m.sky);
+    if (!current_sky(m).empty()) m.view.set_sky(current_sky(m));
     apply_layer_buttons(m);
     apply_foliage(m);
     apply_shading_buttons(m);
@@ -620,6 +632,7 @@ void headless_capture(MapWin& m) {
         if (m.headless->focusFoliage >= 0) m.view.focus_foliage(cam, m.headless->focusFoliage, m.headless->focusForest);
         if (m.headless->focusZoneTree && focus_zone_tree_shot(m.view, m.coll.get(), cam, treeRect))
             SendMessageW(m.bColl, BM_SETCHECK, BST_CHECKED, 0);   // focus_zone_tree turned the layer on
+        if (m.headless->focusHorizon) mapwin_level_camera(cam);
         set_camera(m, cam);
         if (m.headless->fixedTime) m.view.set_time(m.headless->time);
         // Shader: everything in range is built before the shot (no budget),
@@ -670,14 +683,15 @@ void headless_capture(MapWin& m) {
                               : m.view.shading() == castlemist::render::WorldShading::Shader ? "shader" : "materials";
     char extra[1536];
     std::snprintf(extra, sizeof extra,
-                  "sky=%s skyMode=%d skyModes=%zu sky_s=%.2f sky_upload_ms=%.2f "
+                  "sky=%s skyKind=%s skyMode=%d skyModes=%zu sky_s=%.2f sky_upload_ms=%.2f "
                   "shaderInstances=%d shaderDraws=%d shaderPending=%d shaderNoShader=%d shaderAnimated=%d "
                   "shaderCapped=%d shaderModels=%d shaderModelsFailed=%d shaderPrograms=%d shaderLightStandIns=%d "
                   "shaderLeft=%d shader_prep_ms=%.1f shader_build_ms_max=%.2f shader_batches=%zu "
                   "shader_add_ms_median=%.2f shader_add_ms_max=%.2f render_ms_max=%.2f bench_frames=%d "
                   "bench_cpu_ms=%.2f/%.2f bench_gpu_ms=%.2f/%.2f bench_wall_ms=%.2f/%.2f "
                   "warm_frames=%d warm_s=%.2f warm_frame_ms_max=%.2f warm_build_ms_max=%.2f cam=%.0f,%.0f,%.0f adapter=\"%s\" ",
-                  castlemist::render::world_sky_time_name(m.skyTime), st.skyMode, m.sky.size(), m.skySeconds,
+                  castlemist::render::world_sky_time_name(m.skyTime), castlemist::render::world_sky_kind_name(m.skyKind),
+                  st.skyMode, current_sky(m).size(), m.skySeconds,
                   m.skyUploadMs, st.shaderInstances, st.shaderDraws, st.shaderPending, st.shaderNoShader,
                   st.shaderAnimated, st.shaderCapped, st.shaderModels, st.shaderModelsFailed, st.shaderPrograms,
                   st.shaderLightStandIns, shaderLeft, shaderPrepMs, st.shaderBuildMsMax, sadd.size(), saddMedian, saddMax,
@@ -820,9 +834,11 @@ void on_sky(MapWin& m, std::unique_ptr<MapWinSkyMsg> r) {
     m.skySeconds = r->seconds;
     m.skyWarnings = std::move(r->warnings);
     m.sky = std::move(r->modes);
+    m.skyApproxWarnings = std::move(r->approxWarnings);
+    m.skyApprox = std::move(r->approxModes);
     if (m.viewOk) {
         const auto t0 = Clock::now();
-        m.view.set_sky(m.sky);
+        m.view.set_sky(current_sky(m));
         m.skyUploadMs = std::chrono::duration<float, std::milli>(Clock::now() - t0).count();
     }
     refresh_warnings(m);
@@ -1125,6 +1141,13 @@ LRESULT CALLBACK MapWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             m->skyTime = mapwin_next_sky(m->skyTime);
             apply_shading_buttons(*m);
             break;
+        case ID_MW_SKY_APPROX:
+            m->skyKind = SendMessageW(m->bSkyApprox, BM_GETCHECK, 0, 0) == BST_CHECKED
+                             ? castlemist::render::WorldSkyKind::Approx
+                             : castlemist::render::WorldSkyKind::Proven;
+            if (m->viewOk && m->skyDone) m->view.set_sky(current_sky(*m));
+            apply_shading_buttons(*m);
+            break;
         case ID_MW_FOLIAGE:
             m->foliageOn = !m->foliageOn;
             apply_foliage(*m);
@@ -1212,6 +1235,18 @@ std::wstring mapwin_shader_status(castlemist::render::WorldShading shading, cons
         s += buf;
     }
     return s;
+}
+
+void mapwin_level_camera(castlemist::render::WorldCamera& c) {
+    float f[2] = {c.fwd[0], c.fwd[1]};
+    float l = std::sqrt(f[0] * f[0] + f[1] * f[1]);
+    if (!(l > 1e-6f)) { f[0] = 1; f[1] = 0; l = 1; }
+    c.fwd[0] = f[0] / l;
+    c.fwd[1] = f[1] / l;
+    c.fwd[2] = 0;
+    c.up[0] = 0;
+    c.up[1] = 0;
+    c.up[2] = -1;
 }
 
 castlemist::render::WorldSkyTime mapwin_next_sky(castlemist::render::WorldSkyTime t) {
@@ -1307,6 +1342,8 @@ void open_map_window(HWND owner, uint32_t mapFileId, const MapWinHeadless* headl
     m->bShader = mk(L"BUTTON", L"Shader", BS_AUTOCHECKBOX | BS_PUSHLIKE, next(65), y, 65, h, ID_MW_SHADER);
     m->bMotion = mk(L"BUTTON", L"Motion", BS_AUTOCHECKBOX | BS_PUSHLIKE, next(65), y, 65, h, ID_MW_MOTION);
     m->bSky = mk(L"BUTTON", L"Sky: Day", BS_PUSHBUTTON, next(75), y, 75, h, ID_MW_SKY);
+    // Checked: the approximate sky (labelled inputs); unchecked: the proven-only bake.
+    m->bSkyApprox = mk(L"BUTTON", L"Approx sky", BS_AUTOCHECKBOX | BS_PUSHLIKE, next(80), y, 80, h, ID_MW_SKY_APPROX);
     x += 12;
     m->bReset = mk(L"BUTTON", L"Reset", BS_PUSHBUTTON, next(70), y, 70, h, ID_MW_RESET);
     m->bWarn = mk(L"BUTTON", L"Warnings", BS_AUTOCHECKBOX | BS_PUSHLIKE, next(80), y, 80, h, ID_MW_WARNINGS);
@@ -1322,6 +1359,9 @@ void open_map_window(HWND owner, uint32_t mapFileId, const MapWinHeadless* headl
     if (m->headless && m->headless->geometry) SendMessageW(m->bMaterials, BM_SETCHECK, BST_UNCHECKED, 0);
     if (m->headless && m->headless->shader) SendMessageW(m->bShader, BM_SETCHECK, BST_CHECKED, 0);
     if (m->headless) m->skyTime = m->headless->sky;
+    if (m->headless) m->skyKind = m->headless->skyKind;
+    SendMessageW(m->bSkyApprox, BM_SETCHECK,
+                 m->skyKind == castlemist::render::WorldSkyKind::Approx ? BST_CHECKED : BST_UNCHECKED, 0);
     if (m->headless && m->headless->foliage >= 0) {
         m->foliageOn = m->headless->foliage > 0;
         if (m->headless->foliage == 2) m->foliageShow = castlemist::render::FoliageShow::All;

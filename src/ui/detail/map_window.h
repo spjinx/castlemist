@@ -69,8 +69,11 @@ struct MapWinHeadless {
     HWND quitWindow = nullptr;
     bool geometry = false;        ///< GW2_MAPWIN_SHADING=geometry
     bool shader = false;          ///< GW2_MAPWIN_SHADING=shader (waits for the shader pool too)
-    /// GW2_MAPWIN_SKY=day|night|off: the sky's time of day (Day when unset).
+    /// GW2_MAPWIN_SKY=day|night|off and/or approx|proven (comma separated,
+    /// parse_world_sky): the sky's time of day (Day when unset) and which bake
+    /// it shows (the approximate sky when unset).
     castlemist::render::WorldSkyTime sky = castlemist::render::WorldSkyTime::Day;
+    castlemist::render::WorldSkyKind skyKind = castlemist::render::WorldSkyKind::Approx;
     bool fixedTime = false;       ///< GW2_MAPWIN_TIME set: the clock stays at `time`
     double time = 0;
     bool focusAnimated = false;   ///< GW2_MAPWIN_FOCUS=animated: frame the nearest playing placement
@@ -91,6 +94,7 @@ struct MapWinHeadless {
     /// the start camera (WorldView::focus_zone_tree), Collision on, and log
     /// its screen rect as `treeRect`.
     bool focusZoneTree = false;
+    bool focusHorizon = false;    ///< GW2_MAPWIN_FOCUS=horizon: the framed camera, levelled (mapwin_level_camera)
     /// GW2_MAPWIN_FOCUS=foliage (0.9) / foliagemax (1) / forest (1, Collider
     /// instances only): a ground-level view into the foliage tile at that
     /// quantile of placed density (WorldView::focus_foliage); < 0 = not asked.
@@ -116,6 +120,10 @@ castlemist::render::WorldShading mapwin_shading_from_text(const std::string& tex
 ///        any fell back, L" (%d to Materials: %d pending, %d no shader, %d
 ///        animated, %d over cap)"; empty unless @p shading is Shader.
 std::wstring mapwin_shader_status(castlemist::render::WorldShading shading, const castlemist::render::WorldViewStats& st);
+
+/// @brief Levels @p c: forward loses its vertical (z) part and up becomes
+///        -Z, position kept; straight up or down looks along +X.
+void mapwin_level_camera(castlemist::render::WorldCamera& c);
 
 /// @brief The Sky button's next time of day: Day -> Night -> Off -> Day.
 castlemist::render::WorldSkyTime mapwin_next_sky(castlemist::render::WorldSkyTime t);

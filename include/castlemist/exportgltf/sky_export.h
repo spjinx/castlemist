@@ -46,23 +46,51 @@ struct SkyInputs {
     /// light travels (a Directional Light's forward), not toward the sun.
     castlemist::model::Extractor::MapEnvLight daySun;
     uint32_t mapFileId = 0;
+    /// Camera height (GW2 z, up = -z) the approximate sky's cloud layers are
+    /// seen from; when !hasCameraZ, approx_inputs() takes the terrain's
+    /// median height (MapSky::groundZ), else 0. The note says where it came from.
+    bool hasCameraZ = false;
+    float cameraZ = 0;
+    std::string cameraNote;
 };
+
+/// Which env block the approximate sky takes its haze from: -1 dataGlobal,
+/// else dataLocalArray[zone]; `note` says why (gw2-sky.md amendment
+/// 2026-10-17). The block that covers most of parm.rect by its shapes'
+/// area wins; dataGlobal covers what no zone shape does.
+struct EnvBlockChoice {
+    int zone = -1;
+    std::string note;
+};
+EnvBlockChoice choose_env_block(const castlemist::model::Extractor::MapSky& s);
+
+/// The labelled inputs of the approximate sky for sky mode @p mode of @p in
+/// (gw2-sky.md amendment 2026-10-17): FogColorFar from the chosen env
+/// block's haze slot (0 day / 1 night), the sun and SH stand-ins from
+/// dataGlobal lighting[slot], the camera height, the fades, Time and AlphaRef.
+ApproxInputs approx_inputs(const SkyInputs& in, size_t mode);
 
 /// Parse the sky of map packfile @p mapBytes and decode every texture it names.
 /// Only safe on the thread that owns @p dat.
+/// @p approx also decodes what only the approximate sky reads (the flow-fire
+/// material card's textures).
 SkyInputs load_sky_inputs(Gw2Dat& dat, const std::vector<uint8_t>& mapBytes,
-                          const nlohmann::json& tpl, uint32_t mapFileId);
+                          const nlohmann::json& tpl, uint32_t mapFileId, bool approx = false);
 
 /// The texture half of load_sky_inputs, for a caller that already holds the
 /// parsed sky (e.g. WorldScene::environment.sky): decodes every fileId
 /// `in.sky` names, and the star file and its atlas, into `in.textures` /
 /// `in.stars`, appending to `in.decodeWarnings`. Nothing when !in.sky.present.
 /// Read-only lookups on @p dat, as load_sky_inputs.
-void load_sky_textures(Gw2Dat& dat, const nlohmann::json& tpl, SkyInputs& in);
+void load_sky_textures(Gw2Dat& dat, const nlohmann::json& tpl, SkyInputs& in, bool approx = false);
 
 struct SkyExportOptions {
     int faceSize = 1024;        ///< baked cube faces, pixels per side
     int equirectWidth = 4096;   ///< baked equirect; height = width / 2
+    /// Bake the approximate sky (approx_inputs) instead of the proven-only
+    /// one; sky.json says which ("approximate") and lists every input's label.
+    /// Off by default: its haze, sun and cloud inputs are not all proven.
+    bool approximate = false;
 };
 
 struct SkyExportReport {

@@ -249,6 +249,24 @@ CM_TEST(map_window, sky_button_cycles) {
     CHECK(mapwin_next_sky(WorldSkyTime::Off) == WorldSkyTime::Day);
 }
 
+// GW2_MAPWIN_FOCUS=horizon: the framed camera, levelled so the horizon
+// crosses the middle of the shot (the sky's upper half shows).
+CM_TEST(map_window, level_camera_keeps_heading_and_position) {
+    castlemist::render::WorldCamera c;
+    c.pos[0] = 1; c.pos[1] = 2; c.pos[2] = -3000;
+    c.fwd[0] = 0.6f; c.fwd[1] = 0.0f; c.fwd[2] = 0.8f;   // steeply down (+Z)
+    c.up[0] = -0.8f; c.up[1] = 0; c.up[2] = 0.6f;
+    mapwin_level_camera(c);
+    CHECK_NEAR(c.fwd[0], 1.0f, 1e-6f);
+    CHECK_NEAR(c.fwd[2], 0.0f, 1e-6f);
+    CHECK_NEAR(c.up[2], -1.0f, 1e-6f);
+    CHECK_EQ(c.pos[2], -3000.0f);
+    castlemist::render::WorldCamera down;   // straight down: heading +X
+    down.fwd[0] = 0; down.fwd[1] = 0; down.fwd[2] = 1;
+    mapwin_level_camera(down);
+    CHECK_NEAR(down.fwd[0], 1.0f, 1e-6f);
+}
+
 CM_TEST(map_window, material_status_text) {
     castlemist::render::WorldViewStats st;
     st.textures = 12;

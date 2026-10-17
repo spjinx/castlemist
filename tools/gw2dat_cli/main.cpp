@@ -19,7 +19,7 @@
 //            pairs, raw bytes without encodeData), the cell's vertex x0 + 48 c and model
 //            slot (flag >> 1) & 7 (world foliage spec M2-M3); output changed 2026-10-16
 //   skybox   --dat <path> --file-id N --template <json> --out <dir> [--name NAME]
-//            [--size <face px>] [--equirect <width px>]
+//            [--size <face px>] [--equirect <width px>] [--approx]
 //            -- a map's sky as Unity skybox images in <out>/<name> (default map_<fileId>)
 //   world-export --dat <path> --file-id N --template <json> (--out <file.glb> | --out-dir <dir>)
 //            [--foliage off|colliders|all] [--no-unity-terrain] [--region cx0,cy0,cx1,cy1] [--no-fbx] ...
@@ -1495,12 +1495,14 @@ void cmd_skybox(const Args& a) {
     if (has(a, "size")) opt.faceSize = static_cast<int>(to_u64(a.at("size")));
     if (has(a, "equirect")) opt.equirectWidth = static_cast<int>(to_u64(a.at("equirect")));
     if (opt.faceSize < 1 || opt.equirectWidth < 2) fail("--size and --equirect must be positive");
+    // --approx: the approximate sky (gw2-sky.md amendment 2026-10-17), labelled in sky.json.
+    opt.approximate = has(a, "approx");
 
     Gw2Dat dat;
     load_dat_file(dat, need(a, "dat"));
     uint32_t idx = 0;
     std::vector<uint8_t> data = extract_bytes(dat, a, idx);
-    sky::SkyInputs in = sky::load_sky_inputs(dat, data, tpl, fileId);
+    sky::SkyInputs in = sky::load_sky_inputs(dat, data, tpl, fileId, opt.approximate);
     sky::SkyExportReport rep = sky::write_skybox(in, out, name, opt);
     json j = sky::report_json(rep);
     std::fputs(j.dump().c_str(), stdout);
@@ -2463,7 +2465,7 @@ void cmd_world(const Args& a) {
 /// Task 10: --out-dir writes the whole export folder through export_world_folder.
 ///   --out-dir <dir> [--texels-per-chunk 64|128|256|512] [--max-texture <n>]
 ///   [--region cx0,cy0,cx1,cy1] [--cell-max-chunks <n>] [--cell-max-tris <n>]
-///   [--cell-max-texture-mb <mb>] [--no-sky] [--no-collision] [--overwrite]
+///   [--cell-max-texture-mb <mb>] [--no-sky] [--sky-approx] [--no-collision] [--overwrite]
 ///   [--foliage off|colliders|all] [--no-unity-terrain] [--threads <n>] [--no-fbx] [--blender <exe>]
 /// --foliage (world-foliage spec D7, default all): which zone instances become
 /// foliage/<cell>.bin records -- none, the collider trees only, or every one the
@@ -2514,6 +2516,7 @@ void cmd_world_export_folder(const Args& a) {
     if (has(a, "cell-max-texture-mb")) opts.budget.maxTextureMB = std::stod(a.at("cell-max-texture-mb"));
     if (opts.budget.maxChunks < 1) fail("--cell-max-chunks must be at least 1");
     opts.sky = !has(a, "no-sky");
+    opts.skyApproximate = has(a, "sky-approx");   // the approximate sky, off by default
     opts.collision = !has(a, "no-collision");
     opts.overwrite = has(a, "overwrite");
     opts.unityTerrain = !has(a, "no-unity-terrain");
@@ -2554,7 +2557,8 @@ void cmd_world_export_folder(const Args& a) {
     if (opts.sky) {
         try {
             auto bytes = castlemist::world::read_file_bytes(dat, fileId);
-            if (bytes) skyIn = castlemist::exportgltf::sky::load_sky_inputs(dat, *bytes, tpl, fileId);
+            if (bytes)
+                skyIn = castlemist::exportgltf::sky::load_sky_inputs(dat, *bytes, tpl, fileId, opts.skyApproximate);
         } catch (const std::exception& ex) { progress(std::string("sky inputs unavailable: ") + ex.what()); }
     }
     auto src = eg::make_dat_model_source(dat);

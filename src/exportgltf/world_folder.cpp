@@ -660,7 +660,9 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
     } else if (!sky) {
         warnings.push_back("sky: no sky inputs; sky: null");
     } else {
-        const sky::SkyExportReport sr = sky::write_skybox(*sky, utf8(dir), "sky");
+        sky::SkyExportOptions so;
+        so.approximate = opts.skyApproximate;
+        const sky::SkyExportReport sr = sky::write_skybox(*sky, utf8(dir), "sky", so);
         if (!sr.ok && sr.error.rfind("cannot ", 0) == 0) { rep.error = "sky: " + sr.error; return rep; }
         for (const std::string& w : sr.warnings) warnings.push_back("sky: " + w);
         if (sr.ok) skyJson = sky_block(dir);

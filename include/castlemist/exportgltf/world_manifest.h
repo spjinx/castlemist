@@ -66,6 +66,9 @@ struct WorldFolderOptions {
     bool srgbColour = true;
     float unityScale = 0.0254f;          ///< UNPROVEN, gltf_export.h:57 "GW2 inches" (spec D7)
     bool sky = true, collision = true, overwrite = false;
+    /// Bake the approximate sky (sky_export.h SkyExportOptions::approximate);
+    /// off by default, recorded as the manifest setting skyApproximate.
+    bool skyApproximate = false;
     /// Foliage records (world-foliage spec D7). All is also File > Export World (Map)...'s choice.
     FoliageExport foliage = FoliageExport::All;
     /// The unityTerrain tiles (world-foliage spec D7, world_unity_terrain.h); CLI --no-unity-terrain clears it.

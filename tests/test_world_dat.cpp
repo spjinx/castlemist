@@ -253,6 +253,32 @@ CM_TEST(world_dat, terrain_props_sit_on_terrain) {
 #include <cstring>
 #include <tuple>
 
+// A small map whose page grid fits several chunks-per-page values (Mad
+// King's Labyrinth: 6x6 chunks on 2x2 pages fits 3, 4 and 5) takes the
+// measured 4, says so, and every chunk gets its blend pages.
+CM_TEST(world_dat, terrain_pages_tie_takes_measured_four) {
+    constexpr uint32_t kLabyrinth = 2499169;
+    if (!ensure_template()) SKIP("no struct template");
+    std::vector<uint8_t> bytes = packfile_by_file_id(kLabyrinth);
+    castlemist::model::Extractor ex(bytes, *castlemist::tpl::get());
+    std::vector<std::string> warnings;
+    castlemist::world::Terrain T = castlemist::world::build_terrain(ex.parseTerrain(), warnings);
+    CHECK_EQ(T.chunksX, 6);
+    CHECK_EQ(T.chunksY, 6);
+    castlemist::world::resolve_terrain_materials(T, ex.parseTerrainMaterials(), shared_dat(),
+                                                 *castlemist::tpl::get(), warnings);
+    size_t tie = 0;
+    for (const auto& w : warnings) {
+        CHECK(w.find("no blend pages") == std::string::npos);
+        tie += w.find("using 4, the value every uniquely fitting map measures (UNPROVEN here)") != std::string::npos;
+    }
+    CHECK_EQ(tie, size_t(1));
+    for (const auto& ch : T.chunks) {
+        CHECK(ch.material.resolved);
+        CHECK(ch.material.pickerScale > 0);
+    }
+}
+
 // §4: every chunk resolves; the first 16 chunks' colour textures equal
 // T3D's; every chunk's blend pages are the PIMG pages the reference's
 // pickerPage names.

@@ -275,6 +275,10 @@ std::vector<ManifestSetting> world_export_settings(const WorldFolderOptions& o, 
         {"ambient", "fillColor * min(fillIntensity, 1)", kC, "spec D5 (raw intensities, flat ambient)"},
         {"unityAxisConversion", "ModelImporter.bakeAxisConversion = true: east +X, north +Z, up +Y", kM,
          "frame probe on Unity 6000.0.42f1 (world export Task 1) and 2022.3.22f1 (Task 12); bake off fails it, on passes"},
+        {"skyApproximate", o.skyApproximate, o.skyApproximate ? kU : kC,
+         o.skyApproximate ? "docs/research/gw2-sky.md amendment 2026-10-17: haze, sun glow, haze-dominated and "
+                            "material cards and clouds baked with the labelled inputs in sky/sky.json approxInputs"
+                          : "the proven-only sky bake (docs/research/gw2-sky.md); --sky-approx bakes the approximate one"},
     };
     // World foliage (docs/superpowers/specs/2026-10-16-world-foliage-design.md D11; the
     // terrain rows come with the unityTerrain block).
