@@ -4,6 +4,7 @@
 #include "internal.h"
 #include "castlemist/exportgltf/world_lods.h"
 #include "long_path.h"
+#include "sha1.h"
 
 #include <filesystem>
 #include <fstream>
@@ -12,6 +13,47 @@ namespace castlemist::exportgltf {
 
 namespace fs = std::filesystem;
 using nlohmann::json;
+
+namespace {
+
+/// Every textureInfo under @p j ("...Texture": {index, texCoord}) with its index
+/// replaced by the image URI it samples ("image"), so the key names content
+/// (pool files are content- or fileId-named), not this file's numbering.
+void resolve_textures(const GltfWriter& w, json& j) {
+    if (!j.is_object()) return;
+    for (auto it = j.begin(); it != j.end(); ++it) {
+        json& v = it.value();
+        const std::string& k = it.key();
+        if (v.is_object() && k.size() > 7 && k.compare(k.size() - 7, 7, "Texture") == 0 && v.contains("index") &&
+            v["index"].is_number_integer()) {
+            v["image"] = w.texture_uri(v["index"].get<int>());
+            v.erase("index");
+        } else if (v.is_object()) {
+            resolve_textures(w, v);
+        }
+    }
+}
+
+/// Task 15d: each material's key, SHA-1 of {gltf: the material without its name,
+/// textures resolved; vrchat: the caller's input}, written as
+/// extras.castlemistMaterialKey. nlohmann::json keeps object keys sorted, so the
+/// text is canonical for equal content.
+std::vector<std::string> write_material_keys(GltfWriter& w, const std::vector<int>& materialIndices,
+                                             const std::vector<std::string>& inputs) {
+    std::vector<std::string> keys;
+    keys.reserve(materialIndices.size());
+    for (size_t i = 0; i < materialIndices.size(); ++i) {
+        json g = w.material_json(materialIndices[i]);
+        g.erase("name");
+        resolve_textures(w, g);
+        const std::string key = sha1_hex(json{{"gltf", g}, {"vrchat", inputs[i]}}.dump());
+        w.material_json(materialIndices[i])["extras"]["castlemistMaterialKey"] = key;
+        keys.push_back(key);
+    }
+    return keys;
+}
+
+} // namespace
 
 GltfExportResult export_model_gltf(const ModelPreview& model, const std::string& glbPath,
                                    const GltfExportOptions& opts) {
@@ -30,11 +72,14 @@ GltfExportResult export_model_gltf(const ModelPreview& model, const std::string&
     make_dirs(outPath.parent_path(), ec);
 
     GltfWriter w;
+    if (opts.generatedImages) w.set_generated_pool(opts.generatedImages.get(), opts.generatedImageUriPrefix);
 
     std::vector<int> texIndices;
     write_model_textures(w, model.textures, texIndices, opts.imageDirUtf8, opts.imageUriPrefix,
                          opts.sharedImages.get(), opts.sharedImageUriPrefix);
     std::vector<int> materialIndices = write_materials(w, model, texIndices);
+    if (!opts.materialKeyInputs.empty() && opts.materialKeyInputs.size() == materialIndices.size())
+        result.materialKeys = write_material_keys(w, materialIndices, opts.materialKeyInputs);
     std::vector<MeshExportInfo> meshes =
         write_meshes(w, model, materialIndices, opts.exportLods ? model_lod_levels(model) : 1);
     result.particlesJsonPath = write_particle_sidecar(model, materialIndices, glbPath);

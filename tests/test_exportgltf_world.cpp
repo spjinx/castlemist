@@ -16,6 +16,7 @@
 #include "castlemist/exportgltf/world_unity_terrain.h"
 #include "world_export_synthetic.h"
 #include "long_path.h"
+#include "sha1.h"
 #include "castlemist/world/frame.h"
 #include "castlemist/world/props.h"
 #include "castlemist/world/surface_rules.h"
@@ -44,6 +45,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -2595,4 +2597,264 @@ CM_TEST(world_lods, manifest_lods_and_overrides) {
     bool lod2 = false;
     for (const json& n : g["nodes"]) lod2 = lod2 || n.value("name", std::string()) == "101_mesh0_LOD2";
     CHECK(lod2);
+}
+
+// ============================================================ Task 15d: shared materials
+
+namespace {
+
+std::string sha1_of_file(const fs::path& p) { return sha1_hex(file_bytes(p)); }
+
+/// The world export's write_vrchat_folder options (world_folder.cpp's model stage).
+VrchatFolderOptions world_vo(const fs::path& out, std::vector<json> extras = {}) {
+    VrchatFolderOptions vo;
+    vo.gltf.rootMatrix = map_to_gltf_root(1.0);
+    vo.gltf.sharedImages = std::make_shared<SharedImagePool>((out / "textures").string());
+    vo.gltf.sharedImageUriPrefix = "../../textures/";
+    vo.gltf.generatedImages = std::make_shared<SharedImagePool>((out / "textures" / "gen").string());
+    vo.gltf.generatedImageUriPrefix = "../../textures/gen/";
+    vo.generatedMaps = vo.gltf.generatedImages;
+    vo.generatedMapsPrefix = "../../textures/gen/";
+    vo.materialKeys = true;
+    vo.materialKeyExtras = std::move(extras);
+    return vo;
+}
+
+std::string key_of(const VrchatFolderResult& r, size_t i = 0) {
+    return i < r.materialKeys.size() ? r.materialKeys[i].key : std::string();
+}
+
+/// SyntheticModelSource with every material renamed by model fileId (names[fileId]).
+class RenamingSource : public tw::SyntheticModelSource {
+public:
+    std::map<uint32_t, std::string> names;
+    std::shared_ptr<ModelPreview> load(uint32_t index, uint32_t fileId) override {
+        std::shared_ptr<ModelPreview> m = tw::SyntheticModelSource::load(index, fileId);
+        if (m && names.count(fileId))
+            for (ModelMaterialCPU& mat : m->materials) mat.materialName = names[fileId];
+        return m;
+    }
+};
+
+} // namespace
+
+CM_TEST(world_materials, sha1_known_vectors) {
+    CHECK(sha1_hex(std::string_view()) == "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+    CHECK(sha1_hex(std::string_view("abc")) == "a9993e364706816aba3e25717850c26c9cd0d89d");
+    CHECK(sha1_hex(std::string_view("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")) ==
+          "84983e441c3bd26ebaae4aa1f95129e5e54670f1");
+    const std::string a(1000000, 'a');
+    CHECK(sha1_hex(std::string_view(a)) == "34aa973cd4c4daa4f61eeb2bdbad27316534016f");
+    // 55, 56 and 64 bytes: the padding block boundaries (hashlib's digests).
+    const std::string a55(55, 'a'), a56(56, 'a'), a64(64, 'a');
+    CHECK(sha1_hex(std::string_view(a55)) == "c1c8bbdc22796e28c0e15163d20899b65621d65a");
+    CHECK(sha1_hex(std::string_view(a56)) == "c2db330f6083854c99d4b5bfb6e8f29f201be699");
+    CHECK(sha1_hex(std::string_view(a64)) == "0098ba824b5c16427bd7a1122a5a442a25ec644d");
+}
+
+CM_TEST(world_materials, content_pool_writes_once) {
+    const fs::path dir = fresh_dir("content_pool");
+    SharedImagePool pool((dir / "gen").string());
+    const std::vector<uint8_t> a = {1, 2, 3}, b = {4, 5};
+    const std::string na = pool.ensure_content(a, "_BaseColor");
+    CHECK(na == sha1_hex(a) + "_BaseColor.png");
+    CHECK(pool.ensure_content(a, "_BaseColor") == na);   // the same bytes and role: the same file
+    CHECK(pool.ensure_content(a, "_Packed") != na);      // another role is another file
+    CHECK(pool.ensure_content(b) == sha1_hex(b) + ".png");
+    CHECK(pool.ensure_content({}).empty());
+    CHECK_EQ(pool.written(), size_t(3));
+    CHECK_EQ(pool.bytes_requested(), uint64_t(3 + 3 + 3 + 2));
+    CHECK_EQ(pool.bytes_written(), uint64_t(3 + 3 + 2));
+    CHECK(file_bytes(dir / "gen" / na) == a);
+    CHECK_FALSE(fs::exists(dir / "gen" / (na + ".tmp")));
+    // Concurrent callers for one name: one write, every caller gets the name.
+    SharedImagePool p2((dir / "gen2").string());
+    std::vector<std::future<std::string>> futures;
+    for (int i = 0; i < 8; ++i)
+        futures.push_back(std::async(std::launch::async, [&] { return p2.ensure_content(a, "_X"); }));
+    for (auto& f : futures) CHECK(f.get() == sha1_hex(a) + "_X.png");
+    CHECK_EQ(p2.written(), size_t(1));
+    CHECK_EQ(p2.bytes_written(), uint64_t(3));
+}
+
+// The key is the content: equal materials of two models share it whatever their
+// names; any look difference (a constant, a texture, the dark-decal flag or the
+// uvScroll) splits it. The glb and materials.json carry it.
+CM_TEST(world_materials, key_is_content_not_name) {
+    const fs::path out = fresh_dir("keys");
+    const ModelPreview base = glow_quad();
+    ModelPreview renamed = base;
+    renamed.materials[0].materialName = "Other blade";
+    ModelPreview tinted = base;
+    tinted.materials[0].namedConstants[0].second = 0.25f;
+    ModelPreview retextured = base;
+    retextured.textures[1] = wtex(2, 2, std::vector<std::array<uint8_t, 4>>(4, {128, 128, 254, 255}), 3001);
+
+    const json plain{{"darkDecal", false}, {"uvScroll", nullptr}};
+    VrchatFolderOptions vo = world_vo(out, {plain});
+    const auto ra = write_vrchat_folder(base, (out / "models" / "1").string(), "1", 1, vo);
+    const auto rb = write_vrchat_folder(renamed, (out / "models" / "2").string(), "2", 2, vo);
+    const auto rc = write_vrchat_folder(tinted, (out / "models" / "3").string(), "3", 3, vo);
+    const auto rd = write_vrchat_folder(retextured, (out / "models" / "4").string(), "4", 4, vo);
+    VrchatFolderOptions dark = vo;
+    dark.materialKeyExtras = {json{{"darkDecal", true}, {"uvScroll", nullptr}}};
+    const auto re = write_vrchat_folder(base, (out / "models" / "5").string(), "5", 5, dark);
+    VrchatFolderOptions scroll = vo;
+    scroll.materialKeyExtras = {json{{"darkDecal", false}, {"uvScroll", {{"uvIndex", 0}, {"scroll", {0, 0.5}}}}}};
+    const auto rf = write_vrchat_folder(base, (out / "models" / "6").string(), "6", 6, scroll);
+    for (const auto* r : {&ra, &rb, &rc, &rd, &re, &rf}) {
+        CHECK(r->ok);
+        CHECK_EQ(r->materialKeys.size(), size_t(1));
+    }
+    const std::string k = key_of(ra);
+    CHECK_EQ(k.size(), size_t(40));
+    CHECK(key_of(rb) == k);
+    if (!rb.materialKeys.empty()) CHECK(rb.materialKeys[0].name == "Other blade");
+    for (const auto* r : {&rc, &rd, &re, &rf}) CHECK(key_of(*r) != k);
+    CHECK(key_of(re) != key_of(rf));
+
+    // materials.json and the glb carry the key; the maps are pooled by content.
+    const json mj = read_json(out / "models" / "1" / "materials.json");
+    CHECK(mj["materials"][0]["key"] == json(k));
+    const json g = glb_json(out / "models" / "1" / "1.glb");
+    CHECK(g["materials"][0]["extras"]["castlemistMaterialKey"] == json(k));
+    CHECK(g["materials"][0]["name"] == json("Blade"));   // the display name stays
+    CHECK_FALSE(fs::exists(out / "models" / "1" / "Textures"));
+    CHECK_FALSE(fs::exists(out / "models" / "1" / "Images"));
+    size_t maps = 0;
+    for (const auto& [role, v] : mj["materials"][0]["maps"].items()) {
+        if (!v.is_object()) continue;
+        const std::string file = v["file"].get<std::string>();
+        CHECK(file.rfind("../../textures/gen/", 0) == 0);
+        const fs::path p = out / "models" / "1" / fs::path(file);
+        CHECK(fs::exists(p));
+        if (fs::exists(p)) CHECK(sha1_of_file(p) == p.filename().string().substr(0, 40));
+        ++maps;
+    }
+    CHECK(maps >= 3);   // baseColor, normal, packed
+    // Model 2's maps are model 1's files: nothing is written twice.
+    const json mj2 = read_json(out / "models" / "2" / "materials.json");
+    CHECK(mj2["materials"][0]["maps"]["baseColor"]["file"] == mj["materials"][0]["maps"]["baseColor"]["file"]);
+    CHECK(mj2["materials"][0]["name"] == json("Other blade"));
+    // Generated glb images (the metal-rough map) are in the pool too, by content.
+    bool metal = false;
+    for (const json& im : g["images"]) {
+        const std::string uri = im.value("uri", std::string());
+        CHECK(uri.rfind("../../textures/", 0) == 0);
+        if (uri.rfind("../../textures/gen/", 0) == 0) {
+            metal = true;
+            const fs::path p = out / "models" / "1" / fs::path(uri);
+            CHECK(fs::exists(p));
+            if (fs::exists(p)) CHECK(sha1_of_file(p) + ".png" == p.filename().string());
+        }
+    }
+    CHECK(metal);
+    const json g2 = glb_json(out / "models" / "2" / "2.glb");
+    CHECK(g2["images"].size() == g["images"].size());
+    for (size_t i = 0; i < g["images"].size() && i < g2["images"].size(); ++i)
+        CHECK(g2["images"][i]["uri"] == g["images"][i]["uri"]);
+}
+
+// Off (every non-world export): no key anywhere, the folder byte for byte as
+// before (Textures/, embedded images).
+CM_TEST(world_materials, other_exports_unchanged) {
+    const ModelPreview model = glow_quad();
+    const fs::path a = fresh_dir("keys_off_a"), b = fresh_dir("keys_off_b");
+    CHECK(write_vrchat_folder(model, a.string(), "Dagger", 1766522).ok);
+    VrchatFolderOptions vo;
+    vo.materialKeyExtras = {json{{"darkDecal", true}}};   // ignored without materialKeys
+    CHECK(write_vrchat_folder(model, b.string(), "Dagger", 1766522, vo).ok);
+    CHECK(file_bytes(a / "Dagger.glb") == file_bytes(b / "Dagger.glb"));
+    CHECK(file_bytes(a / "materials.json") == file_bytes(b / "materials.json"));
+    const std::vector<uint8_t> mj = file_bytes(a / "materials.json"), glb = file_bytes(a / "Dagger.glb");
+    const std::string mjs(mj.begin(), mj.end()), glbs(glb.begin(), glb.end());
+    CHECK(mjs.find("\"key\"") == std::string::npos);
+    CHECK(glbs.find("castlemistMaterialKey") == std::string::npos);
+    CHECK(fs::exists(a / "Textures" / "Blade - BaseColor.png"));
+    CHECK(export_model_gltf(model, (a / "plain.glb").string()).ok);
+    GltfExportOptions go;
+    go.materialKeyInputs = {"x", "y"};   // not one per material: ignored
+    const GltfExportResult r = export_model_gltf(model, (b / "plain.glb").string(), go);
+    CHECK(r.ok && r.materialKeys.empty());
+    CHECK(file_bytes(a / "plain.glb") == file_bytes(b / "plain.glb"));
+}
+
+// The world export: models 102 and 103 have equal materials (synthetic fixture),
+// so they share one key; the manifest's table has one entry per key.
+CM_TEST(world_materials, export_shares_keys) {
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource src;
+    const fs::path dir = fresh_dir("folder_keys");
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts());
+    CHECK(r.ok);
+    const json man = read_json(dir / "manifest.json");
+    check_valid(man, "shared materials");
+    const json& models = man["models"];
+    CHECK_EQ(models.size(), size_t(3));
+    for (const json& m : models) CHECK_EQ(m["materialKeys"].size(), size_t(1));
+    const std::string k101 = models[0]["materialKeys"][0], k102 = models[1]["materialKeys"][0],
+                      k103 = models[2]["materialKeys"][0];
+    CHECK(k102 == k103);
+    CHECK(k101 != k102);
+    const json& sm = man["sharedMaterials"];
+    CHECK_EQ(sm["entries"].size(), size_t(2));
+    std::set<std::string> keys;
+    for (const json& e : sm["entries"]) keys.insert(e["key"].get<std::string>());
+    CHECK_EQ(keys.size(), size_t(2));
+    const json& shared = sm["entries"][1];
+    CHECK(shared["key"] == json(k102));
+    CHECK(shared["model"] == json(1));   // the first slot: model 102's
+    CHECK(shared["material"] == json(0));
+    CHECK(shared["slots"] == json(2));
+    CHECK(shared["models"] == json(2));
+    CHECK(shared["usedByMeshes"] == json(true));
+    CHECK(shared["name"] == json("Mat_58247"));
+    for (size_t i = 0; i < models.size(); ++i) {
+        const json mj = read_json(dir / models[i]["materials"].get<std::string>());
+        CHECK(mj["materials"][0]["key"] == models[i]["materialKeys"][0]);
+        const json g = glb_json(dir / models[i]["glb"].get<std::string>());
+        CHECK(g["materials"][0]["extras"]["castlemistMaterialKey"] == models[i]["materialKeys"][0]);
+        // LOD levels still draw their LOD0 material (Task 15b): one glTF material, one key.
+        CHECK_EQ(g["materials"].size(), size_t(1));
+        for (const json& mesh : g["meshes"])
+            for (const json& p : mesh["primitives"]) CHECK(p["material"] == json(0));
+        CHECK_FALSE(fs::exists(dir / models[i]["folder"].get<std::string>() / "Textures"));
+    }
+    // The pool: every file once, named by its content; the report's bytes agree.
+    const json& gm = sm["generatedMaps"];
+    CHECK(gm["dir"] == json("textures/gen"));
+    size_t n = 0;
+    uint64_t bytes = 0;
+    for (const auto& e : fs::directory_iterator(dir / "textures" / "gen")) {
+        ++n;
+        bytes += fs::file_size(e.path());
+        CHECK(sha1_of_file(e.path()) == e.path().filename().string().substr(0, 40));
+    }
+    CHECK(n > 0);
+    CHECK_EQ(gm["count"].get<size_t>(), n);
+    CHECK_EQ(gm["bytes"].get<uint64_t>(), bytes);
+    CHECK(gm["bytesRequested"].get<uint64_t>() > bytes);   // 102 and 103 asked for the same maps
+    CHECK_EQ(r.bytes.at("generated-maps"), bytes);
+    CHECK_EQ(r.bytes.at("generated-maps-requested"), gm["bytesRequested"].get<uint64_t>());
+    CHECK_EQ(man["textures"]["count"].get<int>(), 1);   // gen/ is a folder, not a dat texture
+}
+
+// The display name is the most common of the key's slots, the smallest on a tie.
+CM_TEST(world_materials, table_name_most_common) {
+    const cw::WorldScene s = tw::synthetic_world();
+    RenamingSource src;
+    src.names = {{102, "Zeta"}, {103, "Alpha"}};
+    const fs::path dir = fresh_dir("folder_key_names");
+    CHECK(export_world_folder(s, src, nullptr, dir.string(), synthetic_opts()).ok);
+    const json man = read_json(dir / "manifest.json");
+    check_valid(man, "key names");
+    CHECK(man["models"][1]["materialKeys"] == man["models"][2]["materialKeys"]);   // names differ, key equal
+    CHECK_EQ(man["sharedMaterials"]["entries"].size(), size_t(2));
+    CHECK(man["sharedMaterials"]["entries"][1]["name"] == json("Alpha"));   // 1 : 1, the smallest
+    src.names = {{102, "Zeta"}, {103, "Zeta"}, {101, "Alpha"}};
+    const fs::path d2 = fresh_dir("folder_key_names2");
+    CHECK(export_world_folder(s, src, nullptr, d2.string(), synthetic_opts()).ok);
+    const json m2 = read_json(d2 / "manifest.json");
+    CHECK(m2["sharedMaterials"]["entries"][1]["name"] == json("Zeta"));
+    CHECK(m2["sharedMaterials"]["entries"][0]["name"] == json("Alpha"));
 }

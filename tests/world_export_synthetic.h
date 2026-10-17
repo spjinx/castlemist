@@ -14,7 +14,7 @@
 /// Zones (world-foliage spec D2, "Testing" exportgltf): one type-3 layer whose
 /// models are {101} and one type-1 layer whose models are {103} (model 103:
 /// static grass, one mesh, one material, a traced game material naming
-/// VegPara); a collider tree of 101 (Collider, placement 0, collider 0) in
+/// VegPara; its material equals 102's, Task 15d); a collider tree of 101 (Collider, placement 0, collider 0) in
 /// chunk (0, 0); a geometry-only collider of 101 (layer = placement =
 /// UINT32_MAX, collider 1) in chunk (1, 0); two grass instances of 103
 /// (Density, placements 1 and 3) in chunks (0, 1) and (1, 1). fmix32(1) < 2^31
@@ -241,11 +241,12 @@ inline ModelPreview skinned_probe() {
     return mp;
 }
 
-/// @brief static_cube as zone grass: material 58249, and one traced game
+/// @brief static_cube as zone grass: material 58247, equal to skinned_cube's,
+///        so 102 and 103 share one material key (Task 15d), and one traced game
 ///        material whose vertex stage names VegPara (a wind-capable AMAT).
 inline ModelPreview static_grass() {
     ModelPreview mp = static_cube();
-    mp.materials[0].materialFile = 58249;
+    mp.materials[0].materialFile = 58247;
     GameMaterial g;
     g.index = 0;
     g.ok = true;

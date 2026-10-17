@@ -7,6 +7,7 @@
 
 #include "internal.h"
 #include "long_path.h"
+#include "sha1.h"
 
 #include <algorithm>
 #include <cmath>
@@ -160,8 +161,9 @@ struct SharedImagePool::Impl {
     std::string dir;
     mutable std::mutex mu;
     std::condition_variable cv;
-    std::map<uint32_t, Slot> slots;
+    std::map<std::string, Slot> slots;   // by file name
     size_t written = 0;
+    uint64_t bytesRequested = 0, bytesWritten = 0;
 };
 
 SharedImagePool::SharedImagePool(std::string dirUtf8) : impl_(std::make_unique<Impl>()) {
@@ -175,43 +177,71 @@ size_t SharedImagePool::written() const {
     std::lock_guard<std::mutex> lk(impl_->mu);
     return impl_->written;
 }
+uint64_t SharedImagePool::bytes_requested() const {
+    std::lock_guard<std::mutex> lk(impl_->mu);
+    return impl_->bytesRequested;
+}
+uint64_t SharedImagePool::bytes_written() const {
+    std::lock_guard<std::mutex> lk(impl_->mu);
+    return impl_->bytesWritten;
+}
 
 bool SharedImagePool::ensure(uint32_t fileId, const std::function<std::vector<uint8_t>()>& encodePng,
                              std::string* error) {
+    return ensure_file(file_name(fileId), encodePng, error, nullptr);
+}
+
+std::string SharedImagePool::ensure_content(const std::vector<uint8_t>& png, const std::string& suffix,
+                                            std::string* error) {
+    {
+        std::lock_guard<std::mutex> lk(impl_->mu);
+        impl_->bytesRequested += png.size();
+    }
+    if (png.empty()) {
+        if (error) *error = "Could not encode a generated image.";
+        return {};
+    }
+    const std::string name = sha1_hex(png) + suffix + ".png";
+    uint64_t bytes = png.size();
+    return ensure_file(name, [&png] { return png; }, error, &bytes) ? name : std::string();
+}
+
+bool SharedImagePool::ensure_file(const std::string& name, const std::function<std::vector<uint8_t>()>& encodePng,
+                                  std::string* error, uint64_t* bytes) {
     namespace fs = std::filesystem;
     Impl& p = *impl_;
     {
         std::unique_lock<std::mutex> lk(p.mu);
-        auto [it, claimed] = p.slots.try_emplace(fileId);
+        auto [it, claimed] = p.slots.try_emplace(name);
         if (!claimed) {   // another caller owns it: wait until it is in place (or failed)
             p.cv.wait(lk, [&] { return it->second.done; });
             if (!it->second.ok && error) *error = it->second.error;
             return it->second.ok;
         }
     }
-    // This caller claimed fileId: encode and write outside the lock. The guard
+    // This caller claimed the name: encode and write outside the lock. The guard
     // publishes the slot however this scope is left -- an exception (say a
     // bad_alloc building a path) included -- so no waiter blocks forever.
     std::string err;
     bool published = false;
     struct Publish {
-        Impl& p; uint32_t id; const std::string& err; bool& published;
+        Impl& p; const std::string& name; const std::string& err; bool& published; uint64_t bytes;
         ~Publish() {
             {
                 std::lock_guard<std::mutex> lk(p.mu);
-                Impl::Slot& s = p.slots[id];
+                Impl::Slot& s = p.slots[name];
                 s.done = true;
                 s.ok = published;
                 s.error = published ? std::string()
-                          : err.empty() ? "Could not write image " + file_name(id) + ": interrupted."
+                          : err.empty() ? "Could not write image " + name + ": interrupted."
                                         : err;
-                if (published) ++p.written;
+                if (published) { ++p.written; p.bytesWritten += bytes; }
             }
             p.cv.notify_all();
         }
-    } guard{p, fileId, err, published};
+    } guard{p, name, err, published, bytes ? *bytes : 0};
     const fs::path dir = fs::path(std::u8string(p.dir.begin(), p.dir.end()));
-    const fs::path dst = dir / file_name(fileId), tmp = dir / (file_name(fileId) + ".tmp");
+    const fs::path dst = dir / name, tmp = dir / (name + ".tmp");
     std::vector<uint8_t> png;
     try {
         png = encodePng();
@@ -219,7 +249,7 @@ bool SharedImagePool::ensure(uint32_t fileId, const std::function<std::vector<ui
         png.clear();
     }
     if (png.empty()) {
-        err = "Could not encode image " + file_name(fileId) + ".";
+        err = "Could not encode image " + name + ".";
     } else {
         std::error_code ec;
         make_dirs(dir, ec);
@@ -227,11 +257,11 @@ bool SharedImagePool::ensure(uint32_t fileId, const std::function<std::vector<ui
             std::ofstream out(long_path(tmp), std::ios::binary);
             if (out) out.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
             out.close();
-            if (!out) err = "Could not write image '" + p.dir + "/" + file_name(fileId) + ".tmp'.";
+            if (!out) err = "Could not write image '" + p.dir + "/" + name + ".tmp'.";
         }
         if (err.empty()) {
             fs::rename(long_path(tmp), long_path(dst), ec);
-            if (ec) err = "Could not rename image '" + p.dir + "/" + file_name(fileId) + "': " + ec.message();
+            if (ec) err = "Could not rename image '" + p.dir + "/" + name + "': " + ec.message();
         }
         if (!err.empty()) fs::remove(long_path(tmp), ec);
     }

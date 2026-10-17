@@ -17,6 +17,8 @@
 #include <string>
 #include <vector>
 
+#include "nlohmann/json.hpp"
+
 namespace castlemist::exportgltf {
 
 /// Result of write_vrchat_folder. Paths are UTF-8.
@@ -26,6 +28,10 @@ struct VrchatFolderResult {
     std::string folder, glb, materialsJson, particlesJson;  ///< particlesJson empty when none
     size_t materials = 0, clips = 0;
     std::vector<std::string> warnings;  ///< every material's warnings, prefixed "<Mat>: "
+    /// One per model material when VrchatFolderOptions::materialKeys is set (Task 15d):
+    /// its key (as in materials.json), display name and usedByMeshes.
+    struct MaterialKey { std::string key, name; bool usedByMeshes = false; };
+    std::vector<MaterialKey> materialKeys;
 };
 
 /// Options for write_vrchat_folder. Default-constructed, the folder is exactly
@@ -34,6 +40,23 @@ struct VrchatFolderOptions {
     /// Passed to export_model_gltf for the .glb (the world export sets
     /// rootMatrix and the image folder; see world-export spec D2).
     GltfExportOptions gltf;
+
+    /// World export only (Task 15d). Set: every Poiyomi map is written once into
+    /// this content pool as "<sha1 of the PNG>_<Role>.png" (SharedImagePool::
+    /// ensure_content; Role is the map's suffix, e.g. BaseColor, Packed, mod) and
+    /// materials.json names it as @ref generatedMapsPrefix + that name; nothing
+    /// is written to Textures/. Null (the default): `Textures/<Mat> - <Role>.png`.
+    std::shared_ptr<SharedImagePool> generatedMaps;
+    std::string generatedMapsPrefix;   ///< the pool relative to the folder, e.g. "../../textures/gen/"
+    /// World export only (Task 15d): each materials.json entry gains "key", the
+    /// material's content key (export_model_gltf's GltfExportOptions::
+    /// materialKeyInputs, with the entry less name, fileName, usedByMeshes and
+    /// warnings, plus @ref materialKeyExtras as its input), and its glTF material
+    /// extras.castlemistMaterialKey the same key. Off (the default) writes neither.
+    bool materialKeys = false;
+    /// Per model material, more key input (the world export's dark-decal flag and
+    /// uvScroll entry); missing entries count as null.
+    std::vector<nlohmann::json> materialKeyExtras;
 };
 
 /// Write `<folder>/<name>.glb`, `<folder>/materials.json` and

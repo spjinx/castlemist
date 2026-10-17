@@ -104,7 +104,10 @@ struct ManifestModel { uint32_t index = 0, fileId = 0; bool ok = false; std::str
                        nlohmann::json uvScroll = nlohmann::json::array();
                        int meshes = 0, materialCount = 0; nlohmann::json wind;
                        /// world_lods.h model_lods_json, written as models[].lods; null = left out.
-                       nlohmann::json lods; };
+                       nlohmann::json lods;
+                       /// Task 15d: per materials.json entry, its material key
+                       /// (models[].materialKeys, left out when empty).
+                       std::vector<std::string> materialKeys; };
 
 /// @brief One written cell. Empty albedo / water paths are written as null.
 ///        An empty foliageFile writes `foliage: null`; else {file, records,
@@ -134,6 +137,9 @@ struct WorldManifestInput {
     /// foliage block) gains terrainTrees and detailRecords, the tiles' sums.
     nlohmann::json unityTerrain;
     nlohmann::json textures;   ///< {dir: string, count: integer >= 0} (ruling W8) or null = left out
+    /// Task 15d: {generatedMaps: {dir, count, bytes, bytesRequested}, entries: [{key, name,
+    /// model, material, slots, models, usedByMeshes}]}, written as sharedMaterials; null = left out.
+    nlohmann::json sharedMaterials;
     std::function<std::string(uint32_t propIndex)> clipOf;   ///< "" = null
 };
 
