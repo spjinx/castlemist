@@ -1234,3 +1234,35 @@ all-against-off figures are noise. **Budgets held; no lever taken** (tile size
 plants stand on the terrain, none floating or buried; tree trunks reach the
 ground; with ×1.5 more grass shows on the far slopes and more trees on the
 horizon.
+
+### 2026-10-17, Task 15b: model LODs to Unity LODGroups
+
+Added at the user's request. Research: `docs/research/gw2-model-lods.md`
+amendment 2026-10-17 (the client's rule, from static disassembly).
+
+- **Export.** World model glbs (`GltfExportOptions::exportLods`, world export
+  only) carry each mesh's own LOD1/LOD2 index sets as extra meshes sharing the
+  LOD0 vertex accessors and material, on nodes `<LOD0 node>_LOD<k>`; a level a
+  mesh has no set for gets no node and repeats its coarser one
+  (`settings.lodMissingLevel`, UNPROVEN). At most 3 levels. The VRChat,
+  character and model exports are byte-identical (tested).
+- **Manifest.** `models[].lods` {levels, distances, distanceSource,
+  lodOverride, triangles}; `instances[].lod` for OVERRIDE_LOD placements;
+  settings `lodDistances` (measured from the client), `lodDistanceScale` and
+  `lodMissingLevel` (UNPROVEN), `lodPropCullHeight` 0 (castlemist's choice).
+- **Unity.** A model with levels > 1 gets a LODGroup on its prefab; heights
+  `h(d) = size / (2 d tan(lodCullFovDeg / 2))` with the LODGroup's own size and
+  the model-unit distance (the instance scale cancels: the client's distance
+  scales with it); props never cull; tree prefabs end at the fadeFar cull and
+  drop levels it hides; OVERRIDE_LOD instances get their own heights. Grass
+  patches and terrain details keep LOD0. PLAN gains `lodPrefabs`,
+  `lodTreePrefabs`, `lodOverrides`; batchmode logs `LODS ... OK`.
+- **Blender.** LOD meshes go to hidden, non-instanced `<fileId> LOD<k>`
+  collections; `--verify` checks them.
+- **Map Window.** Not changed: it keeps its own angular-size thresholds.
+- **Measured** (Unity 2022.3.22f1 batchmode): Spirit Vale `lodPrefabs=72
+  lodTreePrefabs=0 lodOverrides=32`, Queensdale region 8,4,15,11
+  `lodPrefabs=38 lodTreePrefabs=3 lodOverrides=6`, PLAN equal to the dry run in
+  mesh and Terrain mode. Coverage on the three maps: 8–19% of prop models,
+  6–24% of their placements; LOD1 cuts about 30% and LOD2 about 38% of the
+  triangles of the models that have LODs.
