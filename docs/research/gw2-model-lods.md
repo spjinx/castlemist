@@ -318,3 +318,79 @@ h(d) = S / (2 · d · tan(fov/2))      (then Unity scales by QualitySettings.lod
 - What entries 2–3 of that array hold (the fade or cull distance).
 - What the high-detail vs normal distance sets are (prop flag 0x20 at +220).
 - Whether meshes without `lods` stay visible at LOD1/LOD2.
+
+## Amendment 2026-10-17: the client's rule, and what the export does (Task 15b)
+
+**Executable.** `Gw2-64-disable-aslr.exe` (md5 `1495f3a25b4a0ecc6cb71cf7fb81f8df`,
+imagebase `0x140000000`), disassembled with `objdump -d -M intel`. The
+annotations file's addresses are from an older build (shifted by about
+`0x6500` here). The game was not run.
+
+**`lodDistances[4]` is not the switch distances.** `PrContext_LoadPropModel`
+(here `0x140c7be50`) fills four *bytes* from preference getters
+(`0x1409b4ed0` .. or `0x1409b6470` .. by prop flag `0x20` at `+0xdc`) and
+passes them to `ModelMgr_LoadModel` (`0x140cf7000`). They are quality
+settings, not distances. The open item about "entries 2–3" is moot.
+
+**The model's distances.** The model object (vtable `0x141ee0310`) keeps
+`lod1` / `lod2` at `+0x128` / `+0x12c`:
+
+- At construction (`0x140cf8184`) they are **3500 / 7500** (`0x141ae20d0`,
+  `0x141ee186c`), or 800 / 1800 when bit 10 of the load flags at `+0x90` is
+  set (not a prop load as far as traced). Each is then replaced by `+0x130` /
+  `+0x134` when that is > 0, clamped to 100 000 (`0x141b991f4`).
+- On load (`0x140cf7b50`) `+0x130` / `+0x134` come from the model file's
+  `ModelFileData` at `+0x5c` / `+0x60`, which is `lodOverride[0..1]` (the
+  V66/V70 offset with 8-byte pointers), taking the larger of the model's and
+  a second file's value. While no explicit distance was set (bit 7 / bit 6 of
+  `+0x144`), they become the model's distances, clamped to [0, 100 000].
+- So the model's switch distances are `lodOverride[k]` when it is > 0, else
+  3500 / 7500. That is the rule `world_lods.h model_lod_distances` applies.
+
+**The placement's distances.** After the model loads (`0x140cb3f05`, and the
+same code at `0x140cb5a04`), the prop calls the model's setter (vtable `+0x7e8`,
+`0x140cfa0e0`) with `lod1` / `lod2` from the prop (`+0x3c` / `+0x40`) only when
+`flags` (`+0xdc`) has bit 16 (`OVERRIDE_LOD`, `0x10000`) **and** they are not
+both 0. The setter clamps each to at most 100 000 and makes a negative one 0.
+
+**The switch.** The model's LOD pick (`0x140cf9010`):
+`d_k = lod_k × s × G`, where `s` is the instance transform's largest axis scale
+(`0x140bac510`; 1 when the transform has no scale) and `G` is a global float
+(`.data 0x1425927f8`, initial value 1.0, probably a quality setting; its
+runtime value was not read). The distance is the 3D distance from the camera to
+the model's bounds. Level 0 below `d_1`, level 1 from `d_1`, level 2 from `d_2`,
+with a 75-unit hysteresis (`0x14192d3fc`) when stepping up. This confirms the
+`lod · scale` reading of section 2 for the per-placement values, and shows the
+model's own distances scale with the instance too.
+
+**Consequence for Unity.** Unity's screen-relative height carries the same
+instance scale, so `h = size / (2 · d_k · tan(fov/2))` with the prefab's own
+LODGroup size and `d_k` in model units is right for every instance: no
+per-instance value is needed except for `OVERRIDE_LOD` placements. The
+"compute per instance from its world S" advice of section 7 is not needed.
+
+**Measured on the three test maps** (`world_export_dat.lods`, every prop model
+loaded, LOD0 / LOD1 / LOD2 triangles with a mesh without its own level
+repeating its coarser one):
+
+| map | models with LODs | of them 3 levels | placements of LOD models | OVERRIDE_LOD placements (on LOD models) | tris LOD0 → LOD1 → LOD2 (models) |
+|---|---|---|---|---|---|
+| Queensdale 192711 | 177 / 2244 (7.9%) | 54 | 646 / 11492 (5.6%) | 785 (37) | 722 824 → 503 518 (−30.3%) → 451 828 (−37.5%) |
+| Lion's Arch 191000 | 225 / 1706 (13.2%) | 98 | 2747 / 18319 (15.0%) | 1327 (194) | 901 029 → 639 207 (−29.1%) → 527 497 (−41.5%) |
+| Spirit Vale 1151420 | 72 / 383 (18.8%) | 23 | 564 / 2354 (24.0%) | 42 (32) | 441 734 → 308 178 (−30.2%) → 273 598 (−38.1%) |
+
+- Coverage is well below section 1's "about 40%": that came from a sample of
+  20 models. Over whole maps it is 8–19% of the prop models.
+- Almost every model stores a non-zero `lodOverride` (2244 / 2244, 1705 / 1706,
+  382 / 383); only 528, 516 and 97 of them hold the 3500 / 7500 pair.
+- In Queensdale, 6667 placements store a non-zero `lod1` or `lod2` without
+  `OVERRIDE_LOD`; the other two maps have none. The client ignores them.
+- Models 1713091 and 1792088 give exactly section 4's triangle counts and
+  `lodOverride` values.
+
+**Still open.** Whether a mesh without its own `lods` is hidden at LOD1/LOD2
+(the export repeats its coarser level, `settings.lodMissingLevel`); the
+runtime value of `G`; GW2's prop fade/cull distance (the export never culls a
+prop, `settings.lodPropCullHeight` 0); what `DROP_LOD_2` (bit 4) and
+`DISABLE_LOD` (bit 7) do (bit 4 is tested near the prop's fade code at
+`0x140cb49ec`; not acted on).
