@@ -3354,6 +3354,11 @@ private:
         chk(p, ptr_);
         uint64_t v = 0;
         for (int i = 0; i < ptr_; ++i) v |= (uint64_t)d_[p + i] << (8 * i);
+        // A pointer is a signed offset from its own field. An 8-byte one wraps
+        // in size_t arithmetic by itself; a 4-byte one must be sign-extended,
+        // or a backward pointer (data shared and stored earlier, e.g. the
+        // light records of map 2499169) lands 4 GB past the file.
+        if (ptr_ == 4 && (v & 0x80000000ull)) v |= 0xFFFFFFFF00000000ull;
         return v;
     }
     float rdf(size_t p) const { uint32_t u = rd32(p); float f; std::memcpy(&f, &u, 4); return f; }

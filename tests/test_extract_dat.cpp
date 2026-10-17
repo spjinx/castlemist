@@ -638,6 +638,22 @@ CM_TEST(mapsky, sky_distance_from_trn) {
     CHECK_EQ(map_sky(3134778).skyDistance, 24576.0f);
 }
 
+// Mad King's Labyrinth 2499169 is a 32-bit-pointer packfile (PF v1) whose
+// light pointers point backwards: the light records shared by several presets
+// sit before the pointer arrays. A self-relative 32-bit pointer is signed, so
+// it must sign-extend; read unsigned it lands 4 GB past the file and the map
+// had "no light rig".
+CM_TEST(mapsky, labyrinth_light_rig_reads_through_backward_32bit_pointers) {
+    if (!ensure_template()) SKIP("no gw2_packfile.json struct template");
+    std::vector<uint8_t> bytes = packfile_by_file_id(2499169);
+    castlemist::model::Extractor ex(bytes, *castlemist::tpl::get());
+    auto l = ex.parseMapEnv(0);   // dataGlobal lighting[0]
+    CHECK(l.present);
+    CHECK_EQ(l.lightCount, 8);
+    CHECK_NEAR(l.sunIntensity, 1.30584f, 1e-4f);
+    CHECK(ex.parseMapEnv().present);   // the auto (brightest) preset too
+}
+
 // gw2-sky.md §8.2: starFile 187544 is a PF packfile with chunk STAR v0 --
 // S = 0.125, 1699 stars of {e0, e1, u0, u1, v0, v1}, atlas fileId 187543.
 CM_TEST(mapstars, star_file_187544) {
