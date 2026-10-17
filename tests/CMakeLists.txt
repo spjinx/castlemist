@@ -307,11 +307,12 @@ if (CASTLEMIST_PYTHON)
         world_manifest_unit PROPERTIES FIXTURES_REQUIRED world_fixture RESOURCE_LOCK world_fixture TIMEOUT 120)
     set_tests_properties(world_manifest_validate PROPERTIES PASS_REGULAR_EXPRESSION "^OK")
     # Mesh mode, Foliage All, density 1: trees are the collider tree and the geometry-only collider; the two grass
+    # (Task 15b: the three models have LOD1/LOD2, the trees are model 101, prop 1 has OVERRIDE_LOD)
     # records are 1536-unit squares (1, 1) and (3, 1) of the cell (x0 -15360, y0 33792), so 2 patches.
     set_tests_properties(world_manifest_plan PROPERTIES PASS_REGULAR_EXPRESSION
-        "PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2 foliagePatches=2 terrains=0 detailPrototypes=0 detailCells=0 treeInstances=0")
+        "PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=1 water=1 lights=1 skybox=0 foliageTrees=2 foliagePatches=2 terrains=0 detailPrototypes=0 detailCells=0 treeInstances=0 lodPrefabs=3 lodTreePrefabs=1 lodOverrides=1")
     set_tests_properties(world_manifest_plan_terrain PROPERTIES PASS_REGULAR_EXPRESSION
-        "PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=0 water=1 lights=1 skybox=0 foliageTrees=1 foliagePatches=0 terrains=1 detailPrototypes=1 detailCells=2 treeInstances=1")
+        "PLAN materials=5 prefabs=3 controllers=1 cells=1 instances=4 colliders=1 terrainColliders=0 water=1 lights=1 skybox=0 foliageTrees=1 foliagePatches=0 terrains=1 detailPrototypes=1 detailCells=2 treeInstances=1 lodPrefabs=3 lodTreePrefabs=1 lodOverrides=1")
     set_tests_properties(world_manifest_selftest PROPERTIES PASS_REGULAR_EXPRESSION "SELFTEST OK")
 endif()
 

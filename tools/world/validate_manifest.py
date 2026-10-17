@@ -214,6 +214,32 @@ def _exists(root, rel):
     return os.path.exists(os.path.join(root, rel))
 
 
+def model_lod_levels(mod):
+    """models[].lods.levels (Task 15b), 1 when the model has no lods block."""
+    lods = mod.get("lods") if isinstance(mod, dict) else None
+    lv = lods.get("levels") if isinstance(lods, dict) else None
+    return lv if isinstance(lv, int) else 1
+
+
+def _check_lods(mod, p, errors):
+    """models[].lods (Task 15b): one triangle count per level, never rising; LOD0 equals triangles."""
+    lods = mod.get("lods")
+    if not isinstance(lods, dict):
+        return
+    lv, tris = lods.get("levels"), lods.get("triangles")
+    if not isinstance(lv, int) or not isinstance(tris, list):
+        return
+    if len(tris) != lv:
+        errors.append("ERROR %s.lods.triangles: %d entries for %d levels" % (p, len(tris), lv))
+        return
+    if any(not isinstance(t, int) for t in tris):
+        return
+    if any(tris[k + 1] > tris[k] for k in range(len(tris) - 1)):
+        errors.append("ERROR %s.lods.triangles: a coarser level has more triangles: %s" % (p, tris))
+    if isinstance(mod.get("triangles"), int) and tris and tris[0] != mod["triangles"]:
+        errors.append("ERROR %s.lods.triangles: LOD0 %d != triangles %d" % (p, tris[0], mod["triangles"]))
+
+
 def semantic(m, root):
     errors = []
     _finite_walk(m, "", errors)
@@ -227,6 +253,7 @@ def semantic(m, root):
         for k in ("folder", "glb", "fbx", "materials"):
             if mod.get(k) is not None:
                 need(mod[k], "models[%d].%s" % (i, k))
+        _check_lods(mod, "models[%d]" % i, errors)
     tex = m.get("textures")
     if isinstance(tex, dict) and isinstance(tex.get("dir"), str):
         d = os.path.join(root, tex["dir"])
@@ -617,13 +644,24 @@ def plan_lines(m, root, mode="mesh", foliage="all", density=1.0, distance=1.0):
             elif i.get("clip"):
                 pairs.add((mi, i["clip"]))
     fp = plan_foliage(m, root, mode, foliage, density)
+    # Task 15b: model prefabs with a LODGroup (ok models with lods.levels > 1), tree prefabs of such models,
+    # and prop instances that get their own LODGroup distances (instances[].lod on such a model).
+    lod_prefabs = sum(1 for mod in ok if model_lod_levels(mod) > 1)
+    lod_trees = sum(1 for mi in fp["treeModels"] if 0 <= mi < len(models) and model_lod_levels(models[mi]) > 1)
+    lod_overrides = 0
+    for c in cells:
+        for i in c.get("instances") or []:
+            mi = i.get("model")
+            if (isinstance(mi, int) and 0 <= mi < len(models) and models[mi].get("status") == "ok"
+                    and model_lod_levels(models[mi]) > 1 and isinstance(i.get("lod"), list)):
+                lod_overrides += 1
     line = ("PLAN materials=%d prefabs=%d controllers=%d cells=%d instances=%d colliders=%d terrainColliders=%d "
             "water=%d lights=1 skybox=%d foliageTrees=%d foliagePatches=%d terrains=%d detailPrototypes=%d "
-            "detailCells=%d treeInstances=%d" % (
+            "detailCells=%d treeInstances=%d lodPrefabs=%d lodTreePrefabs=%d lodOverrides=%d" % (
                 mats + mesh_terrain * len(cells) + water_cells + (1 if tiles else 0), len(ok), len(pairs), len(cells),
                 inst, sum(1 for c in cells if c.get("colliderParts", 0) > 0), mesh_terrain * len(cells), water_cells,
                 1 if m.get("sky") else 0, fp["trees"], fp["patches"], tiles, fp["detailPrototypes"],
-                fp["detailCells"], fp["treeInstances"]))
+                fp["detailCells"], fp["treeInstances"], lod_prefabs, lod_trees, lod_overrides))
     return [line, "FOLIAGE records=%d kept=%d colliders=%d" % (fp["records"], fp["kept"], fp["colliders"])], errors
 
 
@@ -665,10 +703,11 @@ def plan_foliage(m, root, mode, foliage, density):
       1536-unit square from the cell's rect x0, y0) and split in record order every patch_capacity(triangles)
       records (foliagePatches).
     records = all records of the bins; kept = those placed (model ok, layer typed, shown, kept by Density);
+    treeModels = the models of the trees placed either way (one tree prefab each, Task 15b);
     colliders = kept records that are colliders (bit 0 or geometry-only).
     A missing or unreadable bin counts nothing here (semantic() reports it)."""
     out = {"trees": 0, "patches": 0, "detailPrototypes": 0, "detailCells": 0, "treeInstances": 0,
-           "records": 0, "kept": 0, "colliders": 0}
+           "records": 0, "kept": 0, "colliders": 0, "treeModels": set()}
     models = m.get("models") or []
     fol = m.get("foliage")
     layers = (fol.get("layers") if isinstance(fol, dict) else None) or []
@@ -714,9 +753,11 @@ def plan_foliage(m, root, mode, foliage, density):
             x, y = r["m"][12], r["m"][13]
             if ut is not None and tile is not None and kind == "tree" and r["flags"] & FOLIAGE_FLAG_TERRAIN_TREE:
                 out["treeInstances"] += 1
+                out["treeModels"].add(mi)
                 continue
             if kind == "tree":
                 out["trees"] += 1
+                out["treeModels"].add(mi)
                 continue
             if (ut is not None and tile is not None and mi in detail_model and mi in dproto
                     and not r["flags"] & FOLIAGE_FLAG_OUTSIDE_TERRAIN):
