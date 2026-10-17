@@ -1327,12 +1327,13 @@ CM_TEST(world_dat, materials_scene_fields) {
 #include <unordered_map>
 #include <unordered_set>
 
-// M1: the run-length walk's placement counts; M3: every visit's layer and
-// model slot resolve; parseMapZones() is the walk with the anchor column c - 1.
+// M1 with the client decode (docs/research/gw2-terrain-to-unity.md §1.3, 2026-10-16; ruling S4):
+// the placement counts; M3: every cell's layer and model slot resolve; parseMapZones() is the
+// walk at the cell's vertex x0 + 48 c.
 CM_TEST(world_dat, zon2_reads_three_maps) {
     if (!ensure_template()) SKIP("no struct template");
     using Ex = castlemist::model::Extractor;
-    const std::map<uint32_t, size_t> kVisits = {{192711, 217114}, {191000, 32448}, {1151420, 7642}};
+    const std::map<uint32_t, size_t> kVisits = {{192711, 247804}, {191000, 40252}, {1151420, 8670}};
     for (uint32_t id : kTestMaps) {
         std::vector<uint8_t> bytes = packfile_by_file_id(id);
         Ex ex(bytes, *castlemist::tpl::get());
@@ -1364,7 +1365,7 @@ CM_TEST(world_dat, zon2_reads_three_maps) {
         const auto inst = ex.parseMapZones();
         CHECK_EQ(inst.size(), visits);
         CHECK(haveFirst && !inst.empty());
-        if (haveFirst && !inst.empty()) CHECK_EQ(inst[0].pos[0], z.rect[0] + 48.0f * (float)(firstC - 1));
+        if (haveFirst && !inst.empty()) CHECK_EQ(inst[0].pos[0], z.rect[0] + 48.0f * (float)firstC);
     }
 }
 
@@ -1410,9 +1411,10 @@ struct ZoneAccept {
     size_t byType[3];
 };
 const std::map<uint32_t, ZoneAccept> kZoneAccept = {
-    {192711, {4381, 4378, 3, 45, 37, {167169, 39649, 10296}}},
-    {191000, {88, 88, 0, 7, 4, {29768, 1669, 1011}}},
-    {1151420, {284, 284, 0, 1, 0, {7358, 0, 284}}},
+    // The client decode (ruling S4): Queensdale's 3 former geometry-only links are cells of zone 135.
+    {192711, {4381, 4381, 0, 45, 37, {193125, 44380, 10299}}},
+    {191000, {88, 88, 0, 7, 4, {36939, 2300, 1013}}},
+    {1151420, {284, 284, 0, 1, 0, {8386, 0, 284}}},
 };
 
 } // namespace
@@ -1464,7 +1466,7 @@ CM_TEST(world_dat, zones_phase1_acceptance) {
 
         size_t far = 0;
         for (const auto& inst : z.instances) {
-            if (inst.placement == UINT32_MAX) continue;
+            if (inst.placement == UINT32_MAX || inst.source != castlemist::world::ZoneSource::Collider) continue;
             const auto& pl = z.placements[inst.placement];
             float a[2];
             castlemist::world::zone_anchor(w.bounds[0], w.bounds[1], pl.c, pl.r, a);
@@ -1490,7 +1492,8 @@ CM_TEST(world_dat, zones_every_collider_has_a_tree) {
             ++zoneColliders;
             if (!instOfCollider.count(ci.placement)) ++missing;
         }
-        for (const auto& i : w.zones.instances) models.insert(i.model);
+        for (const auto& i : w.zones.instances)
+            if (i.source == castlemist::world::ZoneSource::Collider) models.insert(i.model);
         size_t noMesh = 0;
         for (uint32_t m : models) {
             auto mp = load_model_by_fileid(dat, w.models.at(m).fileId, ModelLoadOptions{false, false});
@@ -1569,7 +1572,7 @@ struct ZoneSample {
 };
 
 /// The anchor-matched collider samples of one loaded map, in instance order.
-/// `k` comes from re-walking the zone's flags (the placements are in walk order).
+/// `k` is the cell index, from re-walking the zone's flags (the placements are in walk order).
 std::vector<ZoneSample> zone_samples(uint32_t id, const castlemist::world::WorldScene& w,
                                      const castlemist::model::Extractor::MapHavok& h,
                                      const castlemist::model::Extractor::MapZon2& raw) {
@@ -1618,7 +1621,7 @@ bool terrain_gradient(const castlemist::world::Terrain& t, float x, float y, flo
 } // namespace
 
 /// Writes the 4750 anchor-matched collider samples as CSV to $CM_ZONE_SAMPLES (spec D5 step 1's
-/// data fit). The task-9 columns come first; after them: the slot's model flags and zOffsets
+/// data fit). `k` is the cell index (Task 9 wrote the old walk's position, the cell + 1). The task-9 columns come first; after them: the slot's model flags and zOffsets
 /// bytes as stored, the layer's layerFlags and tiling, the zone's vertRect, and the terrain
 /// height and gradient (dz/dx, dz/dy, +-1 unit) at (tx, ty). Beside it, for the fits in
 /// docs/research/gw2-terrain-to-unity.md §1.3 (2026-10-16): <path>.terrain.csv (4 x 4 terrain
@@ -1893,8 +1896,7 @@ CM_TEST(world_dat, zones_hypotheses) {
                     dc.first = zone_cells_client(raw.zones[s.zone]);
                     dc.second = zone_collide_index(raw.zones[s.zone], dc.first);
                 }
-                // the sample's cell is the old walk's k - 1 (spec M2's column c - 1)
-                const uint32_t ci = s.k >= 1 && s.k - 1 < dc.second.size() ? dc.second[s.k - 1] : UINT32_MAX;
+                const uint32_t ci = s.k < dc.second.size() ? dc.second[s.k] : UINT32_MAX;
                 const auto& cd = raw.zones[s.zone].collideData;
                 if (ci != UINT32_MAX && 3ull * ci + 2 < cd.size()) {
                     const float nx = cd[3ull * ci], ny = cd[3ull * ci + 1], cz = cd[3ull * ci + 2];

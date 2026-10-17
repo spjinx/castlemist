@@ -39,8 +39,9 @@ uint32_t slot_file(const ZoneScatter& z, const ZonePlacement& p) {
 } // namespace
 
 void zone_anchor(float x0, float y0, int32_t c, int32_t r, float out[2]) {
-    out[0] = x0 + kCell * float(c - 1);   // column c - 1: one cell west of the grid point (M2)
-    out[1] = y0 + kCell * float(r);       // rows count north from y0 (M2)
+    // (float)(uint)(c * 48) + x0, as 0x140cc8150; rows count north from y0 (M2)
+    out[0] = float(uint32_t(c) * 48u) + x0;
+    out[1] = float(uint32_t(r) * 48u) + y0;
 }
 
 void build_zones(const Ex::MapZon2& z, const Ex::MapHavok& h, const std::vector<Ex::MapProp>& props,
@@ -76,6 +77,15 @@ void build_zones(const Ex::MapZon2& z, const Ex::MapHavok& h, const std::vector<
             for (size_t m = 0; m < s.models.size(); ++m) {
                 const Ex::Zon2LayerModel& sm = s.models[m];
                 ZoneLayerModel& M = L.models[m];
+                M.fileId = sm.fileId; M.probability = sm.probability; M.flags = sm.flags;
+                for (int k = 0; k < 3; ++k) M.hslOffset[k] = sm.hslOffset[k];
+                for (int k = 0; k < 2; ++k) M.zOffsets[k] = sm.zOffsets[k];
+                M.permutation = sm.permutation;
+            }
+            if (s.hasSubModel) {
+                L.hasSubModel = true;
+                const Ex::Zon2LayerModel& sm = s.subModel;
+                ZoneLayerModel& M = L.subModel;
                 M.fileId = sm.fileId; M.probability = sm.probability; M.flags = sm.flags;
                 for (int k = 0; k < 3; ++k) M.hslOffset[k] = sm.hslOffset[k];
                 for (int k = 0; k < 2; ++k) M.zOffsets[k] = sm.zOffsets[k];
@@ -152,7 +162,7 @@ void build_zones(const Ex::MapZon2& z, const Ex::MapHavok& h, const std::vector<
         const double x = entries[ei]->translate[0], y = entries[ei]->translate[1];
         const double fc = (x - x0) / kCell, fr = (y - y0) / kCell;
         if (!std::isfinite(fc) || !std::isfinite(fr) || std::fabs(fc) > 1e9 || std::fabs(fr) > 1e9) continue;
-        const int64_t cc = std::llround(fc) + 1, rr = std::llround(fr);
+        const int64_t cc = std::llround(fc), rr = std::llround(fr);
         uint32_t best = UINT32_MAX;
         double bestD2 = 0;
         for (int64_t dc = -1; dc <= 1; ++dc)

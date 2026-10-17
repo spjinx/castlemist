@@ -15,8 +15,9 @@
 //   sniff    --dat <path> (--index N | --file-id N)
 //   map      (--dat <path> (--index N | --file-id N) | --data <bin>) --template <json>
 //            -- a map's props, terrain, collision and zones (zon2 placements: count,
-//            byType, layerUnresolved). zones: anchor column c − 1 and model slot
-//            (flag >> 1) & 7 (world foliage spec M2-M3); output changed 2026-10-16
+//            byType, layerUnresolved). zones: the client decode of flags (count, value
+//            pairs, raw bytes without encodeData), the cell's vertex x0 + 48 c and model
+//            slot (flag >> 1) & 7 (world foliage spec M2-M3); output changed 2026-10-16
 //   skybox   --dat <path> --file-id N --template <json> --out <dir> [--name NAME]
 //            [--size <face px>] [--equirect <width px>]
 //            -- a map's sky as Unity skybox images in <out>/<name> (default map_<fileId>)
@@ -1439,8 +1440,8 @@ void cmd_map(const Args& a) {
     for (const auto& kv : coll.counts) cj[kv.first] = kv.second;
     j["collision"] = std::move(cj);
     {
-        // Anchor column c - 1 and model slot (flag >> 1) & 7 (world foliage spec
-        // M2-M3); output changed 2026-10-16.
+        // The client decode, the cell's vertex and model slot (flag >> 1) & 7 (world
+        // foliage spec M2-M3); output changed 2026-10-16.
         auto zones = ex.parseMapZones();
         std::unordered_map<uint32_t,int> zu;
         json zs2 = json::array();

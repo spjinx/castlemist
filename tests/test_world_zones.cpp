@@ -32,6 +32,23 @@ constexpr uint64_t kGuid = 0xABCDEF0123ull;
 // Flag bytes: layer (1-based) in the high nibble, slot in bits 1-3.
 constexpr uint8_t kL1S0 = 0x11, kL1S1 = 0x13, kL3 = 0x31;
 
+/// (count, value) run-length pairs (the client decode) for @p points ((c, r) -> flag, in cell
+/// order) in a zone of width @p w with vertRect origin (0, 0).
+std::vector<uint8_t> rle_flags(const std::vector<std::pair<std::pair<int, int>, uint8_t>>& points, int w) {
+    std::vector<uint8_t> out;
+    uint32_t at = 0;
+    for (const auto& [cr, f] : points) {
+        const uint32_t k = uint32_t(cr.second * w + cr.first);
+        uint32_t gap = k - at;
+        while (gap > 255) { out.push_back(255); out.push_back(0); gap -= 255; }
+        if (gap) { out.push_back(uint8_t(gap)); out.push_back(0); }
+        out.push_back(1);
+        out.push_back(f);
+        at = k + 1;
+    }
+    return out;
+}
+
 /// The synthetic map: one def (token 7) of two layers, type 3 {A, B} and
 /// type 1 {C}, and one zone with vertRect {0, 0, 10, 10} holding @p points
 /// ((c, r) -> flag, in walk order).
@@ -57,15 +74,8 @@ Ex::MapZon2 make_zon2(const std::vector<std::pair<std::pair<int, int>, uint8_t>>
     Ex::Zon2Zone zone;
     zone.defToken = 7;
     zone.vertRect[0] = 0; zone.vertRect[1] = 0; zone.vertRect[2] = 10; zone.vertRect[3] = 10;
-    uint32_t at = 0;
-    for (const auto& [cr, f] : points) {
-        const uint32_t k = uint32_t(cr.second * 10 + cr.first);
-        uint32_t skip = k - at;
-        while (skip > 255) { zone.flags.push_back(255); zone.flags.push_back(0); skip -= 255; }
-        zone.flags.push_back(uint8_t(skip));
-        zone.flags.push_back(f);
-        at = k;
-    }
+    zone.flags = rle_flags(points, 10);
+    zone.encodeData.resize(10);   // present: flags are (count, value) pairs (the walk does not read it)
     z.zones.push_back(zone);
     return z;
 }
@@ -167,7 +177,7 @@ CM_TEST(zones, decode_layer_and_slot) {
 CM_TEST(zones, anchor_formula) {
     float a[2];
     zone_anchor(-1000, -2000, 5, 7, a);
-    CHECK_EQ(a[0], -808.0f);
+    CHECK_EQ(a[0], -760.0f);   // x0 + 48 c (the client decode; phase 1's c - 1 was the old walk's off-by-one)
     CHECK_EQ(a[1], -1664.0f);
 }
 
@@ -220,7 +230,7 @@ CM_TEST(zones, anchor_candidates_are_type3) {
     WorldScene s = make_scene();
     Ex::MapZon2 z = make_zon2({{{5, 7}, kL1S1}});
     Ex::Zon2Zone grass = z.zones[0];
-    grass.flags = {75, 0x21};   // (5, 7): layer 2 (type 1), slot 0, bit 0
+    grass.flags = {75, 0, 1, 0x21};   // (5, 7): layer 2 (type 1), slot 0, bit 0
     z.zones.insert(z.zones.begin(), grass);
     build_zones(z, havok({zone_entry(5, 7, 0, 0, 1)}), {}, s);
     CHECK_EQ(s.zones.placements.size(), size_t(2));

@@ -32,6 +32,8 @@ struct ZoneLayer {
     float scaleRange[2]{}, probability = 0, fadeRange[2]{}, rotRange[3][2]{}, hslRanges[4][2]{};
     float instanceScaleJitter = 0; uint32_t layerFlags = 0; uint32_t materialFileId = 0;
     std::vector<ZoneLayerModel> models;
+    bool hasSubModel = false;       ///< `subModel` is non-null
+    ZoneLayerModel subModel;        ///< as stored when hasSubModel (its `model` set like the others)
 };
 
 /// @brief One `zoneArray` entry (spec D2).
@@ -43,10 +45,11 @@ struct Zone {
     std::vector<uint16_t> offsetData;                   ///< as stored
 };
 
-/// @brief One non-zero flag byte of the run-length walk (spec D2, Measurements notation).
+/// @brief One non-zero cell of a zone's `flags` (spec D2; the client decode,
+///        Extractor::walkZoneFlags).
 struct ZonePlacement {
     uint32_t zone = 0, layer = UINT32_MAX;              ///< layer: index into ZoneScatter::layers; UINT32_MAX = unresolved
-    int32_t c = 0, r = 0;                               ///< grid point (Measurements, notation)
+    int32_t c = 0, r = 0;                               ///< the cell's vertex (col, row), absolute grid indices
     uint8_t flag = 0;                                   ///< as stored: layer (f>>4), slot ((f>>1)&7), bit 0
     uint32_t collider = UINT32_MAX;                     ///< index of the havk zoneModels entry linked to it, else UINT32_MAX
 };
@@ -86,7 +89,9 @@ struct ZoneScatter {
     ZoneScatterMode mode = ZoneScatterMode::Colliders;
 };
 
-/// The anchor of grid point (c, r) for parm origin (x0, y0): (x0 + 48(c-1), y0 + 48 r) (spec M2).
+/// The anchor of vertex (c, r) for parm origin (x0, y0): (x0 + 48 c, y0 + 48 r), in float as the
+/// client computes it (Gw2-64.exe 0x140cc8150; spec M2 with the client decode, research note
+/// §1.3 2026-10-16: the phase-1 "c - 1" was the old walk's off-by-one).
 void zone_anchor(float x0, float y0, int32_t c, int32_t r, float out[2]);
 
 /// @brief Spec D3 steps 1-5: decode the placements, link every havk

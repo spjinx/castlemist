@@ -978,16 +978,19 @@ public:
         float instanceScaleJitter = 0; uint32_t layerFlags = 0;
         uint32_t materialFileId = 0;                ///< the `materialname` filename
         std::vector<Zon2LayerModel> models;
+        bool hasSubModel = false;                   ///< `subModel` (a ptr) is non-null
+        Zon2LayerModel subModel;                    ///< as stored when hasSubModel
     };
     /// @brief One `zoneDefArray` entry: its `token` and layer defs.
     struct Zon2Def { uint32_t token = 0; std::vector<Zon2Layer> layers; };
-    /// @brief One `encodeData` entry (spec M5: presumably a row index into `flags[]`, UNPROVEN).
+    /// @brief One `encodeData` entry: row r's first cell is in pair `index`, `offset` cells into it
+    ///        (Gw2-64.exe 0x140cd0410; 687 / 687 encoded zones, research note §1.3 2026-10-16).
     struct Zon2EncodeRow { uint16_t index = 0; uint8_t offset = 0; };
     /// @brief One `zoneArray` entry, as stored.
     struct Zon2Zone {
         uint32_t defToken = 0; int32_t vertRect[4]{}; uint8_t seed = 0; float range[2]{}, zPos = 0, waterHeight = 0;
         uint32_t zoneFlags = 0; uint16_t broadId = 0;
-        std::vector<uint8_t> flags;                 ///< the run-length (skip, flag) bytes, as stored
+        std::vector<uint8_t> flags;                 ///< as stored: (count, value) pairs, or raw bytes without encodeData (walkZoneFlags)
         std::vector<Zon2EncodeRow> encodeData;
         std::vector<float> collideData;             ///< normalX, normalY, zPos triples
         std::vector<uint16_t> offsetData;
@@ -1000,19 +1003,36 @@ public:
         std::vector<std::string> missingFields;     ///< "<struct>.<field>" the template version lacks (kept at defaults)
     };
 
-    /// @brief The run-length walk (spec Measurements, notation): calls
-    ///        fn(k, c, r, f) for every non-zero flag byte, with k the position
-    ///        after adding the skip byte, (c, r) = (vr[0] + k mod w, vr[1] + k / w).
-    ///        Nothing when w <= 0. A trailing odd byte is ignored.
+    /// @brief The client's decode of a zone's `flags` (Gw2-64.exe 0x140cd0660 / 0x140cd0410,
+    ///        ZnCompress.cpp; docs/research/gw2-terrain-to-unity.md §1.3, 2026-10-16): calls
+    ///        fn(p, c, r, f) for every non-zero cell, in cell order, with p the cell index in
+    ///        vertRect (row-major) and (c, r) = (vr[0] + p mod w, vr[1] + p / w).
+    ///
+    /// - With `encodeData`, `flags` is (count, value) run-length pairs: `count` cells of
+    ///   `value`. (encodeData is only a per-row index into those pairs.) A trailing odd
+    ///   byte is ignored.
+    /// - Without `encodeData`, `flags` is one raw byte per cell.
+    ///
+    /// Cells past w * h are not visited. Nothing when w <= 0 or h <= 0. The phase-1 walk
+    /// read the pairs as (skip, flag); its position was one past the run, so a one-cell
+    /// run sat at its k - 1 (spec M2's "c - 1", U4).
     template <class F> static void walkZoneFlags(const Zon2Zone& z, F&& fn) {
-        const int32_t w = z.vertRect[2] - z.vertRect[0];
-        if (w <= 0) return;
-        uint32_t k = 0;
-        for (size_t i = 0; i + 1 < z.flags.size(); i += 2) {
-            k += z.flags[i];
-            const uint8_t f = z.flags[i + 1];
-            if (!f) continue;
-            fn(k, z.vertRect[0] + (int32_t)(k % (uint32_t)w), z.vertRect[1] + (int32_t)(k / (uint32_t)w), f);
+        const int32_t w = z.vertRect[2] - z.vertRect[0], h = z.vertRect[3] - z.vertRect[1];
+        if (w <= 0 || h <= 0) return;
+        const uint64_t cells = uint64_t(w) * uint64_t(h);
+        auto visit = [&](uint64_t p, uint8_t f) {
+            fn((uint32_t)p, z.vertRect[0] + (int32_t)(p % (uint32_t)w), z.vertRect[1] + (int32_t)(p / (uint32_t)w), f);
+        };
+        if (z.encodeData.empty()) {
+            for (uint64_t p = 0; p < cells && p < z.flags.size(); ++p)
+                if (z.flags[p]) visit(p, z.flags[p]);
+            return;
+        }
+        uint64_t p = 0;
+        for (size_t i = 0; i + 1 < z.flags.size() && p < cells; i += 2) {
+            const uint8_t n = z.flags[i], f = z.flags[i + 1];
+            if (!f) { p += n; continue; }
+            for (uint32_t k = 0; k < n && p < cells; ++k, ++p) visit(p, f);
         }
     }
 
@@ -1080,7 +1100,7 @@ public:
             const std::string& lt = layers.type;
             expect(lt, {"type", "width", "height", "radiusGround", "sortGroup", "tiling", "noise", "scaleRange",
                         "probability", "fadeRange", "rotRange", "hslRanges", "instanceScaleJitter", "layerFlags",
-                        "materialname", "modelArray"});
+                        "materialname", "modelArray", "subModel"});
             d.layers.resize(layers.n);
             for (uint32_t li = 0; li < layers.n; ++li) {
                 const size_t le = layers.base + (size_t)li * layers.stride;
@@ -1103,18 +1123,30 @@ public:
                 const FieldArray models = fieldArray(lt, "modelArray", le);
                 const std::string& mt = models.type;
                 expect(mt, {"filename", "probability", "flags", "hslOffset", "zOffsets", "permutation"});
-                L.models.resize(models.n);
-                for (uint32_t mi = 0; mi < models.n; ++mi) {
-                    const size_t me = models.base + (size_t)mi * models.stride;
-                    Zon2LayerModel& M = L.models[mi];
-                    M.fileId = decodeFilename(mt, me);
-                    floats(mt, "probability", me, &M.probability, 1);
-                    dwordField(mt, "flags", me, M.flags);
-                    floats(mt, "hslOffset", me, M.hslOffset, 3);
+                auto readModel = [&](const std::string& t, size_t me, Zon2LayerModel& M) {
+                    M.fileId = decodeFilename(t, me);
+                    floats(t, "probability", me, &M.probability, 1);
+                    dwordField(t, "flags", me, M.flags);
+                    floats(t, "hslOffset", me, M.hslOffset, 3);
                     // `zOffsets` is byte[2] in the template; kept as the stored byte values.
                     size_t p;
-                    if (at(mt, "zOffsets", me, p)) for (int k = 0; k < 2; ++k) M.zOffsets[k] = (float)rd8(p + k);
-                    if (at(mt, "permutation", me, p)) M.permutation = rd64(p);
+                    if (at(t, "zOffsets", me, p)) for (int k = 0; k < 2; ++k) M.zOffsets[k] = (float)rd8(p + k);
+                    if (at(t, "permutation", me, p)) M.permutation = rd64(p);
+                };
+                L.models.resize(models.n);
+                for (uint32_t mi = 0; mi < models.n; ++mi)
+                    readModel(mt, models.base + (size_t)mi * models.stride, L.models[mi]);
+                // `subModel`: a ptr to one more model struct (Gw2-64.exe 0x140cbc210 reads it).
+                {
+                    size_t so; json sf;
+                    if (fieldOffset(lt, "subModel", so, sf) && sf.value("kind", std::string()) == "ptr") {
+                        const std::string st = ptrTargetStruct(sf);
+                        const size_t sm = follow(le + so);
+                        if (!st.empty() && sm && sm < n_) {
+                            L.hasSubModel = true;
+                            readModel(st, sm, L.subModel);
+                        }
+                    }
                 }
             }
         }
@@ -1168,20 +1200,21 @@ public:
     /// @brief `zon2` -> the map's scattered zone placements (foliage, rocks, ground clutter).
     ///
     /// GW2 does not store a zone's instances as a list of transforms. A zone owns a
-    /// rectangle of points on a fixed 48-unit grid (`vertRect`), and `flags[]` is a
-    /// run-length walk over it: byte pairs of (points to skip, flag). Each non-zero
-    /// flag `f` is one placement (walkZoneFlags(), parseZon2()).
+    /// rectangle of points on a fixed 48-unit grid (`vertRect`), and `flags[]` holds
+    /// one byte per point, run-length coded as (count, value) pairs when the zone has
+    /// `encodeData`. Each non-zero cell `f` is one placement (walkZoneFlags(), parseZon2()).
     ///
     /// Measured on Queensdale, Lion's Arch and Spirit Vale against the havk
     /// `zoneModels` colliders and the prp2 props
     /// (docs/superpowers/specs/2026-10-16-world-foliage-design.md M2-M3):
-    /// - the position is the anchor `(x0 + 48 * (c - 1), y0 + 48 * r)` from the
-    ///   parm rect's south-west corner `(x0, y0)`, rows counting north. The column
-    ///   is `c - 1`, one cell west of the grid point (M2);
+    /// - the position is the cell's vertex `(x0 + 48 * c, y0 + 48 * r)` from the
+    ///   parm rect's south-west corner `(x0, y0)`, rows counting north (M2, with the
+    ///   client decode of docs/research/gw2-terrain-to-unity.md §1.3, 2026-10-16;
+    ///   the phase-1 walk's "c - 1" was its off-by-one run position);
     /// - the model is `layerDefArray[(f >> 4) - 1].modelArray[(f >> 1) & 7]` (M3).
     ///
-    /// The Tyria3D-derived reader this replaces used `modelArray[0]` and column
-    /// `c`; both were measured wrong (M2, M3). A placement whose layer or slot does
+    /// The Tyria3D-derived reader this replaces used `modelArray[0]` and read the
+    /// pairs as (skip, flag); both were wrong (M3, the research amendment). A placement whose layer or slot does
     /// not resolve, or whose model has no fileId, is skipped. The per-layer scatter
     /// (`scaleRange`, `rotRange`, `instanceScaleJitter`, `probability`, `noise`,
     /// bit 0 of `f`) is NOT reproduced: every instance is unrotated at scale 1, and
@@ -1204,7 +1237,7 @@ public:
                 if (slot >= models.size() || !models[slot].fileId) return;
                 MapZoneInst mz;
                 mz.fileId = models[slot].fileId;
-                mz.pos[0] = z.rect[0] + kCell * (float)(c - 1);
+                mz.pos[0] = z.rect[0] + kCell * (float)c;
                 mz.pos[1] = z.rect[1] + kCell * (float)r;
                 mz.pos[2] = zone.zPos;
                 out.push_back(mz);

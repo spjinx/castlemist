@@ -789,20 +789,42 @@ CM_TEST(world, environment_keeps_water_presets) {
 #include <array>
 #include <vector>
 
-CM_TEST(zones, walk_skip_and_flag_pairs) {
+// The client decode (Gw2-64.exe 0x140cd0410 / 0x140cd0660): with encodeData, (count, value)
+// run-length pairs; without, one raw byte per cell.
+CM_TEST(zones, walk_count_value_runs) {
     using Ex = castlemist::model::Extractor;
     Ex::Zon2Zone z;
-    const int32_t vr[4] = {10, 20, 14, 23};   // w = 4
+    const int32_t vr[4] = {10, 20, 14, 24};   // w = 4, h = 4: 16 cells
     for (int i = 0; i < 4; ++i) z.vertRect[i] = vr[i];
-    z.flags = {0, 0x31, 3, 0, 2, 0x23, 7, 0x10, 5};   // the trailing 5 is an odd byte
+    z.encodeData.resize(4);                    // present: the flags are run-length pairs
+    // 1 cell of 0x31, 3 empty, 2 cells of 0x23, 7 empty, 5 cells of 0x10 (only 3 fit), a trailing odd byte
+    z.flags = {1, 0x31, 3, 0, 2, 0x23, 7, 0, 5, 0x10, 9};
     std::vector<std::array<uint32_t, 4>> got;
     Ex::walkZoneFlags(z, [&](uint32_t k, int32_t c, int32_t r, uint8_t f) {
         got.push_back({k, (uint32_t)c, (uint32_t)r, (uint32_t)f});
     });
-    const std::vector<std::array<uint32_t, 4>> want = {{0, 10, 20, 0x31}, {5, 11, 21, 0x23}, {12, 10, 23, 0x10}};
+    const std::vector<std::array<uint32_t, 4>> want = {{0, 10, 20, 0x31},  {4, 10, 21, 0x23},  {5, 11, 21, 0x23},
+                                                       {13, 11, 23, 0x10}, {14, 12, 23, 0x10}, {15, 13, 23, 0x10}};
     CHECK_EQ(got.size(), want.size());
     for (size_t i = 0; i < got.size() && i < want.size(); ++i)
         for (int j = 0; j < 4; ++j) CHECK_EQ(got[i][j], want[i][j]);
+
+    // No encodeData: one raw byte per cell, cells past w * h ignored.
+    Ex::Zon2Zone raw = z;
+    raw.encodeData.clear();
+    raw.flags.assign(18, 0);
+    raw.flags[2] = 0x45;
+    raw.flags[15] = 0x21;
+    raw.flags[17] = 0x33;   // past the 16 cells
+    got.clear();
+    Ex::walkZoneFlags(raw, [&](uint32_t k, int32_t c, int32_t r, uint8_t f) {
+        got.push_back({k, (uint32_t)c, (uint32_t)r, (uint32_t)f});
+    });
+    CHECK_EQ(got.size(), size_t(2));
+    if (got.size() == 2) {
+        CHECK_EQ(got[0][0], 2u); CHECK_EQ(got[0][1], 12u); CHECK_EQ(got[0][2], 20u); CHECK_EQ(got[0][3], 0x45u);
+        CHECK_EQ(got[1][0], 15u); CHECK_EQ(got[1][1], 13u); CHECK_EQ(got[1][2], 23u);
+    }
 
     // w = 0: nothing.
     Ex::Zon2Zone flat = z;
