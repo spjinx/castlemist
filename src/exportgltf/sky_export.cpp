@@ -224,6 +224,10 @@ ApproxInputs approx_inputs(const SkyInputs& in, size_t mode) {
     if (haze) {
         a.haveFog = true;
         for (int k = 0; k < 4; ++k) a.fogFar[k] = haze->farColor[k];
+        a.haveFogDist = true;
+        a.fogNearW = haze->nearColor[3];
+        a.fogDist[0] = haze->distRange[0];
+        a.fogDist[1] = haze->distRange[1];
         a.labels.push_back({"FogColorFar", InputSource::Derived, fmt3(a.fogFar, 4),
                             block_name(hazeBlock) + " haze[" + std::to_string(slot) + "] (" + slotName +
                                 ").farColor, bytes B,G,R,A: haze import 0x140c889e0 -> env slot 0x140c619f0 -> "
@@ -286,9 +290,12 @@ ApproxInputs approx_inputs(const SkyInputs& in, size_t mode) {
                         "EnvEnvironment+0xa40 / +0x970 steady values, expected 1 (gw2-sky.md §9.4, §10.3)"});
     a.labels.push_back({"Time", InputSource::Guess, "0", "material cards' Time uniform; 0 = their first frame"});
     a.labels.push_back({"AlphaRef", InputSource::Guess, "0", "material cards' alpha-test reference"});
-    a.labels.push_back({"cloud fog", InputSource::Derived, "min(FogColorFar.w, 1) x layer haze",
-                        "VS 1645: the distance-fog term saturates (fz = 1) for planes thousands of units away, "
-                        "given FogParam0 = (1/(d1-d0), -d0/(d1-d0), ..) from GrSetFog's distRange"});
+    if (a.haveFogDist)
+        a.labels.push_back({"FogParam0.xy, FogColorNearMinusFar.w", InputSource::Derived,
+                            fmt3(a.fogDist, 2) + ", near.w " + fmt3(&a.fogNearW, 1),
+                            "the same haze's distRange and nearColor.w: GrSetFog 0x140ab2c20 stores "
+                            "(1/(d1-d0), -d0/(d1-d0)) and near - far, which the clouds' VS 1645 reads as "
+                            "fz = saturate(viewZ FogParam0.x + FogParam0.y) (store-to-register link not traced)"});
     return a;
 }
 

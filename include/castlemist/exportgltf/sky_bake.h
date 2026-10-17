@@ -60,6 +60,10 @@ struct InputLabel {
 struct ApproxInputs {
     bool haveFog = false;
     float fogFar[4] = {0, 0, 0, 1};        ///< FogColorFar, RGBA 0..1
+    /// The haze's nearColor.w and distRange (d0, d1), for the clouds' distance
+    /// fog (VS 1645): fz = saturate((viewZ - d0) / (d1 - d0)); without them fz = 1.
+    bool haveFogDist = false;
+    float fogNearW = 1, fogDist[2] = {0, 0};
     bool haveSun = false;                  ///< sun colour/direction and SH below are set
     float sunColor[3] = {1, 1, 1};         ///< sunClr.rgb
     float sunDir[3] = {0, 0, 1};           ///< sunDir.xyz, GW2 axes, normalized: the direction the light travels

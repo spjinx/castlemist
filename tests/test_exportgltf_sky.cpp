@@ -1112,6 +1112,17 @@ CM_TEST(skyapprox, cloud_layer_covers_the_zenith) {
     CHECK_NEAR(c.b, 200 / 255.0f, 2e-3f);
     unity_dir(0.0f, 1.0f, u);   // 1 degree up: the plane is 286000 units away, past F m
     CHECK_EQ(r.radiance(u).r, 0.0f);
+    // §10.4 distance fog: plane 5000 away, distRange 0..10000: fz = 0.5, so
+    // half of the layer's haze 1 goes to FogColorFar.
+    sky.clouds[0].attributes[0].haze = 1;
+    ApproxInputs fogged = fog_inputs(1, 0, 0);
+    fogged.haveFogDist = true;
+    fogged.fogDist[0] = 0;
+    fogged.fogDist[1] = 10000;
+    float zen[3] = {0, 1, 0};
+    Rgb fc = make_sky_sampler(sky, 0, tex, nullptr, &fogged).radiance(zen);
+    CHECK_NEAR(fc.r, 0.5f + 0.5f * 100 / 255.0f, 3e-3f);
+    CHECK_NEAR(fc.b, 0.5f * 200 / 255.0f, 3e-3f);
     // Camera above the plane: the layer is below, the sky above stays black.
     in.cameraZ = -6000;
     r = make_sky_sampler(sky, 0, tex, nullptr, &in);

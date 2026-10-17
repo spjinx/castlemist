@@ -489,6 +489,10 @@ struct CloudLayer : Overlay {
     float camZ = 0, planeZ = 0, Sw = 1, uvScale = 1, depth = 0, density = 0, haze = 0, lightW = 0,
           brightness = 1, fadeEnd = 0, fadeWidth = 0, cloudFade = 1;
     float fog[3] = {0, 0, 0};
+    // VS 1645 fog: min((1 - fz) (near.w - far.w) + far.w, fz) * haze, with
+    // fz = saturate((viewZ - d0) / (d1 - d0)); viewZ = s along this direction.
+    bool fogDist = false;
+    float d0 = 0, d1 = 0, nearW = 1, farW = 1;
 
     void blend(const float d[3], float dst[3]) const override {
         if (d[2] == 0) return;
@@ -508,8 +512,10 @@ struct CloudLayer : Overlay {
         float vf = saturate((std::fabs(camZ - planeZ) - fadeEnd) / (fadeEnd + fadeWidth));
         vf *= vf;
         const float al = std::clamp(va * density * cloudFade * T.a * vf, 0.0f, 1.0f);
+        const float fz = fogDist && d1 > d0 ? saturate((s - d0) / (d1 - d0)) : 1.0f;
+        const float fogAmt = std::min((1 - fz) * (nearW - farW) + farW, fz) * haze;
         for (int k = 0; k < 3; ++k) {
-            const float rgb = (col[k] + (fog[k] - col[k]) * haze) * brightness;
+            const float rgb = (col[k] + (fog[k] - col[k]) * fogAmt) * brightness;
             dst[k] = rgb * al + dst[k] * (1 - al);
         }
     }
@@ -758,9 +764,13 @@ void add_approx(Composite& out, BakeResult& res, const Extractor::MapSky& sky, s
         cl->planeZ = -L.altitude;
         cl->depth = L.depth;
         cl->density = A.density;
-        // §10.4 fog: with the plane thousands of units away the distance fog
-        // term saturates (fz = 1), leaving min(FogColorFar.w, 1) * haze.
-        cl->haze = in.haveFog ? std::min(in.fogFar[3], 1.0f) * A.haze : 0.0f;
+        // §10.4 fog, distance term from the haze's distRange (GrSetFog's FogParam0).
+        cl->haze = in.haveFog ? A.haze : 0.0f;
+        cl->fogDist = in.haveFogDist;
+        cl->d0 = in.fogDist[0];
+        cl->d1 = in.fogDist[1];
+        cl->nearW = in.fogNearW;
+        cl->farW = in.fogFar[3];
         cl->lightW = A.lightIntensity * LI;
         cl->brightness = A.brightness;
         cl->fadeEnd = L.attributes.back().fadeEnd;   // §10.1: the last set's fade values win
