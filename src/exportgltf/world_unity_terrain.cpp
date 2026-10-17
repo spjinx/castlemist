@@ -220,6 +220,8 @@ json write_unity_terrain(const UnityTerrainInput& in, const std::string& dirUtf8
 
     json tiles = json::array();
     std::vector<std::array<double, 4>> realRects;
+    struct CheckTile { double x0, y0; std::vector<float> up; };
+    std::vector<CheckTile> checkTiles;   // parallel to realRects: the heightfield the check points sample
     std::vector<double> spreads;   // per real quad: the two diagonals' height difference at its centre
     size_t treesOutsideRange = 0;
     const int q = n - 1;
@@ -233,6 +235,7 @@ json write_unity_terrain(const UnityTerrainInput& in, const std::string& dirUtf8
         tile_rect_real(cx0, cy0, rr);
         realRects.push_back({rr[0], rr[1], rr[2], rr[3]});
         const double X0 = hf.rect[0], Y0 = hf.rect[1], Y1 = hf.rect[3];
+        checkTiles.push_back({X0, Y0, hf.up});
 
         // Heights.
         std::vector<uint8_t> r16;
@@ -348,18 +351,23 @@ json write_unity_terrain(const UnityTerrainInput& in, const std::string& dirUtf8
                          {"trees", treesJson}});
     }
 
-    // The terrain frame check's points: uniform in the tiles' real area.
+    // The terrain frame check's points (ruling S6): heightmap sample vertices drawn uniformly from the tiles'
+    // real area, with the sample's own up value, so the expected height holds for any triangle split.
     json check = json::array();
     Lcg lcg{uint64_t(s.mapFileId)};
+    const double stepX = tileW / q, stepY = tileH / q;
     for (int tries = 0; int(check.size()) < kUnityTerrainCheckPoints && tries < 32 * kUnityTerrainCheckPoints; ++tries) {
         const size_t ti = std::min(realRects.size() - 1, size_t(lcg.next() * double(realRects.size())));
         const auto& r = realRects[ti];
-        const float x = float(r[0] + lcg.next() * (r[2] - r[0]));
-        const float y = float(r[1] + lcg.next() * (r[3] - r[1]));
-        bool inside = false;
-        const float z = cw::terrain_height_at(t, x, y, &inside);
-        if (!inside || !std::isfinite(z)) continue;
-        check.push_back({{"unity", {x, y}}, {"height", -z}});
+        const CheckTile& ct = checkTiles[ti];
+        const int c = std::min(q, int(lcg.next() * double(n)));
+        const int row = std::min(q, int(lcg.next() * double(n)));   // row 0 south
+        const double x = ct.x0 + double(c) * stepX, y = ct.y0 + double(row) * stepY;
+        const double e = 1e-6 * tileW;
+        if (!(x >= r[0] - e && x <= r[2] + e && y >= r[1] - e && y <= r[3] + e)) continue;   // a padded vertex
+        const float up = ct.up[size_t(row) * n + size_t(c)];
+        if (!std::isfinite(up)) continue;
+        check.push_back({{"unity", {float(x), float(y)}}, {"height", up}});
     }
 
     // The diagonal note: |h00 + h11 - h01 - h10| / 2 over the tiles' real quads (p50, p99, max).

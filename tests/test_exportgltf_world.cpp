@@ -2342,13 +2342,24 @@ CM_TEST(unity_terrain, synthetic_tile) {
     CHECK(man["counts"]["foliage"]["terrainTrees"] == json(1));
     CHECK(man["counts"]["foliage"]["detailRecords"] == json(2));
 
-    // Check points: 32, inside the tile's real area, height = -terrain_height_at.
+    // Check points (ruling S6): 32 heightmap sample vertices inside the tile's real area, height = that
+    // sample's up value exactly (so Unity's SampleHeight needs no triangle split), = -terrain_height_at there.
     CHECK_EQ(ut["check"].size(), size_t(32));
-    for (const json& p : ut["check"]) {
-        const float x = p["unity"][0].get<float>(), y = p["unity"][1].get<float>();
-        CHECK(x >= tw::kSynX0 && x <= tw::kSynX0 + 2 * tw::kSynChunk);
-        CHECK(y >= tw::kSynY1 - 2 * tw::kSynChunk && y <= tw::kSynY1);
-        CHECK_NEAR(p["height"].get<double>(), -cw::terrain_height_at(s.terrain, x, y), 1e-3);
+    {
+        const cw::TerrainHeightfield hf = cw::terrain_heightfield(s.terrain, 0, 0, 4);
+        const double step = 12288.0 / 128.0, x0 = hf.rect[0], y0 = hf.rect[1];
+        for (const json& p : ut["check"]) {
+            const float x = p["unity"][0].get<float>(), y = p["unity"][1].get<float>();
+            CHECK(x >= tw::kSynX0 && x <= tw::kSynX0 + 2 * tw::kSynChunk);
+            CHECK(y >= tw::kSynY1 - 2 * tw::kSynChunk && y <= tw::kSynY1);
+            const double fc = (x - x0) / step, fr = (y - y0) / step;
+            const long c = std::lround(fc), r = std::lround(fr);
+            CHECK_NEAR(fc, double(c), 1e-6);
+            CHECK_NEAR(fr, double(r), 1e-6);
+            if (c >= 0 && c <= 128 && r >= 0 && r <= 128 && hf.up.size() == size_t(129 * 129))
+                CHECK_EQ(p["height"].get<float>(), hf.up[size_t(r) * 129 + size_t(c)]);
+            CHECK_NEAR(p["height"].get<double>(), -cw::terrain_height_at(s.terrain, x, y), 1e-3);
+        }
     }
     // Deterministic: the same map gives the same points.
     const json again = export_synthetic(s, "ut_tile2", synthetic_opts());

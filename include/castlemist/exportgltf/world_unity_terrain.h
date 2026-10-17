@@ -62,11 +62,13 @@ struct UnityTerrainInput {
 ///   largest stored fadeRange[1] of its records' layers (`fadeFar`, map units, not scaled):
 ///   the block's `fadeQualityScale` is the settings' zoneFadeQualityScale, which the
 ///   importers multiply in by default (ruling S5).
-/// - `check`: 32 points, xz uniform in the tiles' real (unpadded) area from the LCG
+/// - `check`: 32 heightmap sample vertices (ruling S6) in the tiles' real (unpadded)
+///   area, drawn (tile, column, row) from the LCG
 ///   state = state * 6364136223846793005 + 1442695040888963407 seeded with the map
-///   fileId (each draw takes the top 53 bits as a fraction), height
-///   -terrain_height_at(x, y): Unity [x, z] = map [x, y] and absolute Unity y, map
-///   units before unityScale.
+///   fileId (each draw takes the top 53 bits as a fraction; padded vertices are
+///   redrawn), height = the sample's up value (= -terrain_height_at there): Unity
+///   [x, z] = map [x, y] and absolute Unity y, map units before unityScale. On a
+///   vertex the expected height holds for any triangle split.
 /// - A heightmap or detail resolution Unity cannot take (n not 2^k + 1) gives null
 ///   and a warning; a failed write gives null and @p error (the export stops).
 nlohmann::json write_unity_terrain(const UnityTerrainInput& in, const std::string& dirUtf8,
