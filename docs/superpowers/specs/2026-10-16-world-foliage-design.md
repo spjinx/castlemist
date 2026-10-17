@@ -1266,3 +1266,64 @@ amendment 2026-10-17 (the client's rule, from static disassembly).
   mesh and Terrain mode. Coverage on the three maps: 8–19% of prop models,
   6–24% of their placements; LOD1 cuts about 30% and LOD2 about 38% of the
   triangles of the models that have LODs.
+
+### 2026-10-17, Task 15d: shared materials across the world export
+
+Added at the user's request ("I don't want a bunch of objects that use
+separate materials that are the same"). World export only; the VRChat, model,
+character and single-file map exports are byte-identical (tested in
+`world_materials.other_exports_unchanged`, and on the dat: 4 models' `--glb`
+and `--vrchat` folders, 50 files, and Spirit Vale's `world-export --out` glb).
+
+- **Content key.** Each material's key is the SHA-1 (40 lower-case hex) of a
+  canonical text: its glTF material less its name, every texture as its image
+  URI (the dat pool's `textures/<fileId>.png` or the content pool's), and its
+  materials.json entry less `name`, `fileName`, `usedByMeshes` and `warnings`
+  (JSON keys sorted), plus the model's dark-decal flag and uvScroll entry for
+  that material. The name is display only. It is written as materials.json
+  `key`, glTF `extras.castlemistMaterialKey` and `models[].materialKeys`.
+- **Generated-map pool.** Every Poiyomi map and generated glb image (emissive
+  bake, metal-rough) is written once, as `textures/gen/<sha1 of the PNG
+  bytes>_<Role>.png` (glb images without a role; extra layers
+  `_x-<lower-case role>`, so no two names differ only by case, which Spirit
+  Vale hit with an extra `projector` beside a `Projector` map), with W8's
+  claim, wait and temp-rename. The PNG-bytes hash was chosen over a pixel hash
+  because stb writes the same bytes for the same pixels and the validator can
+  re-check it with hashlib. `models/<fileId>/Textures/` and `Images/` are no
+  longer written.
+- **Manifest.** Optional `sharedMaterials` {generatedMaps {dir, count, bytes,
+  bytesRequested}, entries [{key, name, model, material, slots, models,
+  usedByMeshes}]}: one entry per key in first-use order; name the most common
+  slot name (the smallest on a tie); model/material the first used slot, which
+  Unity builds from. The validator checks unique keys, that every
+  materialKeys key is listed and equals materials.json's, the counts, that each
+  pool file is named by its SHA-1 (case-sensitively), and that every map exists.
+- **Unity.** One `Materials/Shared/<key>.mat` per key, every FBX material name
+  remapped to it (LOD renderers included); a slot the manifest gives another
+  dark decal or uvScroll gets `<key>_<8 hex>.mat`. GUIDs stay stable on
+  re-import (the file name is the key). PLAN `materials=` is one per distinct
+  (key, dark decal, uvScroll), equal to the dry run. Batchmode logs
+  `MATERIALS ... OK`. The postprocessor reads a pooled map's role from its name.
+- **Blender.** One material per key and variant, shared by every model and LOD
+  level, named from the table; `--verify` prints `MATERIALS keys= materials=
+  slots=`.
+- **Measured** (release build, `--no-fbx`; Unity 2022.3.22f1 batchmode without
+  Poiyomi, the before import with the before importer; each in a fresh project):
+
+  | | Spirit Vale before | after | Queensdale 8,4,15,11 before | after |
+  |---|---|---|---|---|
+  | materials.json entries (used) | 1076 (997) | 1076 (997), 737 keys (688 used) | 906 (838) | 906 (838), 501 keys (474 used) |
+  | PLAN `materials=` | 1063 | 754 | 846 | 482 |
+  | generated maps, files / MB | 5278 / 1093 | 2098 / 320 | 4069 / 473 | 1239 / 119 |
+  | folder without FBX (with FBX), MB | 1683 (1986) | 911 (1214) | 766 (1003) | 412 (650) |
+  | export seconds (models stage) | 15.5 (7.9) | 15.5 (7.5) | 11.7 (4.4) | 12.4 (4.3) |
+  | Unity importer, first import (wall) | 85 s (242 s) | 60 s (162 s) | 103 s (233 s) | 78 s (158 s) |
+  | Unity re-import | 40 s | 34 s | 58 s | 56 s |
+
+  Look unchanged: every prefab renderer's resolved material (shader, queue,
+  keywords, every property, each texture by the SHA-1 of its file and its
+  import settings) is identical before and after: 1294 of 1294 slots on Spirit
+  Vale, 1199 of 1199 on Queensdale. Blender 4.5 (`--import`, Queensdale region): 838 → 474 model
+  materials, import 478 → 428 s, and every model slot's resolved material (node types, unlinked inputs, links,
+  drivers, images by file SHA-1 and colour space, blend settings) identical, 1382 of 1382 slots. No render was
+  compared; the property checks stand in for it.
