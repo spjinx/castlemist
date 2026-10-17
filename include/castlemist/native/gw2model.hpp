@@ -1551,6 +1551,12 @@ public:
         float location[3] = {0, 0, 0};
         MapSkyCardAttr day, night;
         uint32_t materialFile = 0;               // material->filename, 0 if none
+        // material->constants[] (token32 name, float4) and material->textures[]
+        // (filename, textureUV), as stored; empty without a material.
+        struct Constant { uint32_t token = 0; float value[4] = {0, 0, 0, 0}; };
+        struct Texture { uint32_t fileId = 0; float textureUV[4] = {0, 1, 1, 0}; };
+        std::vector<Constant> materialConstants;
+        std::vector<Texture> materialTextures;
     };
     struct MapSkyCloudAttr { float brightness = 0, density = 0, haze = 0, lightIntensity = 0,
                              velocity[2] = {0, 0}, fadeWidth = 0, fadeEnd = 0; };
@@ -1618,6 +1624,10 @@ public:
         // dataGlobal->lighting[k] for k = 0..2, read like parseMapEnv(k) (colour
         // bytes in stored order); `present` false for a missing slot.
         std::vector<MapEnvLight> lighting;
+        // Median of trn.heightMapArray (map space, up = -Z): a ground-level
+        // height for a stand-in camera; hasGroundZ false without terrain.
+        float groundZ = 0;
+        bool hasGroundZ = false;
     };
 
     MapSky parseMapSky() {
@@ -1761,7 +1771,25 @@ public:
                 readAttr(ct, "night", e, c.night);
                 std::string mt;
                 size_t m = ptrField(ct, "material", e, mt);
-                if (m) c.materialFile = decodeFilename(mt, m);
+                if (m) {
+                    c.materialFile = decodeFilename(mt, m);
+                    Arr cs = arrayField(mt, "constants", m);
+                    for (uint32_t k = 0; k < cs.n && k < 256; ++k) {
+                        const size_t ce = cs.base + (size_t)k * cs.size;
+                        MapSkyCard::Constant cc;
+                        cc.token = rdDword(cs.type, "token", ce);
+                        rdFloat4(cs.type, "value", ce, cc.value);
+                        c.materialConstants.push_back(cc);
+                    }
+                    Arr ts = arrayField(mt, "textures", m);
+                    for (uint32_t k = 0; k < ts.n && k < 64; ++k) {
+                        const size_t te = ts.base + (size_t)k * ts.size;
+                        MapSkyCard::Texture tx;
+                        tx.fileId = fileAt(ts.type, "filename", te);
+                        rdFloat4(ts.type, "textureUV", te, tx.textureUV);
+                        c.materialTextures.push_back(tx);
+                    }
+                }
                 out.cards.push_back(std::move(c));
             }
         } catch (const std::exception&) {}
@@ -1870,6 +1898,16 @@ public:
         for (int k = 0; k < 3; ++k) {
             try { out.lighting.push_back(parseMapEnv(k)); } catch (const std::exception&) { out.lighting.push_back({}); }
         }
+        try {
+            MapTerrain t = parseTerrain();
+            std::vector<float> h;
+            for (float z : t.heights) if (std::isfinite(z)) h.push_back(z);
+            if (!h.empty()) {
+                std::nth_element(h.begin(), h.begin() + h.size() / 2, h.end());
+                out.groundZ = h[h.size() / 2];
+                out.hasGroundZ = true;
+            }
+        } catch (const std::exception&) {}
 
         // gw2-sky.md §7.1: TerrainClient hands the EnvContext
         // (float)(3072 * max(3, round(trn.swapDistance / 3072))); the 3072 is

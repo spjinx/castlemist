@@ -976,6 +976,225 @@ CM_TEST(skybake, unproven_layers_are_warned_not_baked) {
 }
 
 // ---------------------------------------------------------------------------
+// Approximate sky (gw2-sky.md amendment 2026-10-17)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using Extractor = castlemist::model::Extractor;
+
+/// Approx inputs with a known FogColorFar and no sun.
+ApproxInputs fog_inputs(float r, float g, float b) {
+    ApproxInputs a;
+    a.haveFog = true;
+    a.fogFar[0] = r; a.fogFar[1] = g; a.fogFar[2] = b; a.fogFar[3] = 1;
+    a.labels.push_back({"FogColorFar", InputSource::Derived, "(test)", "test fog"});
+    return a;
+}
+
+/// The Labyrinth's sky params: Brightness 0, full haze below ~0.37 elevation sine.
+void labyrinth_params(MapSky& sky) {
+    for (float* p : {&sky.params.dayBrightness, &sky.params.nightBrightness}) *p = 0;
+    sky.params.dayHazeBottom = sky.params.nightHazeBottom = 0.171598f;
+    sky.params.dayHazeFalloff = sky.params.nightHazeFalloff = 0.199211f;
+    sky.params.dayHazeDensity = sky.params.nightHazeDensity = 1;
+}
+
+} // namespace
+
+// Without approx inputs the bake is the proven one, pixel for pixel.
+CM_TEST(skyapprox, no_inputs_is_the_proven_bake) {
+    TextureMap tex;
+    MapSky sky = card_sky(tex, 0.3f, 0.2f, 3.0f);
+    tex[kCardDay] = solid(8, 200, 100, 50, 180);
+    sky.clouds.resize(1);
+    sky.params.dayHazeDensity = 0.5f;
+    BakeResult a = make_sky_sampler(sky, 0, tex);
+    BakeResult b = make_sky_sampler(sky, 0, tex, nullptr, nullptr);
+    CHECK(a.warnings == b.warnings);
+    CHECK(a.layers == b.layers);
+    for (int i = 0; i < 64; ++i) {
+        float u[3];
+        unity_dir(i * 37.0f, -20.0f + i * 1.7f, u);
+        Rgb x = a.radiance(u), y = b.radiance(u);
+        CHECK_EQ(x.r, y.r);
+        CHECK_EQ(x.g, y.g);
+        CHECK_EQ(x.b, y.b);
+    }
+}
+
+// §5 haze: out = lerp(col, FogColorFar, (1 - smoothstep) * HazeDensity) over
+// max(n.z, 0); with Brightness 0 the sky is FogColorFar at and below the
+// horizon and black above HazeBottom + HazeFalloff.
+CM_TEST(skyapprox, base_haze_goes_to_fog_colour_at_the_horizon) {
+    TextureMap tex;
+    MapSky sky = black_sky(tex);
+    labyrinth_params(sky);
+    ApproxInputs in = fog_inputs(0.23f, 0.51f, 0.35f);
+    BakeResult r = make_sky_sampler(sky, 0, tex, nullptr, &in);
+    CHECK(r.ok);
+    CHECK(r.layers == (std::vector<std::string>{"base", "haze"}));
+    float u[3];
+    unity_dir(10.0f, 0.0f, u);
+    Rgb h = r.radiance(u);
+    CHECK_NEAR(h.r, 0.23f, 1e-5f);
+    CHECK_NEAR(h.g, 0.51f, 1e-5f);
+    CHECK_NEAR(h.b, 0.35f, 1e-5f);
+    unity_dir(10.0f, -30.0f, u);   // below: n.z clamps to 0
+    CHECK_NEAR(r.radiance(u).g, 0.51f, 1e-5f);
+    unity_dir(10.0f, 40.0f, u);    // sin 40 = 0.64 > 0.37
+    CHECK_EQ(r.radiance(u).g, 0.0f);
+    unity_dir(10.0f, asinf(0.171598f + 0.5f * 0.199211f) / kDegToRad, u);   // f = 0.5: weight 0.5
+    CHECK_NEAR(r.radiance(u).g, 0.51f * 0.5f, 1e-3f);
+    CHECK(any_warning(r, "approx input: FogColorFar", "derived from static code"));
+    CHECK_FALSE(any_warning(r, "haze: inputs UNPROVEN"));
+}
+
+// No FogColorFar: no haze, said so.
+CM_TEST(skyapprox, missing_fog_leaves_haze_out) {
+    TextureMap tex;
+    MapSky sky = black_sky(tex);
+    labyrinth_params(sky);
+    ApproxInputs in;
+    BakeResult r = make_sky_sampler(sky, 0, tex, nullptr, &in);
+    CHECK(r.layers == std::vector<std::string>{"base"});
+    CHECK(any_warning(r, "haze: no FogColorFar"));
+    float u[3];
+    unity_dir(0.0f, 0.0f, u);
+    CHECK_EQ(r.radiance(u).g, 0.0f);
+}
+
+// §9.4: a haze-dominated card (minHaze 1) draws FogColorFar * brightness
+// with alpha T.a * density, instead of being left out.
+CM_TEST(skyapprox, haze_dominated_card_takes_the_fog_colour) {
+    TextureMap tex;
+    MapSky sky = card_sky(tex, 0.0f, 0.5f, 3.0f);
+    tex[kCardDay] = solid(8, 255, 0, 0, 255);
+    sky.cards[0].day.minHaze = 1.0f;
+    sky.cards[0].day.brightness = 2.0f;
+    sky.cards[0].day.density = 0.5f;
+    ApproxInputs in = fog_inputs(0.2f, 0.3f, 0.4f);
+    BakeResult r = make_sky_sampler(sky, 0, tex, nullptr, &in);
+    CHECK(r.layers == (std::vector<std::string>{"base", "cards"}));
+    float g[3], u[3];
+    card_centre(0.0f, 0.5f * kPi / 2, g);
+    to_unity(g, u);
+    Rgb c = r.radiance(u);
+    CHECK_NEAR(c.r, 0.2f * 2 * 0.5f, 1e-4f);   // base black, alpha 0.5
+    CHECK_NEAR(c.g, 0.3f * 2 * 0.5f, 1e-4f);
+    CHECK_NEAR(c.b, 0.4f * 2 * 0.5f, 1e-4f);
+}
+
+// §10.5: an opaque cloud plane overhead covers the zenith with its texture
+// (haze 0, no light), and never reaches the horizon.
+CM_TEST(skyapprox, cloud_layer_covers_the_zenith) {
+    TextureMap tex;
+    MapSky sky = black_sky(tex);
+    sky.skyDistance = 24576;
+    Extractor::MapSkyCloudLayer L;
+    L.texture = 90;
+    L.altitude = 5000;
+    L.extent = 1;
+    L.scale = 1;
+    Extractor::MapSkyCloudAttr A;
+    A.brightness = 1;
+    A.density = 1;
+    L.attributes = {A, A, A};
+    sky.clouds.push_back(L);
+    tex[90] = solid(8, 100, 150, 200, 255);
+    ApproxInputs in = fog_inputs(0, 0, 0);
+    in.cameraZ = 0;
+    BakeResult r = make_sky_sampler(sky, 0, tex, nullptr, &in);
+    CHECK(r.layers == (std::vector<std::string>{"base", "clouds"}));
+    float u[3] = {0, 1, 0};
+    Rgb c = r.radiance(u);
+    CHECK_NEAR(c.r, 100 / 255.0f, 2e-3f);
+    CHECK_NEAR(c.b, 200 / 255.0f, 2e-3f);
+    unity_dir(0.0f, 1.0f, u);   // 1 degree up: the plane is 286000 units away, past F m
+    CHECK_EQ(r.radiance(u).r, 0.0f);
+    // Camera above the plane: the layer is below, the sky above stays black.
+    in.cameraZ = -6000;
+    r = make_sky_sampler(sky, 0, tex, nullptr, &in);
+    float up[3] = {0, 1, 0};
+    CHECK_EQ(r.radiance(up).r, 0.0f);
+}
+
+// The flow-fire material card (AMAT 1262294) is drawn; other materials stay out.
+CM_TEST(skyapprox, flow_fire_material_card_is_drawn_others_are_not) {
+    TextureMap tex;
+    MapSky sky = card_sky(tex, 0.0f, 1.0f, 50.0f);   // overhead
+    MapSkyCard& c = sky.cards[0];
+    c.day.texture = c.night.texture = 0;
+    c.materialFile = kFlowFireMaterial;
+    c.day.hazeDensity = c.night.hazeDensity = 0;
+    for (uint32_t id = 700; id < 705; ++id) {
+        tex[id] = solid(8, 128, 255, 128, 255);
+        Extractor::MapSkyCard::Texture t;
+        t.fileId = id;
+        c.materialTextures.push_back(t);
+    }
+    auto constant = [&](const char* name, float x, float y, float z, float w) {
+        // base-23 Token of a <= 7-letter name (gw2-uniform-hash.md)
+        static const std::string kAlpha = "abcdefghiklmnopvrstuwxy";
+        uint32_t v = 0, mul = 1;
+        for (const char* p = name; *p; ++p) { v += static_cast<uint32_t>(kAlpha.find(*p)) * mul; mul *= 23; }
+        Extractor::MapSkyCard::Constant k;
+        k.token = v + 0x30000000u;
+        k.value[0] = x; k.value[1] = y; k.value[2] = z; k.value[3] = w;
+        c.materialConstants.push_back(k);
+    };
+    constant("colorl", 0.6f, 0.5f, 0.2f, 1);
+    constant("colorh", 0.6f, 0.1f, 0.0f, 1);
+    constant("fireduv", 0, 0, 0, 1);
+    constant("flowuv", 0, 0, 1, 1);
+    constant("flowbuv", 0, 0, 1, 1);
+    constant("ramprmp", 1, 1, 0, 1);
+    constant("opacity", 1, 1, 1, 1);
+    ApproxInputs in = fog_inputs(0, 0, 0);
+    BakeResult r = make_sky_sampler(sky, 0, tex, nullptr, &in);
+    CHECK(r.layers == (std::vector<std::string>{"base", "cards"}));
+    float up[3] = {0, 1, 0};
+    Rgb col = r.radiance(up);
+    CHECK(col.r > 0.05f);
+    CHECK(col.r > col.b);
+    CHECK(any_warning(r, "card 0", "transcribed PS 12"));
+    c.materialFile = 3135800;
+    r = make_sky_sampler(sky, 0, tex, nullptr, &in);
+    CHECK(r.layers == std::vector<std::string>{"base"});
+    CHECK(any_warning(r, "3135800", "no transcribed shader"));
+    CHECK_EQ(r.radiance(up).r, 0.0f);
+}
+
+// §5 sun glow with LightIntensity: col = T + w (G - T) changes a lit texel.
+CM_TEST(skyapprox, sun_glow_changes_the_base_with_light_intensity) {
+    TextureMap tex;
+    tex[kNE] = solid(8, 128, 128, 128, 255);
+    tex[kSW] = solid(8, 128, 128, 128, 255);
+    tex[kT] = solid(8, 128, 128, 128, 255);
+    MapSky sky = one_mode_sky();
+    sky.params.dayLightIntensity = 1;
+    ApproxInputs in;
+    in.haveSun = true;
+    in.sunColor[0] = 1; in.sunColor[1] = 0.5f; in.sunColor[2] = 0.25f;
+    in.sunDir[0] = 0; in.sunDir[1] = 0; in.sunDir[2] = 1;   // straight down
+    float up[3] = {0, 1, 0};
+    BakeResult r = make_sky_sampler(sky, 0, tex, nullptr, &in);
+    CHECK(r.layers == (std::vector<std::string>{"base", "sun glow"}));
+    // Looking up, n = -view = (0, 0, 1): g = ((1 - 1) + 1 * 1) * (1 * 0.25 + 0.75)^2 = 1,
+    // so C = sunClr and col = T + 1 * (X - T) = X.
+    const float T = 128 / 255.0f, g = 1.0f, lum = T;
+    auto expect = [&](float C) {
+        const float X = C * T + lum * lum * (T + C - 2 * C * T);
+        const float M = 0.5f * X + 0.5f * T;
+        return T + ((M + (X - M) * g) - T);
+    };
+    Rgb c = r.radiance(up);
+    CHECK_NEAR(c.r, expect(1.0f), 1e-4f);
+    CHECK_NEAR(c.g, expect(0.5f), 1e-4f);
+    CHECK(c.r > c.g);
+}
+
+// ---------------------------------------------------------------------------
 // Skybox export, pure stage: hand-built SkyInputs, output under the temp dir.
 // ---------------------------------------------------------------------------
 
