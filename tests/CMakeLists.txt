@@ -211,9 +211,10 @@ if (_cm_blender_ok)
              COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${_cm_world_py}"
                      -- --import "${CMAKE_BINARY_DIR}/world_fixture" --scale 0.0254 --no-colliders --verify)
     # 4 props; foliage (world-foliage D8): one geometry-nodes object per (cell, model), 4 records.
-    # FOLIAGE_MATRIX_MAX_ERR below 1e-4 (%.3g prints 0, or d.dde-05 and smaller).
+    # FOLIAGE_MATRIX_MAX_ERR below 1e-4 (%.3g prints 0, or d.dde-05 and smaller). Task 15d: the three models'
+    # materials are two Blender materials (102 and 103 share one key), LOD levels and the clip copy included.
     set_tests_properties(blender_world_import blender_world_import_scaled PROPERTIES
-        PASS_REGULAR_EXPRESSION "INSTANCES 4.*FOLIAGE_OBJECTS 2.*FOLIAGE_KEPT 4.*FOLIAGE_INSTANCES 4.*FOLIAGE_MATRIX_MAX_ERR (0|[0-9.]+e-(0[5-9]|[1-9][0-9]))[^0-9.e].*VERIFY OK")
+        PASS_REGULAR_EXPRESSION "INSTANCES 4.*FOLIAGE_OBJECTS 2.*FOLIAGE_KEPT 4.*FOLIAGE_INSTANCES 4.*FOLIAGE_MATRIX_MAX_ERR (0|[0-9.]+e-(0[5-9]|[1-9][0-9]))[^0-9.e].*MATERIALS keys=2 materials=2 slots=10.*VERIFY OK")
     # Density 0.5 keeps 3 of the 4 records (both colliders and grass placement 1; the validator's plan says the same);
     # Foliage "colliders" draws only the 2 collider records.
     add_test(NAME blender_world_import_density

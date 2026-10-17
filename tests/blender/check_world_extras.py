@@ -6,7 +6,8 @@ UV scroll, and a sky with an equirect (the synthetic export itself has none).
         <tools/blender/castlemist_world.py> <fixture dir> <scratch dir>
 
 <scratch dir> is replaced by the copy. Prints DARK_DECAL <n>, UV_SCROLL <u> <v>
-(the Mapping location at one second), SKY <image> and SUN <direction>, then
+(the Mapping location at one second), SKY <image>, SUN <direction> and VARIANTS <n>
+dark=<d> (Task 15d: a dark decal on one of two models sharing a material key), then
 EXTRAS OK, or EXTRAS FAIL <why>.
 """
 import importlib.util
@@ -100,6 +101,19 @@ def main():
     mats = [m for m in bpy.data.materials if cw.base_name(m.name) == mat]
     if not mats or any(getattr(m, "surface_render_method", "") == 'BLENDED' for m in mats):
         fails.append("--no-dark-decal")
+    # Task 15d: models 102 and 103 share one material key. A dark decal on 103's material only
+    # splits it into two Blender materials of that key: 102's as imported, 103's blended.
+    man["models"][2]["darkDecalMaterials"] = ["Mat_58247"]
+    with open(path, "wb") as f:
+        f.write(json.dumps(man, indent=2).encode("utf-8"))
+    if not cw.import_world(scratch, verify=True):
+        fails.append("verify (variant)")
+    key = man["models"][1]["materialKeys"][0]
+    of_key = [m for m in bpy.data.materials if m.get(cw.MATERIAL_KEY) == key]
+    dark = [m for m in of_key if getattr(m, "surface_render_method", "") == 'BLENDED']
+    print("VARIANTS %d dark=%d" % (len(of_key), len(dark)))
+    if len(of_key) != 2 or len(dark) != 1:
+        fails.append("dark-decal variant of a shared key")
     print("EXTRAS OK" if not fails else "EXTRAS FAIL " + ", ".join(fails))
 
 
