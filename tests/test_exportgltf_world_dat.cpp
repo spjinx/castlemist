@@ -23,6 +23,7 @@
 
 #include "castlemist/exportgltf/sky_export.h"
 #include "castlemist/exportgltf/world_dat_source.h"
+#include "castlemist/exportgltf/world_foliage.h"
 #include "castlemist/exportgltf/world_folder.h"
 #include "castlemist/exportgltf/world_lods.h"
 #include "castlemist/extract/entry_extractor.h"
@@ -31,6 +32,7 @@
 #include "castlemist/world/collision.h"
 #include "castlemist/world/dat_read.h"
 #include "castlemist/world/load_world.h"
+#include "castlemist/world/terrain.h"
 #include "castlemist/world/walk.h"
 #include "long_path.h"
 
@@ -112,7 +114,9 @@ fs::path fresh_dir(const std::string& label) {
 json read_json(const fs::path& p) {
     std::ifstream in(p, std::ios::binary);
     if (!in) return json();
-    try { return json::parse(in); } catch (...) { return json(); }
+    // Parsed from a string: json::parse(std::ifstream&) crashed in this exe on the Task 15d materials.json.
+    const std::string all((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    try { return json::parse(all); } catch (...) { return json(); }
 }
 
 /// One prop of @p fileId at the origin, no terrain (one cell c_all).
@@ -523,6 +527,92 @@ CM_TEST(world_export_dat, spirit_vale) {
     eg::remove_tree(dir, ec);
 }
 
+// World Foliage Task 15: Spirit Vale exported with the defaults (no FBX) against its
+// WorldScene's zone scatter: the records, the collider trees and the terrain check.
+CM_TEST(world_export_dat, spirit_vale_foliage) {
+    Gw2Dat& dat = shared_dat();
+    if (!ensure_template()) SKIP("no struct template");
+    constexpr uint32_t kSpiritVale = 1151420;
+    const fs::path dir = fresh_dir("spirit_vale_foliage");
+    const MapExport x = export_map(dat, kSpiritVale, dir);
+    if (!x.rep.ok) std::printf("    error: %s\n", x.rep.error.c_str());
+    CHECK(x.rep.ok);
+    CHECK(x.manifest.is_object());
+    if (!x.manifest.is_object()) return;
+    const json& man = x.manifest;
+    const cw::WorldScene& scene = x.scene;
+    const json& fol = man["counts"]["foliage"];
+    std::printf("    counts.foliage %s\n", fol.dump().c_str());
+    CHECK_EQ(fol["colliderTrees"].get<size_t>(), size_t(284));
+    const size_t skipped = fol["skipped"].get<size_t>();
+
+    // Σ records over the cells == the scene's zone instances less the skipped ones.
+    size_t total = 0, colliderRecs = 0, matched = 0, unmatched = 0;
+    std::map<uint32_t, std::vector<const cw::ZoneInstance*>> colliders;   // by model
+    for (const cw::ZoneInstance& z : scene.zones.instances)
+        if (z.source == cw::ZoneSource::Collider) colliders[z.model].push_back(&z);
+    for (const json& c : man["cells"]) {
+        if (!c.contains("foliage") || !c["foliage"].is_object()) continue;
+        const size_t n = c["foliage"]["records"].get<size_t>();
+        total += n;
+        std::ifstream in(under(dir, c["foliage"]["file"]), std::ios::binary);
+        const std::vector<uint8_t> b((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        CHECK_EQ(b.size(), n * eg::kFoliageRecordBytes);
+        for (size_t i = 0; i + 1 <= b.size() / eg::kFoliageRecordBytes; ++i) {
+            const eg::FoliageRecord r = eg::decode_foliage_record(b.data() + i * eg::kFoliageRecordBytes);
+            if (!(r.flags & eg::kFoliageFlagCollider)) continue;
+            ++colliderRecs;
+            // m is the 3 x 4 of ZoneInstance::world (column-major 4x4 without its last row).
+            const float* src[4] = {r.m, r.m + 3, r.m + 6, r.m + 9};
+            bool found = false;
+            const auto it = colliders.find(r.model);
+            if (it != colliders.end())
+                for (const cw::ZoneInstance* z : it->second) {
+                    bool same = true;
+                    for (int col = 0; col < 4 && same; ++col)
+                        for (int row = 0; row < 3; ++row)
+                            if (std::fabs(src[col][row] - z->world[col * 4 + row]) > 1e-4f) { same = false; break; }
+                    if (same) { found = true; break; }
+                }
+            (found ? matched : unmatched)++;
+        }
+    }
+    std::printf("    records %zu, instances %zu, skipped %zu; collider records %zu (matched %zu, unmatched %zu)\n", total,
+                scene.zones.instances.size(), skipped, colliderRecs, matched, unmatched);
+    CHECK_EQ(total, scene.zones.instances.size() - skipped);
+    CHECK_EQ(colliderRecs, size_t(284));
+    CHECK_EQ(unmatched, size_t(0));
+
+    // unityTerrain.check: the sample's up value is -terrain_height_at.
+    CHECK(man.contains("unityTerrain") && man["unityTerrain"].is_object());
+    if (man.contains("unityTerrain") && man["unityTerrain"].is_object()) {
+        size_t bad = 0, n = 0;
+        double worst = 0;
+        for (const json& p : man["unityTerrain"]["check"]) {
+            ++n;
+            const float px = p["unity"][0].get<float>(), py = p["unity"][1].get<float>();
+            const double d = std::fabs(p["height"].get<double>() + double(cw::terrain_height_at(scene.terrain, px, py)));
+            worst = std::max(worst, d);
+            if (d > 1e-3) ++bad;
+        }
+        std::printf("    terrain check: %zu points, worst difference %.6f, over 1e-3: %zu\n", n, worst, bad);
+        CHECK(n > 0);
+        CHECK_EQ(bad, size_t(0));
+    }
+
+    if (std::system("python --version >NUL 2>&1") == 0) {
+        const std::string cmd = std::string("python -I \"") + CM_SOURCE_DIR + "/tools/world/validate_manifest.py\" \"" +
+                                dir.string() + "\" --plan";
+        const int rc = std::system(cmd.c_str());
+        std::printf("    validate_manifest.py: %d\n", rc);
+        CHECK_EQ(rc, 0);
+    } else {
+        std::printf("    python not on PATH: validate_manifest.py not run\n");
+    }
+    std::error_code ec;
+    eg::remove_tree(dir, ec);
+}
+
 namespace {
 
 /// min, median, p90 (nearest rank) and max of @p v (sorted in place).
@@ -635,6 +725,39 @@ CM_TEST(world_export_dat, measure) {
         std::string secs;
         for (const auto& [k, v] : x.rep.seconds) { char b[64]; std::snprintf(b, sizeof b, " %s %.2f", k.c_str(), v); secs += b; }
         std::printf("      seconds: load_world %.2f, sky inputs %.2f, export %.2f;%s\n", x.tLoad, x.tSky, x.tExport, secs.c_str());
+
+        // World Foliage Task 15: the foliage records, the foliage-only models, the unityTerrain tiles.
+        {
+            const json& cf = man["counts"].contains("foliage") ? man["counts"]["foliage"] : json::object();
+            uint64_t folBytes = 0, terrBytes = 0;
+            size_t folFiles = 0, terrFiles = 0;
+            for (const auto& [k, b] : top) {
+                if (k.rfind("foliage ", 0) == 0) { folBytes += b; folFiles += topFiles[k]; }
+                if (k.rfind("terrain ", 0) == 0) { terrBytes += b; terrFiles += topFiles[k]; }
+            }
+            size_t failed = 0;
+            for (const json& m : man["models"]) if (m["status"] != "ok") ++failed;
+            std::printf("      foliage: records %s (collider trees %s, terrain trees %s, detail records %s), scatter %s, "
+                        "density %s, skipped %s, failedModel %s; foliage-only models %s; foliage bins %zu files %llu bytes; "
+                        "failed models %zu\n",
+                        cf.value("records", json(nullptr)).dump().c_str(), cf.value("colliderTrees", json(nullptr)).dump().c_str(),
+                        cf.value("terrainTrees", json(nullptr)).dump().c_str(), cf.value("detailRecords", json(nullptr)).dump().c_str(),
+                        cf.value("scatter", json(nullptr)).dump().c_str(), cf.value("density", json(nullptr)).dump().c_str(),
+                        cf.value("skipped", json(nullptr)).dump().c_str(), cf.value("failedModel", json(nullptr)).dump().c_str(),
+                        cf.value("modelsFoliageOnly", json(nullptr)).dump().c_str(), folFiles,
+                        static_cast<unsigned long long>(folBytes), failed);
+            if (man.contains("unityTerrain") && man["unityTerrain"].is_object()) {
+                const json& ut = man["unityTerrain"];
+                const double hmin = ut["heightRange"]["min"].get<double>(), hmax = ut["heightRange"]["max"].get<double>();
+                const bool sentinel = std::fabs(hmin) >= 4999.0 || std::fabs(hmax) >= 4999.0;
+                std::printf("      unityTerrain: %zu tiles, terrain dir %zu files %llu bytes, heightmap %d, heightRange [%.4f, %.4f], "
+                            "sentinel (|h| >= 4999) %s\n",
+                            ut["tiles"].size(), terrFiles, static_cast<unsigned long long>(terrBytes),
+                            ut["heightmapResolution"].get<int>(), hmin, hmax, sentinel ? "PRESENT" : "no");
+            } else {
+                std::printf("      unityTerrain: none\n");
+            }
+        }
 
         // Models without instances (failed, or every placement skipped), and models
         // whose glb has a primitive with no material (Unity: Default-Material).
