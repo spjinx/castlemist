@@ -316,9 +316,9 @@ dotnet run --project tools/unity/Tests~ -- <export dir>   # Unity-free planner a
   editor and have not been run.
 - **Blender.** `castlemist_world.py --import <dir> --verify [--foliage
   off|colliders|trees|all] [--foliage-density f]` prints `FOLIAGE_OBJECTS`,
-  `FOLIAGE_INSTANCES`, `FOLIAGE_KEPT` and `FOLIAGE_MATRIX_MAX_ERR`. Run one
-  Blender per export at a time (parallel runs collide on
-  `*.castlemist_tmp.glb`). The visual check (view the scene, one Cycles frame
+  `FOLIAGE_INSTANCES`, `FOLIAGE_KEPT` and `FOLIAGE_MATRIX_MAX_ERR`. Parallel
+  Blender runs on one export no longer collide: the temporary files carry the
+  process id (`*.castlemist_tmp<pid>.glb`). The visual check (view the scene, one Cycles frame
   at the spawn) has not been run.
 - **Scratch paths and disk.** A Spirit Vale export is about 1.7 GB and a full
   Queensdale one more; a Unity project with Poiyomi is 3 to 4 GB. Keep exports
