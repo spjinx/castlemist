@@ -107,6 +107,7 @@
         "zoneTiling": { "$ref": "#/$defs/setting" },
         "zoneGraphicsQuality": { "$ref": "#/$defs/setting" },
         "zoneGroundcoverOffset": { "$ref": "#/$defs/setting" },
+        "zoneQueryFlags": { "$ref": "#/$defs/setting" },
         "zoneUnprovenBranches": { "$ref": "#/$defs/setting" },
         "zoneProbability": { "$ref": "#/$defs/setting" },
         "zoneTint": { "$ref": "#/$defs/setting" },
@@ -315,7 +316,8 @@
         "propsWritten": { "$ref": "#/$defs/count" },
         "propsSkipped": { "$ref": "#/$defs/count" },
         "models": { "$ref": "#/$defs/count" },
-        "modelsFailed": { "$ref": "#/$defs/count" },
+        "modelsFailed": { "description": "Every model not ok, the empty ones included.", "$ref": "#/$defs/count" },
+        "modelsEmpty": { "description": "Optional: of modelsFailed, the models with no drawable meshes (status empty).", "$ref": "#/$defs/count" },
         "collisionInstances": { "$ref": "#/$defs/count" },
         "cells": { "$ref": "#/$defs/count" },
         "chunks": { "$ref": "#/$defs/count" },
@@ -324,7 +326,7 @@
         "animatedResolved": { "$ref": "#/$defs/count" },
         "clipsFailedDecode": { "$ref": "#/$defs/count" },
         "foliage": {
-          "description": "Optional, with the foliage block. records and colliderTrees are the cells' sums; modelsFoliageOnly the foliage models no written prop uses; skipped the instances with a degenerate transform; failedModel the records of failed or missing models.",
+          "description": "Optional, with the foliage block. records and colliderTrees are the cells' sums; modelsFoliageOnly the foliage models no written prop uses; skipped the instances with a degenerate transform; failedModel the records of failed or missing models; emptyModel (optional) the records of empty models (no drawable meshes), skipped as there is nothing to draw.",
           "type": "object",
           "additionalProperties": false,
           "required": ["records", "colliderTrees", "scatter", "density", "modelsFoliageOnly", "skipped", "failedModel"],
@@ -336,6 +338,7 @@
             "modelsFoliageOnly": { "$ref": "#/$defs/count" },
             "skipped": { "$ref": "#/$defs/count" },
             "failedModel": { "$ref": "#/$defs/count" },
+            "emptyModel": { "$ref": "#/$defs/count" },
             "terrainTrees": { "$ref": "#/$defs/count" },
             "detailRecords": { "$ref": "#/$defs/count" }
           }
@@ -462,7 +465,7 @@
         "clips": { "type": "array", "items": { "type": "string" } },
         "darkDecalMaterials": { "type": "array", "items": { "type": "string" } },
         "uvScroll": { "type": "array", "items": { "$ref": "#/$defs/uvScroll" } },
-        "status": { "enum": ["ok", "failed"] },
+        "status": { "description": "empty: loaded, but no drawable meshes; nothing to place.", "enum": ["ok", "failed", "empty"] },
         "error": { "type": "string" },
         "materialKeys": {
           "description": "Task 15d (optional): the key (sharedMaterials) of each materials.json entry, in order.",

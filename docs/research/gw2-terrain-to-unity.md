@@ -117,7 +117,7 @@ From `gw2-world-frame.md` §4 and `gw2-world-materials.md` §1:
   normal maps' tangent sign; `pickerSolid` byte order; the 36 Spirit Vale
   chunks with `uvData` animation and a third UV set.
 
-### 1.3 Foliage and ground clutter: `zon2` — native parser only, NOT in WorldScene, NOT exported
+### 1.3 Foliage and ground clutter: `zon2` — decoded (client decode) and exported as foliage records
 
 **GW2 has a dedicated scatter layer.** `zon2` (`PackMapZonesV23`, read as v22
 on Queensdale) holds `zoneDefArray` (each def: `token`, `layerDefArray`) and
@@ -128,32 +128,41 @@ probability, fadeRange, rotRange[3], hslRanges[4], instanceScaleJitter,
 noise, layerFlags, materialname` and `modelArray[]` (`filename, probability,
 flags, hslOffset, zOffsets, permutation`).
 
-What castlemist does today (`gw2model.hpp:960-1090`, `parseMapZones`): walks
-`flags[]` as run-length `(skip, flag)` byte pairs over the zone's cells on a
-**48-unit grid** from the `parm` rect corner, plants one instance per
-non-zero flag, layer = `flag >> 4` (1-based), model = that layer's
-**`modelArray[0]` only**, at the zone's `zPos`, unrotated, scale 1. Its
-comment says it was "Ported from Tyria3D's ZoneRenderer" (see §9, licence).
-`gw2dat_cli map` reports it; `load_world` does not attach it
-(`chunk zon2 v22 not read` is in Queensdale's `WorldScene::warnings`), so the
-map window and the world export have **no foliage**.
+> **Corrected 2026-10-18 (world-foliage Task 16).** This section's first
+> version described castlemist's original walk of `flags[]`, which was wrong.
+> The client stores `flags` as run-length **(count, value)** pairs (`count`
+> cells of `value`), and as raw bytes, one per vertex, in a zone with no
+> `encodeData` (34 zones). castlemist now uses that client decode
+> (`walkZoneFlags`, ruling S4): layer = `(flag >> 4) - 1`, model =
+> `layer.modelArray[(flag >> 1) & 7]`, the cell is the walk's position minus
+> one. `WorldScene::zones` holds the result, the Map Window draws it, and the
+> world export writes it as foliage records. The spec is
+> `docs/superpowers/specs/2026-10-16-world-foliage-design.md`, with the
+> corrections in M1-M2 and the amendment of 2026-10-18. The rule that places each
+> instance is the dated amendment below.
+
+What castlemist did before (kept for the record, **superseded**): it walked
+`flags[]` as `(skip, flag)` byte pairs over the zone's cells on a 48-unit grid
+from the `parm` rect corner, planted one instance per non-zero flag with the
+layer's `modelArray[0]` only, unrotated at scale 1 (ported from Tyria3D's
+ZoneRenderer; see §9). `load_world` did not attach it.
 
 The 48-unit cell is consistent with the data: Queensdale is 896 terrain tiles
 × 96 = 86 016 units = **1792 × 48**, and the largest `vertRect` x seen is
 1620. (48 = half a height sample; the constant itself is T3D's.)
 
-Measured placements (same RLE walk, counted per layer `type`):
+Measured placements (the client decode, counted per layer `type`; the old
+walk gave 217 114 / 32 448 / 7 642 in total):
 
 | map | zone defs / layers | zones | placements | type 1 | type 2 | type 3 |
 |---|---|---|---|---|---|---|
-| Queensdale | 42 / 142 | 248 | **217 114** | 167 169 | 39 649 | 10 296 |
-| Lion's Arch | 26 / 60 | 447 | 32 448 | 29 768 | 1 669 | 1 011 |
-| Spirit Vale | 2 / 3 | 26 | 7 642 | 7 358 | 0 | 284 |
+| Queensdale | 42 / 142 | 248 | **247 804** | 193 125 | 44 380 | 10 299 |
+| Lion's Arch | 26 / 60 | 447 | 40 252 | 36 939 | 2 300 | 1 013 |
+| Spirit Vale | 2 / 3 | 26 | 8 670 | 8 386 | 0 | 284 |
 
-The low nibble of each flag is 1, 3, 5 or 7 on 94 % of Queensdale's
-placements (0, 2, 4, 6 on the rest); its meaning is **UNPROVEN** (a model
-index into `modelArray` and an "on" bit is a hypothesis; proof: the client
-code that reads the flag, or a frame capture of one zone).
+The low nibble of each flag holds the model slot in bits 1-3, `(flag >> 1) &
+7` (measured, spec M3, and read from the client); bit 0 is stored and not used
+(**UNPROVEN** meaning, spec M4).
 
 What the layer types hold — all 195 distinct Queensdale zone models through
 `gw2dat_cli model`:
@@ -181,14 +190,17 @@ formula is **UNPROVEN** (proof: transcribe one VS, as `gw2-world-materials.md`
 §1.2 did for the terrain PS). No GW2 model has a billboard or impostor LOD
 (`gw2-model-lods.md` §3); trees fade out at `fadeRange` instead.
 
-Not reproduced anywhere in castlemist and **UNPROVEN**: the per-instance
-offset inside a cell, rotation (`rotRange`), scale (`scaleRange`,
-`instanceScaleJitter`), the `probability` cull, `noise`, `hslRanges` tint,
-the RNG and its seeding (`seed` is per zone, 0 on many), the ground
-alignment, and `zOffsets`. A Unity build can match the game's **density and
-model mix per cell**, not its exact instances, until these are proven.
+Superseded: the per-instance offset, rotation, scale, RNG and seeding, ground
+alignment and `zOffsets`, which this section first listed as unreproduced, are
+the scatter rule below (type 3 reproduced exactly on all 4750 colliders;
+types 1-2 transcribed and UNPROVEN). `noise` and the `hslRanges` tint are not
+applied (spec D11).
 
 #### 2026-10-16: zone scatter rule (static client and data fit)
+
+(Written against the old walk's counts; the decode it asks for is the one
+described above. The query flags are taken as 0, an unfiltered query: every
+instance emitted, transcribed and not measured; spec setting `zoneQueryFlags`.)
 
 **Decision for the World Foliage spec D5: `exact`.** The rule below, read
 from `Gw2-64.exe` (PE timestamp 1792004482, the disable-ASLR copy, image base
@@ -414,6 +426,20 @@ Their render-time meaning stays UNPROVEN.
 |---|---|---|
 | tilt = terrain normal, clamped to `rotRange` x/y | 234 / 4750, worst 2.26 rad | UNPROVEN as phrased (tilt is per model flag: none 743, random 417 + 125, ground 3537 + 53) |
 | z = `terrain_height_at` | 2286 / 4750 within 0.5 | UNPROVEN as phrased (z = NE-SW triangle + zOffset: 4535 / 4535, worst 0.0093) |
+
+**Amendment 2026-10-18 (world-foliage fix wave, review I2).** castlemist's own
+terrain now splits NE-SW everywhere: `CollisionIndex` (walk.cpp), the mesh
+export (world_cell.cpp `push_quad`) and the Map Window (world_view.cpp
+`grid_indices`). It used NW-SE, chosen only to agree with itself (world-export
+spec, Task 13). The NE-SW split is the client's ground query as measured: the
+z of the client's own collider placements, which `ZnPlacement` (`0x140cc2880`,
+Gw2-64.exe 2026-10-14) takes from that query, sits on the NE-SW triangle plus
+the slot's zOffset for 4535 / 4535. The query's code is still not located, and
+the renderer's own terrain index buffer was not read, so the split is
+*derived*, not read. `world_dat.zones_collision_terrain_is_client_ground` checks
+that `CollisionIndex`'s terrain equals the NE-SW triangle at every zone instance
+(Queensdale: 4381 colliders, previously 479 more than 1 unit off, 243 of
+them floating; now 0, worst 0.001 units on all three test maps).
 | scale = `scaleRange[0] + Δ·k` | 4750 / 4750, Δ = 99/1280 global | **measured** (and read in the code) |
 | `collideData` = the ground (normal, z) | z 215 / 215, normal 53 / 53 | **measured** |
 
@@ -640,7 +666,7 @@ props the export flags in `darkDecalMaterials`.
 | LOD | none (stage B could add decimated meshes) | built-in heightfield LOD (Pixel Error), seams handled by neighbours |
 | ground detail close up | 256 texels per chunk bake (blurry at walking height) | splat mode: real ground textures at full repeat, normal maps |
 | foliage | prefab instances only | details (instanced, distance-culled) and trees |
-| collider | MeshCollider on the same mesh: proven equal to `CollisionIndex` (32/32 rays) | TerrainCollider; its quad diagonal versus castlemist's NW-SE is UNPROVEN |
+| collider | MeshCollider on the same mesh: proven equal to `CollisionIndex` (32/32 rays) | TerrainCollider; its quad diagonal versus castlemist's NE-SW is UNPROVEN |
 | editing in Unity | mesh | sculpt / paint tools work |
 | Quest | fine, if region-limited | measured −20 fps for a tiny terrain on Quest 2 (forum), VRChat known issues |
 | proven in this repo | yes (Unity 2022.3 batchmode, probe) | nothing yet |
@@ -766,7 +792,7 @@ clamped) once their meaning is known; with them, the steps above hold.
 
 - `TerrainCollider` per tile (no MeshCollider on the terrain in that mode);
   `havk` colliders unchanged. The triangle diagonal of Unity's collider
-  versus `CollisionIndex`'s NW-SE split is UNPROVEN; the dat test's 32-ray
+  versus `CollisionIndex`'s NE-SW split is UNPROVEN; the dat test's 32-ray
   check should be repeated against `Terrain.SampleHeight` and a downward
   raycast.
 - Water, sky, light and props: unchanged.
@@ -774,6 +800,10 @@ clamped) once their meaning is known; with them, the steps above hold.
 ---
 
 ## 6. Props: Terrain trees, details, or instances
+
+> World-foliage status (2026-10-18): the Terrain-tree / detail / instance split
+> in this section is built (spec D7-D8; amendment 2026-10-18 in
+> `docs/superpowers/specs/2026-10-16-world-foliage-design.md`).
 
 ### 6.1 Rules
 
@@ -874,6 +904,10 @@ not the whole map.
 ---
 
 ## 8. Pipeline proposal
+
+> Built as the world-foliage work (sub-project 5); see the spec and its
+> amendments (`docs/superpowers/specs/2026-10-16-world-foliage-design.md`,
+> 2026-10-18 Task 16) for what changed from this proposal.
 
 ### 8.1 world
 

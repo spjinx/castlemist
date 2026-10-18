@@ -134,7 +134,9 @@ def empty_scene():
 
 # glTF (x, y, z) -> Blender (x, -z, y): the glTF importer's axis conversion.
 GLTF_TO_BLENDER = Matrix(((1, 0, 0, 0), (0, 0, -1, 0), (0, 1, 0, 0), (0, 0, 0, 1)))
-TMP_SUFFIX = ".castlemist_tmp.glb"
+TMP_MARK = ".castlemist_tmp"
+# Per process, so two Blenders on one export never share a temporary file (final review M8).
+TMP_SUFFIX = "%s%d.glb" % (TMP_MARK, os.getpid())
 
 
 def _read_glb(path):
@@ -633,7 +635,7 @@ def bake_objects(objs, actions=None):
 
 # ------------------------------------------------------------------ glb -> fbx --
 
-FBX_TMP_SUFFIX = ".castlemist_tmp.fbx"
+FBX_TMP_SUFFIX = "%s%d.fbx" % (TMP_MARK, os.getpid())
 
 
 def glb_to_fbx(src, out):
@@ -682,7 +684,7 @@ def to_fbx(export_dir):
     done = skipped = failed = 0
     for dirpath, _dirs, files in os.walk(export_dir):
         for f in sorted(files):
-            if not f.lower().endswith(".glb") or f.endswith(TMP_SUFFIX):
+            if not f.lower().endswith(".glb") or TMP_MARK in f:   # any process's temporary file
                 continue
             src = os.path.join(dirpath, f)
             out = os.path.splitext(src)[0] + ".fbx"

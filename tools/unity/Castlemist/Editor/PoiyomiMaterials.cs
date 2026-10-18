@@ -1,12 +1,17 @@
-// castlemist world export: materials.json -> Poiyomi Toon 10 materials.
+// castlemist world export: materials.json -> Poiyomi Pro / Toon 10 or 11 materials.
 //
 // Follows docs/research/poiyomi-10-importer.md:
-//  §1  the shader is ".poiyomi/Poiyomi Toon", found with Shader.Find; no
-//      compile-time reference to Poiyomi or ThryEditor.
+//  §1  the shader is found with Shader.Find among PoiyomiShaders.Names and
+//      picked by PoiyomiShaders.Choose (Task 15c: 11 Pro, 11 Toon, 10 Pro,
+//      10 Toon, 9.3; the plain ".poiyomi/Poiyomi Pro|Toon" names are 11 in
+//      Poiyomi Pro 11 and 10 in Poiyomi 10, so the version comes from
+//      shader_master_label); no compile-time reference to Poiyomi or ThryEditor.
 //  §2  setting _Mode alone does nothing (ThryEditor's inspector runs the
-//      preset's actions), so the preset table below writes the render queue,
-//      the RenderType tag, the blend factors, _ZWrite, _Cutoff,
-//      _AlphaForceOpaque and _AlphaPremultiply itself. castlemist's
+//      preset's actions), so the importer writes the render queue, the
+//      RenderType tag and every property of the preset row itself: the row the
+//      chosen shader's own _Mode description declares (PoiyomiShaders.ParsePresets),
+//      or, when it has none, the table below (blend factors, _ZWrite, _Cutoff,
+//      _AlphaForceOpaque, _AlphaPremultiply, ...). castlemist's
 //      alphaCutoff goes on after the preset; renderQueueOffset on top of the
 //      queue. Where materials.json says exact: false, the raw bgfx factors
 //      override _SrcBlend/_DstBlend/_BlendOp (and the alpha ones) as
@@ -21,7 +26,10 @@
 //      importer makes. The scroll unit itself is UNPROVEN
 //      (settings.uvScrollUnitSeconds).
 //  §3  keywords are enabled by hand for every toggle set; materials are
-//      never locked (the VRChat upload hook locks them).
+//      never locked (ThryEditor's VRChat world-upload hook,
+//      LockMaterialsOnWorldUpload, locks every renderer's material in a scene
+//      with a VRC_SceneDescriptor; unlocked ones that reach a build are
+//      stripped and render pink).
 //  §5  existing .mat assets are updated in place, so GUIDs stay stable; user
 //      edits are overwritten (spec D6 "Re-import").
 // Without Poiyomi (a bare batchmode project), the Standard shader is used with
@@ -41,36 +49,94 @@ namespace Castlemist
     {
         public Shader Shader;
         public bool Poiyomi;
+        /// The Poiyomi shader's name and version (shader_master_label), null for Standard.
+        public string ShaderName, Version;
+        /// The chosen shader's _Mode presets (PoiyomiShaders.ParsePresets); empty: the importer's own table.
+        public Dictionary<int, PoiyomiShaders.PresetActions> Presets = new Dictionary<int, PoiyomiShaders.PresetActions>();
         public List<string> Warnings;
         public int Built;
 
+        /// "SHADER poiyomi=found name=... version=... presets=<n>" or "SHADER poiyomi=absent name=Standard".
+        public string Line
+        {
+            get
+            {
+                return Poiyomi
+                    ? "SHADER poiyomi=found name=" + ShaderName + " version=" + (Version ?? "unknown") +
+                      " family=" + (PoiyomiShaders.IsPro(ShaderName) ? "Pro" : "Toon") + " presets=" + Presets.Count
+                    : "SHADER poiyomi=absent name=" + (Shader != null ? Shader.name : "none");
+            }
+        }
+
+        /// The Poiyomi shader PoiyomiShaders.Choose picks among PoiyomiShaders.Names, or Standard with a warning.
         public static MaterialContext Create(List<string> warnings)
         {
             var c = new MaterialContext { Warnings = warnings };
-            c.Shader = Shader.Find(PoiyomiMaterials.ShaderName);
-            c.Poiyomi = c.Shader != null;
+            var found = new List<PoiyomiShaders.Found>();
+            var shaders = new List<Shader>();
+            foreach (string n in PoiyomiShaders.Names)
+            {
+                Shader s = Shader.Find(n);
+                if (s == null) continue;
+                bool err = PoiyomiMaterials.HasErrors(s);
+                if (err) warnings.Add("materials: shader '" + n + "' has compile errors: not used");
+                found.Add(new PoiyomiShaders.Found { Name = n, Version = PoiyomiMaterials.PoiyomiVersion(s), HasError = err });
+                shaders.Add(s);
+            }
+            int k = PoiyomiShaders.Choose(found);
+            c.Poiyomi = k >= 0;
             if (!c.Poiyomi)
             {
                 c.Shader = Shader.Find("Standard");
-                warnings.Add("materials: Poiyomi Toon 10 ('" + PoiyomiMaterials.ShaderName +
-                             "') is not in this project: the Standard shader is used instead");
+                warnings.Add("materials: no usable Poiyomi Pro or Toon shader (" + string.Join(", ", PoiyomiShaders.Names) +
+                             ") is in this project: the Standard shader is used instead");
+                return c;
             }
-            else
-            {
-                string v = PoiyomiMaterials.PoiyomiVersion(c.Shader);
-                if (v == null || !v.StartsWith("10."))
-                    warnings.Add("materials: Poiyomi version " + (v ?? "unknown") +
-                                 " found; the property names are those of 10.0.24 (docs/research/poiyomi-10-importer.md)");
-            }
+            c.Shader = shaders[k];
+            c.ShaderName = found[k].Name;
+            c.Version = found[k].Version;
+            int major = PoiyomiShaders.Major(c.Version);
+            if (!PoiyomiShaders.Checked(major))
+                warnings.Add("materials: Poiyomi " + (c.Version ?? "of unknown version") + " ('" + c.ShaderName +
+                             "'): the importer's property names were checked against 10.0.9, 10.0.23 and 11.0.22 only");
+            var missing = new List<string>();
+            foreach (string p in PoiyomiShaders.Properties)
+                if (c.Shader.FindPropertyIndex(p) < 0) missing.Add(p);
+            if (missing.Count > 0)
+                warnings.Add("materials: '" + c.ShaderName + "' lacks " + string.Join(", ", missing) + ": not set");
+            int mode = c.Shader.FindPropertyIndex("_Mode");
+            if (mode >= 0) c.Presets = PoiyomiShaders.ParsePresets(c.Shader.GetPropertyDescription(mode));
+            if (c.Presets.Count == 0)
+                warnings.Add("materials: no presets in '" + c.ShaderName + "' _Mode: the importer's own preset table is used");
             return c;
+        }
+
+        /// The render queue of preset `mode`: the shader's own, else the importer's table.
+        public int QueueFor(int mode)
+        {
+            PoiyomiShaders.PresetActions p;
+            if (Poiyomi && Presets.TryGetValue(mode, out p)) return p.Queue;
+            return PoiyomiMaterials.FallbackQueue(mode);
         }
     }
 
     public static class PoiyomiMaterials
     {
-        public const string ShaderName = ".poiyomi/Poiyomi Toon";
+        /// True when Unity reports a compile error for `s` (ShaderUtil's messages).
+        public static bool HasErrors(Shader s)
+        {
+            if (ShaderUtil.ShaderHasError(s)) return true;
+            foreach (ShaderMessage msg in ShaderUtil.GetShaderMessages(s))
+                if (msg.severity == UnityEditor.Rendering.ShaderCompilerMessageSeverity.Error) return true;
+            return false;
+        }
 
-        // The preset rows of poiyomi-10-importer.md §2, indexed by _Mode.
+        public static int FallbackQueue(int mode) { return PresetFor(mode).Queue; }
+
+        // The preset rows of poiyomi-10-importer.md §2, indexed by _Mode: used for
+        // the Standard fallback, and for Poiyomi only when its _Mode description
+        // has no presets (ctx.Presets empty). Poiyomi 10.0.9, 10.0.23 and 11.0.22
+        // declare the same rows.
         struct Preset
         {
             public int Queue, Src, Dst, ZWrite, AddSrc, AddDst;
@@ -157,7 +223,7 @@ namespace Castlemist
             if (!darkDecal && !e.Exact && e.Blend != null) ApplyRawBlend(ctx, mat, e.Blend);
             if (mode == Cutout || mode == TransClipping) SetF(mat, "_Cutoff", (float)e.AlphaCutoff);
             SetF(mat, "_Cull", e.Cull == "Off" ? (float)CullMode.Off : (float)CullMode.Back);
-            mat.renderQueue = PresetFor(mode).Queue + e.RenderQueueOffset;
+            mat.renderQueue = ctx.QueueFor(mode) + e.RenderQueueOffset;
 
             SetColor(mat, "_Color", Color.white);
             MaterialsFile.MapRef bc = e.Map("baseColor");
@@ -254,7 +320,7 @@ namespace Castlemist
         {
             Material mat = GetOrCreate(ctx, assetPath);
             ApplyPreset(ctx, mat, mode);
-            mat.renderQueue = PresetFor(mode).Queue;
+            mat.renderQueue = ctx.QueueFor(mode);
             SetColor(mat, "_Color", Color.white);
             if (mat.HasProperty("_MainTex")) mat.SetTexture("_MainTex", tex);
             SetF(mat, "_Cull", (float)CullMode.Back);
@@ -283,6 +349,15 @@ namespace Castlemist
 
         static void ApplyPreset(MaterialContext ctx, Material mat, int mode)
         {
+            PoiyomiShaders.PresetActions actions;
+            if (ctx.Poiyomi && ctx.Presets.TryGetValue(mode, out actions))
+            {
+                // The chosen shader's own preset row, as ThryEditor's inspector applies it.
+                SetF(mat, "_Mode", mode);
+                if (actions.RenderType != null) mat.SetOverrideTag("RenderType", actions.RenderType);
+                foreach (string k in actions.Order) SetF(mat, k, actions.Floats[k]);
+                return;
+            }
             Preset p = PresetFor(mode);
             mat.SetOverrideTag("RenderType", p.RenderType);
             SetF(mat, "_SrcBlend", p.Src);
@@ -306,7 +381,9 @@ namespace Castlemist
                 SetF(mat, "_AddSrcBlendAlpha", 0);
                 SetF(mat, "_AddDstBlendAlpha", 1);
                 SetF(mat, "_OutlineSrcBlendAlpha", 1);
-                SetF(mat, "_OutlineDstBlendAlpha", 1);
+                SetF(mat, "_OutlineDstBlendAlpha", mode == Opaque ? 0 : 1);
+                SetF(mat, "_OutlineBlendOp", 0);
+                SetF(mat, "_OutlineBlendOpAlpha", 4);
                 SetF(mat, "_AlphaToCoverage", 0);
                 SetF(mat, "_ZTest", 4);
             }

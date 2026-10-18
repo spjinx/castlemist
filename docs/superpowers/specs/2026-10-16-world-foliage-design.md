@@ -89,12 +89,19 @@ vr[1] + ⌊k / w⌋)`. The point's **anchor** is
 
 | | Queensdale | Lion's Arch | Spirit Vale |
 |---|---|---|---|
-| zon2 placements (run-length walk) | 217 114 | 32 448 | 7 642 |
-| of layer type 1 / 2 / 3 | 167 169 / 39 649 / 10 296 | 29 768 / 1 669 / 1 011 | 7 358 / 0 / 284 |
+| zon2 placements (client decode, S4) | 247 804 | 40 252 | 8 670 |
+| of layer type 1 / 2 / 3 | 193 125 / 44 380 / 10 299 | 36 939 / 2 300 / 1 013 | 8 386 / 0 / 284 |
 | `havk.zoneModels` entries | **4381** | **88** | **284** |
 | zone collision instances (hulls, frame §7.4) | 4391 | 88 | 568 |
 | distinct `geometryIndex` in `zoneModels` | 45 | 7 | 1 |
 | of those, also used by `propModels` / `obsModels` | 37 | 4 | 0 |
+
+**Corrected 2026-10-18 (ruling S4, Task 10).** The counts above were first
+measured with a (skip, flag) walk (217 114 / 32 448 / 7 642 placements; type
+1 / 2 / 3: 167 169 / 39 649 / 10 296 on Queensdale). That walk was wrong: the
+client stores `flags` as run-length (count, value) pairs, and as raw bytes, one
+per vertex, in a zone with no `encodeData` (34 zones). The table is the client
+decode (`walkZoneFlags`); type 3 changed by only 3, 2 and 0 placements.
 
 A `zoneModels` entry is one placement. A geometry can carry several hulls,
 which is why Spirit Vale shows 284 entries but 568 hull instances.
@@ -107,6 +114,13 @@ which is why Spirit Vale shows 284 entries but 568 hull instances.
   - The offsets fill the square: x from −23.6 to +23.7 and y from −23.5 to
     +23.4 at p1-p99, with both means within 3 units of 0.
 - Lion's Arch matches 88 of 88 and Spirit Vale 284 of 284.
+- **Corrected 2026-10-18 (S4, Tasks 9-10).** These matches were made against the
+  old walk's type-3 placements. With the client decode, **4381 of 4381**
+  Queensdale entries link by anchor (4750 of 4750 on the three maps). The three
+  "unmatched" entries are the three type-3 cells of raw zone 135, and the
+  scatter rule gives their x, y, yaw and scale exactly. The old walk's position
+  `k` is one past the run, so the true cell is `k − 1`; this is the "c − 1"
+  below, and it settles the open question U4.
 - With rows counted from the north edge instead, almost nothing matches. So
   rows count **north from `y0`**.
 - The anchor's column is `c − 1`, one cell west of the grid point
@@ -294,12 +308,14 @@ For the prop cross-check (D3 step 4), `Extractor::MapProp` gains
 The rule is applied in order. Every step is counted, and every count reaches
 `WorldScene::warnings` when it is non-zero, or always where the table says.
 
-1. **Decode** every placement: zone, layer by `defToken` and `(f >> 4) − 1`,
+1. **Decode** (the client decode, S4: run-length (count, value) pairs) every placement: zone, layer by `defToken` and `(f >> 4) − 1`,
    grid point `(c, r)`, and flag. A placement whose def or layer index does not
    resolve keeps `layer = UINT32_MAX`. These are counted, and none occur on the
    test maps.
 2. **Anchor match.** For each `zoneModels` entry `e`, the candidates are the
-   placements whose anchor `A(c, r)` lies within 24 units of `e.translate.xy`
+   **type-3 placements** (layer `type == 3`; ruling S1: M2 was measured against
+   type 3, and allowing type 1 or 2 caused geometry conflicts that M3 rules
+   out) whose anchor `A(c, r)` lies within 24 units of `e.translate.xy`
    on both axes. The tolerance is half the measured cell. On a tie, the nearest
    by Euclidean distance wins, then the lower placement index. A placement
    already claimed is not a candidate.
@@ -327,7 +343,8 @@ The rule is applied in order. Every step is counted, and every count reaches
 What this proves and what it does not:
 
 - **Proven by the data** (M2, M3, re-proven by the dat test):
-  - the 48-unit grid, its south-west origin and the `c − 1` anchor column;
+  - the 48-unit grid, its south-west origin and the anchor column (the old
+    walk's `c − 1`, the true cell `k − 1`; see M2's correction);
   - the model slot bits;
   - the geometry ↔ model link.
 - **Not proven:** that the client uses this rule. The game could reach the same
@@ -725,10 +742,11 @@ UNPROVEN row is also a line in `warnings` (export spec D3).
 
 | setting | value | status, source |
 |---|---|---|
-| `zoneGrid` | 48 units, origin parm (x0, y0), rows north, anchor column c − 1 | measured, this spec M2 |
+| `zoneGrid` | 48 units, origin parm (x0, y0), rows north, anchor at the cell's vertex (the old walk's c − 1) | measured, this spec M2 (corrected, S4) |
 | `zoneModelSlot` | `(flag >> 1) & 7` into `modelArray` | measured, M3 |
 | `zoneFlagBit0` | as stored, not used | UNPROVEN meaning, M4 |
-| `zoneTreeLink` | anchor ±24, then geometry vote | measured, D3 |
+| `zoneTreeLink` | anchor ±24 to a type-3 placement, then geometry vote | measured, D3 (S1) |
+| `zoneQueryFlags` | 0 (an unfiltered query: every instance emitted) | UNPROVEN, transcribed from the client (Task 10; added in Task 16) |
 | `zoneVisualTransform` | `client_world_matrix(translate, rotate, scale)` | UNPROVEN, D4 |
 | `zoneScatter` | `colliders` / `exact` / `densityMatched` | measured if exact; UNPROVEN if densityMatched, D5 |
 | `zonePlacementMultiplicity` | 1 instance per placement | measured for type 3 (M2); UNPROVEN for types 1-2 |
@@ -745,7 +763,7 @@ UNPROVEN row is also a line in `warnings` (export spec D3).
 | `foliageTileUnits` (Map Window) | 1536 | castlemist's choice |
 | `lodCullFovDeg` | 60 | castlemist's choice; VRChat FOV UNPROVEN |
 | `terrainHeightRowOrder` | row 0 south | UNPROVEN until the terrain frame check passes (research §5.2) |
-| `terrainColliderDiagonal` | Unity's | UNPROVEN against `CollisionIndex`'s NW-SE (research §5.5) |
+| `terrainColliderDiagonal` | Unity's | UNPROVEN against `CollisionIndex`'s NE-SW (research §5.5; NW-SE until the 2026-10-18 fix wave) |
 | `foliageThinHash` | `fmix32(placement)` | castlemist's choice, D9 |
 
 ## Architecture
@@ -916,7 +934,10 @@ checklist items.
 - An unlinked collider keeps its hull, draws no tree, and is warned (D3).
 - No `zon2` gives `zones.present = false` and no warning: some maps have none.
 - In the export, a foliage model that fails is `status: failed`, its records
-  are skipped and counted in `counts.foliage`.
+  are skipped and counted in `counts.foliage`. A model with no drawable
+  meshes is `status: empty` (fix wave, review M1): its records are skipped
+  as `counts.foliage.emptyModel`, not `failedModel`, and importers place
+  nothing for it without an error line.
   - A failed record write stops the export and leaves no `manifest.json`, as
     any failed write does.
 - Importers:
@@ -1131,7 +1152,7 @@ shared with a prop.
 | U1. visual transform = prop rule at `scale` | UNPROVEN, supported by M3 containment | the collider-to-model containment over all 4750 entries |
 | U2. one instance per type 1-2 placement | UNPROVEN (type 3 measured) | the static code or the data fit; else density fallback |
 | U3. tilt is ground alignment | hypothesis (M5) | D5 step 3 on 4750 colliders |
-| U4. walk position `k − 1` against column `c − 1` at row starts | open (no type-3 placement at a row start) | a type-1 visual check at a row start |
+| U4. walk position `k − 1` against column `c − 1` at row starts | settled by the client decode (true cell `k − 1`, S4) | — |
 | exact scatter (offset, yaw, scale, z, RNG, seed) | UNPROVEN | D5 steps 1-2 |
 | flag bit 0, `layerFlags`, `zoneFlags`, `noise`, `zOffsets`, `encodeData`, `collideData`, `offsetData` meaning | UNPROVEN | the static code or the data fit (D5 step 1); else stays a setting |
 | `fadeRange` as camera distance in map units | UNPROVEN | a visual check against the export at known distances |
@@ -1327,3 +1348,270 @@ and `--vrchat` folders, 50 files, and Spirit Vale's `world-export --out` glb).
   materials, import 478 → 428 s, and every model slot's resolved material (node types, unlinked inputs, links,
   drivers, images by file SHA-1 and colour space, blend settings) identical, 1382 of 1382 slots. No render was
   compared; the property checks stand in for it.
+
+### 2026-10-17, Task 15c: Poiyomi Pro 10 and 11
+
+The user has Poiyomi Pro 11.0.22 (and 10.x); the importer had looked only for
+`.poiyomi/Poiyomi Toon` and assumed 10.0.24's names.
+
+- **Detection.** `PoiyomiShaders.Names` lists `.poiyomi/Poiyomi Pro`,
+  `.poiyomi/Poiyomi Toon`, then the `Old Versions/10.0/` and
+  `Old Versions/9.3/` Pro and Toon names. Poiyomi Pro 11 registers 11 at the
+  plain names and 10.0.23 under `Old Versions/10.0/`; Poiyomi 10 registers 10
+  at the plain names. So the version comes from `shader_master_label`, and
+  `PoiyomiShaders.Choose` takes the highest major, then Pro over Toon, and
+  skips a shader with compile errors. Standard stays the fallback. Still no
+  compile-time reference to Poiyomi or ThryEditor.
+- **Properties.** Every property the importer sets has the same name in
+  10.0.9, 10.0.23 and 11.0.22, so one map serves both. The importer warns
+  about any the chosen shader lacks. The `_Mode` presets are read from the
+  chosen shader's own description (`PoiyomiShaders.ParsePresets`), with the
+  hard-coded table only as the fallback. That table now also sets
+  `_OutlineBlendOp`, `_OutlineBlendOpAlpha` and Opaque's
+  `_OutlineDstBlendAlpha = 0`, as Poiyomi does.
+- **Locking.** Materials stay unlocked. ThryEditor's VRChat world-build hook
+  locks every material in the scene.
+- **Batchmode.** There is a `SHADER` line. `POIYOMI_MATERIALS` reads back each
+  shared material and checks for shader errors. `-castlemistExpectShader`
+  pins the expected shader, `-castlemistScreenshot` takes a Camera.Render
+  screenshot, and `BatchEntry.LockProbe` runs ThryEditor's lock and unlock.
+  PLAN is unchanged.
+
+### 2026-10-18, Task 16: corrections, decisions and measurements from the build
+
+Everything below comes from the task reports and the ledger
+(`.superpowers/sdd/2026-10-16-world-foliage/`). The text above (M1, M2, D3,
+D11 and the risk row U4) is corrected in place; this section lists what the
+build decided and measured.
+
+**Phase 1 and the decode (Tasks 2-4, 10).**
+
+- Task 2 changed `gw2dat_cli map`: its `zones` block now uses the measured
+  anchor column and model slot `(flag >> 1) & 7`, and prints `byType` (visits
+  per layer type) and `layerUnresolved` (output changed 2026-10-16). Defs and
+  layers are read by template name; `missingFields` is empty on all three maps.
+  All three are `zon2` v22.
+- Ruling S1: anchor candidates are type-3 placements only (D3 above). Cost if
+  wrong: a collider tree on a type-1/2 model would go unlinked; none do.
+- Ruling S4: the client decode replaces the first walk. Placements are
+  QD 247 804, LA 40 252, SV 8 670 (M1); **4381 of 4381** Queensdale colliders
+  link by anchor (Task 10), and 4750 of 4750 over the three maps.
+- Task 3 (on the old walk): Queensdale 4378 anchor + 3 geometry links, Lion's
+  Arch 88/88, Spirit Vale 284/284, 0 unlinked, 0 prop disagreements. Task 4:
+  every collider has a tree; hull-in-model share median 1.000, minimum 0.936.
+
+**Phase 2: the scatter rule (Tasks 9-10).** Decision: `exact` (ruling S3). The
+rule was found by static disassembly of Gw2-64.exe (the game was never run)
+and reproduces all 4750 colliders within D5's tolerances (worst error: xy
+0.002, yaw 5e-9, tilt 2.4e-7, scale 4.8e-9, z 0.0092). It is Park-Miller 48271,
+re-seeded per cell; the full rule and the addresses are in
+`docs/research/gw2-terrain-to-unity.md` §1.3 "zone scatter rule". Types 1-2
+(tiling, graphics quality 2, groundcover offset +(24, 24)) are transcribed
+only: no collider checks them, so they are UNPROVEN (settings `zoneTiling`,
+`zoneGraphicsQuality`, `zoneGroundcoverOffset`). Also transcribed but not
+exercised by any collider: the clamp rect, the zone matrix (identity), the
+water test, random z, yaw from normal, the 90 degree snap and the sub-model
+second instance (`zoneUnprovenBranches`).
+
+- **Query flags.** The client's query flags (the `noGroundcover` /
+  `onlyGroundcover` assert, and `param_9 & 1` in 0x140cc1f50) are taken as 0, an
+  unfiltered query: every instance is emitted. This is transcribed, not
+  measured. Task 16 added it as the setting `zoneQueryFlags` (UNPROVEN; a row
+  in `world_manifest.cpp` and a key in the schema).
+- Resulting instance counts: Queensdale 369 184 (4 381 Collider, 364 803
+  Scatter; 369 061 placed), Lion's Arch about 73 k, Spirit Vale about 21 k.
+- **Model 57017 has no mesh.** One Queensdale scatter model (fileId 57017, 123
+  instances) has no drawable mesh. The Map Window counts it as failed, and the
+  export skips those 123 placements (123 skipped on Queensdale, 0 on the other
+  two maps).
+- Ruling S2: models used by zone instances count as used in the world folder;
+  Task 7 narrowed this to the kept cells.
+
+**Map Window (Tasks 5, 6, 11).** The Foliage split button toggles on click and
+opens a Colliders / All menu on its arrow; it is on, with Colliders, after the
+window opens. Task 6 captures (debug): Queensdale `zoneTrees` 4381,
+`zoneUnlinked` 0; Spirit Vale 284 and 0. With foliage off the bare pink trunk
+colliders show; with it on each sits inside a tree, and no collider stands
+alone. The zonetree shot's framing deviates from D6's wording in direction
+only (it looks 15 degrees below the horizon from the first clear of eight
+headings, because the steep whole-map view put the camera behind the map-edge
+wall). The user's Queensdale walk (Task 6's handoff) has **no result
+recorded**; treat it as not run. Release `set_world` was 34 ms on Queensdale at
+Task 6 (colliders only); Task 11's budgets are in its own amendment above.
+
+**Unity Terrain export and importer (Tasks 12-13).**
+
+- Task 12 put `TerrainHeightfield`, `terrain_heightfield` and `terrain_up_range`
+  in `world/terrain.h` beside `terrain_height_at`, and the writer in
+  `exportgltf/world_unity_terrain.h`. The foliage grid's public header is
+  `include/castlemist/render/world_foliage_grid.h` (pure, D3D-free). Spirit
+  Vale has 0 Terrain trees: all 284 of its type-3 records lean 27-99 degrees,
+  and none is within the 5 degree limit. Queensdale: 992 of 1 090 type-3
+  records pass (255 of the 318 collider trees).
+- Ruling S5: the export carries `zoneFadeQualityScale` (1.5) and
+  `unityTerrain.fadeQualityScale`; the importers' Distance knob multiplies the
+  stored `fadeRange` by it by default.
+- Ruling S6: the 32 `unityTerrain.check` points sit on heightmap sample
+  vertices (exact for any triangle split), compared at 0.5 units.
+- Task 13 fixed an importer bug found on a region export: prefabs and
+  materials were keyed by `models[].index` (the scene index) and not by array
+  position, so 1010 of the Queensdale region's 1385 props had no prefab. Patch
+  assets live in `FoliagePatches/<cellId>/`, not `Foliage/<cellId>/` (on Windows
+  the second is the same folder as the export's `foliage/`). The fixture's mesh
+  plan has `foliagePatches=2`, because its two grass records are 3000 units
+  apart.
+- Batchmode (Unity 2022.3.22f1; Tasks 8 and 13): PLAN equal to the dry run on
+  the fixture, Spirit Vale and the Queensdale region 8,4,15,11, in Mesh and
+  Terrain mode, at density 0.5, and with the Quest preset. `TERRAIN_CHECK`
+  `maxErr` is 0.00371 (Queensdale) and 0.01025 (Spirit Vale) against a
+  tolerance of 0.0127. Blender (Tasks 8 and 14): `--verify` OK on every run;
+  the kept instances equal the validator's `kept` in 7 runs (Spirit Vale at
+  density 1: 21 344, matrix error 2.9e-5; Queensdale at density 1: 36 001 for
+  the region).
+
+**Late additions the user asked for.** Task 15b (model LODs), Task 15d (shared
+materials) and Task 15c (Poiyomi Pro 10 and 11) have their own amendments
+above. The user-facing consequences: LOD levels share their LOD0 material; the
+world export writes one material per content key; the importer chooses Poiyomi
+Pro 11, Toon 11, Pro 10 or Toon 10 by the version in the shader's label.
+
+**Side fixes made during the work.**
+
+- **Labyrinth terrain pages** (Mad King's Labyrinth 2499169, untextured): 6x6
+  chunks on 2x2 pages fit n = 3, 4 and 5, so no blend pages were found. A tie
+  now takes the measured 4 (UNPROVEN warning), with a dat test.
+- **32-bit packfile pointers**: the Labyrinth's "no light rig" was caused by
+  pointers that were not sign-extended; they now are.
+- **Approximate sky**: haze and per-zone parsing, and an approximate bake that
+  adds the clouds, haze and material cards the proven bake leaves out. It is
+  the Map Window default (the **Approx sky** toggle) and opt-in in the export
+  (`--sky-approx`; `gw2dat_cli skybox --approx`). Its inputs are labelled
+  UNPROVEN. Spirit Vale looks very different under it, and **its look has not
+  been checked against the game**.
+
+**Measurements (Task 15; debug CLI, default options: foliage all, unityTerrain
+on, sky on, `--no-fbx`; release was not rebuilt).**
+`world_export_dat.spirit_vale_foliage` passes: 284 collider trees, 21 344
+records equal to the instances, all 284 collider records equal a collider
+instance to 1e-4, the 32 check points exact, validator OK.
+
+| | Spirit Vale | Lion's Arch | Queensdale |
+|---|---|---|---|
+| wall seconds | 78.6 | 155.9 | 158.5 |
+| peak working set / virtual (MB) | 1 094 / 5 568 | 1 928 / 6 405 | 1 316 / 5 803 |
+| cells / models ok / failed | 66 / 383 / 12 | 96 / 1 706 / 48 | 44 / 2 244 / 36 |
+| foliage records | 21 344 | 73 467 | 369 061 |
+| collider / Terrain trees | 284 / 0 | 88 / 401 | 4 381 / 8 590 |
+| detail records | 21 060 | 72 451 | 357 718 |
+| foliage-only models | 3 | 55 | 98 |
+| foliage bins (files, bytes) | 40, 2.13 MB | 86, 7.35 MB | 44, 36.9 MB |
+| unityTerrain tiles, terrain dir | 21, 16.8 MB | 15, 27.2 MB | 35, 78.4 MB |
+| stage s: models / cells / unity-terrain / sky / manifest | 32.2 / 2.6 / 4.5 / 23.0 / 2.0 | 91.2 / 4.3 / 6.3 / 23.9 / 5.4 | 87.8 / 6.2 / 17.2 / 23.5 / 2.7 |
+| models with LOD levels > 1 | 72 of 383 | 225 of 1 706 | 177 of 2 244 |
+| shared material keys / slots | 737 / 1 076 | 2 130 / 3 659 | 1 912 / 4 276 |
+| generated maps written / requested (MB) | 320 / 1 093 | 751 / 3 079 | 486 / 2 815 |
+| height range (units) | -4999.9995 .. 14 465.69 | -10 000 .. 6 165.79 | -1 701.46 .. 5 768.94 |
+
+Foliage records are built inside the cell stage (there is no separate timer).
+Every model failure is "This model has no drawable meshes to export". The
+validator's schema check and `--plan --mode terrain --foliage all` pass on all
+three, with `FOLIAGE records` equal to kept. Spirit Vale's and Lion's Arch's
+height ranges contain sentinel values (-4999.9995 and -10 000), which stretch
+the `.r16` normalisation; this was not fixed, and the margin of Spirit Vale's
+terrain check is thin (0.40 of 0.5 units at Task 13).
+
+**Settings.** Every UNPROVEN setting was checked against `settings`,
+`warnings` and its code comment. New in the build: `zoneTiling`,
+`zoneGraphicsQuality`, `zoneGroundcoverOffset`, `zoneUnprovenBranches` and
+`zoneFadeQualityScale` (all UNPROVEN), `zoneQueryFlags` (UNPROVEN, added in
+Task 16), `terrainTreeMaxTiltDeg` (castlemist's choice), `terrainTreeYawSign`,
+`detailPlacement`, `terrainHeightRowOrder` and `terrainColliderDiagonal`
+(UNPROVEN where the spec says), and Task 15b's `lodDistances`,
+`lodDistanceScale`, `lodMissingLevel` and `lodPropCullHeight`.
+
+**Checklist results** (dated rows in `tools/unity/CHECKLIST.md`): Unity items
+1-3, 9 (batchmode part) and 12-13 pass in batchmode on 2026-10-15 to 17. The
+Blender checks are the `--verify` runs above.
+
+**Not tried.**
+
+- Unity checklist items 14-18 (walk into trees, Terrain tree yaw against a
+  GameObject, detail density against the Map Window, Frame Debugger draws and
+  import time, no sway) and items 4-8 and 10-11: they need the editor in a
+  VRChat 2022.3 project. No VRChat SDK was in any test project, so the
+  world-build lock hook (ThryEditor `LockMaterialsOnWorldUpload`) did not run
+  and locking all 754 Spirit Vale materials was not timed (6 were locked, in 3
+  to 4 s).
+- The Blender visual checklist: viewing the Spirit Vale scene and one Cycles
+  frame at the spawn. Only `--import --verify` was run.
+- The user's Queensdale Map Window walk (Task 6): no result recorded.
+- The Spirit Vale approximate-sky look against the game.
+- Task 15's release-build timings (debug only), and a full-Queensdale Unity
+  import (only the 4-cell region was imported).
+- Types 1-2 tiling and the graphics-quality input, and the transcribed
+  branches in `zoneUnprovenBranches`: no collider checks them.
+- Poiyomi's "World" shader variants were not researched.
+
+**Open items carried to the whole-branch review.** The scatter z uses the
+NE-SW terrain triangle while the export and the Map Window walk use NW-SE
+(`CollisionIndex`); `parseMapEnv` reads light colours with R and B swapped
+against the game (it affects all world lighting and was left alone for its own
+fix); one `forest` shot may show a gap at a trunk base; the
+`json::parse(std::ifstream&)` crash seen in `cm_test_dat` at 022e2b9 after
+`nlohmann-json` was re-fetched as v3.12.0 (the test now reads the file into a
+string; stream-parse sites remain at `tests/test_exportgltf_world.cpp` lines
+785 and 1384); baked textures named by flagged fileIds could collide in the dat
+pool (Task 15d concern 2); and models with "no drawable meshes" count as failed
+rather than empty.
+
+### 2026-10-18, fix wave after the whole-branch review
+
+The review's (`.superpowers/sdd/2026-10-16-world-foliage/final-review.md`)
+Important items and most Minor ones, with the fix wave's measurements
+(`fix-wave-report.md` beside it has the full table).
+
+- **Light colours are B, G, R (I1).** `parseMapEnv` now reorders at the
+  source (Gw2-64.exe 2026-10-14, lighting import `0x140c8f60e..0x140c8f64f`:
+  byte 2 to x). The approximate sky's compensating swap is gone, so the Map
+  Window light, the manifest's `light` (the Unity and Blender sun), the model
+  preview rig and `sky.json` share one conversion. Day suns now read warm:
+  Queensdale (1.00, 0.84, 0.62), Spirit Vale (1.00, 0.71, 0.37), Mad King's
+  Labyrinth (0.94, 0.90, 0.69). The water colours stay bytes 0, 1, 2 as R, G, B
+  until their import is read the same way.
+- **Terrain diagonal NE-SW (I2).** The mesh export, the Map Window and
+  `CollisionIndex` split quads NE-SW, the client's ground query as measured by
+  the zone scatter (4535 / 4535 collider z; `ZnPlacement` `0x140cc2880` takes
+  z from that query, whose code is not located). The renderer's own index
+  buffer is not read: `terrainColliderDiagonal` stays UNPROVEN for Unity's
+  TerrainCollider. The 32-ray export test stays 32 / 32. At every zone
+  instance of the three test maps `CollisionIndex`'s terrain now equals the
+  NE-SW triangle (worst 0.002 units; Queensdale had 479 colliders more than 1
+  unit off). The Queensdale `forest` shot's trunk bases did not change: those
+  trees' diagonal gap was under 1 unit. Their z (client data) puts each model
+  origin 33-36 units below the terrain (zOffset 36 - z/255 x 72), and the
+  meshes reach below their origin, so the trunks enter the ground; the curved
+  lower edge in the shot is where a trunk meets the ground seen from above,
+  not a gap. No placement gap was found.
+- **fetch_externals stamps files (I3).** Every fetched file gets the current
+  time; after a re-fetch, rebuild every tree with `--clean-first`
+  (external/README.md).
+- **Models with no drawable meshes are `status: "empty"` (M1)**, counted in
+  `counts.modelsEmpty` and `counts.foliage.emptyModel`, with their own
+  warnings: Spirit Vale 12 models (71 props), Lion's Arch 48 (253 props).
+- **Not done: the height sentinel (M2).** Measured on the dat, the sentinel is
+  not what stretches the range. Spirit Vale's 5912 samples at 4999.9995 sit at
+  the foot of a slope whose next values are 4978.4 and lower; leaving them out
+  moves `heightRange` from 19 465.7 to 19 444.1 (step 0.297 either way).
+  Lion's Arch's 21 samples at 10000.0 are the floor of a smooth bowl
+  (9999.999, 9999.997, ...), so they are real surface, not a fill value, and
+  holing them would cut the ground. The heights stay as stored; the frame
+  check margin is unchanged.
+- **Smaller fixes:** geometry-only collider trees are named
+  `<fileId>_g<index>` in Unity (M3); the sky labels name the client build
+  their addresses come from (M5); collided placements whose layer has a
+  subModel are counted and warned (M6); a model drawn only as a subModel gets
+  its layer's `zoneTypes` and `fadeFar` (M7); Blender's temporary files carry
+  the process id (M8). M9 needed no change (the dotnet fixture test passes on
+  a fresh fixture with no `.fbx`). M4 (an option to skip the zone scatter in
+  `load_world`) is left for later: performance only, and it changes the
+  `world` summary's counts.

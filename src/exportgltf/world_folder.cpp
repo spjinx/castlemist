@@ -140,6 +140,7 @@ void export_one_model(const cw::WorldScene& scene, uint32_t mi, ModelSource& src
     mm.wind = model_wind(*m);   // world-foliage spec D7: recorded, not acted on (D10)
     if (m->meshes.empty()) {   // empty, not broken: counted apart (review M2)
         mm.error = "This model has no drawable meshes to export.";
+        mm.empty = true;
         out.empty = true;
         return;
     }
@@ -254,7 +255,7 @@ struct CellOut {
     ManifestCell mc;
     size_t unbaked = 0;
     std::vector<std::string> warnings;
-    size_t foliageSkipped = 0, foliageFailedModel = 0, foliageScatter = 0, foliageDensity = 0;
+    size_t foliageSkipped = 0, foliageFailedModel = 0, foliageEmptyModel = 0, foliageScatter = 0, foliageDensity = 0;
     std::vector<uint32_t> foliageModels;   ///< scene.models indices with a written record
     /// The cell's records (models as manifest positions), written to foliage/<id>.bin after
     /// the unityTerrain stage, which sets their bit 3 (world-foliage spec D7).
@@ -267,6 +268,7 @@ struct FoliageCtx {
     FoliageExport mode = FoliageExport::Off;
     std::vector<uint32_t> manifestPos;   ///< scene.models index -> models[] position, UINT32_MAX = not exported
     std::vector<char> modelOk;           ///< by scene.models index
+    std::vector<char> modelEmpty;        ///< by scene.models index: loaded, no drawable meshes
     std::vector<uint64_t> triangles;     ///< by scene.models index (LOD0, as measured)
 };
 
@@ -280,7 +282,9 @@ std::vector<FoliageRecord> cell_foliage_kept(const cw::WorldScene& s, const cw::
     for (FoliageRecord r : recs) {
         const uint32_t mi = r.model;
         if (mi >= f.manifestPos.size() || f.manifestPos[mi] == UINT32_MAX || !f.modelOk[mi]) {
-            ++out.foliageFailedModel;
+            // Nothing to draw either way; an empty model is not a failure (final review M1).
+            if (mi < f.modelEmpty.size() && f.modelEmpty[mi]) ++out.foliageEmptyModel;
+            else ++out.foliageFailedModel;
             continue;
         }
         r.model = f.manifestPos[mi];
@@ -606,7 +610,9 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
                            " zone instances outside the region left out");
     for (const ModelOut& o : mouts) {
         warnings.insert(warnings.end(), o.warnings.begin(), o.warnings.end());
-        if (!o.mm.ok) warnings.push_back("models: " + std::to_string(o.mm.fileId) + " failed: " + o.mm.error);
+        if (!o.mm.ok)
+            warnings.push_back("models: " + std::to_string(o.mm.fileId) + (o.mm.empty ? " empty: " : " failed: ") +
+                               o.mm.error);
     }
 
     // 4. The kept cells' terrain textures, once each.
@@ -644,11 +650,13 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
     fol.mode = scene.zones.present ? opts.foliage : FoliageExport::Off;
     fol.manifestPos.assign(scene.models.size(), UINT32_MAX);
     fol.modelOk.assign(scene.models.size(), 0);
+    fol.modelEmpty.assign(scene.models.size(), 0);
     fol.triangles.assign(scene.models.size(), 0);
     for (size_t k = 0; k < mouts.size(); ++k) {
         const uint32_t mi = mouts[k].mm.index;
         fol.manifestPos[mi] = static_cast<uint32_t>(k);
         fol.modelOk[mi] = mouts[k].mm.ok ? 1 : 0;
+        fol.modelEmpty[mi] = mouts[k].mm.empty ? 1 : 0;
         fol.triangles[mi] = mouts[k].mm.triangles;
     }
     if (fol.mode != FoliageExport::Off) {
@@ -713,13 +721,14 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
     });
     if (fatal.stopped()) { rep.error = fatal.error; return rep; }
     std::vector<ManifestCell> mcells;
-    size_t unbaked = 0, folSkipped = 0, folFailed = 0, folScatter = 0, folDensity = 0;
+    size_t unbaked = 0, folSkipped = 0, folFailed = 0, folEmpty = 0, folScatter = 0, folDensity = 0;
     std::vector<char> folUsed(mouts.size(), 0);   // models[] positions with a written record
     for (const CellOut& c : couts) {
         warnings.insert(warnings.end(), c.warnings.begin(), c.warnings.end());
         unbaked += c.unbaked;
         folSkipped += c.foliageSkipped;
         folFailed += c.foliageFailedModel;
+        folEmpty += c.foliageEmptyModel;
         if (!c.written) continue;
         mcells.push_back(c.mc);
         folScatter += c.foliageScatter;
@@ -730,6 +739,9 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
         warnings.push_back("foliage: " + std::to_string(folSkipped) + " placements with a degenerate transform skipped");
     if (folFailed)
         warnings.push_back("foliage: " + std::to_string(folFailed) + " placements of failed or missing models skipped");
+    if (folEmpty)
+        warnings.push_back("foliage: " + std::to_string(folEmpty) +
+                           " placements of empty models (no drawable meshes) skipped");
     if (unbaked) warnings.push_back("terrain: " + std::to_string(unbaked) + " chunks with no usable colour texture baked grey");
     texById.clear();
     terrainTex.clear();
@@ -811,7 +823,7 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
     in.counts = {{"chunksUnbaked", unbaked}, {"animated", animated}, {"animatedResolved", resolved},
                  {"clipsFailedDecode", failedDecode},
                  {"foliage", {{"scatter", folScatter}, {"density", folDensity}, {"skipped", folSkipped},
-                              {"failedModel", folFailed}}}};
+                              {"failedModel", folFailed}, {"emptyModel", folEmpty}}}};
     if (fol.mode != FoliageExport::Off) in.foliage = foliage_manifest_json(scene, in.models, folUsed);
     in.unityTerrain = unityTerrain;
     in.warnings = warnings;

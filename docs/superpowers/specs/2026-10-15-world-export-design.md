@@ -665,7 +665,10 @@ The report gives the time for each stage.
 throws and never yields a silently empty export.
 
 - A model that fails to load or write gets `status: "failed"` with its error.
-  Its placements are skipped and counted.
+  Its placements are skipped and counted. A model that loads with no drawable
+  meshes gets `status: "empty"` (world-foliage fix wave, M1), counted in
+  `counts.modelsEmpty` (and still in `modelsFailed`); its placements are
+  skipped with their own "empty models" warning.
 - A texture that fails drops that map only, with the VRChat export's warning.
 - A terrain chunk with no usable colour texture bakes grey and is counted.
 - A cell with no terrain, water or collider is still written if it has
@@ -843,7 +846,7 @@ throws and never yields a silently empty export.
 
 ## Out of scope
 
-- Udon and gameplay data (sub-project 5).
+- Udon and gameplay data. Update 2026-10-18: zone models (foliage) are now sub-project 5 (`2026-10-16-world-foliage-design.md`), and Udon is sub-project 6.
 - Placed effects and particles; the model folders' `_particles.json` is copied,
   not built.
 - Terrain as a splat shader in Unity: the four ground textures and pages
@@ -924,6 +927,9 @@ throws and never yields a silently empty export.
   p00-p11), not NE-SW as first written: with NE-SW only 24 of 32 downward rays agreed with the scene's
   `CollisionIndex`, with NW-SE all 32 do. The world view (`world_view.cpp` `grid_indices`) drew NE-SW until the fix
   wave (M1) and now draws NW-SE too. Which diagonal the game uses is unproven.
+  **Superseded 2026-10-18** (world-foliage fix wave, review I2): all three now split NE-SW, the
+  client's ground query as measured by the zone scatter (4535 / 4535 collider z); the 32 rays still agree
+  because the mesh and `CollisionIndex` changed together.
 - **Poiyomi (Task 12).** Poiyomi 10 is untested: none exists on this machine. Poiyomi Pro 9.0.alpha18 was copied
   read-only from `C:/UnityProjects/2019WorldUDON-Migrated/Assets/_PoiyomiShaders` into a scratch project, and the
   importer built Poiyomi materials from it (shader found; `_Mode`, queue, `RenderType`, `_MochieBRDF`, `MOCHIE_PBR`

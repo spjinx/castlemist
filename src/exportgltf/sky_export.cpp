@@ -233,7 +233,9 @@ ApproxInputs approx_inputs(const SkyInputs& in, size_t mode) {
                                 ").farColor, bytes B,G,R,A: haze import 0x140c889e0 -> env slot 0x140c619f0 -> "
                                 "per-frame pick 0x140c60340 (slot 0 at t = 1, 1 at t = 0) -> fog set 0x140c64960 "
                                 "-> GrSetFog 0x140ab2c20, whose stores follow VSCalculateFog's uniform order "
-                                "(the upload to the FogColorFar register not traced)"});
+                                "(the upload to the FogColorFar register not traced; addresses in the 2026-09-18 "
+                                "research build, gw2-sky.md; in Gw2-64.exe 2026-10-14 the haze import is "
+                                "0x140c8f038)"});
     } else {
         a.labels.push_back({"FogColorFar", InputSource::Guess, "none",
                             "no haze in slot " + std::to_string(slot) + "; haze not baked"});
@@ -246,9 +248,9 @@ ApproxInputs approx_inputs(const SkyInputs& in, size_t mode) {
         s.lighting.size() > slot && s.lighting[slot].present ? &s.lighting[slot] : nullptr;
     if (light) {
         a.haveSun = true;
-        // The client imports light colours like haze ones: byte 2 first (0x140c88dbe).
-        const float clr[3] = {light->sunColor[2], light->sunColor[1], light->sunColor[0]};
-        const float fill[3] = {light->fillColor[2], light->fillColor[1], light->fillColor[0]};
+        // parseMapEnv already gives R, G, B (the file's B, G, R reordered at the source).
+        const float* clr = light->sunColor;
+        const float* fill = light->fillColor;
         float len = std::sqrt(light->sunDir[0] * light->sunDir[0] + light->sunDir[1] * light->sunDir[1] +
                               light->sunDir[2] * light->sunDir[2]);
         if (!(len > 0)) len = 1;
@@ -260,8 +262,9 @@ ApproxInputs approx_inputs(const SkyInputs& in, size_t mode) {
         for (int k = 0; k < 3; ++k) a.sh[k][3] = fill[k] * amb;
         a.labels.push_back({"sunClr.rgb", InputSource::Guess, fmt3(a.sunColor, 3),
                             std::string("dataGlobal lighting[") + std::to_string(slot) +
-                                "] dominant light colour, client byte order (import 0x140c88dbe puts byte 2 "
-                                "first); the writer of EnvContext+0x4e4 is not traced"});
+                                "] dominant light colour as parseMapEnv reads it (bytes B, G, R: the lighting import "
+                                "puts byte 2 in red, Gw2-64.exe 2026-10-14 0x140c8f60e); the writer of "
+                                "EnvContext+0x4e4 is not traced"});
         a.labels.push_back({"sunDir", InputSource::Guess, fmt3(a.sunDir, 3),
                             "the same light's direction (the way it travels), as stored"});
         const float shw[3] = {a.sh[0][3], a.sh[1][3], a.sh[2][3]};
@@ -295,7 +298,8 @@ ApproxInputs approx_inputs(const SkyInputs& in, size_t mode) {
                             fmt3(a.fogDist, 2) + ", near.w " + fmt3(&a.fogNearW, 1),
                             "the same haze's distRange and nearColor.w: GrSetFog 0x140ab2c20 stores "
                             "(1/(d1-d0), -d0/(d1-d0)) and near - far, which the clouds' VS 1645 reads as "
-                            "fz = saturate(viewZ FogParam0.x + FogParam0.y) (store-to-register link not traced)"});
+                            "fz = saturate(viewZ FogParam0.x + FogParam0.y) (store-to-register link not traced; "
+                            "address in the 2026-09-18 research build, gw2-sky.md)"});
     return a;
 }
 

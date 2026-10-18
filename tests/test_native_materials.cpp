@@ -285,7 +285,8 @@ void writeWater(Payload& p, size_t w, int k) {
 
 /// @brief One env chunk: two lighting presets (preset 1 brighter) and two
 ///        water presets, inline (`array_ptr`) or by pointer (`ptr_array_ptr`).
-std::vector<uint8_t> envFile(bool waterByPointer) {
+///        Each light's colour bytes are b0, b1, b2 in file order.
+std::vector<uint8_t> envFile(bool waterByPointer, uint8_t b0 = 255, uint8_t b1 = 255, uint8_t b2 = 255) {
     Payload p;
     const size_t root = p.alloc(4);
     const size_t g = p.alloc(16);
@@ -297,7 +298,7 @@ std::vector<uint8_t> envFile(bool waterByPointer) {
         const size_t lp = p.alloc(4), l = p.alloc(3 + 4 + 12);
         p.arr(lighting + 8 * k, 1, lp);
         p.ptr(lp, l);
-        p.u8(l, 255); p.u8(l + 1, 255); p.u8(l + 2, 255);
+        p.u8(l, b0); p.u8(l + 1, b1); p.u8(l + 2, b2);
         p.f32(l + 3, k == 0 ? 0.25f : 2.0f);
         p.f32(l + 7, 0.f); p.f32(l + 11, 0.f); p.f32(l + 15, 1.f);
     }
@@ -449,6 +450,19 @@ CM_TEST(native_materials, env_light_preset_index) {
     const auto absent = Extractor(none, empty).parseMapEnv();
     CHECK_FALSE(absent.present);
     CHECK_EQ(absent.presetIndex, -1);
+}
+
+// Light colours are stored B, G, R: the client's lighting import puts byte 2
+// in x (red) and byte 0 in z (blue) (Gw2-64.exe 2026-10-14, 0x140c8f60e..0x140c8f64f;
+// world-foliage final review I1). Byte 0 = 0x40, byte 2 = 0xFF reads as red.
+CM_TEST(native_materials, env_light_colour_is_bgr) {
+    const auto bytes = envFile(true, 0x40, 0x80, 0xFF);
+    const json t = envTemplate("ptr_array_ptr");
+    const auto l = Extractor(bytes, t).parseMapEnv();
+    CHECK(l.present);
+    CHECK_NEAR(l.sunColor[0], 1.0, 1e-6);
+    CHECK_NEAR(l.sunColor[1], 0x80 / 255.0, 1e-6);
+    CHECK_NEAR(l.sunColor[2], 0x40 / 255.0, 1e-6);
 }
 
 // trn.materials.materials[]: chunk 0 has uvData, chunk 1 a null pointer.

@@ -255,11 +255,74 @@ python tools/world/validate_manifest.py <dir> --plan   # schema, files, and the 
   10 GB, 5 minutes).
 - **Manual checklists.** Unity: `tools/unity/CHECKLIST.md` (items 1 to 3 run in
   batchmode; items 4 to 11 need the editor in a VRChat 2022.3 project with
-  Poiyomi 10). Blender: `castlemist_world.py --import <dir> --verify
+  Poiyomi Pro 10 or 11). Blender: `castlemist_world.py --import <dir> --verify
   [--save x.blend]`, then a Cycles render at the spawn and the timeline. The
   results, with dates, are in the spec's amendments.
 - Keep the output folder path short: Windows image paths over 260 characters
   fail to write.
+
+## World foliage
+
+Zone foliage (spec `docs/superpowers/specs/2026-10-16-world-foliage-design.md`
+and its amendments): the `zon2` decode, the scatter rule, the Map Window's
+Foliage layer, the export's `foliage/` records and `terrain/` tiles, and the
+importers' foliage options. The Map Window hooks (`GW2_MAPWIN_FOLIAGE`,
+`GW2_MAPWIN_FOCUS=zonetree|foliage|foliagemax|forest`, `GW2_MAPWIN_FOLIAGE_SCALE`)
+and the stats fields are under [The Map window](#the-map-window).
+
+```bash
+ctest --preset debug -j1                       # everything; run it serially
+ctest --preset debug -R "world_manifest"       # validator, --plan lines, terrain and density plans
+ctest --preset debug -R "blender_world_import" # foliage instances, density, colliders
+python tools/world/test_validate_manifest.py   # includes fmix32 vectors and the density rules
+dotnet run --project tools/unity/Tests~ -- <export dir>   # Unity-free planner and readers
+```
+
+- **Unit tests (no dat).** `cm_test_world` (`zones.*`, `scatter.*`: the flag
+  walk, anchor link, scatter rule and tiling tables), `cm_test_render`
+  (`foliage_grid.*`: grid, cull, fade, batch), `cm_test_ui` (`map_window.*`
+  foliage and control-id tests), `cm_test_exportgltf` (`unity_terrain.*`,
+  `world_foliage.*`, `world_lods.*`, `world_materials.*`), and the Python and
+  Blender ctests above. The synthetic fixture's PLAN lines are in
+  `tools/unity/CHECKLIST.md` item 1.
+- **Dat tests** need `GW2_TEST_DAT` and `GW2_TEST_TEMPLATE` and a closed game.
+  Beside the existing `world_dat.*`: `world_dat.zon2_reads_three_maps`,
+  `zones_phase1_acceptance`, `zones_every_collider_has_a_tree`,
+  `zones_hull_in_model`, `zones_hypotheses` (prints), `zones_scatter_samples`
+  (writes a CSV to `$CM_ZONE_SAMPLES`, skipped without it), and
+  `world_export_dat.spirit_vale_foliage` (284 collider trees, records equal
+  instances, 32 check points exact, validator OK). `world_export_dat.measure`
+  (`CM_WORLD_EXPORT_MEASURE=1`) also prints the foliage, unityTerrain, LOD and
+  shared-material lines; the three maps' numbers are in the spec's 2026-10-18
+  amendment.
+- **Known failures.** `cm_test_dat` has 11 failures from curated ids that
+  predate this work. The ripper ctests need `gw2_packfile.json` next to the
+  exes in `build/debug/bin`. Check that no stray `dumps/index/gw2_index.db`
+  appears (only `.gitkeep` belongs there).
+- **Export flags.** `gw2dat_cli world-export --out-dir <dir> [--foliage
+  off|colliders|all] [--no-unity-terrain] [--sky-approx] [--no-fbx]`. Records
+  and tiles are checked by `python tools/world/validate_manifest.py <dir>
+  [--plan --mode mesh|terrain --foliage off|colliders|trees|all
+  --foliage-density 0..1 --foliage-distance 0.1..2]`.
+- **Unity batchmode** (2022.3.22f1; see `tools/unity/CHECKLIST.md`):
+  `-executeMethod Castlemist.BatchEntry.ImportWorld -castlemistWorld
+  Assets/<export> [-castlemistTerrain mesh|terrain] [-castlemistFoliage ...]
+  [-castlemistDensity d] [-castlemistDistance D] [-castlemistQuest]
+  [-castlemistExpectShader "<name>"] [-castlemistScreenshot <png>]`. The log
+  carries `PLAN`, `FOLIAGE_TREES`, `FOLIAGE_PATCHES`, `TERRAIN_CHECK`,
+  `TERRAIN_FILES`, `TERRAIN_TREES`, `LODS`, `MATERIALS`, `SHADER` and
+  `POIYOMI_MATERIALS` lines; `BatchEntry.LockProbe` locks and unlocks a few
+  materials with ThryEditor. Items 14 to 18 and the VRChat upload need the
+  editor and have not been run.
+- **Blender.** `castlemist_world.py --import <dir> --verify [--foliage
+  off|colliders|trees|all] [--foliage-density f]` prints `FOLIAGE_OBJECTS`,
+  `FOLIAGE_INSTANCES`, `FOLIAGE_KEPT` and `FOLIAGE_MATRIX_MAX_ERR`. Parallel
+  Blender runs on one export no longer collide: the temporary files carry the
+  process id (`*.castlemist_tmp<pid>.glb`). The visual check (view the scene, one Cycles frame
+  at the spawn) has not been run.
+- **Scratch paths and disk.** A Spirit Vale export is about 1.7 GB and a full
+  Queensdale one more; a Unity project with Poiyomi is 3 to 4 GB. Keep exports
+  under a short path and delete them after.
 
 ## Adding a test
 

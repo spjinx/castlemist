@@ -371,6 +371,90 @@ Choice: `PrefabUtility.InstantiatePrefab(fbxModel)` → variant of the FBX
 (follows FBX reimports) or `Object.Instantiate(fbxModel)` → standalone prefab.
 Destroy the temporary instance afterwards.
 
+## 6. Poiyomi Pro 10 and 11 (Task 15c, 2026-10-17)
+
+Read from the user's installed `com.poiyomi.pro` 11.0.22 package (a read-only
+copy; its `.shader` files' `Shader "..."` lines and Properties blocks). The
+package carries three shader generations:
+
+| Folder | Registered names (main ones) | `shader_master_label` |
+|---|---|---|
+| `Shaders/11.0/Pro`, `11.0/Toon` | `.poiyomi/Poiyomi Pro`, `.poiyomi/Poiyomi Toon` (+ `Pro World`, `Pro Two Pass`, `Pro Triple Outline`, ...) | Poiyomi 11.0.22 |
+| `Shaders/10.0/Pro`, `10.0/Toon` | `.poiyomi/Old Versions/10.0/Poiyomi Pro`, `.poiyomi/Old Versions/10.0/Poiyomi Toon` | Poiyomi 10.0.23 |
+| `Shaders/9.3/Pro`, `9.3/Toon` | `.poiyomi/Old Versions/9.3/Poiyomi Pro`, `.poiyomi/Old Versions/9.3/Poiyomi Toon` | Poiyomi 9.3.67 |
+
+A Poiyomi Pro 10.0.9 package (seen read-only before the task was narrowed to
+the 11.0.22 package; not used for any test) registers its 10.0 shaders at the
+plain names `.poiyomi/Poiyomi Pro` / `.poiyomi/Poiyomi Toon` (label 10.0.9)
+and 9.3 under `Old Versions/9.3/`. So **a plain name is 10 or 11 depending on
+the package**, and only the label tells them apart. `Shader.Find` reaches all
+of them (Unity 2022.3.22f1 batchmode, see below).
+
+- **Property names.** Every property the importer sets (`PoiyomiShaders.Properties`:
+  `_Mode`, blend/ZWrite/ZTest/Cull, `_Cutoff`, `_AlphaForceOpaque`,
+  `_AlphaPremultiply`, `_AlphaToCoverage`, the `_Add*` and `_Outline*` blend
+  properties, `_MainTex`, `_Color`, `_MainTexUV`, `_MainTexPan`, `_BumpMap`,
+  `_BumpMapUV`, `_BumpScale`, the `_Mochie*` packed-map set, `_EnableEmission`,
+  `_EmissionMap`, `_EmissionMapUV`, `_EmissionMask`, `_EmissionMaskUV`,
+  `_EmissionColor`, `_EmissionStrength`) exists with the same name, type and
+  default in 11.0.22, 10.0.23 and 10.0.9, Pro and Toon, and in 9.3.67. The only
+  declaration differences: in 11, `_Color`, `_MochieSpecularTint` and
+  `_MochieReflectionTint` carry `[ThryHDR]` and `_EmissionMask` a
+  `[ThryMaskLayout(...)]` drawer (inspector only); `_Mode` gained
+  `[DoNotAnimate]`. Keywords are unchanged: `[ThryToggle(MOCHIE_PBR)]
+  _MochieBRDF` (`shader_feature_local_fragment`), `[ThryToggle(_EMISSION)]
+  _EnableEmission` (`shader_feature`), and `POI_PAN_UV(uv, pan) = uv +
+  POI_TIME.x * pan` (so the ×20 pan conversion holds).
+- **Presets.** The nine `_Mode` rows (`on_value_actions`) are byte-identical in
+  11.0.22, 10.0.23 and 10.0.9 (Pro and Toon). They also set
+  `_OutlineBlendOp=0`, `_OutlineBlendOpAlpha=4`, and `_OutlineDstBlendAlpha`
+  is 0 for Opaque (1 otherwise); the table in §2 left these out. The importer
+  now parses the chosen shader's own `_Mode` description
+  (`PoiyomiShaders.ParsePresets`, open question 3) and keeps a hard-coded table
+  (now with those values) only as the fallback.
+- **Locking (ThryEditor 2.73.9, bundled in the package).** Same as §3:
+  `ShaderOptimizer.LockMaterials`/`UnlockMaterials` are `[PublicAPI]`;
+  `LockMaterialsOnWorldUpload` (`IVRCSDKBuildRequestedCallback`, compiled only
+  with the VRChat SDK) locks the `sharedMaterials` of every Renderer in the
+  open scene when the scene has a `VRC_SceneDescriptor`;
+  `StripUnlockedShadersFromBuild` strips any unlocked Poiyomi shader that still
+  reaches a build ("pink materials"); `Config.fixKeywordsWhenLocking` is true by
+  default. New in this ThryEditor: "section locking"
+  (`SectionLockService`), off by default (`Config.sectionLockWhileEditing =
+  false`) and only for materials edited in the inspector. **The importer
+  leaves materials unlocked.** The user does nothing extra for a world upload
+  through the VRChat SDK's Build & Publish; materials placed only in prefabs
+  that are not in the uploaded scene are not locked by the hook (lock them
+  with Thry's "Lock" button or `ShaderOptimizer.LockMaterials` if they are
+  spawned some other way). Locking writes a generated shader per material, and
+  Spirit Vale has 754, so the first upload can be slow; the lock was not run
+  here (no VRChat SDK in the scratch projects), so its time is not measured.
+- **Pro installer stub.** The package's top-level `Editor/` folder
+  (`PoiyomiProInstaller`, `[InitializeOnLoad]`) opens a window and starts a
+  Patreon login over HTTP on every editor load until it deletes itself. The
+  scratch projects left it out; it holds no shader or ThryEditor code.
+
+**Choice (PoiyomiShaders.Choose).** Candidates, tried with `Shader.Find`:
+`.poiyomi/Poiyomi Pro`, `.poiyomi/Poiyomi Toon`,
+`.poiyomi/Old Versions/10.0/Poiyomi Pro`, `... Toon`,
+`.poiyomi/Old Versions/9.3/Poiyomi Pro`, `... Toon`. The highest major
+version from the label wins, then Pro over Toon, then that order; a shader
+with compile errors (`ShaderUtil.ShaderHasError` or an error message) is
+skipped. Hence 11 Pro, 11 Toon, 10 Pro, 10 Toon, 9 Pro, 9 Toon; with none,
+Standard and one warning. A major other than 10 or 11 is used with a warning.
+
+**Verified (Unity 2022.3.22f1 batchmode, graphics on, 2026-10-17).** With
+the 11.0.22 package copied into a fresh project, `Shader.Find` reached
+`.poiyomi/Poiyomi Pro` (label 11.0.22, no compile errors, 9 presets parsed
+from `_Mode`); with `Shaders/11.0` removed it reached
+`.poiyomi/Old Versions/10.0/Poiyomi Pro` (10.0.23), and with `10.0/Pro` also
+removed `.poiyomi/Old Versions/10.0/Poiyomi Toon`. On Spirit Vale (754
+materials) every shared material read back what the importer set, a
+Camera.Render of eight props showed no error colour, and ThryEditor's
+`LockMaterials` (by reflection) locked six materials of six presets to
+compiling `Hidden/Locked/...` shaders and unlocked them again. Details in
+`tools/unity/CHECKLIST.md`, Results.
+
 ## Recommended architecture
 
 ```
@@ -409,11 +493,12 @@ compiling when Poiyomi is missing.
    conversion to Poiyomi `*Pan`.
 2. VPM install folder (`Packages/com.poiyomi.toon`) not stated in VCC docs;
    detection doesn't depend on it.
-3. Whether to write the preset table from the parsed `_Mode` description
-   (robust to Poiyomi changes, depends on Thry's string format) or hard-code it.
+3. ~~Whether to write the preset table from the parsed `_Mode` description
+   or hard-code it.~~ Answered in §6 (Task 15c): parsed, with the table as
+   the fallback.
 4. Prefab as a variant of the FBX vs standalone.
-5. Whether Poiyomi Pro (`com.poiyomi.pro`, 11.x in the same VPM repo) should
-   be accepted; its shader name and property compatibility are **UNCONFIRMED**.
+5. ~~Whether Poiyomi Pro should be accepted.~~ Answered in §6 (Task 15c): yes,
+   preferred over Toon; 10 and 11 share every property name the importer sets.
 6. Re-import policy: overwrite user edits on existing `.mat`s or only fill
    new ones.
 7. Distortion map: no Poiyomi target was researched here (Poiyomi has

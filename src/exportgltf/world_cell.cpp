@@ -44,11 +44,13 @@ int cell_samples(const cw::Terrain& t, const cw::Cell& c) {
 
 /// Two triangles per quad of a W-wide row-major grid block, a..d the quad's
 /// north-west, north-east, south-west and south-east vertices, split along
-/// a-d as CollisionIndex::build splits a terrain quad (walk.cpp add_terrain),
-/// so the exported terrain is the surface castlemist walks on. (a, b, d) and
-/// (a, d, c) have their cross products along -Z (up).
+/// b-c (NE-SW) as CollisionIndex::build splits a terrain quad (walk.cpp
+/// add_terrain), so the exported terrain is the surface castlemist walks on.
+/// NE-SW is the client's ground query (zone_scatter.cpp Ground::height:
+/// 4535 / 4535 collider z; final review I2); the renderer's own index buffer
+/// is UNPROVEN. (a, b, c) and (b, d, c) have their cross products along -Z (up).
 void push_quad(std::vector<uint32_t>& idx, uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
-    idx.insert(idx.end(), {a, b, d, a, d, c});
+    idx.insert(idx.end(), {a, b, c, b, d, c});
 }
 
 } // namespace

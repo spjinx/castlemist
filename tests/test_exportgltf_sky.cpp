@@ -1592,13 +1592,15 @@ CM_TEST(skyexport, env_block_is_the_one_covering_most_of_the_map) {
 
 // FogColorFar is haze[slot].farColor of the chosen block (slot 0 day, 1
 // night), dataGlobal's when that zone has no haze; the light colour is taken
-// in the client's byte order; every input is labelled.
+// as parseMapEnv gives it (R, G, B); every input is labelled.
 CM_TEST(skyexport, approx_inputs_take_haze_slots_and_label_them) {
     SkyInputs in = panorama_inputs();
     in.sky.haze = {haze_far(0.1f, 0.2f, 0.3f), haze_far(0.4f, 0.5f, 0.6f), haze_far(0.7f, 0.8f, 0.9f)};
     castlemist::model::Extractor::MapEnvLight l;
     l.present = true;
-    l.sunColor[0] = 0.25f; l.sunColor[1] = 0.5f; l.sunColor[2] = 1.0f;   // bytes 0, 1, 2 as castlemist reads them
+    // R, G, B as parseMapEnv now gives them (it reorders the file's B, G, R at the
+    // source; final review I1), so the sky takes them as they are, no second swap.
+    l.sunColor[0] = 1.0f; l.sunColor[1] = 0.5f; l.sunColor[2] = 0.25f;
     l.sunDir[0] = 0; l.sunDir[1] = 0; l.sunDir[2] = 2;
     in.sky.lighting = {l, l, l};
     in.sky.hasGroundZ = true;
@@ -1609,7 +1611,7 @@ CM_TEST(skyexport, approx_inputs_take_haze_slots_and_label_them) {
     CHECK_NEAR(night.fogFar[0], 0.4f, 1e-6f);
     CHECK_NEAR(m2.fogFar[0], 0.1f, 1e-6f);   // mode 2 reads the day slot
     CHECK(day.haveSun);
-    CHECK_NEAR(day.sunColor[0], 1.0f, 1e-6f);   // byte 2 first (0x140c88dbe)
+    CHECK_NEAR(day.sunColor[0], 1.0f, 1e-6f);   // unchanged from parseMapEnv's R, G, B
     CHECK_NEAR(day.sunColor[2], 0.25f, 1e-6f);
     CHECK_NEAR(day.sunDir[2], 1.0f, 1e-6f);     // normalized
     CHECK_EQ(day.cameraZ, -7000.0f);

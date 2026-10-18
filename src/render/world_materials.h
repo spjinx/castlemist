@@ -123,8 +123,9 @@ void pose_palette(const PoseRig& rig, double seconds, std::vector<float>& palett
 
 /// @brief A water preset's stored colour (surfaceShallowColor,
 ///        surfaceDeepColor) as linear-unscaled 0..1: bytes 0, 1, 2 as R, G, B
-///        divided by 255, the order parseMapEnv reads env colours
-///        (gw2model.hpp:1300). Byte 3 is ignored. The order is UNPROVEN for
+///        divided by 255. Byte 3 is ignored. The light and haze colours are
+///        B, G, R in the client (parseMapEnv), so this order may be wrong
+///        too, but the water import is not checked yet. The order is UNPROVEN for
 ///        water (docs/research/gw2-world-materials.md §6: the game shader's
 ///        wtrclrs/wtrclrd are filled by the client, not stored).
 using castlemist::world::water_colour;   // moved to world/surface_rules.h

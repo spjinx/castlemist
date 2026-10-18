@@ -154,8 +154,10 @@ namespace Castlemist
             FoliageCellPlan cp;
             if (!cellPlans.TryGetValue(c.Id, out cp)) return;
             Transform fol = null, trees = null;
+            int treeIndex = -1;
             foreach (FoliageRecord r in cp.Trees)
             {
+                treeIndex++;
                 GameObject prefab;
                 if (!ModelOk(r.Model) || !treePrefabs.TryGetValue((int)r.Model, out prefab)) { sum.foliageSkipped++; continue; }
                 if (trees == null)
@@ -164,7 +166,7 @@ namespace Castlemist
                     trees = Child(fol, "Trees");
                 }
                 var go = (GameObject)PrefabUtility.InstantiatePrefab(prefab, trees);
-                go.name = m.Models[(int)r.Model].FileId + "_" + r.Placement;
+                go.name = TreeName(m.Models[(int)r.Model].FileId, r, treeIndex);
                 go.transform.localPosition = new Vector3(r.T[0], r.T[1], r.T[2]);
                 go.transform.localRotation = new Quaternion(r.R[0], r.R[1], r.R[2], r.R[3]);
                 go.transform.localScale = Vector3.one * r.S;
@@ -175,6 +177,14 @@ namespace Castlemist
                 if (fol == null) fol = Child(cell, "Foliage");
                 patches.Place(cp, Child(fol, "Patches"));
             }
+        }
+
+        /// A tree's GameObject name: <fileId>_<placement>. A collider linked by geometry only has
+        /// no placement (UINT32_MAX), so it is named <fileId>_g<index in the cell's planned trees>
+        /// instead, which keeps the names unique (final review M3).
+        public static string TreeName(long fileId, FoliageRecord r, int treeIndex)
+        {
+            return fileId + "_" + (r.Placement == uint.MaxValue ? "g" + treeIndex : r.Placement.ToString());
         }
 
         static Transform Child(Transform parent, string name)

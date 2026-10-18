@@ -44,7 +44,10 @@ void add_terrain(const WorldScene& scene, std::vector<float>& out) {
             for (int i = 0; i + 1 < n; ++i) {
                 float p00[3], p10[3], p01[3], p11[3];
                 at(i, j, p00); at(i + 1, j, p10); at(i, j + 1, p01); at(i + 1, j + 1, p11);
-                for (const float* v : {p00, p10, p11, p00, p11, p01}) out.insert(out.end(), v, v + 3);
+                // NE-SW, the client's ground query (zone_scatter.cpp Ground::height:
+                // 4535 / 4535 collider z; final review I2). The export and the Map
+                // Window split the same way.
+                for (const float* v : {p00, p10, p01, p10, p11, p01}) out.insert(out.end(), v, v + 3);
             }
         }
     }

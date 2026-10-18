@@ -1429,7 +1429,8 @@ public:
     // game feeds its lighting shaders. Path (all template-navigated, so field
     // packing is exact): env -> dataGlobal -> PackMapEnvDataGlobalV* -> lighting[]
     // (time-of-day presets) -> [preset].lights[] (ptr array) ->
-    // PackMapEnvDataLightV*{ color byte3, intensity float, direction float3 }.
+    // PackMapEnvDataLightV*{ color byte3 (B, G, R), intensity float, direction float3 }.
+    // sunColor / fillColor are R, G, B.
     struct MapEnvLight {
         bool  present = false;
         // The direction the light travels, map space (up = -Z, so a day sun has
@@ -1484,7 +1485,10 @@ public:
                 if (!lp) continue;
                 L l;
                 try {
-                    l.c[0] = rd8(lp + lco) / 255.f; l.c[1] = rd8(lp + lco + 1) / 255.f; l.c[2] = rd8(lp + lco + 2) / 255.f;
+                    // Stored B, G, R: the client's lighting import puts byte 2 in x (red), byte 1 in
+                    // y, byte 0 in z (Gw2-64.exe 2026-10-14, 0x140c8f60e..0x140c8f64f), as the haze
+                    // import does for its colours.
+                    l.c[0] = rd8(lp + lco + 2) / 255.f; l.c[1] = rd8(lp + lco + 1) / 255.f; l.c[2] = rd8(lp + lco) / 255.f;
                     l.inten = rdf(lp + ico);
                     l.dir[0] = rdf(lp + dco); l.dir[1] = rdf(lp + dco + 4); l.dir[2] = rdf(lp + dco + 8);
                 } catch (const std::exception&) { continue; }

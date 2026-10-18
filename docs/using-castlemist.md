@@ -188,6 +188,26 @@ below). Collision is off by default: it is the map's physics
 mesh, 988,986 triangles on Queensdale (world_dat test output; 2,078,522 with the terrain), and uploads to the GPU only the first
 time you turn it on. The water is a single plane at the stored height.
 
+**Foliage.** The **Foliage** button draws the map's scatter layer: the grass,
+plants and trees the game plants from its zone data, as instanced models that
+fade out with distance. Click the button to turn it on or off (the label shows
+`Foliage: Colliders`, `Foliage: All` or `Foliage: Off`); click its arrow to
+choose **Colliders** (only the trees that have a collision hull, which is what
+you bump into when walking) or **All** (every zone instance; about 369,000 on
+Queensdale). **All** is greyed out when the map's scatter could not be
+reproduced. It starts on, in Colliders mode. The status line shows `fol V/N`
+(foliage drawn of those placed). The scatter follows the game's own rule for
+trees, and a transcribed rule for grass and plants that no collision hull can
+confirm, so the Warnings list names those settings as UNPROVEN. No sway: foliage
+stands still. One Queensdale grass model (57017) has no mesh and is left out.
+
+**Sky.** The **Sky** button cycles the sky's time of day. **Approx sky**
+(pressed by default) shows castlemist's approximate sky, which adds the
+clouds, haze and material cards the proven bake leaves out, from inputs that
+are labelled UNPROVEN; unpress it for the proven-only bake. The approximate
+sky has not been compared with the game, and some maps (Spirit Vale) look very
+different under it.
+
 **Materials and Motion.** Two push-style toggles, both on by default.
 
 - **Materials** draws the terrain with the map's own ground textures blended by
@@ -269,6 +289,14 @@ gw2dat_cli skybox  --dat $dat --file-id 187611  --template dumps\packfile\gw2_pa
 # A whole map as one scene (terrain, props, collision, water, sky): a JSON summary
 # whose warnings include every dat chunk nothing reads yet
 gw2dat_cli world   --dat $dat --file-id 192711 --template dumps\packfile\gw2_packfile.json --out summary.json
+
+# A whole map as a cell folder for Unity or Blender (manifest.json, cells, models,
+# foliage records, Unity Terrain tiles, sky). Keep the path short.
+gw2dat_cli world-export --dat $dat --file-id 1151420 --template dumps\packfile\gw2_packfile.json --out-dir C:\cm\sv
+#   --foliage off|colliders|all   which zone foliage records to write (default all)
+#   --no-unity-terrain            leave out the terrain/ tiles the importer's Terrain mode uses
+#   --sky-approx                  bake the approximate sky too (UNPROVEN inputs; off by default)
+#   --no-fbx                      skip the Blender FBX step
 
 # What uses a file, with names and chat links (needs the content map; --names goes online)
 gw2dat_cli users --file-id 1200313 --names

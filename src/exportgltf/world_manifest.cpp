@@ -134,7 +134,7 @@ json model_json(const ManifestModel& m, std::vector<std::string>& warnings) {
               {"clips", m.clips},
               {"darkDecalMaterials", m.darkDecalMaterials},
               {"uvScroll", uv_scroll_json(m, warnings)},
-              {"status", m.ok ? "ok" : "failed"}};
+              {"status", m.ok ? "ok" : (m.empty ? "empty" : "failed")}};
     if (m.lods.is_object()) j["lods"] = m.lods;
     if (!m.materialKeys.empty()) j["materialKeys"] = m.materialKeys;   // Task 15d
     if (!m.ok || !m.error.empty()) j["error"] = m.error;
@@ -351,6 +351,9 @@ std::vector<ManifestSetting> world_export_settings(const WorldFolderOptions& o, 
              kU, R + "transcribed from 0x140cc1900 (tables 0x141e44210 / 0x141e443a0 / 0x141e44600); no collider checks it"},
             {"zoneGraphicsQuality", 2, kU, R + "the tiling count and subModel input (getter 0x140c58c10 not read); ruling S3"},
             {"zoneGroundcoverOffset", "+(24, 24) from the vertex on the tiling path", kU, R + "0x140cc1900; ruling S3"},
+            {"zoneQueryFlags", 0, kU,
+             R + "the client's query flags (noGroundcover / onlyGroundcover assert, param_9 & 1 in 0x140cc1f50) are taken "
+                 "as 0, an unfiltered query: every instance is emitted; transcribed, not measured"},
             {"zoneUnprovenBranches",
              "clamp to parm rect inset 1, zone matrix = identity, water test (pack 0x1000), random z (0x10 + 0x800), "
              "yaw from normal (0x200), 90Â° snap (0x200000), subModel second instance",
@@ -460,16 +463,17 @@ json world_manifest_json(const WorldManifestInput& in) {
 
     std::unordered_map<uint32_t, size_t> modelPos;   // scene index -> position in models[]
     json models = json::array();
-    size_t modelsFailed = 0;
+    size_t modelsFailed = 0, modelsEmpty = 0;   // modelsFailed: every model not ok, the empty ones too
     for (size_t k = 0; k < in.models.size(); ++k) {
         const ManifestModel& m = in.models[k];
         modelPos.emplace(m.index, k);
         if (!m.ok) ++modelsFailed;
+        if (!m.ok && m.empty) ++modelsEmpty;
         models.push_back(model_json(m, notes));
     }
     man["models"] = models;
 
-    size_t props = 0, written = 0, skippedTrs = 0, skippedModel = 0, skippedCell = 0, chunks = 0,
+    size_t props = 0, written = 0, skippedTrs = 0, skippedModel = 0, skippedEmpty = 0, skippedCell = 0, chunks = 0,
            collisionInstances = 0;
     bool flatWater = false, waterZWarned = false;
     const bool hasPreset = cw::water_has_preset(s);
@@ -517,7 +521,12 @@ json world_manifest_json(const WorldManifestInput& in) {
             ++props;
             const auto mp = pi < s.props.size() ? modelPos.find(s.props[pi].model) : modelPos.end();
             if (mp != modelPos.end()) propModel[mp->second] = 1;
-            if (mp == modelPos.end() || !in.models[mp->second].ok) { ++skippedModel; continue; }
+            if (mp == modelPos.end() || !in.models[mp->second].ok) {
+                // An empty model (no drawable meshes) is not a failure (final review M1).
+                if (mp != modelPos.end() && in.models[mp->second].empty) ++skippedEmpty;
+                else ++skippedModel;
+                continue;
+            }
             const cw::PropInstance& p = s.props[pi];
             UnityTrs u{};
             if (!unity_trs(p.world, c.origin, u)) { ++skippedTrs; continue; }   // also every non-finite m
@@ -634,6 +643,7 @@ json world_manifest_json(const WorldManifestInput& in) {
                      {"propsSkipped", props - written},
                      {"models", in.models.size()},
                      {"modelsFailed", modelsFailed},
+                     {"modelsEmpty", modelsEmpty},
                      {"collisionInstances", collisionInstances},
                      {"cells", cells.size()},
                      {"chunks", chunks},
@@ -661,7 +671,8 @@ json world_manifest_json(const WorldManifestInput& in) {
                                     {"density", fgiven("density")},
                                     {"modelsFoliageOnly", foliageOnly},
                                     {"skipped", fgiven("skipped")},
-                                    {"failedModel", fgiven("failedModel")}};
+                                    {"failedModel", fgiven("failedModel")},
+                                    {"emptyModel", fgiven("emptyModel")}};
         if (unityTerrain.is_object()) {
             uint64_t terrainTrees = 0, detailRecords = 0;
             for (const json& t : unityTerrain["tiles"]) {
@@ -683,6 +694,9 @@ json world_manifest_json(const WorldManifestInput& in) {
                            " placements with a non-uniform or degenerate transform skipped");
     if (skippedModel)
         warnings.push_back("props: " + std::to_string(skippedModel) + " placements of failed or missing models skipped");
+    if (skippedEmpty)
+        warnings.push_back("props: " + std::to_string(skippedEmpty) +
+                           " placements of empty models (no drawable meshes) skipped");
     if (skippedCell)
         warnings.push_back("props: " + std::to_string(skippedCell) + " placements in dropped cells skipped");
     man["warnings"] = warnings;

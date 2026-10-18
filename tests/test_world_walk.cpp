@@ -221,16 +221,17 @@ CM_TEST(walk, build_terrain_sloped_asymmetric) {
     const float dx = 100, dy = 200;
     auto h = [&](int i, int j) { return c.heights[(size_t)j * 3 + i]; };
     // Sample rule: column i at x0 + i*dx, row j at y1 - j*dy. In a quad, u runs
-    // east and v runs south from its (i, j) corner; triangles are
-    // (p00,p10,p11) when u >= v and (p00,p11,p01) otherwise.
+    // east and v runs south from its (i, j) corner. The quad splits NE-SW, the
+    // client's ground query (zone_scatter.cpp Ground::height, 4535 / 4535 collider
+    // z; final review I2): (p00,p10,p01) when u + v <= 1, else (p10,p11,p01).
     for (int j = 0; j < 2; ++j) {
         for (int i = 0; i < 2; ++i) {
-            const float us[] = {0.7f, 0.2f, 0.35f, 0.9f}, vs[] = {0.2f, 0.7f, 0.3f, 0.6f};
+            const float us[] = {0.7f, 0.5f, 0.35f, 0.9f}, vs[] = {0.2f, 0.8f, 0.3f, 0.6f};
             for (int k = 0; k < 4; ++k) {
                 const float u = us[k], v = vs[k];
                 const float h00 = h(i, j), h10 = h(i + 1, j), h01 = h(i, j + 1), h11 = h(i + 1, j + 1);
-                const float expect = u >= v ? h00 + u * (h10 - h00) + v * (h11 - h10)
-                                            : h00 + u * (h11 - h01) + v * (h01 - h00);
+                const float expect = u + v <= 1 ? h00 + u * (h10 - h00) + v * (h01 - h00)
+                                                : h11 + (1 - u) * (h01 - h11) + (1 - v) * (h10 - h11);
                 const float px = i * dx + u * dx;
                 const float py = 400.0f - (j * dy + v * dy);
                 const float o[3] = {px, py, -1000};

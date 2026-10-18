@@ -13,6 +13,7 @@
 //     [-castlemistScale <s>] [-castlemistTerrain mesh|terrain]
 //     [-castlemistFoliage off|colliders|trees|all] [-castlemistDensity f]
 //     [-castlemistDistance f] [-castlemistQuest]
+//     [-castlemistExpectShader "<Poiyomi shader name>"|Standard] [-castlemistScreenshot <file.png>]
 //
 // ImportWorld runs WorldImporter.Import on the folder (scale: the manifest's
 // unityScale unless given; options: ImportOptions, -castlemistQuest the Quest
@@ -29,8 +30,11 @@
 // lods.levels > 1 has a LODGroup of those levels with strictly decreasing heights equal
 // to ModelLods.TransitionHeights, tree prefabs the levels their cull leaves, and each
 // instances[].lod instance its own heights; CheckLods), then MATERIALS (Task 15d: one Shared .mat
-// per key and variant, never two; every prefab renderer draws its model's shared .mat; CheckMaterials).
-// Exit 0 when there are no errors, the probe
+// per key and variant, never two; every prefab renderer draws its model's shared .mat; CheckMaterials), then
+// POIYOMI_MATERIALS (Task 15c: the shader chosen, -castlemistExpectShader's when given, on every .mat, without
+// compile errors, and each shared .mat's main texture, colour, cutoff, cull, queue, preset, pan and keywords as
+// set; CheckShader), and with -castlemistScreenshot a SCREENSHOT line (a Camera.Render of a few props; skipped
+// under -nographics). Exit 0 when there are no errors, the probe
 // and the terrain frame check passed (or did not run) and those checks passed.
 //
 //   ... -executeMethod Castlemist.BatchEntry.CheckSkinnedProbe -castlemistFile Assets/<dir>/skinned_probe.fbx
@@ -115,12 +119,14 @@ namespace Castlemist
                     : (float)WorldManifest.Parse(System.IO.File.ReadAllText(folder + "/manifest.json")).UnityScale;
                 ImportOptions opts = Options();
                 Debug.Log("CASTLEMIST unity=" + Application.unityVersion + " world=" + folder + " unityScale=" +
-                          scale.ToString("R", CultureInfo.InvariantCulture) + " " + opts +
-                          " poiyomi=" + (Shader.Find(PoiyomiMaterials.ShaderName) != null ? "found" : "absent"));
+                          scale.ToString("R", CultureInfo.InvariantCulture) + " " + opts);
                 ImportSummary sum = WorldImporter.Import(folder, scale, opts);
                 WorldImporter.Log(sum);
                 bool cellsOk = CheckCells(folder, opts);
-                code = sum.errors.Count == 0 && (sum.probeLine == null || sum.probeOk) && sum.terrainCheckOk && cellsOk ? 0 : 1;
+                bool shaderOk = CheckShader(folder);
+                string shot = Arg("-castlemistScreenshot");
+                bool shotOk = shot == null || Screenshot(folder, shot);
+                code = sum.errors.Count == 0 && (sum.probeLine == null || sum.probeOk) && sum.terrainCheckOk && cellsOk && shaderOk && shotOk ? 0 : 1;
             }
             catch (Exception e)
             {
@@ -290,6 +296,257 @@ namespace Castlemist
             Debug.Log("MATERIALS keyed=" + keyed + " keys=" + variantsOfKey.Count + " shared=" + variants + " drawn=" + drawn.Count +
                       " renderers=" + renderers + (ok ? " OK" : " FAIL " + string.Join("; ", fails.Take(8))));
             return ok;
+        }
+
+        /// SHADER / POIYOMI_MATERIALS (Task 15c): the shader the import chose (MaterialContext.Create, run again:
+        /// it is deterministic) is -castlemistExpectShader's ("Standard" for none) when given; every .mat under
+        /// Materials/ except Skybox.mat uses it; no shader the materials use has compile errors; and every used keyed materials.json
+        /// entry's shared .mat reads back what PoiyomiMaterials set from it: _MainTex (the pooled file), _Color,
+        /// _Cutoff (Cutout and TransClipping), _Cull, the render queue, and with Poiyomi _Mode, the RenderType tag of
+        /// the shader's own preset row, _MainTexPan (uvScroll on the base colour's UV), MOCHIE_PBR for a packed map
+        /// and _EMISSION for emission.
+        static bool CheckShader(string folder)
+        {
+            WorldManifest m = WorldManifest.Parse(System.IO.File.ReadAllText(folder + "/manifest.json"));
+            MaterialContext ctx = MaterialContext.Create(new List<string>());
+            var fails = new List<string>();
+            string got = ctx.Poiyomi ? ctx.ShaderName : "Standard";
+            string expect = Arg("-castlemistExpectShader");
+            if (expect != null && expect != got) fails.Add("shader " + got + ", expected " + expect);
+            var all = new HashSet<Material>();
+            foreach (string guid in AssetDatabase.FindAssets("t:Material", new[] { folder + "/Materials" }))
+            {
+                string mp = AssetDatabase.GUIDToAssetPath(guid);
+                if (mp == folder + "/Materials/Skybox.mat") continue;   // Skybox/Panoramic by design
+                var mat = AssetDatabase.LoadAssetAtPath<Material>(mp);
+                if (mat == null) continue;
+                all.Add(mat);
+                if (mat.shader != ctx.Shader) fails.Add(mat.name + ": shader " + mat.shader.name);
+            }
+            var shaders = new HashSet<Shader>(all.Select(x => x.shader));
+            foreach (Shader s in shaders)
+                if (PoiyomiMaterials.HasErrors(s)) fails.Add("shader " + s.name + " has compile errors");
+
+            int n = 0, tex = 0, cut = 0, cullOff = 0, pan = 0, packed = 0, emis = 0;
+            Func<float, double, bool> near = (a, b) => Math.Abs(a - b) <= 1e-5 * Math.Max(1.0, Math.Abs(b));
+            foreach (WorldManifest.ModelEntry e in m.Models)
+            {
+                if (!e.Ok || e.Materials == null || e.MaterialKeys.Count == 0) continue;
+                string rel = folder + "/" + e.Materials;
+                MaterialsFile f = MaterialsFile.Parse(System.IO.File.ReadAllText(rel), e.Materials);
+                string modelFolder = System.IO.Path.GetDirectoryName(rel).Replace('\\', '/');
+                foreach (MaterialsFile.MaterialEntry me in f.Materials)
+                {
+                    if (!me.UsedByMeshes || me.Key == null) continue;
+                    bool dark = m.DarkDecalRule && e.DarkDecalMaterials.Contains(me.Name);
+                    WorldManifest.UvScroll sc = e.UvScroll.FirstOrDefault(u => u.Material == me.Name);
+                    string path = folder + "/Materials/Shared/" + WorldImporter.SharedMaterialFile(me.Key, WorldImporter.SharedMaterialVariant(me.Key, dark, sc)) + ".mat";
+                    var mat = AssetDatabase.LoadAssetAtPath<Material>(path);
+                    string tag = e.FileId + "/" + me.Name;
+                    if (mat == null) { fails.Add(tag + ": no " + path); continue; }
+                    ++n;
+                    int mode = dark ? PoiyomiMaterials.Fade : me.Mode;
+                    var bad = new List<string>();
+                    if (mat.shader != ctx.Shader) bad.Add("shader " + mat.shader.name);
+                    MaterialsFile.MapRef bc = me.Map("baseColor");
+                    if (bc != null)
+                    {
+                        string want = PoiyomiMaterials.AssetPath(modelFolder + "/" + bc.File.Replace('\\', '/'));
+                        Texture t = mat.HasProperty("_MainTex") ? mat.GetTexture("_MainTex") : null;
+                        string have = t != null ? AssetDatabase.GetAssetPath(t) : "none";
+                        if (have != want) bad.Add("_MainTex " + have + ", want " + want);
+                        else ++tex;
+                    }
+                    if (mat.GetColor("_Color") != Color.white) bad.Add("_Color " + mat.GetColor("_Color"));
+                    if (mode == PoiyomiMaterials.Cutout || mode == PoiyomiMaterials.TransClipping)
+                    {
+                        if (!near(mat.GetFloat("_Cutoff"), me.AlphaCutoff)) bad.Add("_Cutoff " + mat.GetFloat("_Cutoff") + ", want " + me.AlphaCutoff);
+                        ++cut;
+                    }
+                    float cull = me.Cull == "Off" ? 0f : 2f;
+                    if (mat.HasProperty("_Cull") && mat.GetFloat("_Cull") != cull) bad.Add("_Cull " + mat.GetFloat("_Cull"));   // Standard has none
+                    if (cull == 0f) ++cullOff;
+                    if (mat.renderQueue != ctx.QueueFor(mode) + me.RenderQueueOffset) bad.Add("queue " + mat.renderQueue);
+                    if (ctx.Poiyomi)
+                    {
+                        if (mat.GetFloat("_Mode") != mode) bad.Add("_Mode " + mat.GetFloat("_Mode") + ", want " + mode);
+                        PoiyomiShaders.PresetActions pa;
+                        if (ctx.Presets.TryGetValue(mode, out pa) && pa.RenderType != null && mat.GetTag("RenderType", false) != pa.RenderType)
+                            bad.Add("RenderType " + mat.GetTag("RenderType", false) + ", want " + pa.RenderType);
+                        if (sc != null && bc != null && bc.Uv == sc.UvIndex)
+                        {
+                            Vector4 v = mat.GetVector("_MainTexPan");
+                            if (!near(v.x, 20.0 * sc.U) || !near(v.y, -20.0 * sc.V)) bad.Add("_MainTexPan " + v);
+                            ++pan;
+                        }
+                        if (me.Map("packed") != null)
+                        {
+                            if (!mat.IsKeywordEnabled("MOCHIE_PBR") || mat.GetFloat("_MochieBRDF") != 1f) bad.Add("packed: MOCHIE_PBR off");
+                            ++packed;
+                        }
+                        if (me.HasEmission || me.Map("emissionMap") != null || me.Map("emissionMask") != null || me.Map("emissionBaked") != null)
+                        {
+                            if (!mat.IsKeywordEnabled("_EMISSION") || mat.GetFloat("_EnableEmission") != 1f) bad.Add("emission: _EMISSION off");
+                            ++emis;
+                        }
+                    }
+                    if (bad.Count > 0) fails.Add(tag + " (" + path + "): " + string.Join(", ", bad));
+                }
+            }
+            bool ok = fails.Count == 0;
+            Debug.Log("POIYOMI_MATERIALS shader=" + got + " version=" + (ctx.Version ?? "-") + " checked=" + n + " mats=" + all.Count +
+                      " shaders=" + shaders.Count + " mainTex=" + tex + " cutout=" + cut + " cullOff=" + cullOff + " panned=" + pan +
+                      " packed=" + packed + " emission=" + emis + (ok ? " OK" : " FAIL " + string.Join("; ", fails.Take(8))));
+            return ok;
+        }
+
+        /// SCREENSHOT (Task 15c): up to 8 model prefabs, picked to cover opaque, cutout, blended, panned, packed and
+        /// emissive materials, each scaled to a 1-unit box, in a 4 x 2 grid under a sun and a grey flat ambient,
+        /// rendered by Camera.Render to `png` (1600 x 800). Fails on a shader error after the render, or when over
+        /// 1% of the pixels are Unity's magenta error colour. Needs a graphics device (no -nographics).
+        static bool Screenshot(string folder, string png)
+        {
+            if (SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Null)
+            {
+                Debug.Log("SCREENSHOT skipped: no graphics device (-nographics)");
+                return true;
+            }
+            ShaderUtil.allowAsyncCompilation = false;   // no cyan placeholder shaders in the render
+            WorldManifest m = WorldManifest.Parse(System.IO.File.ReadAllText(folder + "/manifest.json"));
+            var covered = new HashSet<string>();
+            var picks = new List<GameObject>();
+            var pickNames = new List<string>();
+            for (int pass = 0; pass < 2 && picks.Count < 8; ++pass)
+                foreach (WorldManifest.ModelEntry e in m.Models)
+                {
+                    if (picks.Count >= 8) break;
+                    if (!e.Ok || e.Materials == null) continue;
+                    var p = AssetDatabase.LoadAssetAtPath<GameObject>(folder + "/Prefabs/" + e.FileId + ".prefab");
+                    if (p == null || picks.Contains(p) || p.GetComponentInChildren<Renderer>() == null) continue;
+                    MaterialsFile f = MaterialsFile.Parse(System.IO.File.ReadAllText(folder + "/" + e.Materials), e.Materials);
+                    var feats = new HashSet<string>();
+                    foreach (MaterialsFile.MaterialEntry me in f.Materials)
+                    {
+                        if (!me.UsedByMeshes) continue;
+                        feats.Add(me.Mode == PoiyomiMaterials.Opaque ? "opaque" : me.Mode == PoiyomiMaterials.Cutout || me.Mode == PoiyomiMaterials.TransClipping ? "cutout" : "blend");
+                        if (e.UvScroll.Any(u => u.Material == me.Name)) feats.Add("pan");
+                        if (me.Map("packed") != null) feats.Add("packed");
+                        if (me.HasEmission) feats.Add("emission");
+                    }
+                    if (pass == 0 && feats.All(covered.Contains)) continue;   // first pass: something new each
+                    covered.UnionWith(feats);
+                    picks.Add(p);
+                    pickNames.Add(e.FileId + "[" + string.Join("+", feats.OrderBy(x => x)) + "]");
+                }
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
+            RenderSettings.ambientLight = new Color(0.45f, 0.45f, 0.45f);
+            var sun = new GameObject("Sun").AddComponent<Light>();
+            sun.type = LightType.Directional;
+            sun.intensity = 1.1f;
+            sun.transform.rotation = Quaternion.Euler(40f, -30f, 0f);
+            for (int i = 0; i < picks.Count; ++i)
+            {
+                var go = (GameObject)UnityEngine.Object.Instantiate(picks[i]);
+                Bounds b = Bounds(go);
+                float s = 1f / Mathf.Max(1e-6f, Mathf.Max(b.size.x, Mathf.Max(b.size.y, b.size.z)));
+                go.transform.localScale *= s;
+                b = Bounds(go);
+                Vector3 cell = new Vector3((i % 4 - 1.5f) * 1.3f, (i < 4 ? 0.65f : -0.65f), 0f);
+                go.transform.position += cell - b.center;
+            }
+            var cam = new GameObject("Camera").AddComponent<Camera>();
+            cam.transform.position = new Vector3(0f, 0.8f, -5.6f);
+            cam.transform.LookAt(new Vector3(0f, 0f, 0f));
+            cam.fieldOfView = 40f;
+            cam.clearFlags = CameraClearFlags.SolidColor;
+            cam.backgroundColor = new Color(0.2f, 0.22f, 0.25f);
+            var rt = new RenderTexture(1600, 800, 24);
+            cam.targetTexture = rt;
+            cam.Render();
+            RenderTexture.active = rt;
+            var img = new Texture2D(rt.width, rt.height, TextureFormat.RGB24, false);
+            img.ReadPixels(new Rect(0, 0, rt.width, rt.height), 0, 0);
+            img.Apply();
+            RenderTexture.active = null;
+            cam.targetTexture = null;
+            System.IO.File.WriteAllBytes(png, img.EncodeToPNG());
+            int magenta = 0;
+            Color32[] px = img.GetPixels32();
+            foreach (Color32 c in px) if (c.r > 230 && c.g < 25 && c.b > 230) ++magenta;
+            var errs = new List<string>();
+            foreach (Renderer r in UnityEngine.Object.FindObjectsOfType<Renderer>())
+                foreach (Material mt in r.sharedMaterials)
+                    if (mt != null && PoiyomiMaterials.HasErrors(mt.shader) && !errs.Contains(mt.shader.name)) errs.Add(mt.shader.name);
+            bool ok = errs.Count == 0 && magenta * 100 <= px.Length;
+            Debug.Log("SCREENSHOT file=" + png + " props=" + string.Join(",", pickNames) + " magentaPixels=" + magenta +
+                      " shaderErrors=" + errs.Count + (ok ? " OK" : " FAIL " + string.Join(", ", errs)));
+            return ok;
+        }
+
+        /// LOCK_PROBE (Task 15c): an imported world's materials can be locked by ThryEditor, as its VRChat upload
+        /// hook does. Without a compile-time reference: ShaderOptimizer.LockMaterials / IsMaterialLocked /
+        /// UnlockMaterials by reflection on up to -castlemistLockProbe (default 6) Materials/Shared .mat files,
+        /// one per _Mode first. Each must come out locked on a "Hidden/Locked/..." shader without compile errors,
+        /// then unlocked on its original shader again (the import leaves materials unlocked).
+        ///   ... -executeMethod Castlemist.BatchEntry.LockProbe -castlemistWorld Assets/<export> [-castlemistLockProbe n]
+        public static void LockProbe()
+        {
+            int code = 1;
+            try
+            {
+                string folder = Arg("-castlemistWorld").Replace('\\', '/').TrimEnd('/');
+                string na = Arg("-castlemistLockProbe");
+                int n = na != null ? int.Parse(na, CultureInfo.InvariantCulture) : 6;
+                Type t = AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetType("Thry.ThryEditor.ShaderOptimizer", false)).FirstOrDefault(x => x != null);
+                if (t == null) { Debug.Log("LOCK_PROBE skipped: ThryEditor is not in this project"); EditorApplication.Exit(0); return; }
+                var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static;
+                System.Reflection.MethodInfo lockM = t.GetMethod("LockMaterials", flags), unlockM = t.GetMethod("UnlockMaterials", flags),
+                                             isLocked = t.GetMethod("IsMaterialLocked", flags);
+                var all = AssetDatabase.FindAssets("t:Material", new[] { folder + "/Materials/Shared" })
+                    .Select(g => AssetDatabase.LoadAssetAtPath<Material>(AssetDatabase.GUIDToAssetPath(g))).Where(x => x != null)
+                    .OrderBy(x => x.name, StringComparer.Ordinal).ToList();
+                var mats = all.GroupBy(x => x.HasProperty("_Mode") ? x.GetFloat("_Mode") : 0f).Select(g => g.First()).ToList();
+                mats.AddRange(all.Where(x => !mats.Contains(x)));
+                mats = mats.Take(n).ToList();
+                var original = mats.ToDictionary(x => x, x => x.shader);
+                object none = Enum.ToObject(lockM.GetParameters()[1].ParameterType, 0);
+                var fails = new List<string>();
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                bool lr = (bool)lockM.Invoke(null, new object[] { mats, none });
+                double lockSeconds = sw.Elapsed.TotalSeconds;
+                var locked = new List<string>();
+                foreach (Material x in mats)
+                {
+                    bool il = (bool)isLocked.Invoke(null, new object[] { x });
+                    if (!il || !x.shader.name.StartsWith("Hidden/Locked/", StringComparison.Ordinal)) fails.Add(x.name + ": not locked (" + x.shader.name + ")");
+                    else if (PoiyomiMaterials.HasErrors(x.shader)) fails.Add(x.name + ": locked shader " + x.shader.name + " has errors");
+                    else locked.Add("_Mode " + x.GetFloat("_Mode") + " -> " + x.shader.name);
+                }
+                bool ur = (bool)unlockM.Invoke(null, new object[] { mats, none });
+                foreach (Material x in mats)
+                    if (x.shader != original[x]) fails.Add(x.name + ": unlocked to " + x.shader.name);
+                foreach (string l in locked) Debug.Log("LOCKED " + l);
+                bool ok = lr && ur && fails.Count == 0;
+                Debug.Log("LOCK_PROBE materials=" + mats.Count + " locked=" + locked.Count + " lockSeconds=" +
+                          lockSeconds.ToString("F1", CultureInfo.InvariantCulture) + " unlocked=" + (ur ? "yes" : "no") +
+                          (ok ? " OK" : " FAIL " + string.Join("; ", fails.Take(8))));
+                code = ok ? 0 : 1;
+            }
+            catch (Exception e)
+            {
+                Debug.LogError("LOCK_PROBE ERROR " + e);
+                code = 1;
+            }
+            EditorApplication.Exit(code);
+        }
+
+        static Bounds Bounds(GameObject go)
+        {
+            Renderer[] rs = go.GetComponentsInChildren<Renderer>();
+            Bounds b = rs[0].bounds;
+            foreach (Renderer r in rs) b.Encapsulate(r.bounds);
+            return b;
         }
 
         static double FadeFar(WorldManifest m, int model)
@@ -543,7 +800,7 @@ namespace Castlemist
                 {
                     Transform t = parent.GetChild(k);
                     FoliageRecord r = trees[k];
-                    if (t.name != m.Models[(int)r.Model].FileId + "_" + r.Placement) fails.Add(c.Id + ": child " + k + " is " + t.name);
+                    if (t.name != FoliageImporter.TreeName(m.Models[(int)r.Model].FileId, r, k)) fails.Add(c.Id + ": child " + k + " is " + t.name);
                     LODGroup lg = t.GetComponent<LODGroup>();
                     int wantLevels = levelsOf((int)r.Model);
                     if (lg == null || lg.lodCount != wantLevels) fails.Add(t.name + ": no LODGroup of " + wantLevels + " level(s)");

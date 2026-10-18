@@ -99,7 +99,10 @@ std::vector<ManifestSetting> world_export_settings(const WorldFolderOptions& o,
 ///        materialCount and wind (true / false / null, world_foliage.h
 ///        model_wind) feed the manifest's foliage.models (world-foliage spec D7);
 ///        they are not written into models[].
-struct ManifestModel { uint32_t index = 0, fileId = 0; bool ok = false; std::string error, folder, glb, materials;
+struct ManifestModel { uint32_t index = 0, fileId = 0; bool ok = false;
+                       /// Loaded, but no drawable meshes: `status: "empty"` (not ok, not failed).
+                       bool empty = false;
+                       std::string error, folder, glb, materials;
                        uint64_t triangles = 0, textureBytes = 0; std::vector<std::string> clips, darkDecalMaterials;
                        nlohmann::json uvScroll = nlohmann::json::array();
                        int meshes = 0, materialCount = 0; nlohmann::json wind;
