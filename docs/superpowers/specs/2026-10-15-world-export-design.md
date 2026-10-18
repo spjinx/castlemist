@@ -924,6 +924,9 @@ throws and never yields a silently empty export.
   p00-p11), not NE-SW as first written: with NE-SW only 24 of 32 downward rays agreed with the scene's
   `CollisionIndex`, with NW-SE all 32 do. The world view (`world_view.cpp` `grid_indices`) drew NE-SW until the fix
   wave (M1) and now draws NW-SE too. Which diagonal the game uses is unproven.
+  **Superseded 2026-10-18** (world-foliage fix wave, review I2): all three now split NE-SW, the
+  client's ground query as measured by the zone scatter (4535 / 4535 collider z); the 32 rays still agree
+  because the mesh and `CollisionIndex` changed together.
 - **Poiyomi (Task 12).** Poiyomi 10 is untested: none exists on this machine. Poiyomi Pro 9.0.alpha18 was copied
   read-only from `C:/UnityProjects/2019WorldUDON-Migrated/Assets/_PoiyomiShaders` into a scratch project, and the
   importer built Poiyomi materials from it (shader found; `_Mode`, queue, `RenderType`, `_MochieBRDF`, `MOCHIE_PBR`

@@ -476,7 +476,7 @@ CM_TEST(world_cell, terrain_welded_vertex_count) {
 }
 
 // The cell terrain is the surface castlemist walks on: each quad split along
-// the same diagonal as CollisionIndex::build (p00-p11), so a ray down hits the
+// the same diagonal as CollisionIndex::build (NE-SW, p10-p01), so a ray down hits the
 // same height on both (the Spirit Vale dat test's 32 rays, Task 13). A
 // checkerboard of heights makes every quad's two diagonals differ.
 CM_TEST(world_cell, terrain_matches_collision_index) {

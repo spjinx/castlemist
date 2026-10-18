@@ -763,7 +763,7 @@ UNPROVEN row is also a line in `warnings` (export spec D3).
 | `foliageTileUnits` (Map Window) | 1536 | castlemist's choice |
 | `lodCullFovDeg` | 60 | castlemist's choice; VRChat FOV UNPROVEN |
 | `terrainHeightRowOrder` | row 0 south | UNPROVEN until the terrain frame check passes (research §5.2) |
-| `terrainColliderDiagonal` | Unity's | UNPROVEN against `CollisionIndex`'s NW-SE (research §5.5) |
+| `terrainColliderDiagonal` | Unity's | UNPROVEN against `CollisionIndex`'s NE-SW (research §5.5; NW-SE until the 2026-10-18 fix wave) |
 | `foliageThinHash` | `fmix32(placement)` | castlemist's choice, D9 |
 
 ## Architecture

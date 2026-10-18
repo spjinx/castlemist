@@ -1980,6 +1980,49 @@ CM_TEST(world_dat, zones_hypotheses) {
 /// did not check their tilt and z. Also: every Scatter instance belongs to a placement without a
 /// collider (never doubled), every placement without a collider and with a model has one, and the
 /// hypotheses Task 9 settled are printed for the amendments.
+// The surface castlemist walks and exports (CollisionIndex's terrain, which the
+// mesh export and the Map Window split the same way) is the client's ground
+// query: at every zone instance its height equals the NE-SW triangle the
+// scatter z uses (final review I2). With the old NW-SE split, 243 of 4381
+// Queensdale collider trees stood on a surface more than 1 unit away.
+CM_TEST(world_dat, zones_collision_terrain_is_client_ground) {
+    namespace cw = castlemist::world;
+    Gw2Dat& dat = shared_dat();
+    if (!ensure_template()) SKIP("no struct template");
+    for (uint32_t id : kTestMaps) {
+        cw::WorldScene w = cw::load_world(dat, id, *castlemist::tpl::get());
+        const cw::CollisionIndex idx = cw::CollisionIndex::build(w, true);
+        const float down[3] = {0, 0, 1};
+        for (int pass = 0; pass < 2; ++pass) {
+            const bool colliders = pass == 0;
+            size_t n = 0, off = 0, missed = 0;
+            std::vector<float> gaps;
+            for (const cw::ZoneInstance& z : w.zones.instances) {
+                if ((z.source == cw::ZoneSource::Collider) != colliders) continue;
+                const float x = z.world[12], y = z.world[13];
+                float q[4], fx, fy, dx, dy;
+                if (!terrain_quad(w.terrain, x, y, q, fx, fy, dx, dy)) continue;
+                const float tri = fx + fy <= 1 ? q[0] + (q[1] - q[0]) * fx + (q[2] - q[0]) * fy
+                                               : q[3] + (q[2] - q[3]) * (1 - fx) + (q[1] - q[3]) * (1 - fy);
+                const float o[3] = {x, y, tri - 5000};
+                const auto hit = idx.raycast(o, down, 10000, cw::kHitTerrain);
+                ++n;
+                if (!hit) { ++missed; continue; }
+                const float gap = std::fabs(hit->point[2] - tri);
+                gaps.push_back(gap);
+                off += gap > 1.0f;
+            }
+            std::sort(gaps.begin(), gaps.end());
+            auto pct = [&](double p) { return gaps.empty() ? 0.0 : (double)gaps[size_t(p * (gaps.size() - 1))]; };
+            std::printf("    map %u %-9s: %zu instances, |CollisionIndex - NE-SW| p50 %.3g p99 %.3g max %.3g, "
+                        "%zu over 1 unit, %zu missed\n",
+                        id, colliders ? "colliders" : "scatter", n, pct(0.5), pct(0.99), pct(1.0), off, missed);
+            CHECK_EQ(off, size_t(0));
+            if (!gaps.empty()) CHECK(gaps.back() < 0.05f);
+        }
+    }
+}
+
 CM_TEST(world_dat, zones_phase2) {
     namespace cw = castlemist::world;
     Gw2Dat& dat = shared_dat();

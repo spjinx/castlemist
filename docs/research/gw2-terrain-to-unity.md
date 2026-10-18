@@ -426,6 +426,19 @@ Their render-time meaning stays UNPROVEN.
 |---|---|---|
 | tilt = terrain normal, clamped to `rotRange` x/y | 234 / 4750, worst 2.26 rad | UNPROVEN as phrased (tilt is per model flag: none 743, random 417 + 125, ground 3537 + 53) |
 | z = `terrain_height_at` | 2286 / 4750 within 0.5 | UNPROVEN as phrased (z = NE-SW triangle + zOffset: 4535 / 4535, worst 0.0093) |
+
+**Amendment 2026-10-18 (world-foliage fix wave, review I2).** castlemist's own
+terrain now splits NE-SW everywhere: `CollisionIndex` (walk.cpp), the mesh
+export (world_cell.cpp `push_quad`) and the Map Window (world_view.cpp
+`grid_indices`). It used NW-SE, chosen only to agree with itself (world-export
+spec, Task 13). The NE-SW split is the client's ground query as measured: the
+z of the client's own collider placements, which `ZnPlacement` (`0x140cc2880`,
+Gw2-64.exe 2026-10-14) takes from that query, sits on the NE-SW triangle plus
+the slot's zOffset for 4535 / 4535. The query's code is still not located, and
+the renderer's own terrain index buffer was not read, so the split is
+*derived*, not read. `world_dat.zones_collision_terrain_is_client_ground` checks
+that `CollisionIndex`'s terrain equals the NE-SW triangle at every zone instance
+(Queensdale: 4381 colliders, previously 243 more than 1 unit off).
 | scale = `scaleRange[0] + Δ·k` | 4750 / 4750, Δ = 99/1280 global | **measured** (and read in the code) |
 | `collideData` = the ground (normal, z) | z 215 / 215, normal 53 / 53 | **measured** |
 
@@ -652,7 +665,7 @@ props the export flags in `darkDecalMaterials`.
 | LOD | none (stage B could add decimated meshes) | built-in heightfield LOD (Pixel Error), seams handled by neighbours |
 | ground detail close up | 256 texels per chunk bake (blurry at walking height) | splat mode: real ground textures at full repeat, normal maps |
 | foliage | prefab instances only | details (instanced, distance-culled) and trees |
-| collider | MeshCollider on the same mesh: proven equal to `CollisionIndex` (32/32 rays) | TerrainCollider; its quad diagonal versus castlemist's NW-SE is UNPROVEN |
+| collider | MeshCollider on the same mesh: proven equal to `CollisionIndex` (32/32 rays) | TerrainCollider; its quad diagonal versus castlemist's NE-SW is UNPROVEN |
 | editing in Unity | mesh | sculpt / paint tools work |
 | Quest | fine, if region-limited | measured −20 fps for a tiny terrain on Quest 2 (forum), VRChat known issues |
 | proven in this repo | yes (Unity 2022.3 batchmode, probe) | nothing yet |
@@ -778,7 +791,7 @@ clamped) once their meaning is known; with them, the steps above hold.
 
 - `TerrainCollider` per tile (no MeshCollider on the terrain in that mode);
   `havk` colliders unchanged. The triangle diagonal of Unity's collider
-  versus `CollisionIndex`'s NW-SE split is UNPROVEN; the dat test's 32-ray
+  versus `CollisionIndex`'s NE-SW split is UNPROVEN; the dat test's 32-ray
   check should be repeated against `Terrain.SampleHeight` and a downward
   raycast.
 - Water, sky, light and props: unchanged.

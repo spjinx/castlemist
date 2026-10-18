@@ -87,9 +87,9 @@ std::vector<ManifestSetting> unity_terrain_settings() {
         {"detailPlacement", "count per 48-unit cell, Unity positions", kC, F + "D8"},
         {"terrainHeightRowOrder", "row 0 south", kU, R + "5.2; until the terrain frame check passes"},
         {"terrainColliderDiagonal", "Unity's", kU,
-         R + "5.5: Unity's TerrainCollider split against CollisionIndex's NW-SE (the mesh export and the Map "
-             "Window); the client's scatter z uses NE-SW (" + R + "1.3, 2026-10-16). The .r16 heights are the vertex "
-             "heights and assume no split"},
+         R + "5.5: Unity's TerrainCollider split against the NE-SW split that CollisionIndex, the mesh export "
+             "and the Map Window share, derived from the client's ground query (zone scatter z, 4535 / 4535; " + R +
+             "1.3). The .r16 heights are the vertex heights and assume no split"},
     };
 }
 
@@ -384,8 +384,8 @@ json write_unity_terrain(const UnityTerrainInput& in, const std::string& dirUtf8
     };
     const double p50 = pct(0.5), p99 = pct(0.99), pmax = pct(1.0);
     warnings.push_back("unityTerrain: the .r16 heights are vertex samples (no triangle split); Unity's TerrainCollider "
-                       "triangulates them its own way, the mesh terrain splits NW-SE (CollisionIndex) and the client's "
-                       "scatter z uses NE-SW. At a quad centre the two splits differ by |h00 + h11 - h01 - h10| / 2: p50 " +
+                       "triangulates them its own way, while the mesh terrain and CollisionIndex split NE-SW as the "
+                       "client's ground query does. At a quad centre the two splits differ by |h00 + h11 - h01 - h10| / 2: p50 " +
                        units(p50) + ", p99 " + units(p99) + ", max " + units(pmax) +
                        " map units over the tiles' quads (terrainColliderDiagonal UNPROVEN)");
     if (treesOutsideRange)

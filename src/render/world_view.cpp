@@ -198,9 +198,11 @@ std::vector<uint32_t> grid_indices(int n) {
         for (int i = 0; i + 1 < n; ++i) {
             const uint32_t a = static_cast<uint32_t>(j * n + i), b = a + 1;
             const uint32_t c = a + static_cast<uint32_t>(n), e = c + 1;
-            // Split along a-e (p00-p11, NW-SE), the diagonal CollisionIndex walks
-            // and the world export writes (world_cell.cpp push_quad; review M1).
-            idx.insert(idx.end(), {a, c, e, a, e, b});
+            // Split along b-c (NE-SW): the client's ground query (zone_scatter.cpp
+            // Ground::height, derived from 4535 / 4535 collider z; the renderer's own
+            // index buffer is UNPROVEN), the diagonal CollisionIndex walks and the
+            // world export writes (world_cell.cpp push_quad; final review I2).
+            idx.insert(idx.end(), {a, c, b, b, c, e});
         }
     return idx;
 }

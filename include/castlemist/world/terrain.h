@@ -60,7 +60,7 @@ float terrain_height_at(const Terrain& t, float x, float y, bool* inside = nullp
 ///
 /// The samples are the chunks' own vertex samples, so no triangle split is
 /// assumed: the triangulation is the consumer's (Unity's TerrainCollider uses
-/// its own diagonal, the mesh export NW-SE; terrainColliderDiagonal, UNPROVEN).
+/// its own diagonal, the mesh export NE-SW; terrainColliderDiagonal, UNPROVEN).
 struct TerrainHeightfield {
     int cx0 = 0, cy0 = 0, blockChunks = 4, n = 129;   ///< n = blockChunks * segments + 1
     float rect[4]{};                                    ///< x0, y0, x1, y1 of the full (padded) block, map space
