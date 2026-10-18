@@ -130,7 +130,8 @@ std::vector<std::string> material_setting_warnings(const WorldMaterialSettings& 
          "* xy * bumpTile / waterTileUnit + (bumpSpeed * t, 0) (note \xc2\xa7" "6)",
          static_cast<double>(s.waterTileUnit));
     out.emplace_back("water colours: UNPROVEN byte order, surfaceShallowColor/surfaceDeepColor bytes 0,1,2 read as "
-                     "R,G,B / 255, as parseMapEnv reads env colours (note \xc2\xa7" "6)");
+                     "R,G,B / 255 (the light and haze colours are B,G,R in the client; the water import is not checked) "
+                     "(note \xc2\xa7" "6)");
     out.emplace_back("water bump: castlemist's choice, textureFileIds[waterBumpTextureIndex] read as UNORM xy*2-1, "
                      "N = normalize((n0.xy + n1.xy) * bumpAmount * waterBumpStrengthScale, -1); no scene depth, "
                      "colour copy or reflection; normal xy sign and sun-direction convention sign UNPROVEN (note \xc2\xa7" "6)");

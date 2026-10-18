@@ -246,9 +246,9 @@ ApproxInputs approx_inputs(const SkyInputs& in, size_t mode) {
         s.lighting.size() > slot && s.lighting[slot].present ? &s.lighting[slot] : nullptr;
     if (light) {
         a.haveSun = true;
-        // The client imports light colours like haze ones: byte 2 first (0x140c88dbe).
-        const float clr[3] = {light->sunColor[2], light->sunColor[1], light->sunColor[0]};
-        const float fill[3] = {light->fillColor[2], light->fillColor[1], light->fillColor[0]};
+        // parseMapEnv already gives R, G, B (the file's B, G, R reordered at the source).
+        const float* clr = light->sunColor;
+        const float* fill = light->fillColor;
         float len = std::sqrt(light->sunDir[0] * light->sunDir[0] + light->sunDir[1] * light->sunDir[1] +
                               light->sunDir[2] * light->sunDir[2]);
         if (!(len > 0)) len = 1;
@@ -260,8 +260,9 @@ ApproxInputs approx_inputs(const SkyInputs& in, size_t mode) {
         for (int k = 0; k < 3; ++k) a.sh[k][3] = fill[k] * amb;
         a.labels.push_back({"sunClr.rgb", InputSource::Guess, fmt3(a.sunColor, 3),
                             std::string("dataGlobal lighting[") + std::to_string(slot) +
-                                "] dominant light colour, client byte order (import 0x140c88dbe puts byte 2 "
-                                "first); the writer of EnvContext+0x4e4 is not traced"});
+                                "] dominant light colour as parseMapEnv reads it (bytes B, G, R: the lighting import "
+                                "puts byte 2 in red, Gw2-64.exe 2026-10-14 0x140c8f60e); the writer of "
+                                "EnvContext+0x4e4 is not traced"});
         a.labels.push_back({"sunDir", InputSource::Guess, fmt3(a.sunDir, 3),
                             "the same light's direction (the way it travels), as stored"});
         const float shw[3] = {a.sh[0][3], a.sh[1][3], a.sh[2][3]};

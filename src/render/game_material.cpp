@@ -324,6 +324,12 @@ void game_map_env_uniforms(GameVals& vals, const MapEnvRig& r, const float sunTo
     // the unlit normal-prepass shader being drawn), so the rig has to be right here.
     // (kCalibSunLum = 0.919, kCalibFillLum = 0.656: the default sun / fill
     // luminances; detail/light_calib.h, shared with WorldView's textured shaders.)
+    // Those two are the DEFAULT rig's luminances, so they did not move when
+    // parseMapEnv's R/B swap was fixed (final review I1). A map's own rig did:
+    // its colours now arrive R, G, B instead of B, G, R, so a warm sun gains
+    // luminance (red weighs 0.2126, blue 0.0722) and a cool fill loses some.
+    // The measured targets above came from the game's light buffer, not from
+    // castlemist's reading of the rig, so the calibration itself stands.
     float sunC[3], amb[3];
     calibrated_light(r.sunColor, r.sunIntensity, r.fillColor, r.fillIntensity, lit, sunC, amb);
     put("shSunColor", {sunC[0], sunC[1], sunC[2], 1});

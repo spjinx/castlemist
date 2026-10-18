@@ -27,8 +27,9 @@ bool tex_transform_animates(const ModelTexTransformCPU& t) {
 }
 
 void water_colour(const uint8_t stored[4], float rgb[3]) {
-    // UNPROVEN (note §6): bytes 0, 1, 2 as R, G, B -- the order parseMapEnv
-    // reads every other env colour (gw2model.hpp:1300).
+    // UNPROVEN (note §6): bytes 0, 1, 2 as R, G, B. The client reads the env
+    // light and haze colours B, G, R (parseMapEnv; final review I1); the water
+    // import has not been checked the same way, so this is left as it was.
     for (int k = 0; k < 3; ++k) rgb[k] = static_cast<float>(stored[k]) / 255.0f;
 }
 
