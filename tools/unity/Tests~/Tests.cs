@@ -208,6 +208,65 @@ namespace Castlemist.Tests
                 Check(e.SpecularTint == null && !e.HasRim && e.Warnings.Count == 1 && e.UsedByMeshes, "rest");
             });
 
+            Run("poiyomi.version", () =>
+            {
+                Check(PoiyomiShaders.VersionOf("<color=#E75898ff>Poiyomi 11.0.22</color>") == "11.0.22", "11");
+                Check(PoiyomiShaders.VersionOf("<color=#E75898ff>Poiyomi 10.0.23</color>") == "10.0.23", "10");
+                Check(PoiyomiShaders.VersionOf("Poiyomi 9.0.α18") == "9.0.α18", "9 alpha");
+                Check(PoiyomiShaders.VersionOf("Rendering Preset") == null && PoiyomiShaders.VersionOf(null) == null, "none");
+                Check(PoiyomiShaders.Major("11.0.22") == 11 && PoiyomiShaders.Major("9.0.α18") == 9 && PoiyomiShaders.Major(null) == -1, "major");
+                Check(PoiyomiShaders.IsPro(".poiyomi/Old Versions/10.0/Poiyomi Pro") && !PoiyomiShaders.IsPro(".poiyomi/Poiyomi Toon"), "family");
+            });
+            Run("poiyomi.choose", () =>
+            {
+                Func<string, string, bool, PoiyomiShaders.Found> F = (n, v, err) => new PoiyomiShaders.Found { Name = n, Version = v, HasError = err };
+                const string Pro = ".poiyomi/Poiyomi Pro", Toon = ".poiyomi/Poiyomi Toon";
+                const string Pro10 = ".poiyomi/Old Versions/10.0/Poiyomi Pro", Toon10 = ".poiyomi/Old Versions/10.0/Poiyomi Toon";
+                const string Pro9 = ".poiyomi/Old Versions/9.3/Poiyomi Pro", Toon9 = ".poiyomi/Old Versions/9.3/Poiyomi Toon";
+                // The names are tried in this order; Choose gets them in it.
+                Check(string.Join("|", PoiyomiShaders.Names) == string.Join("|", new[] { Pro, Toon, Pro10, Toon10, Pro9, Toon9 }), "names");
+                // Poiyomi Pro 11.0.22: 11 at the plain names, 10.0.23 and 9.3 under Old Versions.
+                var p11 = new List<PoiyomiShaders.Found> { F(Pro, "11.0.22", false), F(Toon, "11.0.22", false), F(Pro10, "10.0.23", false),
+                                                           F(Toon10, "10.0.23", false), F(Pro9, "9.3.67", false), F(Toon9, "9.3.67", false) };
+                Check(PoiyomiShaders.Choose(p11) == 0, "11 Pro first");
+                // The same package without Shaders/11.0: the old 10.0 Pro.
+                Check(PoiyomiShaders.Choose(p11.GetRange(2, 4)) == 0, "10 Pro when 11 is absent");
+                Check(PoiyomiShaders.Choose(new List<PoiyomiShaders.Found> { F(Toon10, "10.0.23", false), F(Toon9, "9.3.67", false) }) == 0, "10 Toon");
+                // Poiyomi Pro 10.0.9: 10 at the plain names.
+                Check(PoiyomiShaders.Choose(new List<PoiyomiShaders.Found> { F(Pro, "10.0.9", false), F(Toon, "10.0.9", false), F(Pro9, "9.3.67", false) }) == 0, "10.0.9 Pro");
+                // Free Poiyomi Toon: Toon only.
+                Check(PoiyomiShaders.Choose(new List<PoiyomiShaders.Found> { F(Toon, "10.0.24", false) }) == 0, "Toon only");
+                // A newer major beats Pro: 11 Toon over 10 Pro.
+                Check(PoiyomiShaders.Choose(new List<PoiyomiShaders.Found> { F(Toon, "11.0.22", false), F(Pro10, "10.0.23", false) }) == 0, "11 Toon over 10 Pro");
+                // Pro over Toon of one major, whatever the order given.
+                Check(PoiyomiShaders.Choose(new List<PoiyomiShaders.Found> { F(Toon10, "10.0.23", false), F(Pro10, "10.0.23", false) }) == 1, "Pro over Toon");
+                // 9 only when nothing newer; a shader with errors never.
+                Check(PoiyomiShaders.Choose(new List<PoiyomiShaders.Found> { F(Pro9, "9.3.67", false), F(Toon9, "9.3.67", false) }) == 0, "9");
+                Check(PoiyomiShaders.Choose(new List<PoiyomiShaders.Found> { F(Pro, "11.0.22", true), F(Toon, "11.0.22", false) }) == 1, "error skipped");
+                Check(PoiyomiShaders.Choose(new List<PoiyomiShaders.Found> { F(Pro, "11.0.22", true) }) == -1, "only errors");
+                Check(PoiyomiShaders.Choose(new List<PoiyomiShaders.Found>()) == -1, "none");
+                // An unreadable version ranks below every known one.
+                Check(PoiyomiShaders.Choose(new List<PoiyomiShaders.Found> { F(Pro, null, false), F(Toon9, "9.3.67", false) }) == 1, "unknown version");
+                Check(PoiyomiShaders.Checked(11) && PoiyomiShaders.Checked(10) && !PoiyomiShaders.Checked(9) && !PoiyomiShaders.Checked(12), "checked majors");
+            });
+            Run("poiyomi.presets", () =>
+            {
+                // Rows 0 and 3 of _Mode's description, as Poiyomi 10.0.23 and 11.0.22 declare it (identical in both).
+                string desc = "Rendering Preset--{on_value_actions:[\n\t\t" +
+                    "{value:0,actions:[{type:SET_PROPERTY,data:render_queue=2000},{type:SET_PROPERTY,data:_AlphaForceOpaque=1}, {type:SET_PROPERTY,data:render_type=Opaque},            {type:SET_PROPERTY,data:_BlendOp=0}, {type:SET_PROPERTY,data:_BlendOpAlpha=4}, {type:SET_PROPERTY,data:_Cutoff=0},  {type:SET_PROPERTY,data:_SrcBlend=1}, {type:SET_PROPERTY,data:_DstBlend=0},  {type:SET_PROPERTY,data:_SrcBlendAlpha=1}, {type:SET_PROPERTY,data:_DstBlendAlpha=1},  {type:SET_PROPERTY,data:_AddSrcBlend=1}, {type:SET_PROPERTY,data:_AddDstBlend=1}, {type:SET_PROPERTY,data:_AddSrcBlendAlpha=0}, {type:SET_PROPERTY,data:_AddDstBlendAlpha=1}, {type:SET_PROPERTY,data:_AlphaToCoverage=0},  {type:SET_PROPERTY,data:_ZWrite=1}, {type:SET_PROPERTY,data:_ZTest=4},   {type:SET_PROPERTY,data:_AlphaPremultiply=0}, {type:SET_PROPERTY,data:_OutlineSrcBlend=1}, {type:SET_PROPERTY,data:_OutlineDstBlend=0},  {type:SET_PROPERTY,data:_OutlineSrcBlendAlpha=1}, {type:SET_PROPERTY,data:_OutlineDstBlendAlpha=0}, {type:SET_PROPERTY,data:_OutlineBlendOp=0}, {type:SET_PROPERTY,data:_OutlineBlendOpAlpha=4}]},\n\t\t" +
+                    "{value:3,actions:[{type:SET_PROPERTY,data:render_queue=3000},{type:SET_PROPERTY,data:_AlphaForceOpaque=0}, {type:SET_PROPERTY,data:render_type=Transparent},       {type:SET_PROPERTY,data:_BlendOp=0}, {type:SET_PROPERTY,data:_BlendOpAlpha=4}, {type:SET_PROPERTY,data:_Cutoff=.5},  {type:SET_PROPERTY,data:_SrcBlend=1}, {type:SET_PROPERTY,data:_DstBlend=10}, {type:SET_PROPERTY,data:_ZWrite=0}, {type:SET_PROPERTY,data:_AlphaPremultiply=1}]},\n\t\t]}";
+                Dictionary<int, PoiyomiShaders.PresetActions> p = PoiyomiShaders.ParsePresets(desc);
+                Check(p.Count == 2 && p.ContainsKey(0) && p.ContainsKey(3), "rows " + p.Count);
+                Check(p[0].Queue == 2000 && p[0].RenderType == "Opaque" && p[0].Floats.Count == 22, "row 0 " + p[0].Floats.Count);
+                Check(p[0].Floats["_OutlineDstBlendAlpha"] == 0f && p[0].Floats["_OutlineBlendOpAlpha"] == 4f && p[0].Floats["_ZWrite"] == 1f, "row 0 floats");
+                Check(p[3].Queue == 3000 && p[3].RenderType == "Transparent" && p[3].Floats["_Cutoff"] == 0.5f && p[3].Floats["_AlphaPremultiply"] == 1f, "row 3");
+                // The keys stay in the shader's order (the importer applies them in it).
+                Check(string.Join(",", p[3].Order) == "_AlphaForceOpaque,_BlendOp,_BlendOpAlpha,_Cutoff,_SrcBlend,_DstBlend,_ZWrite,_AlphaPremultiply", "order");
+                Check(PoiyomiShaders.ParsePresets("Rendering Preset").Count == 0 && PoiyomiShaders.ParsePresets(null).Count == 0, "no actions");
+                // A row without a queue is not a preset the importer can use.
+                Check(PoiyomiShaders.ParsePresets("x--{on_value_actions:[{value:1,actions:[{type:SET_PROPERTY,data:_Cutoff=.5}]}]}").Count == 0, "no queue");
+            });
+
             if (args.Length > 0)
             {
                 string dir = args[0];

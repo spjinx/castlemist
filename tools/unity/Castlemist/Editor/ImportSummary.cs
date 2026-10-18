@@ -62,6 +62,8 @@ namespace Castlemist
         public bool terrainCheckOk = true;
         public List<string> warnings = new List<string>();
         public List<string> errors = new List<string>();
+        /// The SHADER line (Task 15c): the Poiyomi shader the materials use, or Standard; null before step 3.
+        public string shaderLine;
         /// The frame probe's PROBE line, or null when there was no probe.
         public string probeLine;
         public bool probeOk;

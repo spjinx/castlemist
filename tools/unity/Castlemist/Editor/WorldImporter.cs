@@ -170,6 +170,7 @@ namespace Castlemist
             foreach (string e in sum.errors) Debug.LogError("CASTLEMIST error: " + e);
             Debug.Log("CASTLEMIST colliderParts=" + sum.colliderParts + " warnings=" + sum.warnings.Count +
                       " errors=" + sum.errors.Count + " seconds=" + sum.seconds.ToString("F1"));
+            if (sum.shaderLine != null) Debug.Log(sum.shaderLine);
             if (sum.probeLine != null) Debug.Log(sum.probeLine);
             if (sum.terrainCheckLine != null) Debug.Log(sum.terrainCheckLine);
             Debug.Log(sum.PlanLine());
@@ -285,6 +286,7 @@ namespace Castlemist
             public void Materials()
             {
                 ctx = MaterialContext.Create(sum.warnings);
+                sum.shaderLine = ctx.Line;
                 EnsureFolder(root + "/Materials/terrain");
                 EnsureFolder(root + "/Materials/water");
                 bool anyKeys = false;
