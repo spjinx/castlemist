@@ -800,7 +800,7 @@ namespace Castlemist
                 {
                     Transform t = parent.GetChild(k);
                     FoliageRecord r = trees[k];
-                    if (t.name != m.Models[(int)r.Model].FileId + "_" + r.Placement) fails.Add(c.Id + ": child " + k + " is " + t.name);
+                    if (t.name != FoliageImporter.TreeName(m.Models[(int)r.Model].FileId, r, k)) fails.Add(c.Id + ": child " + k + " is " + t.name);
                     LODGroup lg = t.GetComponent<LODGroup>();
                     int wantLevels = levelsOf((int)r.Model);
                     if (lg == null || lg.lodCount != wantLevels) fails.Add(t.name + ": no LODGroup of " + wantLevels + " level(s)");
