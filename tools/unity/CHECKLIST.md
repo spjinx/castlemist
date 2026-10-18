@@ -4,7 +4,7 @@ The checks for `tools/unity/Castlemist/Editor/` (spec
 `docs/superpowers/specs/2026-10-15-world-export-design.md`, D6 and Testing,
 "Manual checklists, Unity"). CI cannot compile or run the C#. Items 1 to 3 can
 be run in batchmode. The rest need the editor, in a VRChat Unity 2022.3 project
-with Poiyomi Toon 10, importing the Spirit Vale export (1151420; 66 cells at the default budget of 500 000 triangles a cell).
+with Poiyomi Pro 11 or 10 (or Poiyomi Toon 10/11), importing the Spirit Vale export (1151420; 66 cells at the default budget of 500 000 triangles a cell).
 
 ## Setup
 
@@ -105,7 +105,22 @@ the manifest changes.
    warns if a manifest's points up.
 9. **Poiyomi materials.** Opaque, cutout and blended props look right. Packed
    maps give metal and shine. Emission glows. Dark decals are Fade. Nothing
-   is pink.
+   is pink. The `SHADER` line names the shader used (Task 15c: the newest
+   Poiyomi major found, Pro before Toon: `.poiyomi/Poiyomi Pro` is 11 in
+   Poiyomi Pro 11 and 10 in Poiyomi Pro 10;
+   `.poiyomi/Old Versions/10.0/Poiyomi Pro` is 10 inside Poiyomi Pro 11).
+   In batchmode, `POIYOMI_MATERIALS … OK` reads every shared material back
+   (main texture, colour, cutoff, cull, queue, preset, pan, keywords) and
+   checks the shader has no compile errors; `-castlemistExpectShader "<name>"`
+   fails the run on any other shader, and `-castlemistScreenshot <png>` (not
+   with `-nographics`) renders a few props (`SCREENSHOT … OK`: no shader
+   errors, no magenta). `BatchEntry.LockProbe -castlemistWorld Assets/<export>`
+   locks a few materials with ThryEditor (by reflection), checks the locked
+   shaders compile, and unlocks them. The importer never locks: the VRChat
+   SDK's world build locks every material in the scene (ThryEditor's
+   `LockMaterialsOnWorldUpload`). Do not drop in the Poiyomi Pro package's
+   installer stub (`com.poiyomi.pro/Editor`) for a scratch test project: it
+   starts a Patreon login on every load.
 10. **Draw calls and import time.**
     - Read the draw calls off the Frame Debugger at the spawn point.
     - Static batching and GPU instancing are both set. Which one wins is
@@ -159,3 +174,6 @@ the manifest changes.
 | — | VRChat 2022.3 + Poiyomi 10, editor | Spirit Vale, Queensdale | 14-18 | not tried (no editor session) |
 | — | VRChat 2022.3 + Poiyomi 10, editor | Spirit Vale | 4-11 | not tried (no editor session; items 4 to 11 need one). Poiyomi 10 is not on this machine; only Pro 9.0.α18 was tried |
 | 2026-10-17 | 2022.3.22f1 batchmode, no Poiyomi | fixture, Spirit Vale, Queensdale region 8,4,15,11 (world-foliage Task 15d, shared materials) | 1-3 | PASS. Fixture `PLAN materials=4 …` (mesh and terrain) equal to the dry run, `MATERIALS keyed=3 keys=2 shared=2 … OK`, Shared .mat GUIDs unchanged on re-import. Spirit Vale `materials=1063` → `754`, `MATERIALS keyed=383 keys=688 shared=688 … OK`, importer 85 → 60 s first import (242 → 162 s wall), 40 → 34 s re-import. Queensdale region `materials=846` → `482`, `MATERIALS … keys=474 … OK`, importer 103 → 78 s (233 → 158 s wall), 58 → 56 s re-import. Every prefab renderer's resolved material identical before and after (1294 and 1199 slots) |
+| 2026-10-17 | 2022.3.22f1 batchmode (graphics on), Poiyomi Pro 11.0.22 package copied in (installer stub left out) | fixture; Spirit Vale 66 cells (world-foliage Task 15c) | 1-3, 9 (batchmode part) | PASS. `SHADER poiyomi=found name=.poiyomi/Poiyomi Pro version=11.0.22 family=Pro presets=9`; PLAN equal to the dry run (Spirit Vale `materials=754 …`); `POIYOMI_MATERIALS … checked=997 mats=754 shaders=1 mainTex=970 cutout=413 cullOff=77 panned=10 packed=955 emission=34 OK`; `SCREENSHOT … magentaPixels=0 shaderErrors=0 OK`; `LOCK_PROBE materials=6 locked=6 … OK`; re-import OK, 85 s import (first 138 s) |
+| 2026-10-17 | the same, with `Shaders/11.0` removed (only `Old Versions/10.0` and 9.3) | fixture; Spirit Vale | 1-3, 9 (batchmode part) | PASS. `SHADER … name=.poiyomi/Old Versions/10.0/Poiyomi Pro version=10.0.23 family=Pro`; the same PLAN, POIYOMI_MATERIALS, SCREENSHOT and LOCK_PROBE results. With `10.0/Pro` also removed, the fixture uses `.poiyomi/Old Versions/10.0/Poiyomi Toon` (OK) |
+| 2026-10-17 | 2022.3.22f1 batchmode, no Poiyomi | fixture (Task 15c) | 1-3 | PASS. `SHADER poiyomi=absent name=Standard`, one warning, the same PLAN, `POIYOMI_MATERIALS shader=Standard … OK` |

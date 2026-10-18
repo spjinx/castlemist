@@ -1327,3 +1327,31 @@ and `--vrchat` folders, 50 files, and Spirit Vale's `world-export --out` glb).
   materials, import 478 → 428 s, and every model slot's resolved material (node types, unlinked inputs, links,
   drivers, images by file SHA-1 and colour space, blend settings) identical, 1382 of 1382 slots. No render was
   compared; the property checks stand in for it.
+
+### 2026-10-17, Task 15c: Poiyomi Pro 10 and 11
+
+The user has Poiyomi Pro 11.0.22 (and 10.x); the importer had looked only for
+`.poiyomi/Poiyomi Toon` and assumed 10.0.24's names.
+
+- **Detection.** `PoiyomiShaders.Names` lists `.poiyomi/Poiyomi Pro`,
+  `.poiyomi/Poiyomi Toon`, then the `Old Versions/10.0/` and
+  `Old Versions/9.3/` Pro and Toon names. Poiyomi Pro 11 registers 11 at the
+  plain names and 10.0.23 under `Old Versions/10.0/`; Poiyomi 10 registers 10
+  at the plain names. So the version comes from `shader_master_label`, and
+  `PoiyomiShaders.Choose` takes the highest major, then Pro over Toon, and
+  skips a shader with compile errors. Standard stays the fallback. Still no
+  compile-time reference to Poiyomi or ThryEditor.
+- **Properties.** Every property the importer sets has the same name in
+  10.0.9, 10.0.23 and 11.0.22, so one map serves both. The importer warns
+  about any the chosen shader lacks. The `_Mode` presets are read from the
+  chosen shader's own description (`PoiyomiShaders.ParsePresets`), with the
+  hard-coded table only as the fallback. That table now also sets
+  `_OutlineBlendOp`, `_OutlineBlendOpAlpha` and Opaque's
+  `_OutlineDstBlendAlpha = 0`, as Poiyomi does.
+- **Locking.** Materials stay unlocked. ThryEditor's VRChat world-build hook
+  locks every material in the scene.
+- **Batchmode.** There is a `SHADER` line. `POIYOMI_MATERIALS` reads back each
+  shared material and checks for shader errors. `-castlemistExpectShader`
+  pins the expected shader, `-castlemistScreenshot` takes a Camera.Render
+  screenshot, and `BatchEntry.LockProbe` runs ThryEditor's lock and unlock.
+  PLAN is unchanged.
