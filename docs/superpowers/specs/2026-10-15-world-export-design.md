@@ -843,7 +843,7 @@ throws and never yields a silently empty export.
 
 ## Out of scope
 
-- Udon and gameplay data (sub-project 5).
+- Udon and gameplay data. Update 2026-10-18: zone models (foliage) are now sub-project 5 (`2026-10-16-world-foliage-design.md`), and Udon is sub-project 6.
 - Placed effects and particles; the model folders' `_particles.json` is copied,
   not built.
 - Terrain as a splat shader in Unity: the four ground textures and pages

@@ -51,8 +51,8 @@ names an address, that is `Gw2-64.exe` with ASLR disabled, imagebase
 | [gw2-particle-system.md](gw2-particle-system.md) | baked emitters in MODL cloudData/lightData |
 | [gw2-material-channels.md](gw2-material-channels.md) | what each channel of a model's textures means per shader (AMAT): the profile table the VRChat export is built on, plus a per-model survey. The same diffuse alpha is "interior weight" in one shader and "shine" in the next, so channels cannot be read without the AMAT |
 | [gw2-shader-dyes.md](gw2-shader-dyes.md) | mounts dye **in the pixel shader**, not in a texture: a `dyemask` (RGBA = channels 1-4) and twelve `hsmnt*` affine rows in the MODL constants. The CPU dye matrix maps onto them exactly; also what a material/shader editing UI could change, and how |
-| [gw2-model-lods.md](gw2-model-lods.md) | index-buffer LODs inside one MODL, where the switch distances live (prp2 lod1/lod2, MODL lodOverride), and how to export them for a Unity LODGroup |
-| [poiyomi-10-importer.md](poiyomi-10-importer.md) | Poiyomi Toon 10 facts for the Unity importer: shader name, exact property names, presets, keywords and locking, and the editor APIs that build materials and a prefab |
+| [gw2-model-lods.md](gw2-model-lods.md) | index-buffer LODs inside one MODL, where the switch distances live (prp2 lod1/lod2, MODL lodOverride), and how to export them for a Unity LODGroup. Amended 2026-10-17: the client's own rule and the three maps' LOD coverage |
+| [poiyomi-10-importer.md](poiyomi-10-importer.md) | Poiyomi Toon 10 facts for the Unity importer: shader name, exact property names, presets, keywords and locking, and the editor APIs that build materials and a prefab. §6 (2026-10-17): Poiyomi Pro 10 and 11 shader names, how the version is told apart, and locking |
 
 ## Maps
 
@@ -60,8 +60,9 @@ names an address, that is `Gw2-64.exe` with ASLR disabled, imagebase
 | ---- | --------------- |
 | [gw2-map-scene.md](gw2-map-scene.md) | prop placement out of mapc/area prp2. GW2 is Z-up |
 | [gw2-world-frame.md](gw2-world-frame.md) | the world's frame: Z-up map space, units, bounds, and the conversions to Unity and Blender (measured with the frame probe) |
-| [gw2-terrain-to-unity.md](gw2-terrain-to-unity.md) | converting GW2 terrain, foliage (zon2), trees and decals to Unity Terrain for VRChat (Built-in, PC/Quest): mapping, pipeline proposal, unknowns |
+| [gw2-terrain-to-unity.md](gw2-terrain-to-unity.md) | converting GW2 terrain, foliage (zon2), trees and decals to Unity Terrain for VRChat (Built-in, PC/Quest): mapping, pipeline proposal, unknowns. §1.3 corrected 2026-10-18 to the client's zon2 decode, plus the zone scatter rule that reproduces all 4750 collider trees |
 | [gw2-terrain-heightmap.md](gw2-terrain-heightmap.md) | the heightmap is chunk-**tiled**, 35x35 verts at stride 32 with 3 overlapping. Read flat, terrain renders as a squeezed wavy mat |
+| [gw2-sky.md](gw2-sky.md) | how GW2 draws its sky: the hemicube skybox, sky layers, the axis map to Unity, and (amendment 2026-10-17) haze, the material card and the approximate sky the Map Window and `--sky-approx` use |
 | [gw2-map-lighting.md](gw2-map-lighting.md) | the per-map env sun and fill rig, and the tone mapping that stopped props blowing out to white |
 
 ## Shaders and the frame

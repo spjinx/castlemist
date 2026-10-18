@@ -351,6 +351,9 @@ std::vector<ManifestSetting> world_export_settings(const WorldFolderOptions& o, 
              kU, R + "transcribed from 0x140cc1900 (tables 0x141e44210 / 0x141e443a0 / 0x141e44600); no collider checks it"},
             {"zoneGraphicsQuality", 2, kU, R + "the tiling count and subModel input (getter 0x140c58c10 not read); ruling S3"},
             {"zoneGroundcoverOffset", "+(24, 24) from the vertex on the tiling path", kU, R + "0x140cc1900; ruling S3"},
+            {"zoneQueryFlags", 0, kU,
+             R + "the client's query flags (noGroundcover / onlyGroundcover assert, param_9 & 1 in 0x140cc1f50) are taken "
+                 "as 0, an unfiltered query: every instance is emitted; transcribed, not measured"},
             {"zoneUnprovenBranches",
              "clamp to parm rect inset 1, zone matrix = identity, water test (pack 0x1000), random z (0x10 + 0x800), "
              "yaw from normal (0x200), 90Â° snap (0x200000), subModel second instance",

@@ -107,6 +107,7 @@
         "zoneTiling": { "$ref": "#/$defs/setting" },
         "zoneGraphicsQuality": { "$ref": "#/$defs/setting" },
         "zoneGroundcoverOffset": { "$ref": "#/$defs/setting" },
+        "zoneQueryFlags": { "$ref": "#/$defs/setting" },
         "zoneUnprovenBranches": { "$ref": "#/$defs/setting" },
         "zoneProbability": { "$ref": "#/$defs/setting" },
         "zoneTint": { "$ref": "#/$defs/setting" },
