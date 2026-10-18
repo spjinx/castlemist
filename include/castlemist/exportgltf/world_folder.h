@@ -72,7 +72,8 @@ struct WorldFolderReport {
     size_t cells = 0, modelsWritten = 0, modelsFailed = 0, propsWritten = 0, propsSkipped = 0,
            chunksUnbaked = 0, animated = 0, animatedResolved = 0, clipsFailedDecode = 0;
     /// Of modelsFailed, the models with no drawable meshes: empty, not broken
-    /// (review M2). They stay `status: failed` in the manifest.
+    /// (review M2). The manifest gives them `status: "empty"` and counts them as
+    /// counts.modelsEmpty (still inside counts.modelsFailed; final review M1).
     size_t modelsEmpty = 0;
     nlohmann::json foliage;                   ///< the manifest's counts.foliage, or null (no foliage written)
     std::map<std::string, double> seconds;    ///< world-cells, models, terrain-textures, cells, unity-terrain, sky, manifest

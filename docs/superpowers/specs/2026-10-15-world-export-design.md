@@ -665,7 +665,10 @@ The report gives the time for each stage.
 throws and never yields a silently empty export.
 
 - A model that fails to load or write gets `status: "failed"` with its error.
-  Its placements are skipped and counted.
+  Its placements are skipped and counted. A model that loads with no drawable
+  meshes gets `status: "empty"` (world-foliage fix wave, M1), counted in
+  `counts.modelsEmpty` (and still in `modelsFailed`); its placements are
+  skipped with their own "empty models" warning.
 - A texture that fails drops that map only, with the VRChat export's warning.
 - A terrain chunk with no usable colour texture bakes grey and is counted.
 - A cell with no terrain, water or collider is still written if it has

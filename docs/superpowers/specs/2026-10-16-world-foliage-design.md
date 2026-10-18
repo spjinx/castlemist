@@ -934,7 +934,10 @@ checklist items.
 - An unlinked collider keeps its hull, draws no tree, and is warned (D3).
 - No `zon2` gives `zones.present = false` and no warning: some maps have none.
 - In the export, a foliage model that fails is `status: failed`, its records
-  are skipped and counted in `counts.foliage`.
+  are skipped and counted in `counts.foliage`. A model with no drawable
+  meshes is `status: empty` (fix wave, review M1): its records are skipped
+  as `counts.foliage.emptyModel`, not `failedModel`, and importers place
+  nothing for it without an error line.
   - A failed record write stops the export and leaves no `manifest.json`, as
     any failed write does.
 - Importers:

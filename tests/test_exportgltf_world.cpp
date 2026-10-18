@@ -1486,6 +1486,8 @@ CM_TEST(world_folder, failed_model_counted_and_skipped) {
     CHECK(fs::exists(dir / "models" / "102" / "102.glb"));
     // Its foliage records (the two colliders of 101) are skipped and counted (world-foliage spec D7).
     CHECK(man["counts"]["foliage"]["failedModel"] == json(2));
+    CHECK(man["counts"]["foliage"]["emptyModel"] == json(0));
+    CHECK(man["counts"]["modelsEmpty"] == json(0));
     CHECK(man["counts"]["foliage"]["records"] == json(2));
     CHECK(has_warning(man, "foliage: 2 placements of failed or missing models skipped"));
 }
@@ -1804,8 +1806,10 @@ CM_TEST(world_folder, cancel_stops_without_manifest) {
     CHECK(export_world_folder(s, plain, nullptr, dir2.string(), o).ok);
 }
 
-// Review M2: a model with no drawable meshes is failed in the manifest (as
-// before) but counted apart in the report, so the GUI does not call it broken.
+// Review M2: a model with no drawable meshes is counted apart in the report, so
+// the GUI does not call it broken. World-foliage final review M1: the manifest
+// says "empty" too, and its foliage placements are counted as emptyModel, not
+// failedModel (nothing to draw, so skipping them is right; it is not a failure).
 CM_TEST(world_folder, empty_model_counted_apart) {
     const cw::WorldScene s = tw::synthetic_world();
     struct Emptying : tw::SyntheticModelSource {
@@ -1823,8 +1827,14 @@ CM_TEST(world_folder, empty_model_counted_apart) {
     CHECK(report_json(r)["counts"]["modelsEmpty"] == json(1));
     const json man = read_json(dir / "manifest.json");
     check_valid(man, "empty model");
-    CHECK(man["models"][0]["status"] == json("failed"));
+    CHECK(man["models"][0]["status"] == json("empty"));
     CHECK(man["models"][0]["error"] == json("This model has no drawable meshes to export."));
+    CHECK(man["counts"]["modelsEmpty"] == json(1));
+    CHECK(man["counts"]["foliage"]["emptyModel"] == json(2));
+    CHECK(man["counts"]["foliage"]["failedModel"] == json(0));
+    CHECK(has_warning(man, "foliage: 2 placements of empty models (no drawable meshes) skipped"));
+    CHECK_FALSE(has_warning(man, "failed or missing models"));
+    CHECK_FALSE(has_warning(man, "101 failed"));
     // A model that did not load is failed and not empty.
     tw::SyntheticModelSource failing;
     failing.failIndex = 0;

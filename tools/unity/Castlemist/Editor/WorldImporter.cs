@@ -306,6 +306,8 @@ namespace Castlemist
                     {
                         if (!e.Ok)
                         {
+                            // "empty": no drawable meshes, nothing to place; not an error (final review M1).
+                            if (e.Status == "empty") continue;
                             sum.warnings.Add("model " + e.FileId + ": status " + e.Status + (e.Error != null ? " (" + e.Error + ")" : "") + ": skipped");
                             continue;
                         }
