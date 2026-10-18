@@ -1983,8 +1983,9 @@ CM_TEST(world_dat, zones_hypotheses) {
 // The surface castlemist walks and exports (CollisionIndex's terrain, which the
 // mesh export and the Map Window split the same way) is the client's ground
 // query: at every zone instance its height equals the NE-SW triangle the
-// scatter z uses (final review I2). With the old NW-SE split, 243 of 4381
-// Queensdale collider trees stood on a surface more than 1 unit away.
+// scatter z uses (final review I2). With the old NW-SE split, 479 of 4381
+// Queensdale collider trees stood on a surface more than 1 unit away (243 of
+// them floating above it, the review's count).
 CM_TEST(world_dat, zones_collision_terrain_is_client_ground) {
     namespace cw = castlemist::world;
     Gw2Dat& dat = shared_dat();

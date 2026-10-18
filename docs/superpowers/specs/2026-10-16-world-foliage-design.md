@@ -1563,3 +1563,55 @@ string; stream-parse sites remain at `tests/test_exportgltf_world.cpp` lines
 785 and 1384); baked textures named by flagged fileIds could collide in the dat
 pool (Task 15d concern 2); and models with "no drawable meshes" count as failed
 rather than empty.
+
+### 2026-10-18, fix wave after the whole-branch review
+
+The review's (`.superpowers/sdd/2026-10-16-world-foliage/final-review.md`)
+Important items and most Minor ones, with the fix wave's measurements
+(`fix-wave-report.md` beside it has the full table).
+
+- **Light colours are B, G, R (I1).** `parseMapEnv` now reorders at the
+  source (Gw2-64.exe 2026-10-14, lighting import `0x140c8f60e..0x140c8f64f`:
+  byte 2 to x). The approximate sky's compensating swap is gone, so the Map
+  Window light, the manifest's `light` (the Unity and Blender sun), the model
+  preview rig and `sky.json` share one conversion. Day suns now read warm:
+  Queensdale (1.00, 0.84, 0.62), Spirit Vale (1.00, 0.71, 0.37), Mad King's
+  Labyrinth (0.94, 0.90, 0.69). The water colours stay bytes 0, 1, 2 as R, G, B
+  until their import is read the same way.
+- **Terrain diagonal NE-SW (I2).** The mesh export, the Map Window and
+  `CollisionIndex` split quads NE-SW, the client's ground query as measured by
+  the zone scatter (4535 / 4535 collider z; `ZnPlacement` `0x140cc2880` takes
+  z from that query, whose code is not located). The renderer's own index
+  buffer is not read: `terrainColliderDiagonal` stays UNPROVEN for Unity's
+  TerrainCollider. The 32-ray export test stays 32 / 32. At every zone
+  instance of the three test maps `CollisionIndex`'s terrain now equals the
+  NE-SW triangle (worst 0.002 units; Queensdale had 479 colliders more than 1
+  unit off). The Queensdale `forest` shot's trunk bases did not change: those
+  trees' diagonal gap was under 1 unit. Their z (client data) puts each model
+  origin 33-36 units below the terrain (zOffset 36 - z/255 x 72), and the
+  meshes reach below their origin, so the trunks enter the ground; the curved
+  lower edge in the shot is where a trunk meets the ground seen from above,
+  not a gap. No placement gap was found.
+- **fetch_externals stamps files (I3).** Every fetched file gets the current
+  time; after a re-fetch, rebuild every tree with `--clean-first`
+  (external/README.md).
+- **Models with no drawable meshes are `status: "empty"` (M1)**, counted in
+  `counts.modelsEmpty` and `counts.foliage.emptyModel`, with their own
+  warnings: Spirit Vale 12 models (71 props), Lion's Arch 48 (253 props).
+- **Not done: the height sentinel (M2).** Measured on the dat, the sentinel is
+  not what stretches the range. Spirit Vale's 5912 samples at 4999.9995 sit at
+  the foot of a slope whose next values are 4978.4 and lower; leaving them out
+  moves `heightRange` from 19 465.7 to 19 444.1 (step 0.297 either way).
+  Lion's Arch's 21 samples at 10000.0 are the floor of a smooth bowl
+  (9999.999, 9999.997, ...), so they are real surface, not a fill value, and
+  holing them would cut the ground. The heights stay as stored; the frame
+  check margin is unchanged.
+- **Smaller fixes:** geometry-only collider trees are named
+  `<fileId>_g<index>` in Unity (M3); the sky labels name the client build
+  their addresses come from (M5); collided placements whose layer has a
+  subModel are counted and warned (M6); a model drawn only as a subModel gets
+  its layer's `zoneTypes` and `fadeFar` (M7); Blender's temporary files carry
+  the process id (M8). M9 needed no change (the dotnet fixture test passes on
+  a fresh fixture with no `.fbx`). M4 (an option to skip the zone scatter in
+  `load_world`) is left for later: performance only, and it changes the
+  `world` summary's counts.

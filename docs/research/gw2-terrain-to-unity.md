@@ -438,7 +438,8 @@ the slot's zOffset for 4535 / 4535. The query's code is still not located, and
 the renderer's own terrain index buffer was not read, so the split is
 *derived*, not read. `world_dat.zones_collision_terrain_is_client_ground` checks
 that `CollisionIndex`'s terrain equals the NE-SW triangle at every zone instance
-(Queensdale: 4381 colliders, previously 243 more than 1 unit off).
+(Queensdale: 4381 colliders, previously 479 more than 1 unit off, 243 of
+them floating; now 0, worst 0.001 units on all three test maps).
 | scale = `scaleRange[0] + Δ·k` | 4750 / 4750, Δ = 99/1280 global | **measured** (and read in the code) |
 | `collideData` = the ground (normal, z) | z 215 / 215, normal 53 / 53 | **measured** |
 
