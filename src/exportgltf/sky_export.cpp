@@ -233,7 +233,9 @@ ApproxInputs approx_inputs(const SkyInputs& in, size_t mode) {
                                 ").farColor, bytes B,G,R,A: haze import 0x140c889e0 -> env slot 0x140c619f0 -> "
                                 "per-frame pick 0x140c60340 (slot 0 at t = 1, 1 at t = 0) -> fog set 0x140c64960 "
                                 "-> GrSetFog 0x140ab2c20, whose stores follow VSCalculateFog's uniform order "
-                                "(the upload to the FogColorFar register not traced)"});
+                                "(the upload to the FogColorFar register not traced; addresses in the 2026-09-18 "
+                                "research build, gw2-sky.md; in Gw2-64.exe 2026-10-14 the haze import is "
+                                "0x140c8f038)"});
     } else {
         a.labels.push_back({"FogColorFar", InputSource::Guess, "none",
                             "no haze in slot " + std::to_string(slot) + "; haze not baked"});
@@ -296,7 +298,8 @@ ApproxInputs approx_inputs(const SkyInputs& in, size_t mode) {
                             fmt3(a.fogDist, 2) + ", near.w " + fmt3(&a.fogNearW, 1),
                             "the same haze's distRange and nearColor.w: GrSetFog 0x140ab2c20 stores "
                             "(1/(d1-d0), -d0/(d1-d0)) and near - far, which the clouds' VS 1645 reads as "
-                            "fz = saturate(viewZ FogParam0.x + FogParam0.y) (store-to-register link not traced)"});
+                            "fz = saturate(viewZ FogParam0.x + FogParam0.y) (store-to-register link not traced; "
+                            "address in the 2026-09-18 research build, gw2-sky.md)"});
     return a;
 }
 
