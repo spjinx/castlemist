@@ -80,7 +80,8 @@ nlohmann::json model_wind(const ModelPreview& p);
 ///        recordLayout, recordBytes, every scene.zones layer (its models by slot
 ///        as positions in @p models, null for a slot not in it), one entry per
 ///        model of @p models that a zone layer names or a zone instance uses
-///        (zoneTypes and fadeFar from the layers that name it, wind from the
+///        (zoneTypes and fadeFar from the layers that name it in a slot or as
+///        their subModel, wind from the
 ///        ManifestModel, terrainDetail = ok, one mesh, one material and a layer
 ///        type 1 or 2), and the collider link counts. Only the models that hold
 ///        records belong in @p models' foliage entries: pass @p used (parallel

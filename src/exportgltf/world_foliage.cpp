@@ -167,12 +167,13 @@ json foliage_manifest_json(const cw::WorldScene& s, const std::vector<ManifestMo
         std::set<int> types;
         bool anyFade = false;
         float fadeFar = 0;
-        for (const cw::ZoneLayer& L : z.layers)
-            for (const cw::ZoneLayerModel& lm : L.models)
-                if (lm.model == m.index) {
-                    types.insert(L.type);
-                    if (std::isfinite(L.fadeRange[1])) { fadeFar = anyFade ? std::max(fadeFar, L.fadeRange[1]) : L.fadeRange[1]; anyFade = true; }
-                }
+        for (const cw::ZoneLayer& L : z.layers) {
+            bool names = L.hasSubModel && L.subModel.model == m.index;   // a subModel counts too (final review M7)
+            for (const cw::ZoneLayerModel& lm : L.models) names = names || lm.model == m.index;
+            if (!names) continue;
+            types.insert(L.type);
+            if (std::isfinite(L.fadeRange[1])) { fadeFar = anyFade ? std::max(fadeFar, L.fadeRange[1]) : L.fadeRange[1]; anyFade = true; }
+        }
         const bool detailType = types.count(1) || types.count(2);
         const json wind = m.wind.is_boolean() ? m.wind : json(nullptr);
         fm.push_back({{"model", k},

@@ -2028,6 +2028,25 @@ CM_TEST(world_foliage, manifest_blocks) {
     CHECK(man["settings"]["zoneScatter"]["value"] == json("colliders"));
 }
 
+// Final review M7: a model a layer draws only as its subModel takes that
+// layer's type and fadeFar, as a slot model does.
+CM_TEST(world_foliage, submodel_only_model_has_layer_info) {
+    cw::WorldScene s = tw::synthetic_world();
+    CHECK(s.zones.layers.size() >= 2);
+    if (s.zones.layers.size() < 2) return;
+    cw::ZoneLayer& L = s.zones.layers[1];   // the detail layer (type 1, fadeFar 3000; manifest_blocks)
+    L.hasSubModel = true;
+    L.subModel.model = 1;                   // model 102, in no layer slot
+    std::vector<ManifestModel> models(3);
+    for (uint32_t k = 0; k < 3; ++k) { models[k].index = k; models[k].fileId = 101 + k; models[k].ok = true; }
+    const json f = foliage_manifest_json(s, models, {0, 1, 0});
+    CHECK_EQ(f["models"].size(), size_t(1));
+    if (f["models"].size() != 1) return;
+    CHECK(f["models"][0]["model"] == json(1));
+    CHECK(f["models"][0]["zoneTypes"] == json({int(L.type)}));
+    CHECK_NEAR(f["models"][0]["fadeFar"].get<double>(), 3000.0, 1e-6);
+}
+
 CM_TEST(world_foliage, mode_filters) {
     const cw::WorldScene s = tw::synthetic_world();
     WorldFolderOptions o = synthetic_opts();
