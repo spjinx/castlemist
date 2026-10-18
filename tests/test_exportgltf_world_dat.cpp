@@ -114,9 +114,10 @@ fs::path fresh_dir(const std::string& label) {
 json read_json(const fs::path& p) {
     std::ifstream in(p, std::ios::binary);
     if (!in) return json();
-    // Parsed from a string: json::parse(std::ifstream&) crashed in this exe on the Task 15d materials.json.
-    const std::string all((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    try { return json::parse(all); } catch (...) { return json(); }
+    // json::parse(std::ifstream&) once crashed here: stale objects built against an
+    // earlier json.hpp mixed two lexers under one mangled name (an ODR mismatch after
+    // external/ was restored; final review I3). A clean rebuild cured it; the stream is fine.
+    try { return json::parse(in); } catch (...) { return json(); }
 }
 
 /// One prop of @p fileId at the origin, no terrain (one cell c_all).

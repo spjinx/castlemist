@@ -20,6 +20,17 @@ fails at configure time, by name, if one is missing.
 (add `-WithBgfx` for the bgfx / bx / bimg trio). It puts each library in the
 folder named below, at the pinned version, and skips anything already present.
 
+**After a re-fetch, rebuild clean.** Build every existing build tree once with
+`cmake --build build/<preset> --clean-first` (the main checkout's and every
+worktree's). The script stamps each fetched file with the current time so ninja
+sees it as changed, but a clean build is the only sure way that no object
+compiled against the previous headers is left. Without the stamp, Expand-Archive
+keeps the zip's own dates (2025 for `json.hpp`), ninja rebuilt nothing, and the
+stale objects mixed two versions of nlohmann::json's inline lexer under one
+mangled name: a test crashed inside `json::parse(std::ifstream&)` (world-foliage
+final review, I3). `stb-master/` and `dr_libs-master/` follow upstream `master`,
+so a re-fetch can change them too.
+
 ## Required to build castlemist
 
 | directory                | version | used by            | source                                            |
