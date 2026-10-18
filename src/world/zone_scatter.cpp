@@ -564,13 +564,18 @@ size_t scatter_instances(WorldScene& s, const ZoneScatterRule& r) {
         Counts counts;
         const Ctx c = make_ctx(s, r, counts);
         std::vector<ZoneScatterDraw> draws;
-        size_t collided = 0;
+        size_t collided = 0, collidedSubModel = 0;
         for (uint32_t zi = 0; zi < z.zones.size(); ++zi) {
             const Zone& Z = z.zones[zi];
             const std::vector<uint32_t> ci = (Z.zoneFlags & 2u) ? zone_collide_index(z, zi) : std::vector<uint32_t>();
             for (uint32_t i = 0; i < Z.placementCount; ++i) {
                 const uint32_t pi = Z.firstPlacement + i;
-                if (z.placements[pi].collider != UINT32_MAX) { ++collided; continue; }   // D5 step 5: never doubled
+                if (z.placements[pi].collider != UINT32_MAX) {   // D5 step 5: never doubled
+                    ++collided;
+                    const uint32_t li = z.placements[pi].layer;
+                    if (li < z.layers.size() && z.layers[li].hasSubModel) ++collidedSubModel;
+                    continue;
+                }
                 draws.clear();
                 exact_cell(c, pi, ci, draws);
                 for (const ZoneScatterDraw& d : draws) add(pi, d.fileId, d.pos, d.rot, d.scale, ZoneSource::Scatter);
@@ -592,6 +597,10 @@ size_t scatter_instances(WorldScene& s, const ZoneScatterRule& r) {
                        ", yaw from normal " + std::to_string(counts.yawFromNormal) + ", 90\xc2\xb0 snap " +
                        std::to_string(counts.snap90) + ", subModel " + std::to_string(counts.subModel) +
                        "; the zone context matrix is taken as identity");
+        if (collidedSubModel)   // final review M6
+            warn.push_back("zone: UNPROVEN: " + std::to_string(collidedSubModel) +
+                           " collided placements have a layer subModel; skipping the placement leaves its subModel "
+                           "draw out too, which the client would probably still draw");
         if (counts.waterUnknown)
             warn.push_back("zone: " + std::to_string(counts.waterUnknown) +
                            " instances of water-tested models (pack flag 0x1000) on a map with no water height; "

@@ -786,6 +786,23 @@ CM_TEST(scatter, colliders_mode_adds_nothing) {
     CHECK_EQ(s.warnings.size(), warnings);
 }
 
+// Final review M6: a collided placement keeps its Collider instance only, so a
+// subModel on its layer is not drawn; that is counted and warned as UNPROVEN.
+CM_TEST(scatter, collided_submodel_warned) {
+    WorldScene s = many_scene(50, 20);
+    const uint32_t li = s.zones.placements[0].layer;
+    CHECK(li < s.zones.layers.size());
+    if (li >= s.zones.layers.size()) return;
+    s.zones.layers[li].hasSubModel = true;
+    s.zones.layers[li].subModel.fileId = 901;
+    s.zones.layers[li].subModel.probability = -1;   // never drawn for the scattered ones
+    scatter_instances(s, zone_scatter_rule_in_force());
+    CHECK_EQ(zone_warnings_with(s, {"UNPROVEN", "20 collided placements have a layer subModel"}), size_t(1));
+    WorldScene plain = many_scene(50, 20);
+    scatter_instances(plain, zone_scatter_rule_in_force());
+    CHECK_EQ(zone_warnings_with(plain, {"collided placements have a layer subModel"}), size_t(0));
+}
+
 // The exact rule's warnings name the UNPROVEN parts; the summary counts instances by source.
 CM_TEST(scatter, exact_warnings_and_summary) {
     WorldScene s = many_scene(50, 20);
