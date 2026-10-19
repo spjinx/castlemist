@@ -151,6 +151,7 @@ ExportResult export_npc(Gw2Dat& dat, const NpcRecord& r, const std::filesystem::
                     // The generic "no body model" note is stale now.
                     std::erase_if(res.notes, [](const std::string& n) { return n.rfind("no body model", 0) == 0; });
                     res.files.push_back("body.glb");
+                    for (const auto& c : rep.clips) clips.push_back({c.name, c.duration});
                     LookUsed lu;
                     lu.index = options.look;
                     for (const auto& p : rep.parts) lu.parts.push_back({p.name, p.status, p.reason});

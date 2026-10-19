@@ -211,6 +211,16 @@ std::unique_ptr<Context> open_context(const CharacterManifest& manifest, const s
         rep.error = "the race skeleton could not be loaded";
         return nullptr;
     }
+    // The race's animation set lives on its Composite skeleton file (same rig, bound by joint name).
+    if (opt.animations && ctx->race->skeleton_file)
+        if (auto anims = detail::load_model(ctx->dat, ctx->race->skeleton_file)) {
+            ctx->skeleton.hasAnimation = anims->hasAnimation;
+            ctx->skeleton.animationVersion = anims->animationVersion;
+            ctx->skeleton.animationType = anims->animationType;
+            ctx->skeleton.animationTokens = std::move(anims->animationTokens);
+            ctx->skeleton.animClips = std::move(anims->animClips);
+            ctx->skeleton.animClipBank = std::move(anims->animClipBank);
+        }
     plan_weapons(*ctx, manifest, opt);
     return ctx;
 }
@@ -796,7 +806,20 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
 }
 
 bool write_glb(ModelPreview model, const std::string& path, const AssemblyOptions& opt, AssemblyReport& rep) {
+    // mirror_x drops clips; with animations on they are mirrored alongside instead.
+    std::vector<castlemist::granny::Anim> clips;
+    std::vector<uint32_t> banks;
+    if (opt.animations) {
+        clips = std::move(model.animClips);
+        banks = std::move(model.animClipBank);
+    }
     detail::mirror_x(model);  // GW2 is left-handed: un-mirror for glTF
+    if (opt.animations && !clips.empty()) {
+        detail::mirror_x(clips);
+        model.animClips = std::move(clips);
+        model.animClipBank = std::move(banks);
+        model.hasAnimation = true;
+    }
     // GW2 characters stand along -Z; the avatar should stand along glTF +Y,
     // still facing +Z: -90 about X, then 180 about the forward axis. Units stay
     // GW2's (inches) unless asked for metres.
@@ -966,6 +989,10 @@ Selection combined_selection(Context& ctx, const CharacterManifest& manifest, co
     return sel;
 }
 
+void list_clips(const ModelPreview& model, AssemblyReport& rep) {
+    for (const castlemist::granny::Anim& c : model.animClips) rep.clips.push_back({c.name, c.duration});
+}
+
 }  // namespace
 
 AssemblyReport assemble_character(const CharacterManifest& manifest, const std::string& dat_path,
@@ -975,6 +1002,7 @@ AssemblyReport assemble_character(const CharacterManifest& manifest, const std::
     if (!ctx) return rep;
     const Selection sel = combined_selection(*ctx, manifest, opt);
     ModelPreview model = build(*ctx, manifest, opt, sel, rep);
+    list_clips(model, rep);
     if (opt.vrchat) {
         rep.physbone_chains = make_vrchat_ready(model);
         write_vrchat_maps(model, glb_path);
@@ -992,6 +1020,7 @@ AssemblyReport assemble_character_model(const CharacterManifest& manifest, const
     if (!ctx) return rep;
     const Selection sel = combined_selection(*ctx, manifest, opt);
     out = build(*ctx, manifest, opt, sel, rep);
+    list_clips(out, rep);
     rep.joints = out.joints.size();
     rep.ok = true;
     return rep;

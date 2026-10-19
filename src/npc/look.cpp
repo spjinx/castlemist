@@ -154,6 +154,7 @@ std::optional<NpcAssembly> npc_assembly(const NpcRecord& npc, size_t look_index,
     // boneScaleIndex is never applied as a physique: real values run to 153 against 14 presets, so what it
     // indexes is unknown. 0xFFFFFFFF is "none" (743 of 1315 HumanFemale variants) and stays silent.
     opt.physique = -1;
+    opt.animations = true;  // an NPC moves: the race's animation set rides on the body
     if (variant->bone_scale_index != 0xFFFFFFFFu)
         out.notes.push_back("physique " + std::to_string(variant->bone_scale_index) + ": not in composite");
     if (variant->skin_style < std::max<size_t>(race->skin_styles.size(), 1))

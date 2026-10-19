@@ -293,6 +293,24 @@ void mirror_x(ModelPreview& model) {
     model.hasAnimation = false;
 }
 
+void mirror_x(std::vector<castlemist::granny::Anim>& clips) {
+    for (castlemist::granny::Anim& clip : clips)
+        for (castlemist::granny::Track& t : clip.tracks) {
+            if (t.pos.dim == 3)
+                for (size_t i = 0; i < t.pos.controls.size(); i += 3) t.pos.controls[i] = -t.pos.controls[i];
+            if (t.ori.dim == 4)
+                for (size_t i = 0; i + 2 < t.ori.controls.size(); i += 4) {
+                    t.ori.controls[i + 1] = -t.ori.controls[i + 1];
+                    t.ori.controls[i + 2] = -t.ori.controls[i + 2];
+                }
+            if (t.sca.dim == 9)
+                for (size_t i = 0; i + 8 < t.sca.controls.size(); i += 9)
+                    for (int r = 0; r < 3; ++r)
+                        for (int c = 0; c < 3; ++c)
+                            if ((r == 0) != (c == 0)) t.sca.controls[i + r * 3 + c] = -t.sca.controls[i + r * 3 + c];
+        }
+}
+
 bool is_skin_mesh(const ModelPreview& m, const ModelMeshCPU& mesh) {
     if (mesh.materialIndex >= m.materials.size()) return false;
     std::string name = m.materials[mesh.materialIndex].materialName;

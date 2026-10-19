@@ -5,6 +5,7 @@
 #include "test_framework.h"
 
 #include "castlemist/ripper/skeleton_merge.h"
+#include "internal.h"
 
 #include <array>
 #include <string>
@@ -153,4 +154,41 @@ CM_TEST(skeleton, attach_rigid_fails_without_the_joints) {
     const size_t before = body.meshes.size();
     CHECK_FALSE(attach_rigid(body, sword, "actionpoint:RStowBack", "actionpoint:RHolsterBack"));
     CHECK_EQ(body.meshes.size(), before);
+}
+
+// A clip key equal to a joint's local transform stays equal to it after both are mirrored for glTF.
+CM_TEST(skeleton, mirrored_clips_match_the_mirrored_skeleton) {
+    const float pos[3] = {1, 2, 3}, quat[4] = {0.1f, 0.2f, 0.3f, 0.9f};
+    ModelPreview m = model_with({joint("bone:root", -1, 0, 0, 0)}, {});
+    ModelJoint& j = m.joints[0];
+    for (int k = 0; k < 3; ++k) j.localPos[k] = pos[k];
+    for (int k = 0; k < 4; ++k) j.localQuat[k] = quat[k];
+    for (int k = 0; k < 9; ++k) j.localScale[k] = static_cast<float>(k + 1);
+    castlemist::granny::Track t;
+    t.name = "bone:root";
+    t.pos.dim = 3;
+    t.pos.knots = {0};
+    t.pos.controls.assign(pos, pos + 3);
+    t.ori.dim = 4;
+    t.ori.knots = {0};
+    t.ori.controls.assign(quat, quat + 4);
+    t.sca.dim = 9;
+    t.sca.knots = {0};
+    for (int k = 0; k < 9; ++k) t.sca.controls.push_back(static_cast<float>(k + 1));
+    castlemist::granny::Track odd = t;  // a curve of unexpected width is left alone
+    odd.pos.dim = 1;
+    odd.pos.controls = {5};
+    std::vector<castlemist::granny::Anim> clips(1);
+    clips[0].tracks = {t, odd};
+
+    detail::mirror_x(m);
+    detail::mirror_x(clips);
+
+    const castlemist::granny::Track& r = clips[0].tracks[0];
+    for (int k = 0; k < 3; ++k) CHECK_NEAR(r.pos.controls[k], m.joints[0].localPos[k], 1e-6);
+    for (int k = 0; k < 4; ++k) CHECK_NEAR(r.ori.controls[k], m.joints[0].localQuat[k], 1e-6);
+    for (int k = 0; k < 9; ++k) CHECK_NEAR(r.sca.controls[k], m.joints[0].localScale[k], 1e-6);
+    CHECK_NEAR(r.pos.controls[0], -1.0, 1e-6);
+    CHECK_NEAR(r.ori.controls[1], -0.2, 1e-6);
+    CHECK_NEAR(clips[0].tracks[1].pos.controls[0], 5.0, 1e-6);
 }

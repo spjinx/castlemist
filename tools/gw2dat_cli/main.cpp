@@ -2065,6 +2065,21 @@ void cmd_npc_model(const Args& a) {
     emit(out);
 }
 
+// Research: one model's rig and animations, by --file-id (works for skeleton-only files too).
+void cmd_clips(const Args& a) {
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    const uint32_t fid = static_cast<uint32_t>(to_u64(need(a, "file-id")));
+    std::shared_ptr<ModelPreview> m = load_model_by_fileid(dat, fid);
+    if (!m) fail("model " + std::to_string(fid) + " did not load");
+    json names = json::array();
+    for (const auto& c : m->animClips) names.push_back({{"name", c.name}, {"duration", c.duration}});
+    emit({{"ok", true}, {"joints", m->joints.size()}, {"meshes", m->meshes.size()}, {"clips", m->animClips.size()},
+          {"clip_tokens", m->animationTokens.size()},
+          {"imports", m->animationImports}, {"animation_model_ref", m->animationModelRef},
+          {"external_skeleton", m->externalSkeletonRef}, {"clip_names", names}});
+}
+
 // Names the minipet characters from the public GW2 API (/v2/minis; goes online, no key) and re-saves the cache.
 void cmd_npc_names(const Args& a) {
     namespace npc = castlemist::npc;
@@ -2426,7 +2441,7 @@ void cmd_composite_types(const Args& a) {
     }
     emit({{"ok", true}, {"types", types}, {"skin_styles", styles}, {"physiques", presets_json(r->body_bone_scales)},
           {"face_presets", presets_json(r->face_bone_scales)}, {"variants", r->variants.size()},
-          {"variant_samples", variants}});
+          {"variant_samples", variants}, {"skeleton_file", r->skeleton_file}});
 }
 
 // Research (like animmach): every variant colour of a race as raw byte tuples
@@ -2679,6 +2694,7 @@ int main(int argc, char** argv) {
         else if (cmd == "npc-show") cmd_npc_show(a);
         else if (cmd == "npc-export") cmd_npc_export(a);
         else if (cmd == "npc-model") cmd_npc_model(a);
+        else if (cmd == "clips") cmd_clips(a);
         else if (cmd == "npc-names") cmd_npc_names(a);
         else if (cmd == "look-options") cmd_look_options(a);
         else if (cmd == "composite-types") cmd_composite_types(a);

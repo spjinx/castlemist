@@ -49,6 +49,11 @@ std::optional<BakedTextures> bake_part(Gw2Dat& dat, const composite::CompositeFi
 // Animation clips are dropped (not mirrored).
 void mirror_x(ModelPreview& model);
 
+// The same reflection for animation clips: every track's local position (x),
+// rotation (x,y,z,w -> x,-y,-z,w) and scale/shear (S*M*S), matching what
+// mirror_x does to the joints. Curves of an unexpected width are left as they are.
+void mirror_x(std::vector<castlemist::granny::Anim>& clips);
+
 bool is_skin_mesh(const ModelPreview& m, const ModelMeshCPU& mesh);
 
 /// Marks (value 1) every atlas pixel (w x h) the meshes' UV triangles cover,
