@@ -10,10 +10,12 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
 struct Gw2Dat;
+struct ModelPreview;
 
 namespace castlemist::npc {
 
@@ -73,5 +75,13 @@ struct ExportOptions {
 ExportResult export_npc(Gw2Dat& dat, const NpcRecord&, const std::filesystem::path& out_dir,
                         const ExportOptions& options);
 ExportResult export_npc(Gw2Dat& dat, const NpcRecord&, const std::filesystem::path& out_dir);
+
+/// The NPC's body for the viewer: its body model, or, for a race-body NPC, the dressed body export_npc writes as
+/// body.glb (look `look`). `model` is null when there is nothing to show; `notes` say why. Never throws.
+struct NpcModel {
+    std::shared_ptr<ModelPreview> model;
+    std::vector<std::string> notes;
+};
+NpcModel npc_model(Gw2Dat& dat, const NpcRecord&, size_t look = 0);
 
 }  // namespace castlemist::npc

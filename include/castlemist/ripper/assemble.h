@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "castlemist/character/manifest.h"
+#include "castlemist/extract/model_types.h"
 #include "castlemist/ripper/atlas.h"
 
 namespace castlemist::ripper {
@@ -78,6 +79,12 @@ struct AssemblyReport {
 /// the dat (safe on a worker thread). `glb_path` is UTF-8.
 AssemblyReport assemble_character(const character::CharacterManifest& manifest, const std::string& dat_path,
                                   const std::string& glb_path, const AssemblyOptions& options = {});
+
+/// The combined character exactly as assemble_character builds it, as a model
+/// for the viewer: GW2 space (not mirrored or turned for glTF), nothing written.
+/// `out` is set when the report is ok. Opens its own handle on the dat.
+AssemblyReport assemble_character_model(const character::CharacterManifest& manifest, const std::string& dat_path,
+                                        ModelPreview& out, const AssemblyOptions& options = {});
 
 /// Separate: a folder holding `body.glb` (the full bare body + head, nothing
 /// hidden) and one .glb per armor piece, back item and weapon, every file on

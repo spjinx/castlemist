@@ -14,6 +14,23 @@
 
 namespace castlemist::npc {
 
+namespace {
+
+// A race-body NPC's look as Character Ripper inputs; nullopt with a "look N: why" note when unresolvable.
+std::optional<NpcAssembly> resolve_look(Gw2Dat& dat, const NpcRecord& r, size_t look, std::vector<std::string>& notes) {
+    std::optional<composite::Composite> comp = ripper::load_composite(dat);
+    std::string why;
+    std::optional<NpcAssembly> as;
+    if (comp)
+        as = npc_assembly(r, look, *comp, &why);
+    else
+        why = "no Composite in the dat";
+    if (!as) notes.push_back("look " + std::to_string(look) + ": " + why);
+    return as;
+}
+
+}  // namespace
+
 std::string export_folder_name(const NpcRecord& r) {
     std::string name = std::to_string(r.id);
     if (r.codename.empty()) return name;
@@ -122,16 +139,8 @@ ExportResult export_npc(Gw2Dat& dat, const NpcRecord& r, const std::filesystem::
     std::optional<LookUsed> look_used;
     if (r.model == 0 && !r.looks.empty()) {
         try {
-            std::optional<composite::Composite> comp = ripper::load_composite(dat);
-            std::string why;
-            std::optional<NpcAssembly> as;
-            if (comp)
-                as = npc_assembly(r, options.look, *comp, &why);
-            else
-                why = "no Composite in the dat";
-            if (!as) {
-                res.notes.push_back("look " + std::to_string(options.look) + ": " + why);
-            } else {
+            std::optional<NpcAssembly> as = resolve_look(dat, r, options.look, res.notes);
+            if (as) {
                 // The ripper leaves aquatic pieces off the land body itself (assemble.cpp worn_slots), so none are dropped here.
                 ripper::AssemblyReport rep = ripper::assemble_character(
                     as->manifest, dat.file_info.file_path, (res.folder / "body.glb").string(), as->options);
@@ -174,6 +183,35 @@ ExportResult export_npc(Gw2Dat& dat, const NpcRecord& r, const std::filesystem::
         }
     } catch (const std::exception& e) {
         res.notes.push_back(std::string("manifest.json: ") + e.what());
+    }
+    return res;
+}
+
+NpcModel npc_model(Gw2Dat& dat, const NpcRecord& r, size_t look) {
+    NpcModel res;
+    try {
+        if (r.model != 0) {
+            res.model = load_model_by_fileid(dat, r.model);
+            if (!res.model) res.notes.push_back("model " + std::to_string(r.model) + ": failed to load");
+            return res;
+        }
+        if (r.looks.empty()) {
+            res.notes.push_back("no body model and no look");
+            return res;
+        }
+        std::optional<NpcAssembly> as = resolve_look(dat, r, look, res.notes);
+        if (!as) return res;
+        for (const std::string& n : as->notes) res.notes.push_back(n);
+        auto m = std::make_shared<ModelPreview>();
+        ripper::AssemblyReport rep = ripper::assemble_character_model(as->manifest, dat.file_info.file_path, *m, as->options);
+        if (!rep.ok) {
+            res.notes.push_back("assembly: " + rep.error);
+            return res;
+        }
+        res.model = std::move(m);
+    } catch (const std::exception& e) {
+        res.model.reset();
+        res.notes.push_back(e.what());
     }
     return res;
 }

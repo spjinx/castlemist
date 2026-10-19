@@ -949,14 +949,13 @@ const char* to_string(WeaponPlacement w) {
     return "stowed";
 }
 
-AssemblyReport assemble_character(const CharacterManifest& manifest, const std::string& dat_path,
-                                  const std::string& glb_path, const AssemblyOptions& opt) {
-    AssemblyReport rep;
-    std::unique_ptr<Context> ctx = open_context(manifest, dat_path, opt, rep);
-    if (!ctx) return rep;
+namespace {
+
+// The combined character's selection, shared by assemble_character and assemble_character_model.
+Selection combined_selection(Context& ctx, const CharacterManifest& manifest, const AssemblyOptions& opt) {
     Selection sel;
     sel.armor = armor_pieces(manifest);
-    sel.worn = worn_slots(*ctx, manifest);
+    sel.worn = worn_slots(ctx, manifest);
     sel.back = true;
     sel.weapons.assign(std::begin(kWeaponSlots), std::end(kWeaponSlots));
     sel.drop_shared_holster = true;
@@ -964,6 +963,17 @@ AssemblyReport assemble_character(const CharacterManifest& manifest, const std::
         sel.hide_body_under_armor = false;
         sel.hair_under_helm_scalp_only = false;
     }
+    return sel;
+}
+
+}  // namespace
+
+AssemblyReport assemble_character(const CharacterManifest& manifest, const std::string& dat_path,
+                                  const std::string& glb_path, const AssemblyOptions& opt) {
+    AssemblyReport rep;
+    std::unique_ptr<Context> ctx = open_context(manifest, dat_path, opt, rep);
+    if (!ctx) return rep;
+    const Selection sel = combined_selection(*ctx, manifest, opt);
     ModelPreview model = build(*ctx, manifest, opt, sel, rep);
     if (opt.vrchat) {
         rep.physbone_chains = make_vrchat_ready(model);
@@ -971,6 +981,18 @@ AssemblyReport assemble_character(const CharacterManifest& manifest, const std::
     }
     if (!write_glb(model, glb_path, opt, rep)) return rep;
     rep.joints = model.joints.size();
+    rep.ok = true;
+    return rep;
+}
+
+AssemblyReport assemble_character_model(const CharacterManifest& manifest, const std::string& dat_path,
+                                        ModelPreview& out, const AssemblyOptions& opt) {
+    AssemblyReport rep;
+    std::unique_ptr<Context> ctx = open_context(manifest, dat_path, opt, rep);
+    if (!ctx) return rep;
+    const Selection sel = combined_selection(*ctx, manifest, opt);
+    out = build(*ctx, manifest, opt, sel, rep);
+    rep.joints = out.joints.size();
     rep.ok = true;
     return rep;
 }

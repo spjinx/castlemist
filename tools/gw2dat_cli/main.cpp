@@ -2042,6 +2042,29 @@ void cmd_npc_export(const Args& a) {
     emit({{"ok", r.ok}, {"folder", r.folder.generic_string()}, {"files", r.files}, {"notes", r.notes}});
 }
 
+// What the NPC catalogue's "Open model" shows: the body model, or a race-body NPC dressed from look --look (default 0).
+void cmd_npc_model(const Args& a) {
+    castlemist::npc::Catalogue cat = ensure_npc(a);
+    const uint32_t id = static_cast<uint32_t>(to_u64(need(a, "id")));
+    const castlemist::npc::NpcRecord* n = cat.find(id);
+    if (!n) fail("no npc with id " + std::to_string(id));
+    const size_t look = has(a, "look") ? static_cast<size_t>(to_u64(a.at("look"))) : 0;
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    castlemist::npc::NpcModel m = castlemist::npc::npc_model(dat, *n, look);
+    json out = {{"ok", m.model != nullptr}, {"notes", m.notes}};
+    if (m.model) {
+        size_t verts = 0;
+        for (const auto& mesh : m.model->meshes) verts += mesh.vertices.size();
+        out["meshes"] = m.model->meshes.size();
+        out["vertices"] = verts;
+        out["textures"] = m.model->textures.size();
+        out["joints"] = m.model->joints.size();
+        out["clips"] = m.model->animClips.size();
+    }
+    emit(out);
+}
+
 // Names the minipet characters from the public GW2 API (/v2/minis; goes online, no key) and re-saves the cache.
 void cmd_npc_names(const Args& a) {
     namespace npc = castlemist::npc;
@@ -2655,6 +2678,7 @@ int main(int argc, char** argv) {
         else if (cmd == "npc-list") cmd_npc_list(a);
         else if (cmd == "npc-show") cmd_npc_show(a);
         else if (cmd == "npc-export") cmd_npc_export(a);
+        else if (cmd == "npc-model") cmd_npc_model(a);
         else if (cmd == "npc-names") cmd_npc_names(a);
         else if (cmd == "look-options") cmd_look_options(a);
         else if (cmd == "composite-types") cmd_composite_types(a);

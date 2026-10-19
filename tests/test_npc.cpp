@@ -4,6 +4,7 @@
 #include "test_framework.h"
 
 #include "castlemist/format/content_map.h"
+#include "castlemist/native/gw2dat.h"
 #include "castlemist/npc/browse.h"
 #include "castlemist/npc/catalogue.h"
 #include "castlemist/npc/export.h"
@@ -680,6 +681,16 @@ CM_TEST(npc_export, manifest_lists_look_and_parts) {
     CHECK_EQ(j["parts"][0]["name"].get<std::string>(), std::string("hair"));
     CHECK_EQ(j["parts"][0]["status"].get<std::string>(), std::string("used"));
     CHECK_EQ(j["parts"][1]["reason"].get<std::string>(), std::string("under armour"));
+}
+
+CM_TEST(npc_export, npc_model_without_body_or_look_is_a_note) {
+    Gw2Dat dat;  // never opened: nothing to load
+    NpcRecord r;
+    r.id = 9;
+    NpcModel m = npc_model(dat, r);
+    CHECK(m.model == nullptr);
+    CHECK_EQ(m.notes.size(), size_t(1));
+    CHECK_EQ(m.notes[0], std::string("no body model and no look"));
 }
 
 namespace {

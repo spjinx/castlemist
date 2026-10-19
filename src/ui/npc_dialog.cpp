@@ -254,6 +254,7 @@ void show_clips() {
     SendMessageW(g_clips, LB_RESETCONTENT, 0, 0);
     const npc::NpcRecord* n = current_npc();
     if (!n) return;
+    if (!n->model && !n->looks.empty()) { set_status(L"A race-body NPC: Open model shows it dressed from its look."); return; }
     if (!n->model) { set_status(L"This NPC has no body model."); return; }
     if (!g_app->dat_loaded) { set_status(L"Open Gw2.dat first."); return; }
     HCURSOR old = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
@@ -267,6 +268,33 @@ void show_clips() {
         SendMessageW(g_clips, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(line));
     }
     set_status(std::to_wstring(pv->animClips.size()) + L" clips on model " + std::to_wstring(n->model));
+}
+
+// A body file opens in the main browser. A race-body NPC has none: the Character Ripper dresses
+// one from its first look, the same body export writes as body.glb, and the viewer shows it.
+void open_model() {
+    const npc::NpcRecord* n = current_npc();
+    if (!n) return;
+    if (n->model) { navigate_to_file_id(n->model); return; }
+    if (n->looks.empty()) { set_status(L"This NPC has no body model."); return; }
+    if (!g_app->dat_loaded) { set_status(L"Open Gw2.dat first - the models come from it."); return; }
+    set_status(L"Dressing the race body...");
+    HCURSOR old = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+    npc::NpcModel m = npc::npc_model(g_app->data_gw2, *n);
+    SetCursor(old);
+    if (!m.model) {
+        std::wstring why;
+        for (const std::string& note : m.notes) why += (why.empty() ? L"" : L"; ") + utf8_to_wide(note);
+        set_status(L"The race body could not be built: " + why);
+        return;
+    }
+    ExtractedEntry e;
+    e.kind = PreviewKind::Model;
+    e.model = std::move(m.model);
+    apply_extracted_entry(UINT32_MAX, std::move(e));
+    if (g_app->hwnd_main) SetForegroundWindow(g_app->hwnd_main);
+    set_status(L"Showing " + utf8_to_wide(n->race) + L" look 1 of " + std::to_wstring(n->looks.size()) +
+               L" in the viewer (" + std::to_wstring(m.notes.size()) + L" notes)");
 }
 
 void export_selected() {
@@ -308,9 +336,7 @@ LRESULT CALLBACK NpcWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         switch (LOWORD(wparam)) {
         case ID_NPC_FILTER: if (HIWORD(wparam) == EN_CHANGE && !g_cat.npcs.empty()) refilter(); return 0;
         case ID_NPC_SHOW_CLIPS: show_clips(); return 0;
-        case ID_NPC_OPEN_MODEL:
-            if (const npc::NpcRecord* n = current_npc()) navigate_to_file_id(n->model);
-            return 0;
+        case ID_NPC_OPEN_MODEL: open_model(); return 0;
         case ID_NPC_EXPORT: export_selected(); return 0;
         case ID_NPC_FETCH_NAMES: fetch_names(); return 0;
         case ID_NPC_CLOSE: DestroyWindow(hwnd); return 0;
