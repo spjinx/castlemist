@@ -120,7 +120,7 @@ copy any of it.
 | Export glTF (Model, Baked UV Atlas)... | the same, with all materials baked into one atlas texture |
 | Export for VRChat (Model)... | the selected model as a folder for Unity/VRChat: `.glb`, `.fbx` + `.blend` (needs Blender), `Textures` (Poiyomi-ready PNGs) and `materials.json`; the name you type becomes the folder name |
 | Export glTF (Map)... | the selected map scene as `.glb` |
-| Export Skybox (Map)... | the selected map's sky as a folder of PNGs: `sky.json`, and per sky mode (`day`, `night`, `mode2`, `mode3`) `baked/equirect.png` + six `baked/` faces, plus `skybox/` faces when the map stores its own cube; the name you type becomes the folder name |
+| Export Skybox (Map)... | the selected map's sky as a folder of PNGs: `sky.json`, and per sky mode (`day`, `night`, `mode2`, `mode3`) `baked/equirect.png` + six `baked/` faces, plus `skybox/` faces when the map stores its own cube; the name you type becomes the folder name; a preview first lets you pick what shows below the horizon (fade to black / white, or the game's stretched horizon) |
 
 ### Tools
 
@@ -299,7 +299,7 @@ gw2dat_cli extract --dat $dat --base-id 477426 --out model.bin       # decompres
 gw2dat_cli texture --dat $dat --base-id 46403  --out icon.png        # decoded texture
 gw2dat_cli model   --dat $dat --file-id 1766522 --template dumps\packfile\gw2_packfile.json --glb dagger.glb
 gw2dat_cli model   --dat $dat --file-id 1766522 --template dumps\packfile\gw2_packfile.json --vrchat out   # folder out\model_1766522 for VRChat
-gw2dat_cli skybox  --dat $dat --file-id 187611  --template dumps\packfile\gw2_packfile.json --out skies    # folder skies\map_187611 (--name, --size <face px>)
+gw2dat_cli skybox  --dat $dat --file-id 187611  --template dumps\packfile\gw2_packfile.json --out skies    # folder skies\map_187611 (--name, --size <face px>, --ground black|white|skirt, --ground-fade <deg>)
 
 # A whole map as one scene (terrain, props, collision, water, sky): a JSON summary
 # whose warnings include every dat chunk nothing reads yet

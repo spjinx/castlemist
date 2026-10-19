@@ -7,6 +7,7 @@
 
 #include <array>
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -27,6 +28,11 @@ struct WorldExportOptions {
     /// @brief Uniform scale on the root node; 1 writes the map's own units.
     ///        Map units per metre are UNPROVEN (docs/research/gw2-world-frame.md §1.3).
     double rootScale = 1.0;
+    /// @brief Called as the export advances, on the calling thread: @p stage
+    ///        is "terrain", "props", "collision" or "save"; @p done of @p total
+    ///        items so far (for "save", total is the .glb's size in bytes and
+    ///        it is called once, before writing). Empty = no reports.
+    std::function<void(const char* stage, size_t done, size_t total)> progress;
 };
 
 /// @brief What export_world_gltf wrote.

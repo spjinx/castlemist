@@ -1669,3 +1669,28 @@ CM_TEST(skyexport, approximate_flag_and_labels_in_sky_json) {
     CHECK(any_contains(a["warnings"], "approximate sky"));
     fs::remove_all(parent);
 }
+
+CM_TEST(skybake, ground_fill_fades_below_horizon) {
+    const float upDir[3] = {0, 1, 0}, horizon[3] = {1, 0, 0}, down[3] = {0, -1, 0};
+    const float s5 = std::sin(5.0f * 3.14159265f / 180), c5 = std::cos(5.0f * 3.14159265f / 180);
+    const float below5[3] = {c5, -s5, 0};
+    CHECK_EQ(ground_weight(upDir, 10), 0.0f);
+    CHECK_EQ(ground_weight(horizon, 10), 0.0f);
+    CHECK_EQ(ground_weight(down, 10), 1.0f);
+    CHECK(std::fabs(ground_weight(below5, 10) - 0.5f) < 1e-3f);   // smoothstep midpoint
+    CHECK_EQ(ground_weight(below5, 0), 1.0f);                     // band 0: hard edge
+
+    Radiance grey = [](const float*) { return Rgb{0.5f, 0.5f, 0.5f}; };
+    Radiance black = with_ground(grey, GroundOptions{GroundFill::Black, 10});
+    Radiance white = with_ground(grey, GroundOptions{GroundFill::White, 10});
+    Radiance skirt = with_ground(grey, GroundOptions{GroundFill::Skirt, 10});
+    CHECK_EQ(black(upDir).r, 0.5f);
+    CHECK_EQ(black(down).r, 0.0f);
+    CHECK_EQ(white(down).g, 1.0f);
+    CHECK_EQ(skirt(down).b, 0.5f);
+
+    GroundFill f{};
+    CHECK(parse_ground_fill("white", f) && f == GroundFill::White);
+    CHECK(parse_ground_fill(ground_fill_name(GroundFill::Skirt), f) && f == GroundFill::Skirt);
+    CHECK(!parse_ground_fill("grey", f));
+}

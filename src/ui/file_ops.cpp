@@ -905,13 +905,20 @@ void do_export_skybox_map(HWND hwnd) {
     }
     SetCursor(old_cursor);
 
+    // What the bakes show below the horizon, chosen on a preview.
+    sky::SkyExportOptions opt;
+    if (!run_sky_ground_preview(hwnd, *inputs, opt.ground)) {
+        SetWindowTextW(g_app->hwnd_status_label, L"Skybox export cancelled.");
+        return;
+    }
+
     const std::string parentUtf8 = wide_to_utf8(parent), nameUtf8 = wide_to_utf8(stem);
     SetWindowTextW(g_app->hwnd_status_label, L"Baking the skybox...");
     g_skybox_export_running = true;
-    std::thread([hwnd, inputs, parentUtf8, nameUtf8]() {
+    std::thread([hwnd, inputs, parentUtf8, nameUtf8, opt]() {
         sky::SkyExportReport rep;
         try {
-            rep = sky::write_skybox(*inputs, parentUtf8, nameUtf8);
+            rep = sky::write_skybox(*inputs, parentUtf8, nameUtf8, opt);
         } catch (const std::exception& e) {
             rep = {};
             rep.error = e.what();

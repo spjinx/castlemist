@@ -143,6 +143,14 @@ WorldExportReport export_world_gltf(const WorldScene& scene, const std::vector<s
 
     GltfWriter w;
     json rootChildren = json::array();
+    auto report = [&](const char* stage, size_t done, size_t total) {
+        if (opts.progress) opts.progress(stage, done, total);
+    };
+    // About every 5%, and always the last item.
+    auto tick = [&](const char* stage, size_t done, size_t total) {
+        const size_t step = std::max<size_t>(1, total / 20);
+        if (done % step == 0 || done == total) report(stage, done, total);
+    };
 
     // ---- terrain ----
     if (opts.terrain && scene.terrain.present && !scene.terrain.chunks.empty()) {
@@ -156,7 +164,10 @@ WorldExportReport export_world_gltf(const WorldScene& scene, const std::vector<s
             {"pbrMetallicRoughness", {{"baseColorFactor", {0.42, 0.40, 0.34, 1.0}}, {"metallicFactor", 0.0}, {"roughnessFactor", 1.0}}},
         });
         json children = json::array();
+        const size_t total = scene.terrain.chunks.size();
+        size_t done = 0;
         for (const auto& c : scene.terrain.chunks) {
+            tick("terrain", ++done, total);
             if (c.samples < 2 || c.heights.size() != static_cast<size_t>(c.samples) * c.samples) {
                 rep.warnings.push_back("terrain chunk " + std::to_string(c.cx) + "," + std::to_string(c.cy) +
                                        " has no usable samples; skipped");
@@ -179,6 +190,7 @@ WorldExportReport export_world_gltf(const WorldScene& scene, const std::vector<s
         std::vector<bool> written(scene.models.size(), false);
         json children = json::array();
         for (size_t pi = 0; pi < scene.props.size(); ++pi) {
+            tick("props", pi + 1, scene.props.size());
             const auto& inst = scene.props[pi];
             const ModelPreview* model = inst.model < models.size() ? models[inst.model].get() : nullptr;
             if (!model || model->meshes.empty() || inst.model >= scene.models.size()) { ++rep.propsSkipped; continue; }
@@ -235,6 +247,7 @@ WorldExportReport export_world_gltf(const WorldScene& scene, const std::vector<s
         std::vector<int> meshOf(scene.collision.meshes.size(), -1);
         json children = json::array();
         for (size_t ci = 0; ci < scene.collision.instances.size(); ++ci) {
+            tick("collision", ci + 1, scene.collision.instances.size());
             const auto& inst = scene.collision.instances[ci];
             if (inst.mesh >= scene.collision.meshes.size()) continue;
             const auto& m = scene.collision.meshes[inst.mesh];
@@ -265,6 +278,7 @@ WorldExportReport export_world_gltf(const WorldScene& scene, const std::vector<s
     if (outPath.has_parent_path()) fs::create_directories(outPath.parent_path(), ec);
 
     std::vector<uint8_t> glb = w.finish();
+    report("save", glb.size(), glb.size());
     std::ofstream out(outPath, std::ios::binary);
     if (!out) {
         rep.error = "Could not open '" + glbPath + "' for writing.";

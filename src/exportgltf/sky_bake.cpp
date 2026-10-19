@@ -791,6 +791,42 @@ void add_approx(Composite& out, BakeResult& res, const Extractor::MapSky& sky, s
 
 } // namespace
 
+const char* ground_fill_name(GroundFill f) {
+    switch (f) {
+    case GroundFill::White: return "white";
+    case GroundFill::Skirt: return "skirt";
+    default: return "black";
+    }
+}
+
+bool parse_ground_fill(const std::string& name, GroundFill& out) {
+    for (GroundFill f : {GroundFill::Black, GroundFill::White, GroundFill::Skirt})
+        if (name == ground_fill_name(f)) {
+            out = f;
+            return true;
+        }
+    return false;
+}
+
+float ground_weight(const float d[3], float fadeDegrees) {
+    if (d[1] >= 0) return 0;
+    const float below = std::asin(std::min(-d[1], 1.0f)) * 180.0f / kPi;
+    if (fadeDegrees <= 0) return 1;
+    const float t = std::min(below / fadeDegrees, 1.0f);
+    return t * t * (3 - 2 * t);
+}
+
+Rgb apply_ground(const Rgb& c, float w, GroundFill fill) {
+    if (fill == GroundFill::Skirt || w <= 0) return c;
+    const float g = fill == GroundFill::White ? 1.0f : 0.0f;
+    return Rgb{c.r + (g - c.r) * w, c.g + (g - c.g) * w, c.b + (g - c.b) * w};
+}
+
+Radiance with_ground(Radiance r, const GroundOptions& g) {
+    if (g.fill == GroundFill::Skirt) return r;
+    return [r = std::move(r), g](const float d[3]) { return apply_ground(r(d), ground_weight(d, g.fadeDegrees), g.fill); };
+}
+
 BakeResult make_sky_sampler(const Extractor::MapSky& sky, size_t modeIndex, const TextureMap& textures,
                             const Extractor::MapStars* stars, const ApproxInputs* approx) {
     BakeResult res;

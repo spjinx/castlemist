@@ -91,6 +91,28 @@ BakeResult make_sky_sampler(const castlemist::model::Extractor::MapSky& sky, siz
 /// any other material stay unbaked.
 inline constexpr uint32_t kFlowFireMaterial = 1262294;
 
+/// What a bake shows below the horizon. The game draws a skirt there that
+/// repeats the horizon row downward (gw2-sky.md §2); terrain hides it in game,
+/// but a skybox shows it as vertical streaks.
+enum class GroundFill { Black, White, Skirt };
+
+struct GroundOptions {
+    GroundFill fill = GroundFill::Black;
+    float fadeDegrees = 10;   ///< band below the horizon over which the skirt fades into the fill
+};
+
+/// "black", "white", "skirt".
+const char* ground_fill_name(GroundFill f);
+/// Inverse of ground_fill_name; false for an unknown name.
+bool parse_ground_fill(const std::string& name, GroundFill& out);
+/// Fill weight at Unity direction @p d: 0 at and above the horizon, rising
+/// smoothly to 1 at @p fadeDegrees below it (a band of 0 is a hard edge).
+float ground_weight(const float d[3], float fadeDegrees);
+/// @p c blended toward the fill colour by @p w (unchanged for Skirt).
+Rgb apply_ground(const Rgb& c, float w, GroundFill fill);
+/// @p r with the ground fill applied below the horizon.
+Radiance with_ground(Radiance r, const GroundOptions& g);
+
 /// GW2 sky space (X east, Y north, Z down; gw2-sky.md §1) to Unity.
 void gw2_to_unity(const float gw2[3], float unity[3]);
 /// Inverse of gw2_to_unity.

@@ -83,16 +83,28 @@ static void* hk_insert(int textId, uint64_t key8) {
     return o_insert(textId, key8);
 }
 
+// MinGW g++ has no __try/__except, so check the pages are readable instead.
+static bool readable(uint64_t addr, size_t n) {
+    MEMORY_BASIC_INFORMATION mbi;
+    for (uint64_t p = addr; p < addr + n; p = (uint64_t)mbi.BaseAddress + mbi.RegionSize) {
+        if (!VirtualQuery((void*)p, &mbi, sizeof mbi) || mbi.State != MEM_COMMIT) return false;
+        if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return false;
+    }
+    return true;
+}
+
 static uint64_t hk_bulk(uint64_t a1, uint64_t chunk) {
-    __try {
+    if (chunk && readable(chunk, 11)) {
         uint8_t  count = *(uint8_t*)(chunk + 2);
-        uint64_t arr   = *(uint64_t*)(chunk + 3);      // unaligned read
-        for (int i = 0; i < count; ++i) {
-            uint32_t id  = *(uint32_t*)(arr + 12*i);
-            uint64_t key = *(uint64_t*)(arr + 12*i + 4);
-            emit(id, key);
+        uint64_t arr;  memcpy(&arr, (void*)(chunk + 3), 8);   // unaligned read
+        if (arr && readable(arr, 12 * (size_t)count)) {
+            for (int i = 0; i < count; ++i) {
+                uint32_t id;  memcpy(&id,  (void*)(arr + 12*i), 4);
+                uint64_t key; memcpy(&key, (void*)(arr + 12*i + 4), 8);
+                emit(id, key);
+            }
         }
-    } __except (EXCEPTION_EXECUTE_HANDLER) { /* chunk tak valid -> abaikan */ }
+    }
     return o_bulk(a1, chunk);
 }
 

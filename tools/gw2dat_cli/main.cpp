@@ -20,6 +20,7 @@
 //            slot (flag >> 1) & 7 (world foliage spec M2-M3); output changed 2026-10-16
 //   skybox   --dat <path> --file-id N --template <json> --out <dir> [--name NAME]
 //            [--size <face px>] [--equirect <width px>] [--approx]
+//            [--ground black|white|skirt] [--ground-fade <degrees, default 10>]
 //            -- a map's sky as Unity skybox images in <out>/<name> (default map_<fileId>)
 //   world-export --dat <path> --file-id N --template <json> (--out <file.glb> | --out-dir <dir>)
 //            [--foliage off|colliders|all] [--no-unity-terrain] [--region cx0,cy0,cx1,cy1] [--no-fbx] ...
@@ -67,6 +68,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <span>
@@ -1504,6 +1506,12 @@ void cmd_skybox(const Args& a) {
     if (opt.faceSize < 1 || opt.equirectWidth < 2) fail("--size and --equirect must be positive");
     // --approx: the approximate sky (gw2-sky.md amendment 2026-10-17), labelled in sky.json.
     opt.approximate = has(a, "approx");
+    if (has(a, "ground") && !sky::parse_ground_fill(a.at("ground"), opt.ground.fill))
+        fail("--ground must be black, white or skirt");
+    if (has(a, "ground-fade")) {
+        try { opt.ground.fadeDegrees = std::stof(a.at("ground-fade")); } catch (const std::exception&) { fail("--ground-fade must be a number"); }
+        if (!(opt.ground.fadeDegrees >= 0 && opt.ground.fadeDegrees <= 90)) fail("--ground-fade must be 0..90 degrees");
+    }
 
     Gw2Dat dat;
     load_dat_file(dat, need(a, "dat"));
@@ -2897,11 +2905,25 @@ void cmd_world_export(const Args& a) {
 
     auto t0 = std::chrono::steady_clock::now();
     auto secs = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
+    // Progress goes to stderr, one line each, flushed: stdout stays the JSON report.
+    std::mutex logMu;
+    auto log = [&](const char* fmt, auto... args) {
+        std::lock_guard<std::mutex> lk(logMu);
+        std::fprintf(stderr, "[%7.1fs] ", secs());
+        std::fprintf(stderr, fmt, args...);
+        std::fputc('\n', stderr);
+        std::fflush(stderr);
+    };
 
+    log("[dat] opening %s", need(a, "dat").c_str());
     Gw2Dat dat;
     load_dat_file(dat, need(a, "dat"));
+    log("[world] loading map %u", fileId);
     castlemist::world::WorldScene scene = castlemist::world::load_world(dat, fileId, tpl);
     const double tWorld = secs();
+    log("[world] map %u loaded: %zu terrain chunks, %zu props, %zu distinct models, %zu collision instances, %zu warnings",
+        fileId, scene.terrain.chunks.size(), scene.props.size(), scene.models.size(),
+        scene.collision.instances.size(), scene.warnings.size());
 
     // Load each distinct prop model once, in parallel against the one parsed
     // dat (read-only lookups).
@@ -2911,7 +2933,9 @@ void cmd_world_export(const Args& a) {
         unsigned n = has(a, "threads") ? static_cast<unsigned>(to_u64(a.at("threads")))
                                        : std::max(1u, std::thread::hardware_concurrency());
         n = std::max(1u, std::min<unsigned>(n, static_cast<unsigned>(scene.models.size())));
-        std::atomic<size_t> next{0};
+        log("[models] loading %zu models on %u threads", models.size(), n);
+        std::atomic<size_t> next{0}, finished{0};
+        const size_t step = std::max<size_t>(1, models.size() / 20);
         std::vector<std::thread> pool;
         for (unsigned t = 0; t < n; ++t)
             pool.emplace_back([&] {
@@ -2921,14 +2945,26 @@ void cmd_world_export(const Args& a) {
                     } catch (const std::exception&) {
                         models[i] = nullptr;  // counted as not loaded below
                     }
+                    const size_t f = finished.fetch_add(1) + 1;
+                    if (f % step == 0 || f == models.size()) log("[models] %zu/%zu loaded", f, models.size());
                 }
             });
         for (auto& th : pool) th.join();
         for (const auto& m : models) loaded += m != nullptr;
+        log("[models] done: %zu loaded, %zu failed", loaded, models.size() - loaded);
     }
     const double tModels = secs();
 
+    opt.progress = [&](const char* stage, size_t done, size_t total) {
+        if (std::strcmp(stage, "save") == 0)
+            log("[write] saving %.1f MB to %s", static_cast<double>(total) / (1024.0 * 1024.0), out.c_str());
+        else
+            log("[write] %s %zu/%zu", stage, done, total);
+    };
+
     eg::WorldExportReport rep = eg::export_world_gltf(scene, models, out, opt);
+    if (rep.ok) log("[done] wrote %s", rep.glbPath.c_str());
+    else log("[failed] %s", rep.error.c_str());
     json j;
     j["ok"] = rep.ok;
     if (!rep.ok) j["error"] = rep.error;

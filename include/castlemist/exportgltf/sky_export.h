@@ -91,6 +91,7 @@ struct SkyExportOptions {
     /// one; sky.json says which ("approximate") and lists every input's label.
     /// Off by default: its haze, sun and cloud inputs are not all proven.
     bool approximate = false;
+    GroundOptions ground;       ///< what the bakes show below the horizon
 };
 
 struct SkyExportReport {

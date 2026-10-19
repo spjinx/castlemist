@@ -48,6 +48,11 @@
 #include "castlemist/ui/struct_tree.h"
 #include "castlemist/ui/texture_panel.h"
 
+namespace castlemist::exportgltf::sky {
+struct SkyInputs;
+struct GroundOptions;
+} // namespace castlemist::exportgltf::sky
+
 namespace castlemist::ui {
 
 constexpr wchar_t kMainClassName[] = L"Gw2BrowserMain";
@@ -747,6 +752,9 @@ void do_export_vrchat_model(HWND hwnd);
 void on_vrchat_model_done(HWND hwnd, LPARAM lparam);
 void do_export_skybox_map(HWND hwnd);
 void on_skybox_export_done(HWND hwnd, LPARAM lparam);
+/// Modal preview of the bake's below-horizon fill; false when cancelled.
+bool run_sky_ground_preview(HWND owner, const castlemist::exportgltf::sky::SkyInputs& in,
+                            castlemist::exportgltf::sky::GroundOptions& ground);
 void do_save_model_texture(HWND hwnd, uint32_t fileId);
 std::string combo_sel(HWND combo);
 void apply_filters();

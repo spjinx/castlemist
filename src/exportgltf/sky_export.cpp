@@ -500,9 +500,10 @@ SkyExportReport write_skybox(const SkyInputs& in, const std::string& parentDir, 
             for (const std::string& w : b.warnings) push_unique(warns, w);
             if (b.ok) {
                 baked_sources(b, mj["sources"]);
-                baked = write(render_equirect(b.radiance, eqW, eqH), dir / "baked" / "equirect.png");
+                const Radiance r = with_ground(b.radiance, opt.ground);
+                baked = write(render_equirect(r, eqW, eqH), dir / "baked" / "equirect.png");
                 for (Face f : kFaces)
-                    baked = write(render_face(b.radiance, f, faceSize),
+                    baked = write(render_face(r, f, faceSize),
                                   dir / "baked" / (std::string(face_file(f)) + ".png")) &&
                             baked;
                 if (baked) layers = b.layers;
@@ -519,6 +520,12 @@ SkyExportReport write_skybox(const SkyInputs& in, const std::string& parentDir, 
             if (j >= 2) wroteMode23 = true;
         }
         mj["baked"] = baked;
+        if (baked) {
+            mj["ground"] = {{"fill", ground_fill_name(opt.ground.fill)}, {"fadeDegrees", opt.ground.fadeDegrees}};
+            if (opt.ground.fill != GroundFill::Skirt)
+                push_unique(warns, mname + ": below the horizon the game repeats the horizon row (gw2-sky.md §2); "
+                                           "baked fading to " + ground_fill_name(opt.ground.fill) + " instead");
+        }
         mj["layers"] = layers;
         mj["skybox"] = skybox;
         mj["unitySlots"] = unity_slots();
