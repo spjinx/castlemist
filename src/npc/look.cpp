@@ -102,6 +102,18 @@ std::optional<NpcAssembly> npc_assembly(const NpcRecord& npc, size_t look_index,
             }
     }
     if (!variant) return fail("variant " + look_name + ": not in composite");
+    // A race shares its armour through variantRefRace (AsuraFemale -> AsuraMale, CharrFemale -> CharrMale): its
+    // own file data holds only the pieces it has a mesh of its own for.
+    const composite::CompositeRace* shared = nullptr;
+    if (race->variant_ref_race)
+        if (const composite::CompositeRace* ref = find_race(comp, decode_token(race->variant_ref_race)))
+            if (ref != race) shared = ref;
+    auto file_data = [&](uint64_t token) -> const composite::CompositeFileData* {
+        if (auto it = race->file_data.find(token); it != race->file_data.end()) return &it->second;
+        if (shared)
+            if (auto it = shared->file_data.find(token); it != shared->file_data.end()) return &it->second;
+        return nullptr;
+    };
 
     NpcAssembly out;
     split_race(race->name, out.manifest.race, out.manifest.gender);
@@ -124,11 +136,11 @@ std::optional<NpcAssembly> npc_assembly(const NpcRecord& npc, size_t look_index,
             opt.hair = i;
         } else if (int i = index_of(race->ears, token); i >= 0) {
             opt.ears = i;
-        } else if (auto it = race->file_data.find(token); it != race->file_data.end()) {
-            const char* slot = slot_name(it->second.type);
+        } else if (const composite::CompositeFileData* fd = file_data(token)) {
+            const char* slot = slot_name(fd->type);
             if (!slot) {  // a bare-body part: the skin style covers it
                 out.notes.push_back("component " + decode_token(token) + ": type " +
-                                    std::to_string(static_cast<int>(it->second.type)) + " not an armour piece");
+                                    std::to_string(static_cast<int>(fd->type)) + " not an armour piece");
                 continue;
             }
             character::ManifestPiece p;

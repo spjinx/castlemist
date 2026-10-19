@@ -832,6 +832,25 @@ CM_TEST(npc_look, a_variant_missing_here_is_found_through_variant_ref_race) {
     if (a) CHECK_EQ(a->manifest.gender, std::string("Male"));
 }
 
+// AsuraFemale -> AsuraMale, CharrFemale -> CharrMale: the race's own file data holds only its own meshes.
+CM_TEST(npc_look, armour_shared_through_variant_ref_race_is_dressed) {
+    castlemist::composite::Composite c = look_composite();
+    castlemist::composite::CompositeRace female = c.races[0];
+    c.races[0].name = "AsuraMale";
+    c.races[0].variants.clear();
+    female.name = "AsuraFemale";
+    female.file_data.clear();  // the coat lives on AsuraMale only
+    female.variant_ref_race = pack_name("asuramale");
+    c.races.push_back(female);
+    auto a = npc_assembly(look_npc("asurafemale", "banditvar"), 0, c);
+    CHECK(a.has_value());
+    if (!a) return;
+    CHECK_EQ(a->manifest.gender, std::string("Female"));
+    CHECK_EQ(a->manifest.pieces.size(), size_t(1));
+    if (!a->manifest.pieces.empty()) CHECK_EQ(a->manifest.pieces[0].slot, std::string("Coat"));
+    for (const std::string& n : a->notes) CHECK(n.find("not in composite") == std::string::npos || n.rfind("physique", 0) == 0);
+}
+
 CM_TEST(npc_look, an_unknown_component_token_is_a_note) {
     castlemist::composite::Composite c = look_composite();
     c.races[0].variants[0].components.push_back({pack_name("mystery"), {}});

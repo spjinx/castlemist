@@ -131,11 +131,36 @@ struct Context {
         return it->second;
     }
 
+    // The race it shares pieces from (variantRefRace: AsuraFemale -> AsuraMale, CharrFemale -> CharrMale).
+    const composite::CompositeRace* shared = nullptr;
+
+    // Its own piece first, then the shared race's.
     const composite::CompositeFileData* entry(uint64_t token) const {
-        auto it = race->file_data.find(token);
-        return it == race->file_data.end() ? nullptr : &it->second;
+        if (auto it = race->file_data.find(token); it != race->file_data.end()) return &it->second;
+        if (shared)
+            if (auto it = shared->file_data.find(token); it != shared->file_data.end()) return &it->second;
+        return nullptr;
     }
 };
+
+// A name 5-bit packed the way Composite tokens are (a = 1 ... z = 26, first letter lowest, 12 letters at most).
+uint64_t pack_name(const std::string& name) {
+    uint64_t t = 0;
+    for (size_t i = 0; i < name.size() && i < 12; ++i) {
+        const int c = std::tolower(static_cast<unsigned char>(name[i]));
+        if (c < 'a' || c > 'z') return 0;
+        t |= static_cast<uint64_t>(c - 'a' + 1) << (5 * i);
+    }
+    return t;
+}
+
+const composite::CompositeRace* race_by_token(const composite::Composite& comp, uint64_t token) {
+    const uint64_t name_bits = token & ((uint64_t{1} << 60) - 1);  // the top nibble is a variant digit
+    if (!name_bits) return nullptr;
+    for (const composite::CompositeRace& r : comp.races)
+        if (pack_name(r.name) == name_bits) return &r;
+    return nullptr;
+}
 
 // Loads every weapon of the kit and gives each its attach point: the active
 // set in the hands when asked, the rest spread over the holsters.
@@ -196,6 +221,8 @@ std::unique_ptr<Context> open_context(const CharacterManifest& manifest, const s
         rep.error = "unknown race/gender '" + ctx->race_key + "'";
         return nullptr;
     }
+    if (const composite::CompositeRace* ref = race_by_token(ctx->comp, ctx->race->variant_ref_race))
+        if (ref != ctx->race) ctx->shared = ref;
     // The race skeleton, taken from the bare chest (every body part and armor
     // piece of the race shares it).
     if (opt.skin_style >= 0 && static_cast<size_t>(opt.skin_style) < ctx->race->skin_styles.size()) {

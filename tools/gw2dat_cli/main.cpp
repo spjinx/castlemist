@@ -2444,6 +2444,34 @@ void cmd_composite_types(const Args& a) {
           {"variant_samples", variants}, {"skeleton_file", r->skeleton_file}});
 }
 
+// Research: where a Composite token lives, by --name (its decoded spelling): every race whose file data,
+// faces, hair or ears hold it, plus the race's variantRefRace.
+void cmd_composite_find(const Args& a) {
+    namespace rp = castlemist::ripper;
+    using castlemist::npc::decode_token;
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    auto comp = rp::load_composite(dat);
+    if (!comp) fail("no Composite in the dat");
+    const std::string name = need(a, "name");
+    json hits = json::array(), refs = json::object();
+    for (const auto& r : comp->races) {
+        refs[r.name] = r.variant_ref_race ? decode_token(r.variant_ref_race) : std::string();
+        for (const auto& [token, fd] : r.file_data)
+            if (decode_token(token) == name)
+                hits.push_back({{"race", r.name}, {"in", "file_data"}, {"type", static_cast<int>(fd.type)},
+                                {"mesh", fd.mesh_base}, {"token", std::to_string(token)}});
+        auto list = [&](const std::vector<uint64_t>& v, const char* in) {
+            for (uint64_t t : v)
+                if (decode_token(t) == name) hits.push_back({{"race", r.name}, {"in", in}});
+        };
+        list(r.faces, "faces");
+        list(r.hair_styles, "hair_styles");
+        list(r.ears, "ears");
+    }
+    emit({{"ok", true}, {"hits", hits}, {"variant_ref_race", refs}});
+}
+
 // Research (like animmach): every variant colour of a race as raw byte tuples
 // [brightness, contrast, hue, saturation, lightness], labelled by role. The
 // measurement of npc/look.h's byte->DyeShift mapping ran over this output.
@@ -2699,6 +2727,7 @@ int main(int argc, char** argv) {
         else if (cmd == "look-options") cmd_look_options(a);
         else if (cmd == "composite-types") cmd_composite_types(a);
         else if (cmd == "composite-colors") cmd_composite_colors(a);
+        else if (cmd == "composite-find") cmd_composite_find(a);
         else if (cmd == "look-set") cmd_look_set(a);
         else if (cmd == "look-thumbs") cmd_look_thumbs(a);
         else if (cmd == "character-vrchat") cmd_character_vrchat(a);
