@@ -1,0 +1,642 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "castlemist-world/1",
+  "title": "castlemist world export manifest, version 1",
+  "description": "manifest.json of a castlemist world export folder (docs/superpowers/specs/2026-10-15-world-export-design.md, 'manifest.json (version 1)'). Written by src/exportgltf/world_manifest.cpp. Keywords are limited to: $schema $id $defs $ref title description type properties required additionalProperties items enum const minimum maximum minItems maxItems (tools/world/validate_manifest.py checks exactly these). Map space is left-handed, +X east, +Y north, up -Z; Unity values are map_to_unity, (x, y, z) -> (x, -z, y), in map units before unityScale.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "version", "castlemist", "map", "frame", "settings", "terrain", "models", "cells", "water",
+               "sky", "light", "spawn", "frameProbe", "counts", "warnings"],
+  "properties": {
+    "format": { "const": "castlemist-world" },
+    "version": { "description": "Integer major; importers refuse an unknown one.", "const": 1 },
+    "castlemist": { "description": "The castlemist version that wrote the export.", "type": "string" },
+    "map": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fileId", "bounds"],
+      "properties": {
+        "fileId": { "type": "integer", "minimum": 0 },
+        "bounds": { "description": "parm rect x0, y0, x1, y1 in map space, or null.",
+                    "type": ["array", "null"], "items": { "type": "number" }, "minItems": 4, "maxItems": 4 }
+      }
+    },
+    "frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["space", "handedness", "east", "north", "up", "toUnity", "toBlender", "gltfRoot", "units"],
+      "properties": {
+        "space": { "const": "gw2-map" },
+        "handedness": { "const": "left" },
+        "east": { "const": "+X" },
+        "north": { "const": "+Y" },
+        "up": { "const": "-Z" },
+        "toUnity": { "description": "Rows of world/frame.h map_to_unity.", "$ref": "#/$defs/mat3" },
+        "toBlender": { "description": "Rows of world/frame.h map_to_blender.", "$ref": "#/$defs/mat3" },
+        "gltfRoot": { "description": "map_to_gltf_root(1), column-major.", "$ref": "#/$defs/mat4" },
+        "units": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["perMetre", "status", "source", "unityScale"],
+          "properties": {
+            "perMetre": { "description": "Map units per metre: UNPROVEN, so null.", "type": ["number", "null"] },
+            "status": { "$ref": "#/$defs/status" },
+            "source": { "type": "string" },
+            "unityScale": {
+              "description": "Uniform scale the Unity importer applies on the map root GameObject (GW2_<fileId>) and nowhere else. Every position in this manifest, cells' origins and instances' unity.t included, stays in map units.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["value", "status", "source"],
+              "properties": {
+                "value": { "type": "number", "minimum": 0 },
+                "status": { "$ref": "#/$defs/status" },
+                "source": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "settings": {
+      "description": "Spec D3 'UNPROVEN settings that travel' plus the export's own settings; each UNPROVEN one is also a line in warnings. The zone* / foliage* rows and lodCullFovDeg are the world-foliage spec's D11 rows (optional); the lod* rows other than lodCullFovDeg are Task 15b's model LOD rows (optional); terrainTreeMaxTiltDeg, terrainTreeYawSign, detailPlacement, terrainHeightRowOrder and terrainColliderDiagonal come with the unityTerrain block.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["groundRepeatsPerChunk", "srgbColourTextures", "pickerSolidByteOrder", "waterPresetPairing",
+                   "waterArea", "waterAlpha", "uvScrollUnitSeconds", "darkDecalRule", "blendModes",
+                   "collisionHullSelection", "unityScale", "clipPhase", "texelsPerChunk", "waterTexelsPerChunk",
+                   "maxTextureSize", "cellMaxChunks", "cellMaxTriangles", "cellMaxTextureMB", "ambient",
+                   "unityAxisConversion"],
+      "properties": {
+        "groundRepeatsPerChunk": { "$ref": "#/$defs/setting" },
+        "srgbColourTextures": { "$ref": "#/$defs/setting" },
+        "pickerSolidByteOrder": { "$ref": "#/$defs/setting" },
+        "waterPresetPairing": { "$ref": "#/$defs/setting" },
+        "waterArea": { "$ref": "#/$defs/setting" },
+        "waterAlpha": { "$ref": "#/$defs/setting" },
+        "uvScrollUnitSeconds": { "$ref": "#/$defs/setting" },
+        "darkDecalRule": { "$ref": "#/$defs/setting" },
+        "blendModes": { "$ref": "#/$defs/setting" },
+        "collisionHullSelection": { "$ref": "#/$defs/setting" },
+        "unityScale": { "$ref": "#/$defs/setting" },
+        "clipPhase": { "$ref": "#/$defs/setting" },
+        "texelsPerChunk": { "$ref": "#/$defs/setting" },
+        "waterTexelsPerChunk": { "$ref": "#/$defs/setting" },
+        "maxTextureSize": { "$ref": "#/$defs/setting" },
+        "cellMaxChunks": { "$ref": "#/$defs/setting" },
+        "cellMaxTriangles": { "$ref": "#/$defs/setting" },
+        "cellMaxTextureMB": { "$ref": "#/$defs/setting" },
+        "ambient": { "$ref": "#/$defs/setting" },
+        "unityAxisConversion": { "$ref": "#/$defs/setting" },
+        "skyApproximate": { "$ref": "#/$defs/setting" },
+        "lodDistances": { "$ref": "#/$defs/setting" },
+        "lodDistanceScale": { "$ref": "#/$defs/setting" },
+        "lodMissingLevel": { "$ref": "#/$defs/setting" },
+        "lodPropCullHeight": { "$ref": "#/$defs/setting" },
+        "zoneGrid": { "$ref": "#/$defs/setting" },
+        "zoneModelSlot": { "$ref": "#/$defs/setting" },
+        "zoneFlagBit0": { "$ref": "#/$defs/setting" },
+        "zoneTreeLink": { "$ref": "#/$defs/setting" },
+        "zoneVisualTransform": { "$ref": "#/$defs/setting" },
+        "zoneScatter": { "$ref": "#/$defs/setting" },
+        "zonePlacementMultiplicity": { "$ref": "#/$defs/setting" },
+        "zoneJitter": { "$ref": "#/$defs/setting" },
+        "zoneYaw": { "$ref": "#/$defs/setting" },
+        "zoneScale": { "$ref": "#/$defs/setting" },
+        "zoneTilt": { "$ref": "#/$defs/setting" },
+        "zoneZ": { "$ref": "#/$defs/setting" },
+        "zoneTiling": { "$ref": "#/$defs/setting" },
+        "zoneGraphicsQuality": { "$ref": "#/$defs/setting" },
+        "zoneGroundcoverOffset": { "$ref": "#/$defs/setting" },
+        "zoneQueryFlags": { "$ref": "#/$defs/setting" },
+        "zoneUnprovenBranches": { "$ref": "#/$defs/setting" },
+        "zoneProbability": { "$ref": "#/$defs/setting" },
+        "zoneTint": { "$ref": "#/$defs/setting" },
+        "zoneFade": { "$ref": "#/$defs/setting" },
+        "zoneFadeQualityScale": { "$ref": "#/$defs/setting" },
+        "zoneLayerTypeTarget": { "$ref": "#/$defs/setting" },
+        "foliageWind": { "$ref": "#/$defs/setting" },
+        "foliagePatchUnits": { "$ref": "#/$defs/setting" },
+        "foliageTileUnits": { "$ref": "#/$defs/setting" },
+        "foliageThinHash": { "$ref": "#/$defs/setting" },
+        "lodCullFovDeg": { "$ref": "#/$defs/setting" },
+        "terrainTreeMaxTiltDeg": { "$ref": "#/$defs/setting" },
+        "terrainTreeYawSign": { "$ref": "#/$defs/setting" },
+        "detailPlacement": { "$ref": "#/$defs/setting" },
+        "terrainHeightRowOrder": { "$ref": "#/$defs/setting" },
+        "terrainColliderDiagonal": { "$ref": "#/$defs/setting" }
+      }
+    },
+    "terrain": {
+      "description": "{present: false} on a map with no terrain; every other key is then absent.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["present"],
+      "properties": {
+        "present": { "type": "boolean" },
+        "chunksX": { "type": "integer", "minimum": 0 },
+        "chunksY": { "type": "integer", "minimum": 0 },
+        "chunkSize": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+        "segments": { "type": "integer", "minimum": 0 },
+        "region": { "description": "Inclusive chunk rect cx0, cy0, cx1, cy1.", "$ref": "#/$defs/int4" }
+      }
+    },
+    "models": { "type": "array", "items": { "$ref": "#/$defs/model" } },
+    "cells": { "type": "array", "items": { "$ref": "#/$defs/cell" } },
+    "water": {
+      "description": "{plane: false}, or the plane with its env preset, or (no preset) the flat colour and its note; null when a stored value is not finite (warned).",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["plane"],
+      "properties": {
+        "plane": { "type": "boolean" },
+        "z": { "type": "number" },
+        "preset": { "type": ["integer", "null"], "minimum": 0 },
+        "shallow": { "$ref": "#/$defs/rgba" },
+        "deep": { "$ref": "#/$defs/rgba" },
+        "depthAttenuation": { "type": "number" },
+        "flatColour": { "$ref": "#/$defs/rgba" },
+        "note": { "type": "string" }
+      }
+    },
+    "sky": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["json", "default"],
+      "properties": {
+        "json": { "type": "string" },
+        "default": { "type": "string" },
+        "equirect": { "type": ["string", "null"] }
+      }
+    },
+    "textures": {
+      "description": "Optional. The shared texture pool (ruling W8): every dat texture once, as <dir>/<fileId>.png; model glbs reference it by relative URI.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dir", "count"],
+      "properties": {
+        "dir": { "type": "string" },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "sharedMaterials": {
+      "description": "Optional (Task 15d, world-foliage spec amendment 2026-10-17). One entry per material key, in first-use order over models[] (position, then materials.json order). A key is the SHA-1 (40 lower-case hex digits) of a canonical text of the material's look: its glTF material less its name, each texture as its image URI (textures/<fileId>.png or textures/gen/<sha1>.png, both content-named), and its materials.json entry less name, fileName, usedByMeshes and warnings (each map file a textures/gen name) with the model's dark-decal flag and uvScroll entry for it. The display name is not part of it. models[].materialKeys lists each materials.json entry's key, the same as that entry's key and its glTF material's extras.castlemistMaterialKey. name: the most common display name of the key's slots (the smallest on a tie); model, material: the first slot with usedByMeshes (else the first), the materials.json entry importers build the shared material from; slots: material slots with the key; models: models with it. generatedMaps: the content pool every generated image and Poiyomi map is written to once, as <sha1 of the PNG bytes>[_<Role>].png; bytes as written, bytesRequested as every material asked for them.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generatedMaps", "entries"],
+      "properties": {
+        "generatedMaps": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["dir", "count", "bytes", "bytesRequested"],
+          "properties": {
+            "dir": { "type": "string" },
+            "count": { "$ref": "#/$defs/count" },
+            "bytes": { "$ref": "#/$defs/count" },
+            "bytesRequested": { "$ref": "#/$defs/count" }
+          }
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "name", "model", "material", "slots", "models", "usedByMeshes"],
+            "properties": {
+              "key": { "type": "string" },
+              "name": { "type": "string" },
+              "model": { "description": "Position in models[].", "type": "integer", "minimum": 0 },
+              "material": { "description": "Index in that model's materials.json materials.", "type": "integer", "minimum": 0 },
+              "slots": { "type": "integer", "minimum": 1 },
+              "models": { "type": "integer", "minimum": 1 },
+              "usedByMeshes": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "foliage": {
+      "description": "Optional (world-foliage spec D7, 'manifest.json additions'). Zone scatter foliage. Each cell's records are in cells[].foliage.file, layout castlemist-foliage-1: recordBytes (100) bytes per record, little-endian, no padding, sorted by (model, placement): offset 0 u32 model (index into models[]); 4 u16 layer (index into foliage.layers[], 0xFFFF for a collider linked by geometry only); 6 u16 flags (bit 0 has a collider; bits 1-2 source: 0 collider, 1 scatter, 2 density; bit 3 Unity Terrain tree; bit 4 outside the terrain, bucketed by clamping as props are); 8 u32 placement (index into the map's zone placements, 0xFFFFFFFF for a geometry-only collider; the thinning key fmix32(placement)); 12 f32[12] m (map-space 3 x 4, column-major, absolute: columns 0-2 the 3 x 3, column 3 the translation); 60 f32[3] unity.t (local to the cell node, map units, before unityScale); 72 f32[4] unity.r (quaternion x, y, z, w); 88 f32 unity.s (uniform scale); 92 f32 unityYaw (radians about Unity +Y, sign UNPROVEN: terrainTreeYawSign); 96 f32 tiltDeg (degrees between the instance's up and map up).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scatter", "recordLayout", "recordBytes", "layers", "models", "colliders"],
+      "properties": {
+        "scatter": { "description": "The zoneScatter rule the instances came from (spec D5).", "enum": ["colliders", "exact", "densityMatched"] },
+        "recordLayout": { "const": "castlemist-foliage-1" },
+        "recordBytes": { "const": 100 },
+        "layers": { "type": "array", "items": { "$ref": "#/$defs/foliageLayer" } },
+        "models": { "type": "array", "items": { "$ref": "#/$defs/foliageModel" } },
+        "colliders": {
+          "description": "The havk zoneModels entries and their link (spec D3).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["entries", "linkedByAnchor", "linkedByGeometry", "unlinked", "geometries", "propCrossChecks",
+                       "propDisagreements"],
+          "properties": {
+            "entries": { "$ref": "#/$defs/count" },
+            "linkedByAnchor": { "$ref": "#/$defs/count" },
+            "linkedByGeometry": { "$ref": "#/$defs/count" },
+            "unlinked": { "$ref": "#/$defs/count" },
+            "geometries": { "$ref": "#/$defs/count" },
+            "propCrossChecks": { "$ref": "#/$defs/count" },
+            "propDisagreements": { "$ref": "#/$defs/count" }
+          }
+        }
+      }
+    },
+    "light": {
+      "description": "Null when a stored value is not finite (warned).",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["presetIndex", "sun", "fill", "ambient"],
+      "properties": {
+        "present": { "type": "boolean" },
+        "presetIndex": { "type": "integer", "minimum": -1 },
+        "sun": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["toSun", "unityForward", "blenderDirection", "color", "intensity"],
+          "properties": {
+            "toSun": { "description": "Toward the sun, map space: -MapEnvLight::sunDir (the env chunk stores the direction the light travels).", "$ref": "#/$defs/vec3" },
+            "unityForward": { "description": "The direction the light travels, Unity axes: -map_to_unity(toSun).", "$ref": "#/$defs/vec3" },
+            "blenderDirection": { "description": "The direction the light travels, Blender axes: -map_to_blender(toSun).", "$ref": "#/$defs/vec3" },
+            "color": { "$ref": "#/$defs/vec3" },
+            "intensity": { "type": "number" }
+          }
+        },
+        "fill": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["color", "intensity"],
+          "properties": {
+            "color": { "$ref": "#/$defs/vec3" },
+            "intensity": { "type": "number" }
+          }
+        },
+        "ambient": { "description": "fillColor * min(fillIntensity, 1) (castlemist's choice).", "$ref": "#/$defs/vec3" }
+      }
+    },
+    "spawn": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["map", "unity"],
+      "properties": {
+        "map": { "$ref": "#/$defs/vec3" },
+        "unity": { "description": "map_to_unity(map): map units, Unity axes; the importer applies unityScale on the map root.", "$ref": "#/$defs/vec3" }
+      }
+    },
+    "frameProbe": {
+      "description": "Null when its position is not finite (warned).",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["glb", "fbx", "map", "expect"],
+      "properties": {
+        "glb": { "type": "string" },
+        "fbx": { "type": ["string", "null"] },
+        "map": { "$ref": "#/$defs/vec3" },
+        "unity": { "$ref": "#/$defs/vec3" },
+        "expect": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["unity", "blender", "lengths"],
+          "properties": {
+            "unity": { "$ref": "#/$defs/axes" },
+            "blender": { "$ref": "#/$defs/axes" },
+            "lengths": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 }
+          }
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["props", "propsWritten", "propsSkipped", "models", "modelsFailed", "collisionInstances", "cells",
+                   "chunks", "chunksUnbaked", "animated", "animatedResolved", "clipsFailedDecode"],
+      "properties": {
+        "props": { "$ref": "#/$defs/count" },
+        "propsWritten": { "$ref": "#/$defs/count" },
+        "propsSkipped": { "$ref": "#/$defs/count" },
+        "models": { "$ref": "#/$defs/count" },
+        "modelsFailed": { "description": "Every model not ok, the empty ones included.", "$ref": "#/$defs/count" },
+        "modelsEmpty": { "description": "Optional: of modelsFailed, the models with no drawable meshes (status empty).", "$ref": "#/$defs/count" },
+        "collisionInstances": { "$ref": "#/$defs/count" },
+        "cells": { "$ref": "#/$defs/count" },
+        "chunks": { "$ref": "#/$defs/count" },
+        "chunksUnbaked": { "$ref": "#/$defs/count" },
+        "animated": { "$ref": "#/$defs/count" },
+        "animatedResolved": { "$ref": "#/$defs/count" },
+        "clipsFailedDecode": { "$ref": "#/$defs/count" },
+        "foliage": {
+          "description": "Optional, with the foliage block. records and colliderTrees are the cells' sums; modelsFoliageOnly the foliage models no written prop uses; skipped the instances with a degenerate transform; failedModel the records of failed or missing models; emptyModel (optional) the records of empty models (no drawable meshes), skipped as there is nothing to draw.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["records", "colliderTrees", "scatter", "density", "modelsFoliageOnly", "skipped", "failedModel"],
+          "properties": {
+            "records": { "$ref": "#/$defs/count" },
+            "colliderTrees": { "$ref": "#/$defs/count" },
+            "scatter": { "$ref": "#/$defs/count" },
+            "density": { "$ref": "#/$defs/count" },
+            "modelsFoliageOnly": { "$ref": "#/$defs/count" },
+            "skipped": { "$ref": "#/$defs/count" },
+            "failedModel": { "$ref": "#/$defs/count" },
+            "emptyModel": { "$ref": "#/$defs/count" },
+            "terrainTrees": { "$ref": "#/$defs/count" },
+            "detailRecords": { "$ref": "#/$defs/count" }
+          }
+        }
+      }
+    },
+    "unityTerrain": {
+      "description": "Optional (world-foliage spec D7, 'manifest.json additions'; CLI --no-unity-terrain leaves it out). One Unity Terrain tile per block of tileChunks x tileChunks chunks, baked-layer mode. Positions, sizes, heights and check points are Unity axes (east +X, up +Y, north +Z) in map units before unityScale. Files: heights = heightmapResolution^2 uint16 LE, row 0 south, column 0 west, round((up - min) / (max - min) * 65535) with up = -z (vertex samples, no triangle split: terrainColliderDiagonal); holes = (heightmapResolution - 1)^2 8-bit PNG, white = surface, row 0 north, edge tiles only; albedo = the block's cell albedos assembled pixel-exact, row 0 north; details[].counts = detailResolution^2 8-bit PNG, row 0 north, the number of that prototype's records in each detailCellUnits cell (floor((x - x0) / 48), floor((y1 - y) / 48)), clamped to 255; trees.file = 24-byte records, u32 prototype (treePrototypes index), f32 u, v (0..1 along +X and +Z from the tile's south-west corner), f32 h ((up - min) / (max - min)), f32 yaw (unityYaw), f32 scale (unity.s). A Terrain tree's foliage record has flag bit 3.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tileChunks", "heightmapResolution", "detailResolution", "detailCellUnits", "heightRange",
+                   "fadeQualityScale", "tiles", "detailPrototypes", "treePrototypes", "check"],
+      "properties": {
+        "tileChunks": { "type": "integer", "minimum": 1 },
+        "heightmapResolution": { "type": "integer", "minimum": 3 },
+        "detailResolution": { "type": "integer", "minimum": 1 },
+        "detailCellUnits": { "type": "number", "minimum": 0 },
+        "heightRange": {
+          "description": "Map-wide min and max of up = -z over every terrain sample, map units.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["min", "max"],
+          "properties": { "min": { "type": "number" }, "max": { "type": "number" } }
+        },
+        "fadeQualityScale": { "description": "settings.zoneFadeQualityScale, copied (ruling S5): the importers multiply the prototypes' stored fadeFar by it by default.", "type": "number", "minimum": 0 },
+        "tiles": { "type": "array", "items": { "$ref": "#/$defs/unityTerrainTile" } },
+        "detailPrototypes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["model", "minScale", "maxScale", "fadeFar"],
+            "properties": {
+              "model": { "description": "Position in models[].", "type": "integer", "minimum": 0 },
+              "minScale": { "description": "The smallest unity.s of its records.", "type": ["number", "null"] },
+              "maxScale": { "description": "The largest unity.s of its records.", "type": ["number", "null"] },
+              "fadeFar": { "description": "The largest stored fadeRange[1] of its records' layers (not scaled by fadeQualityScale).", "type": ["number", "null"] }
+            }
+          }
+        },
+        "treePrototypes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["model", "fadeFar"],
+            "properties": {
+              "model": { "description": "Position in models[].", "type": "integer", "minimum": 0 },
+              "fadeFar": { "description": "The largest stored fadeRange[1] of its records' layers (not scaled by fadeQualityScale).", "type": ["number", "null"] }
+            }
+          }
+        },
+        "check": {
+          "description": "The terrain frame check: points xz-uniform in the tiles' real area, height = -terrain_height_at (bilinear over the chunk's samples), absolute Unity y.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["unity", "height"],
+            "properties": {
+              "unity": { "description": "Unity x, z (= map x, y).", "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+              "height": { "type": "number" }
+            }
+          }
+        }
+      }
+    },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "status": { "enum": ["UNPROVEN", "castlemist's choice", "measured"] },
+    "count": { "type": "integer", "minimum": 0 },
+    "vec3": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+    "vec4": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 },
+    "rgba": { "type": "array", "items": { "type": "number", "minimum": 0, "maximum": 1 }, "minItems": 4, "maxItems": 4 },
+    "int4": { "type": "array", "items": { "type": "integer" }, "minItems": 4, "maxItems": 4 },
+    "mat3": { "type": "array", "items": { "$ref": "#/$defs/vec3" }, "minItems": 3, "maxItems": 3 },
+    "mat4": { "type": "array", "items": { "type": "number" }, "minItems": 16, "maxItems": 16 },
+    "axes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["east", "north", "up"],
+      "properties": {
+        "east": { "$ref": "#/$defs/vec3" },
+        "north": { "$ref": "#/$defs/vec3" },
+        "up": { "$ref": "#/$defs/vec3" }
+      }
+    },
+    "setting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "status", "source"],
+      "properties": {
+        "value": { "type": ["number", "string", "boolean"] },
+        "status": { "$ref": "#/$defs/status" },
+        "source": { "type": "string" }
+      }
+    },
+    "uvScroll": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["material", "uvIndex", "scroll", "unit"],
+      "properties": {
+        "material": { "type": "string" },
+        "uvIndex": { "type": "integer", "minimum": 0 },
+        "scroll": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+        "unit": { "const": "per second, UNPROVEN" }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "fileId", "folder", "glb", "fbx", "materials", "triangles", "textureBytes", "clips",
+                   "darkDecalMaterials", "uvScroll", "status"],
+      "properties": {
+        "index": { "description": "scene.models index.", "type": "integer", "minimum": 0 },
+        "fileId": { "type": "integer", "minimum": 0 },
+        "folder": { "type": ["string", "null"] },
+        "glb": { "type": ["string", "null"] },
+        "fbx": { "type": ["string", "null"] },
+        "materials": { "type": ["string", "null"] },
+        "triangles": { "$ref": "#/$defs/count" },
+        "textureBytes": { "$ref": "#/$defs/count" },
+        "clips": { "type": "array", "items": { "type": "string" } },
+        "darkDecalMaterials": { "type": "array", "items": { "type": "string" } },
+        "uvScroll": { "type": "array", "items": { "$ref": "#/$defs/uvScroll" } },
+        "status": { "description": "empty: loaded, but no drawable meshes; nothing to place.", "enum": ["ok", "failed", "empty"] },
+        "error": { "type": "string" },
+        "materialKeys": {
+          "description": "Task 15d (optional): the key (sharedMaterials) of each materials.json entry, in order.",
+          "type": "array", "items": { "type": "string" }
+        },
+        "lods": {
+          "description": "Task 15b (optional; docs/research/gw2-model-lods.md amendment 2026-10-17). levels: LOD0..LOD(levels-1) in the glb, each mesh's own LOD1 / LOD2 index sets on nodes '<LOD0 node>_LOD<k>' (a mesh without its own level repeats its coarser one: settings.lodMissingLevel). distances: the model's switch distances in model units (lodOverride[k] when > 0, else the client's 3500 / 7500; settings.lodDistances); the client switches at distance x the instance's largest axis scale. lodOverride: ModelFileData.lodOverride as stored, null when the MODL version has none. triangles: drawn at each level.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["levels", "distances", "distanceSource", "lodOverride", "triangles"],
+          "properties": {
+            "levels": { "type": "integer", "minimum": 1, "maximum": 3 },
+            "distances": { "type": "array", "items": { "type": "number", "minimum": 0 }, "minItems": 2, "maxItems": 2 },
+            "distanceSource": { "type": "array", "items": { "enum": ["lodOverride", "default"] }, "minItems": 2, "maxItems": 2 },
+            "lodOverride": { "type": ["array", "null"], "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+            "triangles": { "type": "array", "items": { "$ref": "#/$defs/count" }, "minItems": 1, "maxItems": 3 }
+          }
+        }
+      }
+    },
+    "cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "chunks", "rect", "origin", "glb", "fbx", "albedo", "albedoSize", "water", "colliderParts",
+                   "colliderTriangles", "budget", "instances"],
+      "properties": {
+        "id": { "description": "c<cx0>_<cy0>_<w>x<h> or c_all.", "type": "string" },
+        "chunks": { "description": "Inclusive chunk rect cx0, cy0, cx1, cy1; null for c_all.",
+                    "type": ["array", "null"], "items": { "type": "integer" }, "minItems": 4, "maxItems": 4 },
+        "rect": { "$ref": "#/$defs/vec4" },
+        "origin": { "description": "Rect centre, z 0: the Cell node's translation (map space).", "$ref": "#/$defs/vec3" },
+        "glb": { "type": "string" },
+        "fbx": { "type": ["string", "null"] },
+        "albedo": { "type": ["string", "null"] },
+        "albedoSize": { "type": ["array", "null"], "items": { "type": "integer", "minimum": 0 }, "minItems": 2, "maxItems": 2 },
+        "water": {
+          "description": "The cell's water plane; texture null (and a note) for the flat colour.",
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["texture", "z"],
+          "properties": {
+            "texture": { "type": ["string", "null"] },
+            "z": { "type": "number" },
+            "note": { "type": "string" }
+          }
+        },
+        "colliderParts": { "$ref": "#/$defs/count" },
+        "colliderTriangles": { "$ref": "#/$defs/count" },
+        "budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["triangles", "textureMB", "split", "overBudget"],
+          "properties": {
+            "triangles": { "$ref": "#/$defs/count" },
+            "textureMB": { "type": "number", "minimum": 0 },
+            "split": { "type": "boolean" },
+            "overBudget": { "type": "boolean" }
+          }
+        },
+        "instances": { "type": "array", "items": { "$ref": "#/$defs/instance" } },
+        "foliage": {
+          "description": "Optional. The cell's foliage records (castlemist-foliage-1, see the top-level foliage block), or null when it has none.",
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["file", "records", "colliderTrees", "triangles"],
+          "properties": {
+            "file": { "description": "foliage/<cellId>.bin; its size is records x foliage.recordBytes.", "type": "string" },
+            "records": { "$ref": "#/$defs/count" },
+            "colliderTrees": { "description": "Records with flag bit 0.", "$ref": "#/$defs/count" },
+            "triangles": { "description": "LOD0 triangles of the records' models; not in budget.triangles.", "$ref": "#/$defs/count" }
+          }
+        }
+      }
+    },
+    "unityTerrainTile": {
+      "description": "One Unity Terrain tile: the block whose north-west chunk is (cx0, cy0), id t<cx0>_<cy0>.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "chunks", "position", "size", "heights", "holes", "albedo", "albedoSize", "details", "trees"],
+      "properties": {
+        "id": { "type": "string" },
+        "chunks": { "description": "The real chunks, inclusive cx0, cy0, cx1, cy1 (an edge tile is padded past them).", "$ref": "#/$defs/int4" },
+        "position": { "description": "The south-west corner: map x, min, map y of the padded block.", "$ref": "#/$defs/vec3" },
+        "size": { "description": "The padded block's width, max - min, its height (north-south).", "$ref": "#/$defs/vec3" },
+        "heights": { "type": "string" },
+        "holes": { "type": ["string", "null"] },
+        "albedo": { "type": "string" },
+        "albedoSize": { "type": "array", "items": { "type": "integer", "minimum": 1 }, "minItems": 2, "maxItems": 2 },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["prototype", "counts", "records"],
+            "properties": {
+              "prototype": { "description": "detailPrototypes index.", "type": "integer", "minimum": 0 },
+              "counts": { "type": "string" },
+              "records": { "description": "The records counted, before the clamp to 255.", "$ref": "#/$defs/count" }
+            }
+          }
+        },
+        "trees": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["file", "records"],
+          "properties": { "file": { "type": "string" }, "records": { "$ref": "#/$defs/count" } }
+        }
+      }
+    },
+    "foliageLayer": {
+      "description": "One zone layer (layerDefArray entry), in scene order; records name it by position.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "zoneDef", "layer", "type", "width", "height", "radiusGround", "fadeRange", "scaleRange",
+                   "rotRange", "layerFlags", "material", "target", "models"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "zoneDef": { "type": "integer", "minimum": 0 },
+        "layer": { "description": "0-based index in its zone def.", "type": "integer", "minimum": 0 },
+        "type": { "type": "integer", "minimum": 0 },
+        "width": { "type": "integer", "minimum": 0 },
+        "height": { "type": "integer", "minimum": 0 },
+        "radiusGround": { "type": "integer", "minimum": 0 },
+        "fadeRange": { "description": "As stored; camera distance in map units is UNPROVEN (zoneFade).", "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+        "scaleRange": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+        "rotRange": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }, "minItems": 3, "maxItems": 3 },
+        "layerFlags": { "type": "integer", "minimum": 0 },
+        "material": { "type": ["integer", "null"], "minimum": 0 },
+        "target": { "description": "zoneLayerTypeTarget: types 1-2 detail, 3 tree; null for any other type.", "enum": ["tree", "detail", null] },
+        "models": { "description": "models[] positions by modelArray slot; null for a slot not exported.", "type": "array", "items": { "type": ["integer", "null"], "minimum": 0 } }
+      }
+    },
+    "foliageModel": {
+      "description": "A model with foliage records.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "zoneTypes", "fadeFar", "wind", "terrainDetail"],
+      "properties": {
+        "model": { "description": "Position in models[].", "type": "integer", "minimum": 0 },
+        "zoneTypes": { "description": "The types of the layers that name it.", "type": "array", "items": { "type": "integer", "minimum": 0 } },
+        "fadeFar": { "description": "The largest fadeRange[1] of those layers; null when none names it.", "type": ["number", "null"] },
+        "wind": { "description": "A traced material's VS uniforms name VegPara (true), traced without it (false), not traced (null). Recorded, not acted on (foliageWind).", "type": ["boolean", "null"] },
+        "terrainDetail": { "description": "Eligible as a Unity detail: ok, one mesh, one material, a layer of type 1 or 2.", "type": "boolean" }
+      }
+    },
+    "instance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prop", "model", "group", "m", "unity", "clip"],
+      "properties": {
+        "prop": { "description": "scene.props index.", "type": "integer", "minimum": 0 },
+        "model": { "description": "Position in the manifest's models array.", "type": "integer", "minimum": 0 },
+        "group": { "type": "string" },
+        "m": { "description": "PropInstance::world: column-major, map space, absolute.", "$ref": "#/$defs/mat4" },
+        "unity": {
+          "description": "The instance's local transform under its Cell node: map_matrix_to_unity(m with the cell origin subtracted from its translation) as t, r (xyzw, w >= 0) and s. t is in map units relative to the cell origin, in Unity axes; unityScale is not applied here (the importer applies it on the map root).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["t", "r", "s"],
+          "properties": {
+            "t": { "description": "Map units, relative to the cell origin, Unity axes (x, -z, y).", "$ref": "#/$defs/vec3" },
+            "r": { "$ref": "#/$defs/vec4" },
+            "s": { "type": "number", "minimum": 0 }
+          }
+        },
+        "clip": { "type": ["string", "null"] },
+        "lod": {
+          "description": "Task 15b (optional): the placement's own switch distances, model units: prp2 lod1 / lod2 when its flags have bit 16 (OVERRIDE_LOD) and they are not both 0 (negatives 0, clamped to 100000). Absent: the model's lods.distances apply.",
+          "type": "array", "items": { "type": "number", "minimum": 0 }, "minItems": 2, "maxItems": 2
+        }
+      }
+    }
+  }
+}

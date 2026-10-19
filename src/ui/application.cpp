@@ -11,15 +11,19 @@
 ///     process exits silently after ~2 seconds with no window and no WER event.
 
 #include "detail/app_state.h"
+#include "detail/map_window.h"
+#include "detail/map_window_loader.h"
 
 #include <ole2.h>
 
 #include "castlemist/core/env.h"
 #include "castlemist/core/text.h"
 #include "castlemist/render/gw2bgfx_view.h"
+#include "castlemist/render/world_sky.h"
 #include "castlemist/ui/application.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstdio>
 #include <cwchar>
 #include <thread>
@@ -322,7 +326,11 @@ int run(HINSTANCE hInstance, int cmd_show) {
         // -- the subtitle search needs the CINP list.
         {
             std::string ierr;
-            bool iok = castlemist::db::open(L"dumps/index/gw2_index.db", ierr);
+            bool iok = false;
+            for (const std::wstring& cand : index_db_candidates())
+                if (GetFileAttributesW(cand.c_str()) != INVALID_FILE_ATTRIBUTES &&
+                    (iok = castlemist::db::open(cand, ierr)))
+                    break;
             log("index db open=%d (%s)\n", (int)iok, ierr.c_str());
         }
         {
@@ -566,6 +574,10 @@ int run(HINSTANCE hInstance, int cmd_show) {
             uint32_t idx = static_cast<uint32_t>(atoi(al));
             ExtractedEntry e = extract_entry(g_app->data_gw2, idx);
             bool isMap = (e.kind == PreviewKind::Map);
+            if (isMap) {   // as the extract thread does for a clicked map entry
+                const std::vector<uint32_t> fids = get_by_file_id(g_app->data_gw2, idx + 1);
+                e.text_preview = map_preview_text(g_app->data_gw2.file_info.file_path, fids.empty() ? 0 : fids.front());
+            }
             apply_extracted_entry(idx, std::move(e));
             castlemist::render::on_resize(1000, 800);
             if (const char* li = std::getenv("GW2_LIGHTINT")) castlemist::render::set_light_intensity((float)atof(li));
@@ -578,22 +590,8 @@ int run(HINSTANCE hInstance, int cmd_show) {
                 float z = (float)atof(zm); if (z > 0.01f) castlemist::render::zoom(z);
             }
             if (isMap) {
-                castlemist::render::save_screenshot(dump_path("shot_map.bmp").c_str());
-                castlemist::render::set_layer_visible(castlemist::render::LAYER_COLLISION, true);
-                castlemist::render::save_screenshot(dump_path("shot_map_coll.bmp").c_str());
-                castlemist::render::set_layer_visible(castlemist::render::LAYER_COLLISION, false);
-                auto zl = build_map_zone_layer(g_app->current_entry.decompressed, g_app->data_gw2.file_info.file_path);
-                if (zl && !zl->instances.empty()) {
-                    std::vector<castlemist::render::SceneInstance> zi;
-                    for (const MapInstance& mi : zl->instances) {
-                        castlemist::render::SceneInstance si; si.model = mi.model;
-                        for (int k = 0; k < 3; ++k) { si.pos[k] = mi.pos[k]; si.rot[k] = mi.rot[k]; }
-                        si.scale = mi.scale; si.layer = mi.layer; zi.push_back(si);
-                    }
-                    castlemist::render::add_scene_models(zl->models, zi);
-                }
-                castlemist::render::set_layer_visible(castlemist::render::LAYER_ZONE, true);
-                castlemist::render::save_screenshot(dump_path("shot_map_zone.bmp").c_str());
+                // A map entry previews as text (world_summary); the Map Window
+                // (GW2_MAPWIN) is the map's headless shot.
             } else {
                 castlemist::render::set_show_skeleton(false); // isolate the MESH
                 castlemist::render::set_animation(-1);
@@ -776,27 +774,115 @@ int run(HINSTANCE hInstance, int cmd_show) {
         }
     }
 
+    // Debug: GW2_MAPWIN=<map fileId> loads the dat (GW2_DAT, as GW2_AUTOLOAD)
+    // and opens the Map window on that map. The window itself waits until
+    // every model is loaded or failed (at most 600 s), renders one 1280x720
+    // frame to GW2_MAPWIN_SHOT (default shot_mapwin.bmp), writes one stats
+    // line to mapwin.txt and closes the app. Everything runs through the
+    // normal message loop below; nothing here blocks the UI thread.
+    const bool mapwin_hook = std::getenv("GW2_MAPWIN") != nullptr;
+    if (mapwin_hook) {
+        const char* mw = std::getenv("GW2_MAPWIN");
+        MapWinHeadless h;
+        const char* shot = std::getenv("GW2_MAPWIN_SHOT");
+        h.shotPath = shot && *shot ? shot : dump_path("shot_mapwin.bmp");
+        h.statsPath = dump_path("mapwin.txt");
+        h.quitWindow = hwnd;
+        h.geometry = castlemist::ui::mapwin_shading_is_geometry(castlemist::core::env::text("GW2_MAPWIN_SHADING"));
+        h.shader = castlemist::ui::mapwin_shading_from_text(castlemist::core::env::text("GW2_MAPWIN_SHADING")) ==
+                   castlemist::render::WorldShading::Shader;
+        // GW2_MAPWIN_SKY=day|night|off and/or approx|proven, e.g. "night,proven":
+        // the sky's time of day (Day otherwise) and bake (the approximate sky otherwise).
+        castlemist::render::parse_world_sky(castlemist::core::env::text("GW2_MAPWIN_SKY"), h.sky, h.skyKind);
+        // Minimum below 0 so that GW2_MAPWIN_TIME=0 is honoured (real() ignores values <= minimum).
+        if (castlemist::core::env::is_set("GW2_MAPWIN_TIME")) {
+            h.fixedTime = true;
+            h.time = std::max(0.0f, castlemist::core::env::real("GW2_MAPWIN_TIME", 0.0f, -1e9f));
+        }
+        h.focusAnimated = castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "animated";
+        h.focusProps = castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "props";
+        h.focusZoneTree = castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "zonetree";
+        h.focusHorizon = castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "horizon";
+        if (castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "foliage") h.focusFoliage = 0.9f;
+        if (castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "foliagemax") h.focusFoliage = 1.0f;
+        if (castlemist::core::env::text("GW2_MAPWIN_FOCUS") == "forest") { h.focusFoliage = 1.0f; h.focusForest = true; }
+        if (castlemist::core::env::is_set("GW2_MAPWIN_FOLIAGE_SCALE"))
+            h.foliageScale = castlemist::core::env::real("GW2_MAPWIN_FOLIAGE_SCALE", 0.0f, 0.0f);
+        // GW2_MAPWIN_FOLIAGE=off|colliders|all: the Foliage layer (on, Colliders otherwise).
+        h.foliage = castlemist::ui::mapwin_foliage_from_text(castlemist::core::env::text("GW2_MAPWIN_FOLIAGE"));
+        if (castlemist::core::env::is_set("GW2_MAPWIN_SHADER_RANGE"))
+            h.shaderRange = castlemist::core::env::real("GW2_MAPWIN_SHADER_RANGE", 0.0f, -1.0f);
+        if (castlemist::core::env::is_set("GW2_MAPWIN_SHADER_MAX"))
+            h.shaderMax = static_cast<int>(castlemist::core::env::real("GW2_MAPWIN_SHADER_MAX", -1.0f, -2.0f));
+        // GW2_MAPWIN_BENCH=<frames>: frames timed after the shot (default 30, 0 = none).
+        if (castlemist::core::env::is_set("GW2_MAPWIN_BENCH"))
+            h.benchFrames = static_cast<int>(std::max(0.0f, castlemist::core::env::real("GW2_MAPWIN_BENCH", 30.0f, -1.0f)));
+        try {
+            if (!g_app->dat_loaded) {
+                const char* dat_env = std::getenv("GW2_DAT");
+                load_dat_file(g_app->data_gw2,
+                              dat_env && *dat_env
+                                  ? dat_env
+                                  : "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Guild Wars 2\\Gw2.dat");
+                g_app->dat_loaded = true;
+            }
+            open_map_window(hwnd, static_cast<uint32_t>(std::strtoul(mw, nullptr, 10)), &h);
+        } catch (const std::exception& ex) {
+            if (FILE* f = std::fopen(h.statsPath.c_str(), "wb")) {
+                std::fprintf(f, "map=%s ok=0 error=\"dat: %s\"\n", mw, ex.what());
+                std::fclose(f);
+            }
+            PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        }
+    }
+
     // Best-effort: open the index under dumps/index/ so the browser comes up
     // already indexed against the latest Gw2.dat build (File > Open Index DB
     // overrides). Runs here -- after the window is shown and past the headless
     // GW2_* self-test hooks (which return early) -- rather than in WM_CREATE, so
     // its synchronous .dat MFT load can't abort window creation and doesn't
     // interfere with the debug hooks. Exceptions are contained.
-    try {
-        try_autoload_index(hwnd);
-    } catch (const std::exception&) {
-        // Fall back to manual File > Open Index DB; the app still runs.
+    // (Not under GW2_MAPWIN: its synchronous dat load would only delay the
+    // headless run, which needs nothing from the index.)
+    if (!mapwin_hook) {
+        try {
+            try_autoload_index(hwnd);
+        } catch (const std::exception&) {
+            // Fall back to manual File > Open Index DB; the app still runs.
+        }
     }
     request_data_status_refresh();
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        if (accel_table == nullptr || !TranslateAcceleratorW(hwnd, accel_table, &msg)) {
+        // The accelerator (Enter = Search) belongs to the main window only:
+        // Enter in another top-level window (the Map window) must not search.
+        const bool main_msg = msg.hwnd == hwnd || (msg.hwnd && GetAncestor(msg.hwnd, GA_ROOT) == hwnd);
+        if (accel_table == nullptr || !main_msg || !TranslateAcceleratorW(hwnd, accel_table, &msg)) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
     }
+    // Map window threads stop once the window's WM_DESTROY bumps the
+    // generation (model workers between models); give them a moment so none
+    // is still running into process teardown.
+    const bool workers_done = mapwin_wait_workers(3000);
+    // A world export is cancelled (WM_CLOSE asked first) and given a moment to
+    // stop; one still inside load_world or Blender's last file cannot be, so
+    // the process ends below without CRT teardown, which also closes Blender's
+    // kill-on-close job (review I5).
+    cancel_world_export();
+    const bool export_done = wait_world_export(5000);
     OleUninitialize();
+    if (!workers_done || !export_done) {
+        // A Map window thread is still inside load_world (or one model load),
+        // which cannot be cancelled. Returning would run the CRT's static
+        // destructors under it (the struct template, the theme, ...); end the
+        // process without that teardown instead, after flushing what was
+        // written.
+        std::fflush(nullptr);
+        ExitProcess(static_cast<UINT>(msg.wParam));
+    }
     return static_cast<int>(msg.wParam);
 }
 

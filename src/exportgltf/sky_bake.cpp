@@ -6,11 +6,21 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <memory>
+#include <string>
 
 namespace castlemist::exportgltf::sky {
 
 using castlemist::model::Extractor;
+
+const char* input_source_name(InputSource s) {
+    switch (s) {
+    case InputSource::Measured: return "measured";
+    case InputSource::Derived: return "derived from static code";
+    default: return "UNPROVEN guess";
+    }
+}
 
 // gw2-sky.md §1: GW2 sky space is left-handed, X east, Y north, Z down.
 void gw2_to_unity(const float gw2[3], float unity[3]) {
@@ -63,6 +73,32 @@ Rgba lookup(const Image& img, float u, float v, int row0, int row1) {
 }
 
 Rgba lookup(const Image& img, float u, float v) { return lookup(img, u, v, 0, img.height - 1); }
+
+/// Bilinear lookup with wrap (D3D WRAP addressing), for tiling layers.
+Rgba lookup_wrap(const Image& img, float u, float v) {
+    const float fx = u * img.width - 0.5f, fy = v * img.height - 0.5f;
+    const float x0f = std::floor(fx), y0f = std::floor(fy);
+    const float tx = fx - x0f, ty = fy - y0f;
+    auto wrap = [](long long i, int n) { return static_cast<int>(((i % n) + n) % n); };
+    const long long x0 = static_cast<long long>(x0f), y0 = static_cast<long long>(y0f);
+    const int xs[2] = {wrap(x0, img.width), wrap(x0 + 1, img.width)};
+    const int ys[2] = {wrap(y0, img.height), wrap(y0 + 1, img.height)};
+    const float wx[2] = {1 - tx, tx}, wy[2] = {1 - ty, ty};
+    Rgba out;
+    for (int j = 0; j < 2; ++j)
+        for (int i = 0; i < 2; ++i) {
+            const uint8_t* p = &img.rgba[(static_cast<size_t>(ys[j]) * img.width + xs[i]) * 4];
+            const float w = wx[i] * wy[j] / 255.0f;
+            out.r += p[0] * w;
+            out.g += p[1] * w;
+            out.b += p[2] * w;
+            out.a += p[3] * w;
+        }
+    return out;
+}
+
+float frac(float x) { return x - std::floor(x); }
+float smooth01(float f) { return f * f * (3 - 2 * f); }
 
 bool image_ok(const Image& img) {
     return img.width > 0 && img.height > 0 &&
@@ -311,30 +347,452 @@ struct Card {
     }
 };
 
+// ---- approximate sky (gw2-sky.md amendment 2026-10-17) -----------------
+
+/// The sun-glow / SH lighting term shared by the hemicube (§5), the cards
+/// (§9.4) and the clouds (§10.4): `col = T + w (G - T)`, with g taken from
+/// @p v and the ambient from (-v, 1).
+struct Glow {
+    bool on = false;
+    float sunClr[3] = {1, 1, 1}, sunDir[3] = {0, 0, 1}, sh[3][4] = {};
+
+    void apply(const float T[3], const float v[3], float w, float out[3]) const {
+        if (!on || w == 0) {
+            for (int k = 0; k < 3; ++k) out[k] = T[k];
+            return;
+        }
+        const float s = dot3(sunDir, v) * 0.25f + 0.75f;
+        const float g = ((1 - v[2]) + sunDir[2] * v[2]) * s * s;
+        const float lum = T[0] * 0.3f + T[1] * 0.59f + T[2] * 0.11f;
+        for (int k = 0; k < 3; ++k) {
+            const float amb = -v[0] * sh[k][0] - v[1] * sh[k][1] - v[2] * sh[k][2] + sh[k][3];
+            const float C = amb + (sunClr[k] - amb) * g;
+            const float X = C * T[k] + lum * lum * (T[k] + C - 2 * C * T[k]);
+            const float M = 0.5f * X + 0.5f * T[k];
+            const float G = M + (X - M) * g;
+            out[k] = T[k] + w * (G - T[k]);
+        }
+    }
+};
+
+/// One layer drawn over the hemicube in the approximate sky.
+struct Overlay {
+    virtual ~Overlay() = default;
+    virtual void blend(const float d[3], float dst[3]) const = 0;
+};
+
+/// Where direction @p d hits a card quad: its 0..1 quad coordinates (s left
+/// to right, r top to bottom) and texture uv (§9.5); false on a miss.
+bool card_hit(const Card& k, const float d[3], float& u, float& v) {
+    const float x = dot3(d, k.c);
+    if (x <= 0) return false;
+    const float a = dot3(d, k.eL) / x, b = dot3(d, k.eD) / x;
+    if (std::fabs(a) > k.tu || std::fabs(b) > k.tv) return false;
+    const float s = (1 - a / k.tu) / 2, r = (1 + b / k.tv) / 2;
+    u = k.uv[0] + (k.uv[1] - k.uv[0]) * s;
+    v = (1 - k.uv[2]) + ((1 - k.uv[3]) - (1 - k.uv[2])) * r;
+    return true;
+}
+
+/// A texture card with §9.4 in full: sun glow and haze toward FogColorFar.
+struct LitCard : Overlay {
+    Card geo;                    // placement, UVs, texture, brightness, density
+    Glow glow;
+    float lightW = 0;            // card.lightIntensity * sky LightIntensity
+    float fog[3] = {0, 0, 0};
+    float hazeBottom = 0, hazeFalloff = 0, hazeW = 0, minHaze = 0, cardFade = 1;
+
+    void blend(const float d[3], float dst[3]) const override {
+        float u, v;
+        if (!card_hit(geo, d, u, v)) return;
+        const Rgba T = lookup(*geo.tex, u, v);
+        const float t3[3] = {T.r, T.g, T.b};
+        float col[3];
+        glow.apply(t3, d, lightW, col);   // §9.4: g and the ambient from d
+        const float e = saturate(-d[2]);
+        const float f = saturate((e - hazeBottom) / hazeFalloff);
+        const float h = saturate((1 - smooth01(f)) * hazeW + minHaze);
+        const float al = std::clamp(T.a * geo.density * cardFade, 0.0f, 1.0f);
+        for (int k = 0; k < 3; ++k) {
+            const float rgb = (col[k] + (fog[k] - col[k]) * h) * geo.brightness;
+            dst[k] = rgb * al + dst[k] * (1 - al);
+        }
+    }
+};
+
+/// A material card drawn with the transcribed pixel shader of AMAT 1262294
+/// (PS 12, "flow fire"): two flow maps distort a noise texture, which picks
+/// a colour between colorl and colorh, masked by a second flow-distorted
+/// texture; then the §9.4 haze (skypara) and density / brightness (skyparb).
+struct FlowFireCard : Overlay {
+    Card geo;                                          // placement (uv = textures[0].textureUV)
+    std::shared_ptr<const Image> t[5];                 // t0..t4 = material textures[0..4]
+    float colorl[4] = {}, colorh[4] = {}, fireduv[4] = {}, flowspd[4] = {}, flowuv[4] = {}, flowbuv[4] = {},
+          firedfl[4] = {}, ramprmp[4] = {}, firesfl[4] = {}, opacity[4] = {};
+    float fog[3] = {0, 0, 0};
+    float skypara[4] = {}, skyparb[4] = {};
+    float time = 0, alphaRef = 0;
+
+    /// Scale and offset of one animated UV set:
+    /// (|2 frac(T c.y) - 1| (c.w - c.z) + c.z, frac(T c.x)).
+    void anim(const float c[4], float& scale, float& off) const {
+        scale = std::fabs(frac(time * c[1]) * 2 - 1) * (c[3] - c[2]) + c[2];
+        off = frac(time * c[0]);
+    }
+
+    void blend(const float d[3], float dst[3]) const override {
+        float u, v;
+        if (!card_hit(geo, d, u, v)) return;
+        const float v0[4] = {u, v, u, v};   // TEXCOORD1 / TEXCOORD0 through identity TexTransforms
+        float sc, off;
+        anim(flowuv, sc, off);
+        const Rgba f2 = lookup_wrap(*t[2], v0[0] * sc, v0[1] * sc + off);
+        anim(flowbuv, sc, off);
+        const Rgba f3 = lookup_wrap(*t[3], v0[0] * sc, v0[1] * sc + off);
+        const float flow[2] = {(f2.r * 2 - 1) + (f3.r * 2 - 1), (f2.g * 2 - 1) + (f3.g * 2 - 1)};
+        const float fd[2] = {flow[0] * firedfl[0], flow[1] * firedfl[0]};
+        anim(fireduv, sc, off);
+        const float base[2] = {v0[0] * sc, v0[1] * sc + off};
+        const float ph1 = frac(flowspd[0] * time - 0.5f), ph2 = frac(time * flowspd[0]);
+        const float A = lookup_wrap(*t[1], fd[0] * ph1 + base[0], fd[1] * ph1 + base[1]).g;
+        const float B = lookup_wrap(*t[1], fd[0] * ph2 + base[0], fd[1] * ph2 + base[1]).g;
+        const float w2 = std::fabs(ph2 * 2 - 1);
+        const float n = B + w2 * (A - B);
+        const float k = smooth01(saturate((n + 0.05f) * 2.03593f));
+        float col[4];
+        for (int c = 0; c < 3; ++c) col[c] = (colorl[c] + n * (colorh[c] - colorl[c])) * k * 3.24f;
+        col[3] = k * 1.8f;
+        const float m = lookup_wrap(*t[4], v0[2], v0[3]).r * (ramprmp[1] - ramprmp[0]) + ramprmp[0];
+        const float dm[2] = {flow[0] * m * firesfl[0], flow[1] * m * firesfl[0]};
+        const float A0 = lookup_wrap(*t[0], dm[0] * ph1 + v0[2], dm[1] * ph1 + v0[3]).g;
+        const float B0 = lookup_wrap(*t[0], dm[0] * ph2 + v0[2], dm[1] * ph2 + v0[3]).g;
+        const float mask = B0 + w2 * (A0 - B0);
+        const float al = mask * col[3] * opacity[0];
+        if (al * skyparb[0] - alphaRef < 0) return;   // discard
+        const float e = saturate(-d[2]);
+        const float f = saturate((e - skypara[0]) * (1.0f / skypara[1]));
+        const float h = saturate((1 - smooth01(f)) * skypara[2] + skypara[3]);
+        const float outA = std::clamp(al * skyparb[0], 0.0f, 1.0f);
+        for (int c = 0; c < 3; ++c) {
+            const float rgb = mask * col[c] * opacity[0];
+            const float o = (rgb + (fog[c] - rgb) * h) * skyparb[1];
+            dst[c] = o * outA + dst[c] * (1 - outA);
+        }
+    }
+};
+
+/// One cloud layer, §10.5: a horizontal square at z = -altitude, half-size
+/// F m, centred under the camera, scroll 0, soft-particle factor 1.
+struct CloudLayer : Overlay {
+    std::shared_ptr<const Image> tex;
+    Glow glow;
+    float camZ = 0, planeZ = 0, Sw = 1, uvScale = 1, depth = 0, density = 0, haze = 0, lightW = 0,
+          brightness = 1, fadeEnd = 0, fadeWidth = 0, cloudFade = 1;
+    float fog[3] = {0, 0, 0};
+    // VS 1645 fog: min((1 - fz) (near.w - far.w) + far.w, fz) * haze, with
+    // fz = saturate((viewZ - d0) / (d1 - d0)); viewZ = s along this direction.
+    bool fogDist = false;
+    float d0 = 0, d1 = 0, nearW = 1, farW = 1;
+
+    void blend(const float d[3], float dst[3]) const override {
+        if (d[2] == 0) return;
+        const float s = (planeZ - camZ) / d[2];
+        if (!(s > 0)) return;
+        const float xl = s * d[0] / Sw, yl = s * d[1] / Sw;
+        if (std::fabs(xl) > 0.5f || std::fabs(yl) > 0.5f) return;
+        const float rr = std::min(std::sqrt(xl * xl + yl * yl) / 0.5f, 1.0f);
+        const float va = 1 - rr * rr * rr * rr;
+        const float u = (xl + 0.5f) * uvScale, v = (yl + 0.5f) * uvScale;   // cam.xy = 0, scroll 0
+        const float n[3] = {-d[0], -d[1], -d[2]};
+        const float a0 = lookup_wrap(*tex, u, v).a;
+        const Rgba T = lookup_wrap(*tex, u + (a0 - 0.5f) * depth * n[0], v + (a0 - 0.5f) * depth * n[1]);
+        const float t3[3] = {T.r, T.g, T.b};
+        float col[3];
+        glow.apply(t3, n, lightW, col);   // §10.4: as §9.4 with d replaced by n
+        float vf = saturate((std::fabs(camZ - planeZ) - fadeEnd) / (fadeEnd + fadeWidth));
+        vf *= vf;
+        const float al = std::clamp(va * density * cloudFade * T.a * vf, 0.0f, 1.0f);
+        const float fz = fogDist && d1 > d0 ? saturate((s - d0) / (d1 - d0)) : 1.0f;
+        const float fogAmt = std::min((1 - fz) * (nearW - farW) + farW, fz) * haze;
+        for (int k = 0; k < 3; ++k) {
+            const float rgb = (col[k] + (fog[k] - col[k]) * fogAmt) * brightness;
+            dst[k] = rgb * al + dst[k] * (1 - al);
+        }
+    }
+};
+
 /// Every baked layer of one mode, composed in the §7 order the blend states
 /// suggest: hemicube (opaque) -> stars (additive) -> cards (alpha).
 struct Composite {
     Hemicube base;
     std::shared_ptr<const StarLayer> stars;
     std::vector<Card> cards;
+    // Approximate sky only: the base's haze and glow, then every card and
+    // cloud layer as an overlay (cards in card order, then clouds farthest first).
+    bool approx = false;
+    Glow baseGlow;
+    float baseLightW = 0, fog[3] = {0, 0, 0}, hazeBottom = 0, hazeFalloff = 0, hazeW = 0;
+    std::vector<std::shared_ptr<const Overlay>> overlays;
 
     Rgb radiance(const float unity[3]) const {
         float g[3], c[3];
         unity_to_gw2(unity, g);
+        if (approx) return approx_radiance(g);
         base.radiance(g, c);
         if (stars) stars->add(g, c);
         for (const Card& k : cards) k.blend(g, c);
         // §5: the honest 8-bit mapping is clamp(c, 0, 1).
         return Rgb{std::clamp(c[0], 0.0f, 1.0f), std::clamp(c[1], 0.0f, 1.0f), std::clamp(c[2], 0.0f, 1.0f)};
     }
+
+    /// §5 in full (sun glow, horizon haze), then stars, then the overlays.
+    Rgb approx_radiance(const float g[3]) const {
+        float T[3], c[3];
+        base.radiance(g, T);   // tex.rgb * tex.a * Brightness
+        const float n[3] = {-g[0], -g[1], -g[2]};   // PS 1617: n = -view
+        baseGlow.apply(T, n, baseLightW, c);
+        float f = saturate((std::max(n[2], 0.0f) - hazeBottom) / hazeFalloff);
+        f = (1 - smooth01(f)) * hazeW;
+        for (int k = 0; k < 3; ++k) c[k] += (fog[k] - c[k]) * f;
+        if (stars) stars->add(g, c);
+        for (const auto& o : overlays) o->blend(g, c);
+        return Rgb{std::clamp(c[0], 0.0f, 1.0f), std::clamp(c[1], 0.0f, 1.0f), std::clamp(c[2], 0.0f, 1.0f)};
+    }
 };
 
 Rgb black(const float*) { return Rgb{}; }
 
+/// GW2 Token (base-23, gw2-uniform-hash.md): a material constant's name.
+std::string token_name(uint32_t token) {
+    static const char kAlpha[] = "abcdefghiklmnopvrstuwxy";
+    uint32_t v = token - 0x30000000u;
+    std::string out;
+    while (v) {
+        out += kAlpha[v % 23];
+        v /= 23;
+    }
+    return out;
+}
+
+/// §9.2 / §9.3 placement of one card attribute set at distance F.
+Card place_card(const Extractor::MapSkyCardAttr& at, float F) {
+    Card k;
+    const float az = at.azimuth, lat = at.latitude * kPi / 2;
+    const float ca = std::cos(az), sa = std::sin(az), cl = std::cos(lat), sl = std::sin(lat);
+    k.c[0] = cl * ca;  k.c[1] = cl * sa;  k.c[2] = -sl;
+    k.eL[0] = -sa;     k.eL[1] = ca;      k.eL[2] = 0;
+    k.eD[0] = sl * ca; k.eD[1] = sl * sa; k.eD[2] = cl;
+    k.tu = 1000 * std::max(at.scale[0], 1e-6f) / F;
+    k.tv = 1000 * std::max(at.scale[1], 1e-6f) / F;
+    std::copy(std::begin(at.textureUV), std::end(at.textureUV), k.uv);
+    k.brightness = at.brightness;
+    k.density = at.density;
+    return k;
+}
+
+std::string fmt(float v) {
+    char b[32];
+    std::snprintf(b, sizeof b, "%.4g", v);
+    return b;
+}
+
+/// The approximate sky's additions to one mode (gw2-sky.md amendment
+/// 2026-10-17): the hemicube's haze and sun glow, every card it can draw
+/// (texture cards with §9.4 in full, the flow-fire material card), then the
+/// cloud layers (§10.5), farthest first.
+void add_approx(Composite& out, BakeResult& res, const Extractor::MapSky& sky, size_t modeIndex,
+                const TextureMap& textures, const ApproxInputs& in) {
+    const bool day = modeIndex % 2 == 0;
+    const Extractor::MapSkyParams& p = sky.params;
+    const float F0 = sky.skyDistance;
+    out.approx = true;
+    res.warnings.push_back("approximate sky: layers the proven bake leaves out are drawn with the labelled "
+                           "inputs below (gw2-sky.md amendment 2026-10-17)");
+    for (const InputLabel& l : in.labels)
+        res.warnings.push_back("approx input: " + l.input + " = " + l.value + " [" + input_source_name(l.source) +
+                               "] " + l.note);
+
+    Glow glow;
+    glow.on = in.haveSun;
+    for (int k = 0; k < 3; ++k) {
+        glow.sunClr[k] = in.sunColor[k];
+        glow.sunDir[k] = in.sunDir[k];
+        for (int j = 0; j < 4; ++j) glow.sh[k][j] = in.sh[k][j];
+    }
+    const float fog[3] = {in.fogFar[0], in.fogFar[1], in.fogFar[2]};
+    const float HB = day ? p.dayHazeBottom : p.nightHazeBottom;
+    const float HF = day ? p.dayHazeFalloff : p.nightHazeFalloff;
+    const float HD = day ? p.dayHazeDensity : p.nightHazeDensity;
+    const float LI = day ? p.dayLightIntensity : p.nightLightIntensity;
+    const float hazeW = in.haveFog ? HD : 0.0f;   // without FogColorFar no haze at all
+
+    // §5: the base pass's own haze and glow.
+    out.baseGlow = glow;
+    out.baseLightW = LI;
+    for (int k = 0; k < 3; ++k) out.fog[k] = fog[k];
+    out.hazeBottom = HB;
+    out.hazeFalloff = HF;
+    out.hazeW = hazeW;
+    // "haze" and "sun glow" belong to the base pass: listed right after "base".
+    auto afterBase = std::find(res.layers.begin(), res.layers.end(), std::string("base"));
+    size_t pos = afterBase == res.layers.end() ? res.layers.size() : static_cast<size_t>(afterBase - res.layers.begin()) + 1;
+    if (HD != 0) {
+        if (in.haveFog) res.layers.insert(res.layers.begin() + static_cast<long>(pos++), "haze");
+        else res.warnings.push_back("haze: no FogColorFar for this mode; not baked");
+    }
+    if (LI != 0) {
+        if (in.haveSun) res.layers.insert(res.layers.begin() + static_cast<long>(pos++), "sun glow");
+        else res.warnings.push_back("sun glow: no sun colour / SH inputs; not baked");
+    }
+
+    // §9: every card in card order, texture and material cards alike.
+    size_t drawnCards = 0;
+    for (size_t i = 0; i < sky.cards.size(); ++i) {
+        const Extractor::MapSkyCard& card = sky.cards[i];
+        const Extractor::MapSkyCardAttr& at = day ? card.day : card.night;
+        const std::string ci = "sky cards: card " + std::to_string(i);
+        if (at.density == 0) continue;   // alpha 0 everywhere
+        if (card.flags & 0x8) {
+            res.warnings.push_back(ci + " aims at its location (flag 8), which needs the camera; not baked");
+            continue;
+        }
+        if (card.flags & 0x80) {
+            res.warnings.push_back(ci + " depends on the UNPROVEN `level` (flag 0x80); not baked");
+            continue;
+        }
+        Card geo = place_card(at, F0);
+        if (card.materialFile) {
+            if (card.materialFile != kFlowFireMaterial) {
+                res.warnings.push_back(ci + " (material fileId " + std::to_string(card.materialFile) +
+                                       ") has no transcribed shader; not baked");
+                continue;
+            }
+            auto ff = std::make_shared<FlowFireCard>();
+            bool texOk = card.materialTextures.size() >= 5;
+            for (int k = 0; texOk && k < 5; ++k) {
+                auto it = textures.find(card.materialTextures[k].fileId);
+                if (it == textures.end() || !image_ok(it->second)) texOk = false;
+                else ff->t[k] = std::make_shared<const Image>(it->second);
+            }
+            if (!texOk) {
+                res.warnings.push_back(ci + " (flow-fire material): a material texture is missing or not decoded; "
+                                            "not baked");
+                continue;
+            }
+            std::copy(std::begin(card.materialTextures[0].textureUV), std::end(card.materialTextures[0].textureUV),
+                      geo.uv);
+            ff->geo = geo;
+            for (const auto& c : card.materialConstants) {
+                const std::string nm = token_name(c.token);
+                float* dst = nm == "colorl" ? ff->colorl : nm == "colorh" ? ff->colorh : nm == "fireduv" ? ff->fireduv
+                           : nm == "flowspd" ? ff->flowspd : nm == "flowuv" ? ff->flowuv : nm == "flowbuv" ? ff->flowbuv
+                           : nm == "firedfl" ? ff->firedfl : nm == "ramprmp" ? ff->ramprmp : nm == "firesfl" ? ff->firesfl
+                           : nm == "opacity" ? ff->opacity : nullptr;
+                if (dst) std::copy(std::begin(c.value), std::end(c.value), dst);
+            }
+            for (int k = 0; k < 3; ++k) ff->fog[k] = fog[k];
+            // §9.4: the card draw sets skypara / skyparb itself (the tokens are
+            // in the reserved table 0x1427f1550, so the material's own are not used).
+            ff->skypara[0] = HB;
+            ff->skypara[1] = HF;
+            ff->skypara[2] = in.haveFog ? at.hazeDensity * HD : 0.0f;
+            ff->skypara[3] = in.haveFog ? at.minHaze : 0.0f;
+            ff->skyparb[0] = at.density * in.cardFade;
+            ff->skyparb[1] = at.brightness;
+            ff->time = in.time;
+            ff->alphaRef = in.alphaRef;
+            out.overlays.push_back(ff);
+            ++drawnCards;
+            res.warnings.push_back(ci + " (material " + std::to_string(card.materialFile) +
+                                   "): drawn with the transcribed PS 12 of that AMAT; quad UVs taken as "
+                                   "textures[0].textureUV with identity TexTransforms and t_i = textures[i] "
+                                   "(UNPROVEN: the material quad 0x140ca7740 and the sky path's effect choice "
+                                   "0x140aab550 were not traced)");
+            continue;
+        }
+        if (!at.texture) continue;
+        auto it = textures.find(at.texture);
+        if (it == textures.end() || !image_ok(it->second)) {
+            res.warnings.push_back(ci + " texture " + std::to_string(at.texture) + " missing or not decoded; not baked");
+            continue;
+        }
+        auto lc = std::make_shared<LitCard>();
+        geo.tex = std::make_shared<const Image>(it->second);
+        lc->geo = geo;
+        lc->glow = glow;
+        lc->lightW = at.lightIntensity * LI;
+        for (int k = 0; k < 3; ++k) lc->fog[k] = fog[k];
+        lc->hazeBottom = HB;
+        lc->hazeFalloff = HF;
+        lc->hazeW = in.haveFog ? at.hazeDensity * HD : 0.0f;
+        lc->minHaze = in.haveFog ? at.minHaze : 0.0f;
+        lc->cardFade = in.cardFade;
+        out.overlays.push_back(lc);
+        ++drawnCards;
+        if (std::find(res.cardTextures.begin(), res.cardTextures.end(), at.texture) == res.cardTextures.end())
+            res.cardTextures.push_back(at.texture);
+        if (at.minHaze > 0 && !in.haveFog)
+            res.warnings.push_back(ci + " minHaze > 0 but no FogColorFar: drawn un-hazed");
+    }
+    if (drawnCards) res.layers.push_back("cards");
+
+    // §10: cloud layers, attribute set 0 (day) / 1 (night); the third set
+    // (camera.z > level) is not used.
+    struct Pending { float dist; std::shared_ptr<CloudLayer> layer; };
+    std::vector<Pending> clouds;
+    const size_t slot = day ? 0 : 1;
+    for (size_t i = 0; i < sky.clouds.size(); ++i) {
+        const Extractor::MapSkyCloudLayer& L = sky.clouds[i];
+        const std::string li = "clouds: layer " + std::to_string(i);
+        if (L.attributes.size() <= slot) {
+            res.warnings.push_back(li + " has no attribute set " + std::to_string(slot) + "; not baked");
+            continue;
+        }
+        auto it = textures.find(L.texture);
+        if (!L.texture || it == textures.end() || !image_ok(it->second)) {
+            res.warnings.push_back(li + " texture " + std::to_string(L.texture) + " missing or not decoded; not baked");
+            continue;
+        }
+        const Extractor::MapSkyCloudAttr& A = L.attributes[slot];
+        auto cl = std::make_shared<CloudLayer>();
+        cl->tex = std::make_shared<const Image>(it->second);
+        cl->glow = glow;
+        const float m = 0.5925f + 0.4075f * L.extent;   // §10.2
+        cl->Sw = 2 * F0 * m;
+        cl->uvScale = m * L.scale;
+        cl->camZ = in.cameraZ;
+        cl->planeZ = -L.altitude;
+        cl->depth = L.depth;
+        cl->density = A.density;
+        // §10.4 fog, distance term from the haze's distRange (GrSetFog's FogParam0).
+        cl->haze = in.haveFog ? A.haze : 0.0f;
+        cl->fogDist = in.haveFogDist;
+        cl->d0 = in.fogDist[0];
+        cl->d1 = in.fogDist[1];
+        cl->nearW = in.fogNearW;
+        cl->farW = in.fogFar[3];
+        cl->lightW = A.lightIntensity * LI;
+        cl->brightness = A.brightness;
+        cl->fadeEnd = L.attributes.back().fadeEnd;   // §10.1: the last set's fade values win
+        cl->fadeWidth = L.attributes.back().fadeWidth;
+        cl->cloudFade = in.cloudFade;
+        for (int k = 0; k < 3; ++k) cl->fog[k] = fog[k];
+        clouds.push_back({std::fabs(cl->planeZ - cl->camZ), cl});
+    }
+    std::stable_sort(clouds.begin(), clouds.end(), [](const Pending& a, const Pending& b) { return a.dist > b.dist; });
+    for (const Pending& c : clouds) out.overlays.push_back(c.layer);
+    if (!clouds.empty()) {
+        res.layers.push_back("clouds");
+        res.warnings.push_back("clouds: drawn farthest first (order UNPROVEN), scroll 0 (the load state), camera "
+                               "x/y 0, soft-particle factor 1 (no scene depth), attribute set " +
+                               std::to_string(slot) + " (the camera.z > level set not used)");
+    }
+}
+
 } // namespace
 
 BakeResult make_sky_sampler(const Extractor::MapSky& sky, size_t modeIndex, const TextureMap& textures,
-                            const Extractor::MapStars* stars) {
+                            const Extractor::MapStars* stars, const ApproxInputs* approx) {
     BakeResult res;
     res.radiance = black;
     const std::string mode = "mode " + std::to_string(modeIndex);
@@ -356,11 +814,13 @@ BakeResult make_sky_sampler(const Extractor::MapSky& sky, size_t modeIndex, cons
     const float F0 = sky.skyDistance;   // §7.1
 
     // §10.5: clouds need a camera height, cloudFade and the engine fog.
-    if (!sky.clouds.empty()) res.warnings.push_back("clouds: UNPROVEN (gw2-sky.md §4); not baked");
-    if ((day ? p.dayHazeDensity : p.nightHazeDensity) != 0)
-        res.warnings.push_back("haze: inputs UNPROVEN (FogColorFar, gw2-sky.md §4/§5); not baked");
-    if ((day ? p.dayLightIntensity : p.nightLightIntensity) != 0)
-        res.warnings.push_back("sun glow: inputs UNPROVEN (sun colour, SH, gw2-sky.md §4/§5); not baked");
+    if (!approx) {
+        if (!sky.clouds.empty()) res.warnings.push_back("clouds: UNPROVEN (gw2-sky.md §4); not baked");
+        if ((day ? p.dayHazeDensity : p.nightHazeDensity) != 0)
+            res.warnings.push_back("haze: inputs UNPROVEN (FogColorFar, gw2-sky.md §4/§5); not baked");
+        if ((day ? p.dayLightIntensity : p.nightLightIntensity) != 0)
+            res.warnings.push_back("sun glow: inputs UNPROVEN (sun colour, SH, gw2-sky.md §4/§5); not baked");
+    }
 
     // §2: the base layer is the NE / SW / T hemicube.
     if (!m.hasPanorama()) {
@@ -436,9 +896,12 @@ BakeResult make_sky_sampler(const Extractor::MapSky& sky, size_t modeIndex, cons
         }
     }
 
+    // Approximate sky: base haze / glow, every card it can draw, the clouds.
+    if (approx) add_approx(*sky_out, res, sky, modeIndex, textures, *approx);
+
     // §9: texture sky cards, in card order, with this mode's attribute set.
     bool flag2 = false;
-    for (size_t i = 0; i < sky.cards.size(); ++i) {
+    for (size_t i = 0; !approx && i < sky.cards.size(); ++i) {
         const Extractor::MapSkyCard& card = sky.cards[i];
         const Extractor::MapSkyCardAttr& at = day ? card.day : card.night;
         const std::string ci = "sky cards: card " + std::to_string(i);
@@ -490,7 +953,7 @@ BakeResult make_sky_sampler(const Extractor::MapSky& sky, size_t modeIndex, cons
         if (std::find(res.cardTextures.begin(), res.cardTextures.end(), at.texture) == res.cardTextures.end())
             res.cardTextures.push_back(at.texture);
     }
-    if (!sky_out->cards.empty()) {
+    if (!approx && !sky_out->cards.empty()) {
         res.layers.push_back("cards");
         res.warnings.push_back("sky cards: haze, sun-light and cardFade terms UNPROVEN (FogColorFar, SH, sun "
                                "colour); reduced form rgb = T.rgb*brightness, a = T.a*density "

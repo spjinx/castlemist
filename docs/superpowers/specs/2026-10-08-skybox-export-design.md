@@ -81,7 +81,7 @@ fills cube modes 0–1 and leaves 2–3 null.
 `mode0`..`mode3`. Modes whose inputs are identical to an earlier mode are not
 written again; `sky.json` lists them as aliases of the first.
 
-`sky.json` per mode: the source fileIds used, sun direction (Unity axes) and
+`sky.json` per mode: the source fileIds used, sun direction (Unity axes; the direction the light travels, not toward the sun) and
 colour/intensity from the env light rig for that preset, and which layers made
 it into the bake.
 

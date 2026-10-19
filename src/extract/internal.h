@@ -170,6 +170,43 @@ std::vector<uint8_t> load_modl_bytes_by_fileid(Gw2Dat& dat, uint32_t fileId);
 std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& modl_bytes, Gw2Dat& dat,
                                                   const nlohmann::json& tpl, bool want_game = false);
 
+/// @brief As above, with full load options (decodeTextures=false keeps textures header-only).
+std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& modl_bytes, Gw2Dat& dat,
+                                                  const nlohmann::json& tpl, const ModelLoadOptions& opts);
+
+/// @brief Record `clips` on `out`: animationTokens gets every clip; animClips,
+///        animClipBank and animClipTokens get the ones `decode` returns valid.
+void append_decoded_clips(const std::vector<castlemist::model::AnimClip>& clips, ModelPreview& out,
+                          const std::function<castlemist::granny::Anim(const castlemist::model::AnimClip&)>& decode);
+
+/// @brief What the first bytes of an (uncompressed) ATEX say.
+struct AtexHeader {
+    int width = 0, height = 0;
+    std::string fmt;            ///< Format label, as ModelTextureCPU::fmt.
+    uint32_t firstMipSize = 0;  ///< dataSize of mip 0 (0 when the prefix is too short for it).
+};
+/// @brief Parse width/height/format (+ mip 0 size) from at least 12 bytes. False on bad magic/fourCC.
+bool parse_atex_header(const uint8_t* data, size_t n, AtexHeader& out);
+/// @brief Mip count for an ATEX of `totalSize` decompressed bytes, from its header alone:
+///        1 when mip 0 fills the file, else the full chain down to 1x1.
+int estimate_mip_count(const AtexHeader& h, size_t totalSize);
+
+/// @brief 2x2 box-average halving of RGBA8 (rounded); ow = max(1, w/2), oh = max(1, h/2); odd edges clamp.
+void halve_rgba(const std::vector<uint8_t>& in, int w, int h, std::vector<uint8_t>& out, int& ow, int& oh);
+
+/// @brief Mip chain from `level0` (RGBA8), halving until both sides are <= 4. Level 0 is first.
+std::vector<std::vector<uint8_t>> build_mips(std::vector<uint8_t> level0, int w, int h);
+
+/// @brief decode_texture_capped's fallback for an entry that is a plain "DDS "
+///        file, not ATEX (ruling P9; e.g. the water bump 186359): the top mip
+///        through dds::decode_rgba8 (uncompressed 32-bit only), `baseId` =
+///        @p i0 + 1, `fmt` "DDS", not a normal map. False (never throws) for
+///        any other magic, a block-compressed or other format, or short pixels.
+bool decode_dds_bytes(const std::vector<uint8_t>& bytes, size_t i0, ModelTextureCPU& out);
+
+/// @brief Header-only texture: fileId, baseId, size, fmt, mipCount, isNormal; `rgba` left empty.
+bool peek_texture_by_fileid(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out);
+
 /// @brief Overload that opens its own archive handle, for background threads with no shared Gw2Dat.
 std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& modl_bytes,
                                                   const std::string& dat_path,
@@ -205,52 +242,6 @@ std::set<uint32_t> layer_only_files(const std::vector<MaterialTextureSlot>& slot
 void assign_texture_slots(ModelMaterialCPU& mat, const std::vector<MaterialTextureSlot>& slots,
                           const std::set<uint32_t>& layerOnly,
                           const std::function<int(uint32_t)>& texIndexOf);
-
-// ---------------------------------------------------------------- map scene --
-// map_scene.cpp
-
-/// @brief Turn a map's height grid into a renderable terrain mesh.
-///
-/// @param t         Parsed terrain block.
-/// @param hasWaterZ A real water plane height was found in the `havk` chunk.
-/// @param waterZ    That height (GW2 is Z-up, so this is an altitude).
-/// @param skipFloodFillWater Suppress the guessed flood-fill water quad --
-///        pass true when build_water_model() below already has real `watr`
-///        surface geometry for this map, so the two don't draw on top of
-///        each other.
-/// @return null when the map has no terrain.
-std::shared_ptr<ModelPreview> build_terrain_model(const castlemist::model::Extractor::MapTerrain& t,
-                                                  bool hasWaterZ, float waterZ,
-                                                  bool skipFloodFillWater = false);
-
-/// @brief Turn a map's collision hull into a renderable wireframe-ish mesh.
-std::shared_ptr<ModelPreview> build_collision_model(const castlemist::model::Extractor::MapCollision& c);
-
-/// @brief Turn a map's `watr` surface geometry into a renderable mesh.
-///
-/// Distinct from build_terrain_model()'s flood-fill water quad: this is the
-/// game's own per-surface outline (see castlemist::model::Extractor::parseWater()),
-/// not a guess from where the ground dips below a flat plane.
-/// @return null when the map has no `watr` chunk (or it decoded to nothing).
-std::shared_ptr<ModelPreview> build_water_model(const castlemist::model::Extractor::MapWater& w);
-
-/// @brief Visualize a map's navigation data: coarse-graph node regions (boxes),
-/// portal connection edges (thin beams) and, when the fine navmesh's own
-/// bounding boxes are known, one box per `nm15`/`pnvm` chunk.
-///
-/// Coarse-graph geometry (nodes + portal edges) is exact -- see
-/// castlemist::model::Extractor::parseNavGraph(). The `nm15`/`pnvm` chunk
-/// boxes are bounding volumes only: the walkable-triangle payload inside each
-/// chunk is an undecoded opaque blob (see parseNavMesh()'s docstring), so
-/// this shows where that data lives spatially, not the walkable surface
-/// itself.
-/// @return null when neither source has anything to show.
-std::shared_ptr<ModelPreview> build_navmesh_model(const castlemist::model::Extractor::MapNavMesh& nm,
-                                                  const castlemist::model::Extractor::MapNavGraph& ng);
-
-/// @brief Load a map packfile's props, terrain and collision into one scene.
-std::shared_ptr<MapScene> build_map_scene(const std::vector<uint8_t>& map_bytes,
-                                          const std::string& dat_path, const nlohmann::json& tpl);
 
 // -------------------------------------------------------------- PIMG atlases --
 // pimg_atlas.cpp

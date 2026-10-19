@@ -308,13 +308,13 @@ CM_TEST(world, terrain_material_index_out_of_range) {
     // §4.1, §4.4: what is kept but UNPROVEN is one aggregated line each.
     auto count = [&](const std::string& prefix) {
         size_t n = 0;
-        for (const auto& w : warnings) n += w.rfind(prefix, 0) == 0 && w.find("UNPROVEN") != std::string::npos;
+        for (const auto& w : warnings) n += w.rfind(prefix, 0) == 0;
         return n;
     };
     CHECK_EQ(count("terrain materials: uvScale UNPROVEN on all 2 chunks"), size_t(1));
     CHECK_EQ(count("terrain materials: tiling bytes kept as stored on 2 chunks"), size_t(1));
     CHECK_EQ(count("terrain materials: materialFileId is loResMaterial on 2 chunks"), size_t(1));
-    CHECK_EQ(count("terrain materials: 1 chunks have a non-null uvData"), size_t(1));
+    CHECK_EQ(count("terrain materials: 1 chunks have a uvData"), size_t(1));
     CHECK_EQ(count("terrain materials: 0 chunk blend pages"), size_t(0));   // no solid pages: no line
     CHECK_EQ(terr.chunks[0].material.pickerScale, 0.0f);                   // no pages: unknown
 }
@@ -608,14 +608,15 @@ CM_TEST(world, environment_names_unattached) {
     CHECK(scene.environment.sky.present);
     CHECK_EQ(scene.environment.sky.starFile, uint32_t(42));
     CHECK_EQ(scene.environment.light.lightCount, 2);
-    CHECK_EQ(scene.warnings.size(), size_t(1));
+    CHECK_EQ(scene.warnings.size(), size_t(2));
+    CHECK_EQ(warnings_starting(scene, "environment: no dataGlobal water presets"), size_t(1));
     CHECK_EQ(warnings_starting(scene, "environment: 2 other dataGlobal lighting presets and 13 per-zone blocks "
                                       "(12 dataLocalArray, 1 dataOverrideArray"),
              size_t(1));
 
     castlemist::world::WorldScene empty;
     castlemist::world::build_environment({}, empty);
-    CHECK_EQ(empty.warnings.size(), size_t(2));
+    CHECK_EQ(empty.warnings.size(), size_t(3));
     CHECK_EQ(warnings_starting(empty, "environment: no sky"), size_t(1));
     CHECK_EQ(warnings_starting(empty, "environment: no light rig"), size_t(1));
 }
@@ -688,7 +689,147 @@ CM_TEST(world, unread_chunk_warnings_skip_consumed_and_dedupe) {
         {"parm", 1}, {"trn", 2}, {"prp2", 3}, {"havk", 4}, {"env", 5}, {"watr", 1}, {"shor", 1}, {"rive", 1},
         {"zon2", 22}, {"zon2", 22}, {"dcal", 10}};
     const auto w = castlemist::world::unread_chunk_warnings(chunks);
-    CHECK_EQ(w.size(), size_t(2));
-    CHECK_EQ(w[0], std::string("chunk zon2 v22 not read"));
-    CHECK_EQ(w[1], std::string("chunk dcal v10 not read"));
+    CHECK_EQ(w.size(), size_t(1));   // zon2 is read by the zones section (zones.h)
+    CHECK_EQ(w[0], std::string("chunk dcal v10 not read"));
+}
+
+// ---- world-materials additions (raw fields kept as stored) ----
+
+CM_TEST(world, props_keep_anim_sequence_and_color) {
+    auto p = make_prop(5, "propAnimArray");
+    p.animSequence = 463;
+    p.color[0] = 0x4A; p.color[1] = 0x81; p.color[2] = 0x64; p.color[3] = 0x80;
+    castlemist::world::WorldScene scene;
+    castlemist::world::build_props({p}, scene);
+    CHECK_EQ(scene.props.size(), size_t(1));
+    if (scene.props.size() != 1) return;
+    CHECK_EQ(scene.props[0].animSequence, uint64_t(463));
+    CHECK_EQ(int(scene.props[0].color[0]), 0x4A);
+    CHECK_EQ(int(scene.props[0].color[1]), 0x81);
+    CHECK_EQ(int(scene.props[0].color[2]), 0x64);
+    CHECK_EQ(int(scene.props[0].color[3]), 0x80);
+}
+
+CM_TEST(world, terrain_materials_keep_positions_and_uvdata) {
+    castlemist::model::Extractor::MapTerrain t;
+    t.present = true;
+    t.dimX = 2; t.dimY = 2; t.vertsPerChunkSide = 2;
+    t.rect[0] = 0; t.rect[1] = 0; t.rect[2] = 100; t.rect[3] = 100; t.hasRect = true;
+    t.heights.assign(25, 1.0f);
+    std::vector<std::string> warnings;
+    auto terr = castlemist::world::build_terrain(t, warnings);
+    CHECK_EQ(terr.chunks.size(), size_t(1));
+    if (terr.chunks.size() != 1) return;
+
+    castlemist::model::Extractor::MapTerrainMaterials m;
+    m.present = true;
+    const char* names[] = {"color", "colorb", "colorc", "colord", "blend"};
+    for (int k = 0; k < 5; ++k) {
+        castlemist::model::Extractor::MapTerrainMaterials::Tex tx;
+        tx.token = token_of(names[k]);
+        tx.flags = 1;
+        tx.fileId = k < 4 ? 11 + k : 0;
+        tx.layer = k < 4 ? 0xFFFFFFFFu : 0u;
+        m.texFiles.push_back(tx);
+        m.texFileIds.push_back(tx.fileId);
+    }
+    m.chunks.resize(1);
+    m.chunks[0].materialFileId = 7;
+    m.chunks[0].texIndices = {0, 1, 2, 3, 4};
+    m.chunks[0].hiMaterialFileId = 9;
+    m.chunks[0].hasUvData = true;
+    m.chunks[0].uv.translation[1] = 0.2f;
+
+    Gw2Dat dat;
+    warnings.clear();
+    castlemist::world::resolve_terrain_materials(terr, m, dat, nlohmann::json::object(), warnings);
+    const auto& mat = terr.chunks[0].material;
+    CHECK(mat.texIndexFileIds == std::vector<uint32_t>({11, 12, 13, 14, 0}));
+    CHECK_EQ(mat.hiResMaterialFileId, uint32_t(9));
+    CHECK(mat.hasUvData);
+    CHECK(std::fabs(mat.uvData.translation[1] - 0.2f) < 1e-6f);
+    bool noted = false;
+    for (const auto& w : warnings) noted = noted || w.find("note §" "1.5") != std::string::npos;
+    CHECK(noted);
+}
+
+CM_TEST(world, terrain_keeps_swap_distance) {
+    castlemist::model::Extractor::MapTerrain t;
+    t.present = true;
+    t.dimX = 2; t.dimY = 2; t.vertsPerChunkSide = 2;
+    t.rect[0] = 0; t.rect[1] = 0; t.rect[2] = 100; t.rect[3] = 100; t.hasRect = true;
+    t.heights.assign(25, 1.0f);
+    t.swapDistance = 39936;
+    std::vector<std::string> warnings;
+    auto terr = castlemist::world::build_terrain(t, warnings);
+    CHECK(terr.present);
+    CHECK_EQ(terr.swapDistance, 39936.0f);
+}
+
+CM_TEST(world, environment_keeps_water_presets) {
+    castlemist::world::EnvSources in;
+    in.light.present = true;
+    in.light.presetIndex = 1;
+    in.water.resize(3);
+    in.water[0].materialFileId = 187551;
+    castlemist::world::WorldScene scene;
+    castlemist::world::build_environment(in, scene);
+    CHECK_EQ(scene.environment.water.size(), size_t(3));
+    CHECK_EQ(scene.environment.water[0].materialFileId, uint32_t(187551));
+    CHECK_EQ(scene.environment.light.presetIndex, 1);
+    bool noted = false;
+    for (const auto& w : scene.warnings) noted = noted || w.find("note §" "6") != std::string::npos;
+    CHECK(noted);
+}
+
+// ---- zon2 run-length walk (world foliage spec, Measurements: notation) ----
+
+#include "castlemist/native/gw2model.hpp"
+
+#include <array>
+#include <vector>
+
+// The client decode (Gw2-64.exe 0x140cd0410 / 0x140cd0660): with encodeData, (count, value)
+// run-length pairs; without, one raw byte per cell.
+CM_TEST(zones, walk_count_value_runs) {
+    using Ex = castlemist::model::Extractor;
+    Ex::Zon2Zone z;
+    const int32_t vr[4] = {10, 20, 14, 24};   // w = 4, h = 4: 16 cells
+    for (int i = 0; i < 4; ++i) z.vertRect[i] = vr[i];
+    z.encodeData.resize(4);                    // present: the flags are run-length pairs
+    // 1 cell of 0x31, 3 empty, 2 cells of 0x23, 7 empty, 5 cells of 0x10 (only 3 fit), a trailing odd byte
+    z.flags = {1, 0x31, 3, 0, 2, 0x23, 7, 0, 5, 0x10, 9};
+    std::vector<std::array<uint32_t, 4>> got;
+    Ex::walkZoneFlags(z, [&](uint32_t k, int32_t c, int32_t r, uint8_t f) {
+        got.push_back({k, (uint32_t)c, (uint32_t)r, (uint32_t)f});
+    });
+    const std::vector<std::array<uint32_t, 4>> want = {{0, 10, 20, 0x31},  {4, 10, 21, 0x23},  {5, 11, 21, 0x23},
+                                                       {13, 11, 23, 0x10}, {14, 12, 23, 0x10}, {15, 13, 23, 0x10}};
+    CHECK_EQ(got.size(), want.size());
+    for (size_t i = 0; i < got.size() && i < want.size(); ++i)
+        for (int j = 0; j < 4; ++j) CHECK_EQ(got[i][j], want[i][j]);
+
+    // No encodeData: one raw byte per cell, cells past w * h ignored.
+    Ex::Zon2Zone raw = z;
+    raw.encodeData.clear();
+    raw.flags.assign(18, 0);
+    raw.flags[2] = 0x45;
+    raw.flags[15] = 0x21;
+    raw.flags[17] = 0x33;   // past the 16 cells
+    got.clear();
+    Ex::walkZoneFlags(raw, [&](uint32_t k, int32_t c, int32_t r, uint8_t f) {
+        got.push_back({k, (uint32_t)c, (uint32_t)r, (uint32_t)f});
+    });
+    CHECK_EQ(got.size(), size_t(2));
+    if (got.size() == 2) {
+        CHECK_EQ(got[0][0], 2u); CHECK_EQ(got[0][1], 12u); CHECK_EQ(got[0][2], 20u); CHECK_EQ(got[0][3], 0x45u);
+        CHECK_EQ(got[1][0], 15u); CHECK_EQ(got[1][1], 13u); CHECK_EQ(got[1][2], 23u);
+    }
+
+    // w = 0: nothing.
+    Ex::Zon2Zone flat = z;
+    flat.vertRect[2] = flat.vertRect[0];
+    size_t n = 0;
+    Ex::walkZoneFlags(flat, [&](uint32_t, int32_t, int32_t, uint8_t) { ++n; });
+    CHECK_EQ(n, size_t(0));
 }

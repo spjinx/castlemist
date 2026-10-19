@@ -4,6 +4,8 @@
 
 #include "internal.h"
 
+#include "castlemist/exportgltf/world_lods.h"
+
 #include <algorithm>
 #include <limits>
 
@@ -22,7 +24,7 @@ constexpr int kElementArrayBuffer = 34963;
 } // namespace
 
 std::vector<MeshExportInfo> write_meshes(GltfWriter& w, const ModelPreview& model,
-                                         const std::vector<int>& materialIndices) {
+                                         const std::vector<int>& materialIndices, int lodLevels) {
     std::vector<MeshExportInfo> out;
     out.reserve(model.meshes.size());
 
@@ -168,12 +170,25 @@ std::vector<MeshExportInfo> write_meshes(GltfWriter& w, const ModelPreview& mode
             }
         }
         meshJson["primitives"].push_back(primitive);
+        const json lodTemplate = meshJson;   // before add_mesh moves it
         int meshIdx = w.add_mesh(meshJson);
 
         MeshExportInfo info;
         info.meshIndex = meshIdx;
         info.materialIndex = mesh.materialIndex;
         info.sourceIndex = mi;
+        // World export LODs (world_lods.h): one glTF mesh per level with its own set.
+        for (int level = 1, prev = -1; level < lodLevels; ++level) {
+            const int src = mesh_lod_source(mesh, level);
+            if (src < 0 || src == prev) continue;   // repeats LOD0 or the level before
+            prev = src;
+            const std::vector<uint32_t>& lod = mesh.lodIndices[size_t(src)];
+            const int lodAcc = w.add_accessor(lod.data(), lod.size() * sizeof(uint32_t), kUnsignedInt, "SCALAR",
+                                              lod.size(), kElementArrayBuffer);
+            json lodMesh = lodTemplate;
+            lodMesh["primitives"][0]["indices"] = lodAcc;
+            info.lods.emplace_back(level, w.add_mesh(lodMesh));
+        }
         out.push_back(info);
     }
     return out;

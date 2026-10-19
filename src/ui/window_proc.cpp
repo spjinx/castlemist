@@ -2,6 +2,7 @@
 /// @brief The menu bar and the three window procedures.
 
 #include "detail/app_state.h"
+#include "detail/map_window.h"
 
 #include "castlemist/core/text.h"
 
@@ -32,7 +33,7 @@ HMENU build_menu() {
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_GLTF_MODEL_ATLAS,
                 L"Export glTF (Model, &Baked UV Atlas)...");
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_VRCHAT_MODEL, L"Export for &VRChat (Model)...");
-    AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_GLTF_MAP, L"Export glTF (&Map)...");
+    AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_WORLD_MAP, L"Export &World (Map)...");
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXPORT_SKYBOX_MAP, L"Export S&kybox (Map)...");
     AppendMenuW(g_file_menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(g_file_menu, MF_STRING, ID_FILE_EXIT, L"E&xit");
@@ -41,7 +42,7 @@ HMENU build_menu() {
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MODEL, MF_GRAYED | MF_DISABLED);
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MODEL_ATLAS, MF_GRAYED | MF_DISABLED);
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_VRCHAT_MODEL, MF_GRAYED | MF_DISABLED);
-    EnableMenuItem(g_file_menu, ID_FILE_EXPORT_GLTF_MAP, MF_GRAYED | MF_DISABLED);
+    EnableMenuItem(g_file_menu, ID_FILE_EXPORT_WORLD_MAP, MF_GRAYED | MF_DISABLED);
     EnableMenuItem(g_file_menu, ID_FILE_EXPORT_SKYBOX_MAP, MF_GRAYED | MF_DISABLED);
 
     HMENU tools_menu = CreatePopupMenu();
@@ -51,6 +52,7 @@ HMENU build_menu() {
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DOWNLOAD_NAMES, L"Download all game &names (GW2 API)");
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DECODE_TOKEN,
                 L"Decode &Token / Filename Bytes...");
+    AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_MAP_WINDOW, L"&Map Window... (fly / walk a map)");
     AppendMenuW(tools_menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(tools_menu, MF_STRING, ID_TOOLS_DATA_STATUS, L"Data &status... (is everything current?)");
 
@@ -313,71 +315,11 @@ LRESULT CALLBACK ModelWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
             break;
         }
         int notches = GET_WHEEL_DELTA_WPARAM(wparam) / WHEEL_DELTA;
-        // In the fly view there is nothing to zoom -- the wheel trims how fast
-        // you move, which is the control you actually want on a map this size.
-        if (fly_view_active()) {
-            castlemist::render::fly_adjust_speed(static_cast<float>(notches));
-            update_fly_hud();
-            return 0;
-        }
         castlemist::render::zoom(std::pow(0.9f, static_cast<float>(notches))); // wheel up -> closer
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
     }
-    case WM_KEYDOWN:
-    case WM_KEYUP: {
-        if (g_app == nullptr || !fly_view_active()) break;
-        bool down = (msg == WM_KEYDOWN);
-        int k = -1;
-        switch (wparam) {
-            case 'W': k = castlemist::render::FLY_KEY_FWD; break;
-            case 'A': k = castlemist::render::FLY_KEY_LEFT; break;
-            case 'S': k = castlemist::render::FLY_KEY_BACK; break;
-            case 'D': k = castlemist::render::FLY_KEY_RIGHT; break;
-            case 'Q': k = castlemist::render::FLY_KEY_DOWN; break;
-            case 'E': k = castlemist::render::FLY_KEY_UP; break;
-            case VK_SHIFT: k = castlemist::render::FLY_KEY_FAST; break;
-            case VK_CONTROL: k = castlemist::render::FLY_KEY_SLOW; break;
-            // Roll and re-level. Rotation is unclamped, so roll accumulates
-            // whenever you combine yaw and pitch -- L puts the horizon back
-            // without giving up the position you flew to.
-            case 'Z': if (down) { castlemist::render::fly_roll(-0.06f); InvalidateRect(hwnd, nullptr, FALSE); } return 0;
-            case 'C': if (down) { castlemist::render::fly_roll(0.06f); InvalidateRect(hwnd, nullptr, FALSE); } return 0;
-            case 'L': if (down) { castlemist::render::fly_level(); InvalidateRect(hwnd, nullptr, FALSE); } return 0;
-            default: break;
-        }
-        if (k < 0) break;
-        castlemist::render::fly_set_key(k, down);
-        return 0;
-    }
-    case WM_KILLFOCUS:
-        // Keys are tracked by transition, so losing focus mid-press would strand
-        // one down and leave the camera flying by itself.
-        if (g_app != nullptr) {
-            castlemist::render::fly_clear_keys();
-            g_app->fly_looking = false;
-        }
-        break;
-    case WM_RBUTTONDOWN:
-        if (g_app != nullptr && fly_view_active()) {
-            SetCapture(hwnd);
-            SetFocus(hwnd);
-            g_app->fly_looking = true;
-            g_app->fly_look_last = POINT{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-            return 0;
-        }
-        break;
     case WM_LBUTTONDOWN:
-        // Fly view: the surface has no gizmo and no orbit, so a left drag is also
-        // mouse-look. Clicking it first also takes focus, which is what makes the
-        // WASD keys reach this window at all.
-        if (g_app != nullptr && fly_view_active()) {
-            SetCapture(hwnd);
-            SetFocus(hwnd);
-            g_app->fly_looking = true;
-            g_app->fly_look_last = POINT{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-            return 0;
-        }
         SetCapture(hwnd);
         if (g_app != nullptr) {
             int mx = GET_X_LPARAM(lparam), my = GET_Y_LPARAM(lparam);
@@ -395,14 +337,6 @@ LRESULT CALLBACK ModelWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
         }
         return 0;
     case WM_MOUSEMOVE:
-        if (g_app != nullptr && g_app->fly_looking) {
-            POINT cur{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-            castlemist::render::fly_look(static_cast<float>(cur.x - g_app->fly_look_last.x),
-                                         static_cast<float>(cur.y - g_app->fly_look_last.y));
-            g_app->fly_look_last = cur;
-            InvalidateRect(hwnd, nullptr, FALSE);
-            return 0;
-        }
         if (g_app != nullptr && g_app->gizmo_dragging) {
             castlemist::render::gizmo_update(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
             update_gizmo_readout();
@@ -426,11 +360,6 @@ LRESULT CALLBACK ModelWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
         }
         return 0;
     case WM_LBUTTONUP:
-        if (g_app != nullptr && g_app->fly_looking) {
-            g_app->fly_looking = false;
-            ReleaseCapture();
-            return 0;
-        }
         if (g_app != nullptr && g_app->gizmo_dragging) {
             castlemist::render::gizmo_end();
             g_app->gizmo_dragging = false;
@@ -455,12 +384,6 @@ LRESULT CALLBACK ModelWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
         }
         return 0;
     case WM_RBUTTONUP:
-        // Fly view: right-drag was mouse-look, so releasing just ends the look.
-        if (g_app != nullptr && g_app->fly_looking) {
-            g_app->fly_looking = false;
-            ReleaseCapture();
-            return 0;
-        }
         // Right-click clears the map inset preview.
         if (g_app != nullptr && castlemist::render::scene_active() && castlemist::render::scene_focus() >= 0) {
             castlemist::render::set_scene_focus(-1);
@@ -620,10 +543,6 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         g_app->hwnd_mode_shader =
             CreateWindowExW(0, L"BUTTON", L"Shader", WS_CHILD, 0, 0, 0, 0, hwnd,
                              reinterpret_cast<HMENU>(ID_MODE_SHADER), g_hinstance, nullptr);
-        // Mesh-only free-camera map view: no textures, no game shaders, baked AO.
-        g_app->hwnd_mode_fly =
-            CreateWindowExW(0, L"BUTTON", L"Fly", WS_CHILD, 0, 0, 0, 0, hwnd,
-                             reinterpret_cast<HMENU>(ID_MODE_FLY), g_hinstance, nullptr);
         g_app->hwnd_model_reset =
             CreateWindowExW(0, L"BUTTON", L"Reset", WS_CHILD, 0, 0, 0, 0, hwnd,
                              reinterpret_cast<HMENU>(ID_MODEL_RESET), g_hinstance, nullptr);
@@ -749,11 +668,6 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         // and it composites reliably at the surface top-left. Fixed at (10,8).
         g_app->hwnd_gizmo_readout =
             CreateWindowExW(0, L"STATIC", L"", WS_CHILD | SS_LEFT, 10, 8, 214, 92, g_app->hwnd_model, nullptr,
-                            g_hinstance, nullptr);
-        // Fly-view HUD, same trick: a child of the surface so it survives Present.
-        // Sits under the transform readout's slot; only one of the two is ever up.
-        g_app->hwnd_fly_hud =
-            CreateWindowExW(0, L"STATIC", L"", WS_CHILD | SS_LEFT, 10, 8, 300, 104, g_app->hwnd_model, nullptr,
                             g_hinstance, nullptr);
         // Audio playback controls (shown only for ASND/audio entries).
         g_app->hwnd_audio_play =
@@ -1186,7 +1100,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         on_index_build_done(hwnd, wparam != 0);
         return 0;
     case WM_APP_GLTF_EXPORT_DONE:
-        on_gltf_export_done(hwnd);
+        // lparam != 0: Export World (Map)'s report; 0: a model glTF export.
+        if (lparam != 0) on_world_export_done(hwnd, lparam);
+        else on_gltf_export_done(hwnd);
         return 0;
     case WM_APP_VRCHAT_MODEL_DONE:
         on_vrchat_model_done(hwnd, lparam);
@@ -1263,6 +1179,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         case ID_TOOLS_DATA_STATUS:
             open_data_status_dialog(hwnd);
             return 0;
+        case ID_TOOLS_MAP_WINDOW:
+            prompt_map_window(hwnd);
+            return 0;
         case ID_DATA_BADGE:
             if (HIWORD(wparam) == STN_CLICKED) open_data_status_dialog(hwnd);
             return 0;
@@ -1299,8 +1218,8 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         case ID_FILE_EXPORT_GLTF_MODEL_ATLAS:
             do_export_gltf_model_atlas(hwnd);
             return 0;
-        case ID_FILE_EXPORT_GLTF_MAP:
-            do_export_gltf_map(hwnd);
+        case ID_FILE_EXPORT_WORLD_MAP:
+            do_export_world_map(hwnd);
             return 0;
         case ID_FILE_EXPORT_SKYBOX_MAP:
             do_export_skybox_map(hwnd);
@@ -1453,35 +1372,11 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             // nothing is re-extracted or re-uploaded either way.
             bool on = SendMessageW(g_app->hwnd_show_map, BM_GETCHECK, 0, 0) == BST_CHECKED;
             castlemist::render::set_scene_shown(on);
-            update_fly_timer();
             InvalidateRect(g_app->hwnd_model, nullptr, FALSE);
             return 0;
         }
-        case ID_MODE_FLY:
-            set_model_mode(castlemist::render::RenderMode::MapFly);
-            return 0;
         case ID_LAYER_ZONE: {
             bool on = SendMessageW(g_app->hwnd_layer_zone, BM_GETCHECK, 0, 0) == BST_CHECKED;
-            // Lazily load the zone models the first time zones are enabled (keeps
-            // the initial map load prop-only and fast).
-            if (on && !g_app->map_zone_loaded && g_app->current_entry.map) {
-                HCURSOR old = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
-                auto zl = build_map_zone_layer(g_app->current_entry.decompressed,
-                                               g_app->data_gw2.file_info.file_path);
-                if (zl && !zl->instances.empty()) {
-                    std::vector<castlemist::render::SceneInstance> insts;
-                    for (const MapInstance& mi : zl->instances) {
-                        castlemist::render::SceneInstance si;
-                        si.model = mi.model;
-                        for (int k = 0; k < 3; ++k) { si.pos[k] = mi.pos[k]; si.rot[k] = mi.rot[k]; }
-                        si.scale = mi.scale; si.layer = mi.layer;
-                        insts.push_back(si);
-                    }
-                    castlemist::render::add_scene_models(zl->models, insts);
-                }
-                g_app->map_zone_loaded = true;
-                SetCursor(old);
-            }
             castlemist::render::set_layer_visible(castlemist::render::LAYER_ZONE, on);
             InvalidateRect(g_app->hwnd_model, nullptr, FALSE);
             return 0;
@@ -1681,27 +1576,6 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             request_data_status_refresh();
             return 0;
         }
-        if (wparam == TIMER_FLY) {
-            if (!fly_view_active()) { update_fly_timer(); return 0; }
-            // Integrate movement against the real elapsed time rather than the
-            // nominal 16 ms, so flying speed does not depend on how punctually
-            // the message queue delivers the timer.
-            LARGE_INTEGER now, freq;
-            QueryPerformanceCounter(&now);
-            QueryPerformanceFrequency(&freq);
-            float dt = 0.0f;
-            if (g_app->fly_qpc_init && freq.QuadPart)
-                dt = static_cast<float>(double(now.QuadPart - g_app->fly_qpc_last.QuadPart) / freq.QuadPart);
-            g_app->fly_qpc_last = now;
-            g_app->fly_qpc_init = true;
-            // Repaint when the camera moved; also repaint while looking so the
-            // HUD's frame timing stays live during a drag.
-            if (castlemist::render::fly_tick(dt) || g_app->fly_looking) {
-                update_fly_hud();
-                InvalidateRect(g_app->hwnd_model, nullptr, FALSE);
-            }
-            return 0;
-        }
         if (wparam == TIMER_ANIM &&
             (castlemist::render::is_playing() || castlemist::render::cloth_enabled() ||
              (castlemist::render::has_effects() && castlemist::render::show_effects()))) {
@@ -1738,7 +1612,25 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             }
         }
         return 0;
+    case WM_CLOSE:
+        // Closing during Export World would leave a half-written folder and,
+        // before the job object, an orphaned Blender: ask first (review I5).
+        if (world_export_running()) {
+            const int a = MessageBoxW(hwnd,
+                                      L"A world export is still running.\n\nQuit anyway? The export stops and its folder "
+                                      L"is left incomplete (no manifest.json, or no .fbx files if Blender was "
+                                      L"converting).",
+                                      L"castlemist", MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2);
+            if (a != IDYES) return 0;
+            cancel_world_export();
+        }
+        DestroyWindow(hwnd);
+        return 0;
     case WM_DESTROY:
+        // The Map window is not owned by this one, so it is not destroyed
+        // with it: close it first, so its worker generation is bumped (and its
+        // threads start stopping) before the message loop exits.
+        close_map_window();
         KillTimer(hwnd, TIMER_ANIM);
         KillTimer(hwnd, TIMER_AUDIO);
         KillTimer(hwnd, TIMER_VIDEO);

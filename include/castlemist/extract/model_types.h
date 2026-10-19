@@ -93,8 +93,30 @@ struct ModelTextureCPU {
     bool hasCutout = false;
 };
 
+/// @brief A texture decoded once for a capped cache: RGBA8 mip chain down to 4x4.
+struct CappedTexture {
+    uint32_t fileId = 0;
+    uint32_t baseId = 0;                     ///< The entry decoded (the reduced member when GW2 ships one).
+    int width = 0, height = 0;               ///< Mip 0.
+    std::vector<std::vector<uint8_t>> mips;  ///< RGBA8; empty = decode failed.
+    bool isNormal = false, hasCutout = false, looksLikeEffect = false;
+    /// @brief Sum of mips[i].size().
+    size_t bytes() const { size_t n = 0; for (const auto& m : mips) n += m.size(); return n; }
+};
+
+/// @brief One texture transform of a material, as stored (mirrors castlemist::model::MatTexTransform).
+struct ModelTexTransformCPU {
+    uint32_t flags = 0;
+    uint8_t  uvIndex = 0, columns = 0, rows = 0;
+    uint16_t count = 0;
+    float    fps = 0;
+    float    scroll[2] = {0, 0}, scrollFreq[2] = {0, 0}, scale[2] = {0, 0}, scaleFreq[2] = {0, 0};
+    float    rotate = 0, rotate2 = 0;
+};
+
 /// @brief A model material as the reconstruction renderer needs it.
 struct ModelMaterialCPU {
+    std::vector<ModelTexTransformCPU> texTransforms; ///< Copied as stored.
     uint32_t index = 0;                   ///< Material slot, matches ModelMeshCPU::materialIndex.
     float tint[4] = {1, 1, 1, 1};         ///< Flat colour multiplier.
     bool isEffect = false;                ///< Additive/translucent effect material.
@@ -454,6 +476,11 @@ struct ModelPreview {
     float radius = 1.0f;                      ///< Bounding-sphere radius.
     uint32_t totalVerts = 0;                  ///< Sum over all submeshes.
     uint32_t totalTris = 0;                   ///< Sum over all submeshes (LOD0).
+    /// @brief `ModelFileData.lodOverride` as stored (model units; 0 = not set):
+    ///        the LOD0->LOD1 and LOD1->LOD2 switch distances. See
+    ///        castlemist::world::model_lod_distances for the client's rule.
+    float lodOverride[2] = {0, 0};
+    bool hasLodOverride = false;              ///< The MODL version has the field.
 
     /// @name Skeleton (bind pose)
     /// @{
@@ -480,6 +507,8 @@ struct ModelPreview {
     std::vector<castlemist::granny::Anim> animClips;   ///< Decoded clips (name, duration, tracks).
     /// @brief Parallel to @ref animClips: source fileId, 0 = this model's own bank.
     std::vector<uint32_t> animClipBank;
+    /// @brief Parallel to @ref animClips: the token64 of each decoded clip (animationTokens lists every clip).
+    std::vector<uint64_t> animClipTokens;
     /// @brief fileIds of the external animation banks this model imports.
     ///
     /// Populated whether or not the load succeeded, so a UI can show an
@@ -492,9 +521,8 @@ struct ModelPreview {
 
     /// @brief Real game shaders per material, for the "Shader" render mode.
     ///
-    /// Empty unless the entry was extracted for single-model preview; the map
-    /// scene path skips extraction to stay fast and fills this in lazily via
-    /// ::augment_map_scene_game. Indexed by GameMaterial::index.
+    /// Empty unless the model was extracted with game shaders (single-model
+    /// preview). Indexed by GameMaterial::index.
     std::vector<GameMaterial> gameMaterials;
 
     std::vector<ParticleCloudCPU> clouds;        ///< Baked emitter groups (`cloudData`).

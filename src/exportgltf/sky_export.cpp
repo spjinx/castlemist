@@ -7,8 +7,11 @@
 #include "castlemist/extract/entry_extractor.h"
 #include "castlemist/format/dds.h"
 #include "castlemist/native/cmp_decompress_method0.hpp"
+#include "long_path.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <unordered_set>
@@ -61,6 +64,14 @@ bool same_mode(const Extractor::MapSky& s, size_t i, size_t j) {
     return a.ne == b.ne && a.sw == b.sw && a.top == b.top &&
            std::equal(std::begin(a.cube), std::end(a.cube), std::begin(b.cube)) && same_attribute_set(s, i, j);
 }
+
+} // namespace
+
+bool same_sky_mode(const Extractor::MapSky& s, size_t i, size_t j) {
+    return i < s.modes.size() && j < s.modes.size() && same_mode(s, i, j);
+}
+
+namespace {
 
 json id_or_null(uint32_t id) { return id ? json(id) : json(nullptr); }
 
@@ -126,8 +137,174 @@ std::string mode_name(size_t index) {
     return "mode" + std::to_string(index);
 }
 
+namespace {
+
+std::string fmt3(const float* v, int n) {
+    std::string s = "(";
+    char b[32];
+    for (int i = 0; i < n; ++i) {
+        std::snprintf(b, sizeof b, "%s%.4g", i ? ", " : "", v[i]);
+        s += b;
+    }
+    return s + ")";
+}
+
+std::string pct(double x) {
+    char b[32];
+    std::snprintf(b, sizeof b, "%.0f%%", x * 100);
+    return b;
+}
+
+std::string block_name(int zone) { return zone < 0 ? "dataGlobal" : "dataLocalArray[" + std::to_string(zone) + "]"; }
+
+} // namespace
+
+/// The approximate sky of modes @p i and @p j reads the same haze, light and
+/// cloud attribute values (day/night slots differ only by mode parity).
+bool same_approx_slots(const SkyInputs& in, size_t i, size_t j) {
+    if (i % 2 == j % 2) return true;
+    const ApproxInputs a = approx_inputs(in, i), b = approx_inputs(in, j);
+    auto eq = [](const float* x, const float* y, int n) { return std::equal(x, x + n, y); };
+    if (a.haveFog != b.haveFog || a.haveSun != b.haveSun || !eq(a.fogFar, b.fogFar, 4) ||
+        !eq(a.sunColor, b.sunColor, 3) || !eq(a.sunDir, b.sunDir, 3) || !eq(&a.sh[0][0], &b.sh[0][0], 12))
+        return false;
+    for (const auto& L : in.sky.clouds) {
+        if (L.attributes.size() < 2) continue;
+        const auto &x = L.attributes[0], &y = L.attributes[1];
+        if (x.brightness != y.brightness || x.density != y.density || x.haze != y.haze ||
+            x.lightIntensity != y.lightIntensity)
+            return false;
+    }
+    return true;
+}
+
+EnvBlockChoice choose_env_block(const Extractor::MapSky& s) {
+    EnvBlockChoice c;
+    const double w = static_cast<double>(s.mapRect[2]) - s.mapRect[0], h = static_cast<double>(s.mapRect[3]) - s.mapRect[1];
+    const double area = w > 0 && h > 0 ? w * h : 0;
+    if (s.zones.empty() || area <= 0) {
+        c.note = s.zones.empty() ? "dataGlobal: the map has no per-zone env blocks"
+                                 : "dataGlobal: no parm.rect to weigh the zones against";
+        return c;
+    }
+    double zonesArea = 0;
+    int best = -1;
+    for (size_t i = 0; i < s.zones.size(); ++i) {
+        zonesArea += s.zones[i].area;
+        if (best < 0 || s.zones[i].area > s.zones[static_cast<size_t>(best)].area) best = static_cast<int>(i);
+    }
+    const double globalCover = std::max(0.0, area - zonesArea);
+    const double bestCover = s.zones[static_cast<size_t>(best)].area;
+    if (bestCover > globalCover) c.zone = best;
+    c.note = block_name(c.zone) + ": the block covering most of parm.rect by shape area (dataGlobal " +
+             pct(globalCover / area) + ", largest zone " + block_name(best) + " " + pct(bestCover / area) +
+             "); the game blends the blocks by camera position, so this is one static stand-in "
+             "(UNPROVEN as what a given camera sees)";
+    return c;
+}
+
+ApproxInputs approx_inputs(const SkyInputs& in, size_t mode) {
+    const Extractor::MapSky& s = in.sky;
+    ApproxInputs a;
+    const size_t slot = mode % 2;   // gw2-sky.md §3: modes 0/2 day (t = 1), 1/3 night (t = 0)
+    const char* slotName = slot ? "night" : "day";
+
+    // FogColorFar: haze[slot].farColor of the chosen block (dataGlobal's when
+    // the zone has none of its own, as 0x140c60340 falls back to the parent).
+    const EnvBlockChoice block = choose_env_block(s);
+    a.labels.push_back({"env block", InputSource::Guess, block_name(block.zone), block.note});
+    const Extractor::MapHaze* haze = nullptr;
+    int hazeBlock = -1;
+    if (block.zone >= 0 && s.zones[static_cast<size_t>(block.zone)].haze.size() > slot) {
+        haze = &s.zones[static_cast<size_t>(block.zone)].haze[slot];
+        hazeBlock = block.zone;
+    } else if (s.haze.size() > slot) {
+        haze = &s.haze[slot];
+    }
+    if (haze) {
+        a.haveFog = true;
+        for (int k = 0; k < 4; ++k) a.fogFar[k] = haze->farColor[k];
+        a.haveFogDist = true;
+        a.fogNearW = haze->nearColor[3];
+        a.fogDist[0] = haze->distRange[0];
+        a.fogDist[1] = haze->distRange[1];
+        a.labels.push_back({"FogColorFar", InputSource::Derived, fmt3(a.fogFar, 4),
+                            block_name(hazeBlock) + " haze[" + std::to_string(slot) + "] (" + slotName +
+                                ").farColor, bytes B,G,R,A: haze import 0x140c889e0 -> env slot 0x140c619f0 -> "
+                                "per-frame pick 0x140c60340 (slot 0 at t = 1, 1 at t = 0) -> fog set 0x140c64960 "
+                                "-> GrSetFog 0x140ab2c20, whose stores follow VSCalculateFog's uniform order "
+                                "(the upload to the FogColorFar register not traced; addresses in the 2026-09-18 "
+                                "research build, gw2-sky.md; in Gw2-64.exe 2026-10-14 the haze import is "
+                                "0x140c8f038)"});
+    } else {
+        a.labels.push_back({"FogColorFar", InputSource::Guess, "none",
+                            "no haze in slot " + std::to_string(slot) + "; haze not baked"});
+    }
+
+    // Sun colour / direction and SH: dataGlobal lighting[slot] (the same
+    // day/night/alternate slots, 0x140c60690). Their path into EnvContext
+    // +0x4e4..0x4f8 and the SH globals is not traced.
+    const Extractor::MapEnvLight* light =
+        s.lighting.size() > slot && s.lighting[slot].present ? &s.lighting[slot] : nullptr;
+    if (light) {
+        a.haveSun = true;
+        // parseMapEnv already gives R, G, B (the file's B, G, R reordered at the source).
+        const float* clr = light->sunColor;
+        const float* fill = light->fillColor;
+        float len = std::sqrt(light->sunDir[0] * light->sunDir[0] + light->sunDir[1] * light->sunDir[1] +
+                              light->sunDir[2] * light->sunDir[2]);
+        if (!(len > 0)) len = 1;
+        for (int k = 0; k < 3; ++k) {
+            a.sunColor[k] = clr[k];
+            a.sunDir[k] = light->sunDir[k] / len;
+        }
+        const float amb = std::clamp(light->fillIntensity * 0.30f, 0.12f, 0.55f);
+        for (int k = 0; k < 3; ++k) a.sh[k][3] = fill[k] * amb;
+        a.labels.push_back({"sunClr.rgb", InputSource::Guess, fmt3(a.sunColor, 3),
+                            std::string("dataGlobal lighting[") + std::to_string(slot) +
+                                "] dominant light colour as parseMapEnv reads it (bytes B, G, R: the lighting import "
+                                "puts byte 2 in red, Gw2-64.exe 2026-10-14 0x140c8f60e); the writer of "
+                                "EnvContext+0x4e4 is not traced"});
+        a.labels.push_back({"sunDir", InputSource::Guess, fmt3(a.sunDir, 3),
+                            "the same light's direction (the way it travels), as stored"});
+        const float shw[3] = {a.sh[0][3], a.sh[1][3], a.sh[2][3]};
+        a.labels.push_back({"shRed/shGreen/shBlue", InputSource::Guess, fmt3(shw, 3) + " constant",
+                            "fill lights' colour x clamp(0.3 x fill intensity, 0.12, 0.55), castlemist's world-view "
+                            "stand-in; the engine's SH globals are not traced"});
+    } else {
+        a.labels.push_back({"sunClr / sunDir / SH", InputSource::Guess, "none",
+                            std::string("no dataGlobal lighting[") + std::to_string(slot) + "]; sun glow not baked"});
+    }
+
+    // Camera height for the cloud planes.
+    if (in.hasCameraZ) {
+        a.cameraZ = in.cameraZ;
+        a.labels.push_back({"camera z", InputSource::Guess, fmt3(&a.cameraZ, 1),
+                            in.cameraNote.empty() ? "given by the caller" : in.cameraNote});
+    } else if (s.hasGroundZ) {
+        a.cameraZ = s.groundZ;
+        a.labels.push_back({"camera z", InputSource::Guess, fmt3(&a.cameraZ, 1),
+                            "the terrain's median height (trn.heightMapArray), a ground-level stand-in camera"});
+    } else {
+        a.cameraZ = 0;
+        a.labels.push_back({"camera z", InputSource::Guess, "0", "no terrain; the map origin"});
+    }
+    a.labels.push_back({"cardFade, cloudFade", InputSource::Guess, "1",
+                        "EnvEnvironment+0xa40 / +0x970 steady values, expected 1 (gw2-sky.md §9.4, §10.3)"});
+    a.labels.push_back({"Time", InputSource::Guess, "0", "material cards' Time uniform; 0 = their first frame"});
+    a.labels.push_back({"AlphaRef", InputSource::Guess, "0", "material cards' alpha-test reference"});
+    if (a.haveFogDist)
+        a.labels.push_back({"FogParam0.xy, FogColorNearMinusFar.w", InputSource::Derived,
+                            fmt3(a.fogDist, 2) + ", near.w " + fmt3(&a.fogNearW, 1),
+                            "the same haze's distRange and nearColor.w: GrSetFog 0x140ab2c20 stores "
+                            "(1/(d1-d0), -d0/(d1-d0)) and near - far, which the clouds' VS 1645 reads as "
+                            "fz = saturate(viewZ FogParam0.x + FogParam0.y) (store-to-register link not traced; "
+                            "address in the 2026-09-18 research build, gw2-sky.md)"});
+    return a;
+}
+
 SkyInputs load_sky_inputs(Gw2Dat& dat, const std::vector<uint8_t>& mapBytes, const json& tpl,
-                          uint32_t mapFileId) {
+                          uint32_t mapFileId, bool approx) {
     SkyInputs in;
     in.mapFileId = mapFileId;
     try {
@@ -140,7 +317,12 @@ SkyInputs load_sky_inputs(Gw2Dat& dat, const std::vector<uint8_t>& mapBytes, con
                                     ": env chunk unreadable (" + e.what() + ")");
         return in;
     }
-    if (!in.sky.present) return in;
+    load_sky_textures(dat, tpl, in, approx);
+    return in;
+}
+
+void load_sky_textures(Gw2Dat& dat, const json& tpl, SkyInputs& in, bool approx) {
+    if (!in.sky.present) return;
 
     // Every distinct fileId the sky names, in a stable order.
     std::vector<uint32_t> ids;
@@ -158,6 +340,9 @@ SkyInputs load_sky_inputs(Gw2Dat& dat, const std::vector<uint8_t>& mapBytes, con
     for (const auto& c : in.sky.cards) {
         add(c.day.texture);
         add(c.night.texture);
+        // The approximate sky's flow-fire material card samples these.
+        if (approx && c.materialFile == kFlowFireMaterial)
+            for (const auto& t : c.materialTextures) add(t.fileId);
     }
 
     for (uint32_t id : ids) {
@@ -208,7 +393,6 @@ SkyInputs load_sky_inputs(Gw2Dat& dat, const std::vector<uint8_t>& mapBytes, con
                 in.decodeWarnings.push_back("fileId " + std::to_string(at) + ": star atlas not decodable");
         }
     }
-    return in;
 }
 
 SkyExportReport write_skybox(const SkyInputs& in, const std::string& parentDir, const std::string& name,
@@ -223,12 +407,12 @@ SkyExportReport write_skybox(const SkyInputs& in, const std::string& parentDir, 
     const fs::path folder = fs::path(parentDir) / name;
     rep.folder = folder.string();
     std::error_code ec;
-    fs::remove_all(folder, ec);   // overwrite: nothing stale survives
+    remove_tree(folder, ec);   // overwrite: nothing stale survives (remove_all spins past MAX_PATH)
     if (ec) {
         rep.error = "cannot clear " + rep.folder + ": " + ec.message();
         return rep;
     }
-    fs::create_directories(folder, ec);
+    make_dirs(folder, ec);
     if (ec) {
         rep.error = "cannot create " + rep.folder + ": " + ec.message();
         return rep;
@@ -255,7 +439,9 @@ SkyExportReport write_skybox(const SkyInputs& in, const std::string& parentDir, 
         if (has_content(m)) {
             size_t alias = j;
             for (size_t i = 0; i < j && alias == j; ++i)
-                if (has_content(s.modes[i]) && same_mode(s, i, j)) alias = i;
+                if (has_content(s.modes[i]) && same_mode(s, i, j) &&
+                    (!opt.approximate || same_approx_slots(in, i, j)))
+                    alias = i;
             if (alias != j) {
                 mj["aliasOf"] = mode_name(alias);
                 modes.push_back(std::move(mj));
@@ -301,7 +487,16 @@ SkyExportReport write_skybox(const SkyInputs& in, const std::string& parentDir, 
 
         // Bake: hemicube (gw2-sky.md §2, §5), stars (§8), texture cards (§9).
         if (m.hasPanorama()) {
-            BakeResult b = make_sky_sampler(s, j, in.textures, &in.stars);
+            ApproxInputs ai;
+            if (opt.approximate) ai = approx_inputs(in, j);
+            BakeResult b = make_sky_sampler(s, j, in.textures, &in.stars, opt.approximate ? &ai : nullptr);
+            if (opt.approximate) {
+                json labels = json::array();
+                for (const InputLabel& l : ai.labels)
+                    labels.push_back({{"input", l.input}, {"source", input_source_name(l.source)},
+                                      {"value", l.value}, {"note", l.note}});
+                mj["approxInputs"] = labels;
+            }
             for (const std::string& w : b.warnings) push_unique(warns, w);
             if (b.ok) {
                 baked_sources(b, mj["sources"]);
@@ -335,9 +530,13 @@ SkyExportReport write_skybox(const SkyInputs& in, const std::string& parentDir, 
     if (wroteMode23)
         push_unique(top, "mode2/mode3: the second factor that selects them is UNPROVEN (gw2-sky.md §3)");
 
-    json sky = {{"map", in.mapFileId}, {"envVersion", s.envVersion}, {"modes", modes}, {"warnings", top}};
+    if (opt.approximate)
+        push_unique(top, "approximate sky: haze, sun glow, haze-dominated and material cards and clouds are baked "
+                         "with the labelled inputs in each mode's approxInputs (gw2-sky.md amendment 2026-10-17)");
+    json sky = {{"map", in.mapFileId}, {"envVersion", s.envVersion}, {"approximate", opt.approximate},
+                {"modes", modes}, {"warnings", top}};
     {
-        std::ofstream f(folder / "sky.json", std::ios::binary);
+        std::ofstream f(long_path(folder / "sky.json"), std::ios::binary);
         f << sky.dump(2) << '\n';
         if (!f) push_unique(top, "sky.json not written");
     }

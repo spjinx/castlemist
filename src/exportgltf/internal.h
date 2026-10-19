@@ -11,6 +11,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -104,7 +105,37 @@ public:
     ///        material's textureInfo references). `name` becomes the image's
     ///        glTF name -- what Blender calls the image, and the file name
     ///        "Unpack Resources" writes it out as.
+    ///
+    ///        After ::set_image_output the PNG is written to that folder
+    ///        instead and referenced by URI (see ::add_texture_uri); a failed
+    ///        write returns -1 and records ::image_error.
     int add_or_reuse_texture(uint32_t fileId, const std::vector<uint8_t>& pngBytes, const std::string& name = {});
+
+    /// @brief Adds an image referenced by `uri` (no bufferView) + texture,
+    ///        deduped by fileId exactly as ::add_or_reuse_texture (fileId 0 is
+    ///        never shared). Returns the texture index.
+    int add_texture_uri(uint32_t fileId, const std::string& uri, const std::string& name = {});
+
+    /// @brief From now on, ::add_or_reuse_texture writes `<dir>/<stem>.png`
+    ///        (UTF-8 `dirUtf8`, created on first use) and references it as
+    ///        `<uriPrefix><stem>.png`. `stem` is the image name made a legal,
+    ///        unique (case-insensitive) file name, else the fileId.
+    ///        An empty `dirUtf8` switches back to embedding.
+    void set_image_output(const std::string& dirUtf8, const std::string& uriPrefix);
+    /// @brief From now on (world export, Task 15d), ::add_or_reuse_texture puts
+    ///        the PNG into @p pool by content ("<sha1>.png") and references it as
+    ///        `<uriPrefix><sha1>.png`; an image already referenced by that URI in
+    ///        this file is reused. Wins over ::set_image_output. Null switches it off.
+    void set_generated_pool(SharedImagePool* pool, const std::string& uriPrefix);
+    /// @brief Material @p i as added (Task 15d: the key reads it, then adds its extras).
+    nlohmann::json& material_json(int i) { return doc_["materials"][static_cast<size_t>(i)]; }
+    /// @brief The image URI texture @p textureIndex samples; empty for an embedded
+    ///        image or a bad index.
+    std::string texture_uri(int textureIndex) const;
+    /// @brief The first image file write failure since construction; empty when none.
+    const std::string& image_error() const { return imageError_; }
+    /// @brief Records @p e as ::image_error unless one is already recorded.
+    void set_image_error(const std::string& e) { if (imageError_.empty()) imageError_ = e; }
 
     int add_node(nlohmann::json node);           ///< Pushes to `nodes`, returns its index.
     /// @brief Appends `childIndex` to an already-added node's `children` list
@@ -117,6 +148,9 @@ public:
     int add_skin(nlohmann::json skin);            ///< Pushes to `skins`, returns its index.
     void add_animation(nlohmann::json animation); ///< Pushes to `animations`.
     void add_scene_root(int nodeIndex);           ///< Adds `nodeIndex` to the (sole) scene's node list.
+    /// @brief Lists @p name in `extensionsUsed` (once), for a material or
+    ///        node that carries that extension (e.g. KHR_materials_unlit).
+    void use_extension(const std::string& name);
 
     /// @brief Assembles the final .glb: the 12-byte header, the JSON chunk
     ///        (space-padded to 4 bytes) and the BIN chunk (zero-padded to 4 bytes).
@@ -126,6 +160,12 @@ private:
     nlohmann::json doc_;
     std::vector<uint8_t> bin_;
     std::map<uint32_t, int> textureByFileId_; // fileId -> texture index, for dedup
+    std::string imageDir_, imageUriPrefix_;   // set_image_output; empty = embed
+    std::set<std::string> imageStems_;        // lower-case file stems written, for unique names
+    SharedImagePool* generatedPool_ = nullptr; // set_generated_pool
+    std::string generatedPrefix_;
+    std::map<std::string, int> textureByUri_; // generated-pool URI -> texture index
+    std::string imageError_;
 };
 
 // ==================================================================== textures ==
@@ -135,13 +175,28 @@ private:
 ///        twice.
 /// @param texIndices Parallel to `textures`: the resulting glTF *texture*
 ///        index for each one (-1 if it had no decoded pixels to encode).
+///
+/// @param imageDirUtf8 Non-empty: switches `w` to ::GltfWriter::set_image_output
+///        (`imageDirUtf8`, `uriPrefix`) first, so these and every later image
+///        are written as files and referenced by URI. Empty leaves `w` as it is.
+/// @return False when an image file could not be written (::GltfWriter::image_error).
+/// @param shared     Non-null: textures with a fileId go into this pool once and
+///        are referenced as `sharedPrefix + SharedImagePool::file_name(fileId)`
+///        (GltfExportOptions::sharedImages); a failed pool write is an image_error.
 bool write_model_textures(GltfWriter& w, const std::vector<ModelTextureCPU>& textures,
-                          std::vector<int>& texIndices);
+                          std::vector<int>& texIndices, const std::string& imageDirUtf8 = {},
+                          const std::string& uriPrefix = {}, SharedImagePool* shared = nullptr,
+                          const std::string& sharedPrefix = {});
 
 /// @brief PNG bytes for an already-decoded texture; empty when it has no
 ///        pixels or encoding fails. Lets callers write files through a UTF-8
 ///        `std::filesystem::path` (save_texture_png takes a narrow path).
 std::vector<uint8_t> encode_png(const ModelTextureCPU& tex);
+
+/// @brief PNG bytes of @p pixels (width x height, @p channels 1..4 bytes per
+///        texel, row 0 first); empty when the size is wrong or encoding fails.
+///        The world export writes its RGB terrain albedo with it.
+std::vector<uint8_t> encode_png_pixels(int width, int height, int channels, const std::vector<uint8_t>& pixels);
 
 /// @brief Bakes and embeds an emissive texture for an "effect" (additive/glow)
 ///        material: the diffuse texture's own bright regions (luminance-
@@ -184,6 +239,10 @@ struct MeshExportInfo {
     int meshIndex = -1;
     uint32_t materialIndex = 0;
     size_t sourceIndex = 0; // index into ModelPreview::meshes (write_meshes skips empty ones)
+    /// (level, glTF mesh) for each level 1.. whose index set is the mesh's own
+    /// (world_lods.h mesh_lod_source); levels it repeats are left out. Empty
+    /// unless write_meshes was given lodLevels > 1.
+    std::vector<std::pair<int, int>> lods;
 };
 
 /// @brief Write one glTF `mesh` (one primitive) per `ModelMeshCPU`, with
@@ -191,8 +250,12 @@ struct MeshExportInfo {
 ///        Geometry stays in the model's own local/bind space -- callers place
 ///        it via the referencing node's transform, never by pre-transforming
 ///        vertices.
+///        With @p lodLevels > 1 (the world export only, GltfExportOptions::exportLods),
+///        each mesh's own LOD1.. index sets become extra glTF meshes whose one
+///        primitive shares the LOD0 primitive's attributes, material and morph
+///        targets and has only its own `indices`; with 1 (the default) nothing changes.
 std::vector<MeshExportInfo> write_meshes(GltfWriter& w, const ModelPreview& model,
-                                         const std::vector<int>& materialIndices);
+                                         const std::vector<int>& materialIndices, int lodLevels = 1);
 
 // =================================================================== skeleton ==
 

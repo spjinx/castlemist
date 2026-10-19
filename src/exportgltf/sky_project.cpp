@@ -2,14 +2,17 @@
 /// @brief Equirect and cube-face writers over a radiance callback.
 
 #include "castlemist/exportgltf/sky_project.h"
+#include "internal.h"
+#include "long_path.h"
 
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <system_error>
+#include <thread>
+#include <vector>
 
-// texture_export.cpp already defines STB_IMAGE_WRITE_IMPLEMENTATION for this layer.
-#include "stb_image_write.h"
 
 namespace castlemist::exportgltf::sky {
 
@@ -84,16 +87,25 @@ Image render_face(const Radiance& r, Face f, int size) {
 Image render_equirect(const Radiance& r, int width, int height) {
     // Unity Skybox/Panoramic (latitude-longitude): row 0 looks at +Y, the
     // image centre at +X, and u = 0.75 at -Z.
+    // Rows in parallel (the radiance is read-only); the image is the same
+    // whatever the thread count.
     Image img = blank(width, height);
-    for (int y = 0; y < height; ++y) {
-        float latitude = (y + 0.5f) / height * kPi;
-        float sl = std::sin(latitude), cl = std::cos(latitude);
-        for (int x = 0; x < width; ++x) {
-            float longitude = (0.5f - (x + 0.5f) / width) * 2.0f * kPi;
-            float d[3] = {sl * std::cos(longitude), cl, sl * std::sin(longitude)};
-            put(img, x, y, r(d));
+    auto rows = [&](int y0, int y1) {
+        for (int y = y0; y < y1; ++y) {
+            float latitude = (y + 0.5f) / height * kPi;
+            float sl = std::sin(latitude), cl = std::cos(latitude);
+            for (int x = 0; x < width; ++x) {
+                float longitude = (0.5f - (x + 0.5f) / width) * 2.0f * kPi;
+                float d[3] = {sl * std::cos(longitude), cl, sl * std::sin(longitude)};
+                put(img, x, y, r(d));
+            }
         }
-    }
+    };
+    const int n = std::clamp(static_cast<int>(std::thread::hardware_concurrency()), 1, std::max(1, height / 16));
+    std::vector<std::thread> pool;
+    for (int t = 1; t < n; ++t) pool.emplace_back(rows, height * t / n, height * (t + 1) / n);
+    rows(0, height / n);
+    for (std::thread& th : pool) th.join();
     return img;
 }
 
@@ -106,13 +118,20 @@ bool write_png(const Image& img, const std::string& path, std::string& error) {
     std::filesystem::path parent = std::filesystem::path(path).parent_path();
     if (!parent.empty()) {
         std::error_code ec;
-        std::filesystem::create_directories(parent, ec);
+        make_dirs(parent, ec);
         if (ec) {
             error = "cannot create " + parent.string() + ": " + ec.message();
             return false;
         }
     }
-    if (!stbi_write_png(path.c_str(), img.width, img.height, 4, img.rgba.data(), img.width * 4)) {
+    // Encoded in memory and written through long_path(), so a sky folder past
+    // MAX_PATH is written too (review I4).
+    const std::vector<uint8_t> png = encode_png_pixels(img.width, img.height, 4, img.rgba);
+    std::ofstream out(long_path(std::filesystem::path(path)), std::ios::binary);
+    if (!png.empty() && out)
+        out.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+    out.close();
+    if (png.empty() || out.fail()) {
         error = "failed to write PNG (bad path, or disk/permission error)";
         return false;
     }

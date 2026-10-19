@@ -91,6 +91,36 @@ Also: the export's `local_types` holds 1,463 name-only lines and **no type
 bodies** (zero `{`). The real type definitions exist only in the three
 `gw2_ida_types*.h` headers. Import those; don't rely on the JSON for types.
 
+### Re-anchor after the 2026-10-14 patch
+
+New client: `Gw2-64.exe` PE timestamp 1791828055 (2026-10-12 18:00 UTC),
+43,065,736 bytes. Every anchor below matched exactly once. "Old" is the
+1790880995 build for the emu anchors (from `tools/emu/bin/emu_anchors.json`)
+and the 1789758548 build for the hook ones (that exe is the only older one
+left on disk).
+
+| anchor | old VA | new VA | found by |
+| --- | --- | --- | --- |
+| `emu_Msg_Raw_ClientRecvEncrypt` | `0x140FEDE40` | `0x140FEE7F0` | string, `emu_anchors.py` |
+| `emu_MsgConnDispatch` | `0x14023F080` | `0x14023F080` | string |
+| `emu_Gc_GcAuthCmdNotifyProc` | `0x1402411F0` | `0x1402411F0` | string, 2 corroborating strings agree |
+| `emu_AccountLoginResult` | `0x14023D8F0` | `0x14023D8F0` | string |
+| `emu_PortalUserInfoError` | `0x140246EE0` | `0x140246EE0` | string |
+| `emu_Rc4Prga` / rc4-identity site | `0x140FF4410` / `0x140FF446C` | `0x140FF4DC0` / `0x140FF4E1C` | signature |
+| textkey insert (`SIG_INSERT`) | `0x1410D8490` | `0x1410DC7A0` | signature, hook |
+| txtp bulk (`SIG_BULK`) | `0x1410E32F0` | `0x1410E7600` | signature, hook |
+| TlsIndex | `0x14280E5A0` | `0x1428155C0` | PE TLS directory, = `SIG_GAMECTX` rip target |
+| `CMapLoader::Update` (`SIG_UPDATE`) | `0x140953220` | `0x140951770` | signature, maploader probe |
+| `OnServerReady` | `0x140955510` | `0x1409538C0` | signature |
+| `LocalResolve` | `0x140951100` | `0x14094F4D0` | signature |
+| `MapTypeFromMapId` | `0x1412DF620` | `0x1412E19C0` | signature |
+| `ParamGetFlag` | `0x1410E5790` | `0x1410E9AA0` | signature |
+| `GameContext` (TLS) | `0x1409B4CD0` | `0x1409B1FB0` | signature |
+
+The auth-side functions did not move; the MsgConn crypto moved +0x9B0. The
+hook DLLs scan for their signatures at run time, so they need no change.
+`tools/strs/gw2_capture_textkeys.py` pins RVAs and was updated.
+
 ## Plan
 
 In order. Each step is useful alone.

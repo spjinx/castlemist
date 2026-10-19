@@ -131,29 +131,33 @@ castlemist_add_layer(extract DEPS castlemist::format castlemist::media
 # types: the solver is fed a ModelMeshCPU straight out of model extraction.
 castlemist_add_layer(sim    DEPS castlemist::extract ext::glm)
 
-# exportgltf also sits beside render: it turns the same CPU ModelPreview/MapScene
+# world turns a GW2 map into one renderer-free WorldScene (terrain, props,
+# collision, water, environment) on top of extract's parsers.
+castlemist_add_layer(world DEPS castlemist::extract ext::json)
+
+# exportgltf also sits beside render: it turns the same CPU ModelPreview
 # payloads into a binary glTF (.glb) -- a precisely specified, Khronos-ratified
 # format, unlike FBX's undocumented binary container. Needs extract's types,
 # stb_image_write.h (from the same ext::stb checkout format/media already use)
 # to encode embedded textures as PNGs, and ext::json (already used by
-# native/db) to build the glTF JSON chunk without hand-rolled escaping.
-castlemist_add_layer(exportgltf DEPS castlemist::extract ext::stb ext::json)
+# native/db) to build the glTF JSON chunk without hand-rolled escaping. world
+# is for export_world_gltf, which writes a WorldScene (world never depends back).
+castlemist_add_layer(exportgltf DEPS castlemist::extract castlemist::world ext::stb ext::json)
 # Recorded in the VRChat export's materials.json.
 target_compile_definitions(castlemist_exportgltf PRIVATE CASTLEMIST_VERSION_STRING="${PROJECT_VERSION}")
 
 # npc: NPC catalogue (cntc pack reader + catalogue) on top of extract/exportgltf.
 castlemist_add_layer(npc DEPS castlemist::extract castlemist::exportgltf castlemist::ripper ext::json)
 
-# world turns a GW2 map into one renderer-free WorldScene (terrain, props,
-# collision, water, environment) on top of extract's parsers.
-castlemist_add_layer(world DEPS castlemist::extract ext::json)
-
 # ripper turns a character manifest into exported pieces: composite lookup,
 # dye baking and atlas cropping on top of extract + exportgltf.
 castlemist_add_layer(ripper DEPS castlemist::character castlemist::extract castlemist::exportgltf
                                  castlemist::format castlemist::db ext::json ext::stb)
 
-castlemist_add_layer(render DEPS castlemist::extract castlemist::sim
+# render reads exportgltf's material rules (profile_for, alpha_tested,
+# decode_blend) so the map view's prop alpha modes match the glTF export.
+# exportgltf is CPU-only and never depends back on render.
+castlemist_add_layer(render DEPS castlemist::extract castlemist::sim castlemist::world castlemist::exportgltf
                                  d3d11 dxgi d3dcompiler dxguid)
 
 # The "Game 1:1" surface. PRIVATE: nothing above render needs bgfx headers --

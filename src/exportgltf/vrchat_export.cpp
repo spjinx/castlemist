@@ -5,6 +5,7 @@
 #include "castlemist/exportgltf/vrchat_export.h"
 
 #include "internal.h"
+#include "long_path.h"
 
 #include "castlemist/exportgltf/vrchat_maps.h"
 
@@ -63,29 +64,48 @@ json opt_json(const std::optional<float>& v) { return v ? json(*v) : json(); }
 json rgb_json(const std::array<float, 3>& c) { return {c[0], c[1], c[2]}; }
 
 bool write_file(const fs::path& p, const std::vector<uint8_t>& bytes) {
-    std::ofstream out(p, std::ios::binary);
+    std::ofstream out(long_path(p), std::ios::binary);
     if (!out) return false;
     out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-    return static_cast<bool>(out);
+    out.close();   // the final flush can fail: check after it
+    return !out.fail();
 }
 
 /// Writes one material's maps under `Textures/` and builds their JSON.
 class MapWriter {
 public:
-    MapWriter(const fs::path& folder, std::string matFile, std::vector<std::string>& warnings)
-        : folder_(folder), matFile_(std::move(matFile)), warnings_(warnings) {}
+    MapWriter(const fs::path& folder, std::string matFile, std::vector<std::string>& warnings,
+              SharedImagePool* pool = nullptr, std::string poolPrefix = {})
+        : folder_(folder), matFile_(std::move(matFile)), warnings_(warnings), pool_(pool),
+          poolPrefix_(std::move(poolPrefix)) {}
 
     /// The map's JSON ({file, uv, fileId, source}), or null when it is not
-    /// present or its PNG could not be written (with a warning).
-    json write(const MapSlot& slot, const std::string& suffix) {
+    /// present or its PNG could not be written (with a warning). With a pool
+    /// (Task 15d) the file is the pool's "<sha1>_<suffix>.png", shared by every
+    /// map of the export with the same bytes and role; an extra layer's
+    /// (@p extra) is "<sha1>_x-<lower-case role>.png", so it never meets a
+    /// Poiyomi role's name ("projector" and "Projector" are one file on Windows).
+    json write(const MapSlot& slot, const std::string& suffix, bool extra = false) {
         if (!slot.present) return json();
-        const std::string leaf = matFile_ + " - " + unique_name(suffix, suffixes_) + ".png";
-        const std::string rel = "Textures/" + leaf;
         const std::vector<uint8_t> png = encode_png(slot.tex);
-        if (png.empty() || !write_file(folder_ / "Textures" / u8path(leaf), png)) {
-            warnings_.push_back(suffix + " map (" + slot.source + ") could not be written to " +
-                                rel + ": left out");
-            return json();
+        std::string rel;
+        if (pool_) {
+            std::string err;
+            const std::string leaf = pool_->ensure_content(png, extra ? "_x-" + lower_ascii(suffix) : "_" + suffix, &err);
+            if (leaf.empty()) {
+                warnings_.push_back(suffix + " map (" + slot.source + ") could not be written to " + poolPrefix_ +
+                                    ": left out" + (err.empty() ? "" : " (" + err + ")"));
+                return json();
+            }
+            rel = poolPrefix_ + leaf;
+        } else {
+            const std::string leaf = matFile_ + " - " + unique_name(suffix, suffixes_) + ".png";
+            rel = "Textures/" + leaf;
+            if (png.empty() || !write_file(folder_ / "Textures" / u8path(leaf), png)) {
+                warnings_.push_back(suffix + " map (" + slot.source + ") could not be written to " +
+                                    rel + ": left out");
+                return json();
+            }
         }
         return json{{"file", rel},
                     {"uv", slot.uv},
@@ -98,7 +118,20 @@ private:
     std::string matFile_;
     std::vector<std::string>& warnings_;
     std::set<std::string> suffixes_;
+    SharedImagePool* pool_;
+    std::string poolPrefix_;
 };
+
+/// Task 15d: the Poiyomi side of a material's key -- its materials.json entry
+/// without the display fields (name, fileName), the per-model ones
+/// (usedByMeshes, warnings) and, from the world export, `world` (dark decal,
+/// uvScroll). Re-parsed as nlohmann::json, so the keys are sorted.
+std::string key_input(const json& entry, const nlohmann::json& world) {
+    nlohmann::json j = nlohmann::json::parse(entry.dump(-1, ' ', false, json::error_handler_t::replace));
+    for (const char* k : {"name", "fileName", "usedByMeshes", "warnings"}) j.erase(k);
+    j["world"] = world;
+    return j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
 
 json blend_json(const ModelMaterialCPU& mat, const BlendInfo& b) {
     if (!mat.hasRenderState) return json();  // no game blend word: nothing raw to record
@@ -143,6 +176,12 @@ std::string safe_file_name(const std::string& s) {
 
 VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::string& folderUtf8,
                                        const std::string& name, uint32_t modelFileId) {
+    return write_vrchat_folder(model, folderUtf8, name, modelFileId, VrchatFolderOptions{});
+}
+
+VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::string& folderUtf8,
+                                       const std::string& name, uint32_t modelFileId,
+                                       const VrchatFolderOptions& opts) {
     VrchatFolderResult r;
     if (model.meshes.empty()) {
         r.error = "This model has no drawable meshes to export.";
@@ -151,9 +190,10 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
 
     const fs::path folder = u8path(folderUtf8);
     std::error_code ec;
-    fs::create_directories(folder / "Textures", ec);
+    if (opts.generatedMaps) make_dirs(folder, ec);   // the maps go to the pool (Task 15d)
+    else make_dirs(folder / "Textures", ec);
     if (ec) {
-        r.error = "Could not create '" + utf8(folder / "Textures") + "': " + ec.message();
+        r.error = "Could not create '" + utf8(opts.generatedMaps ? folder : folder / "Textures") + "': " + ec.message();
         return r;
     }
     r.folder = utf8(folder);
@@ -186,7 +226,7 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
                                poiyomi_preset_name(blend.nearest) +
                                "', use the raw factors in \"blend\" (Advanced Blending)");
 
-        MapWriter mw(folder, matFile, warnings);
+        MapWriter mw(folder, matFile, warnings, opts.generatedMaps.get(), opts.generatedMapsPrefix);
         json jm{{"baseColor", mw.write(maps.baseColor, "BaseColor")},
                 {"normal", mw.write(maps.normal, "Normal")}};
         json packed = mw.write(maps.packed, "Packed");
@@ -217,7 +257,7 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
         jm["alphaMask"] = std::move(alphaMask);
         json extras = json::array();
         for (const MaterialMaps::Extra& x : maps.extras) {
-            json e = mw.write(x.slot, safe_file_name(x.role.empty() ? "extra" : x.role));
+            json e = mw.write(x.slot, safe_file_name(x.role.empty() ? "extra" : x.role), true);
             if (e.is_null()) continue;
             e["role"] = x.role;
             e["use"] = x.use.empty() ? json() : json(x.use);
@@ -299,11 +339,24 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
     }
 
     const fs::path glb = folder / u8path(modelName + ".glb");
-    const GltfExportResult g = export_model_gltf(model, utf8(glb));
+    GltfExportOptions gopts = opts.gltf;
+    if (opts.materialKeys) {
+        gopts.materialKeyInputs.clear();
+        for (size_t i = 0; i < materials.size(); ++i)
+            gopts.materialKeyInputs.push_back(
+                key_input(materials[i], i < opts.materialKeyExtras.size() ? opts.materialKeyExtras[i] : nlohmann::json()));
+    }
+    const GltfExportResult g = export_model_gltf(model, utf8(glb), gopts);
     if (!g.ok) {
         r.error = g.error;
         return r;
     }
+    if (opts.materialKeys && g.materialKeys.size() == materials.size())
+        for (size_t i = 0; i < materials.size(); ++i) {
+            materials[i]["key"] = g.materialKeys[i];
+            r.materialKeys.push_back({g.materialKeys[i], materials[i]["name"].get<std::string>(),
+                                      materials[i]["usedByMeshes"].get<bool>()});
+        }
     r.glb = utf8(glb);
     r.particlesJson = g.particlesJsonPath;
 

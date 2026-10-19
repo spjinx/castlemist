@@ -1068,3 +1068,182 @@ Runtime captures that would settle the rest (one map, day and night):
 11. GPU order of the hemicube, star, card and cloud draws (one frame capture).
 12. Render target format and the sky's path through exposure/tonemap
     (unchanged from round 1).
+
+---
+
+## Amendment 2026-10-17: haze, the material card, the approximate sky
+
+Done for Mad King's Labyrinth (map 2499169), whose sky castlemist baked almost
+black. Same exe as the rest of this note: the research build
+(`Gw2-64-disable-aslr.exe`, md5 `6a2b0557…`, kept on disk as
+`Gw2-64-disable-aslr.exe.pre-2026-10-14`). Disassembled with `objdump`. Dat
+values read through `gw2dat_cli` (`parse`, `extract --decompress`, `amat`,
+`texture`).
+
+### A.1 Why the Labyrinth is black (measured)
+
+All four of its env blocks with a sky (dataGlobal and dataLocalArray 0-2;
+block 3 has none) carry the same `PackMapEnvDataSkyV75`: **day and night
+Brightness 0**, HazeBottom 0.1716, HazeFalloff 0.1992, **HazeDensity 1**,
+LightIntensity 3, StarDensity 0. By §5 the hemicube term is `tex·a·0 = 0`
+and the sun glow of a zero texel is 0, so the base pass is exactly
+`lerp(0, FogColorFar, (1 − smoothstep((max(n.z,0) − 0.17)/0.2))·1)`:
+FogColorFar at and below the horizon, fading to black by about 22° up. The
+look comes from FogColorFar, the cards and the clouds; the hemicube
+textures add nothing. Cards: 0 = the Mad King moon (texture 504870); 1 = a
+haze-dominated band (minHaze 0.905; its `flags` 0x0b738909 has bit 8 set,
+so it aims at `location`, §9.2); 2-5 = material cards on AMAT 1262294
+(scales 60-100, latitudes 1.05-1.18 × π/2, just past the zenith). Four
+cloud layers, one of them (altitude 5492) below the floating island.
+
+### A.2 FogColorFar's source (derived from static code)
+
+| step | where | finding |
+|---|---|---|
+| haze import | `0x140c889e0` | for each `haze[i]` (ptr_array of `PackMapEnvDataHaze*`): byte4 colours become float4 with **byte 2 → x, 1 → y, 0 → z, 3 → w** (× `0x141ae1098` = 1/255): the file stores colours **B, G, R, A**. Layout `{near, far, distRange, height, heightRange, depthCue, sunDirRange}` = 0x4c bytes, then `0x140c619f0(env, i, …)` |
+| env slot | `0x140c619f0` | `env + 0x1d8 + i·0x4c`; three slots (`MAP_ENV_GROUP_TYPES`) |
+| per-frame pick | `0x140c60340` | env flag 4 (has haze) clear → the parent env's; else the flag argument → **slot 2**; `t == 1` → **slot 0 (day)**; `t == 0` → **slot 1 (night)**; otherwise slot 0 weight t and slot 1 weight 1 − t through the accumulator `0x140c56df0`. An override env (`+0x70`) blends on top |
+| zone blend | `0x140c64430` / `0x140c64600` | the haze manager at `EnvContext+0x198` accumulates the environments' hazes by weight into its `+0x70..+0xbb` |
+| fog set | `0x140c64570`, `0x140c64960` | `0x140a6dc10(near +0x70, far +0x80, distRange +0xa0, height +0x90, heightRange +0xa8, depthCue +0xb8)`; mode 0 → `0x140a6dbd0`, fog off |
+| GrSetFog | `0x140ab2c20` | into the graphics state (`0x140b053f0()`): `+0x14cfc0 = near − far` (all four), `+0x14cfd0 = far`, `+0x14cfe0 = height`, `+0x14cff0 = depthCue` (broadcast), then `1/(d1−d0)`, `−d0/(d1−d0)`, `1/(h1−h0)`, `−h0/(h1−h0)`, and the same for sunDirRange |
+
+The stores follow, in order, the uniforms of the engine HLSL embedded in the
+exe (`0x14204c86f`: `FogColorNearMinusFar : FOGCOLOR0`, `FogColorFar :
+FOGCOLOR1`, `FogColorHeight : FOGCOLOR2`, …, `FogDepthCue`, `FogParam0`),
+and `VSCalculateFog` (`0x14204e5c8`) uses them as
+`fogColorDist = FogColorFar + FogColorNearMinusFar·(1 − fogs.x)`. So
+**FogColorFar = the blended env haze's `farColor`** (RGBA from B,G,R,A
+bytes), slot 0 by day, 1 by night. The copy from `+0x14cfd0` into the
+uniform register was not found (no direct reader of those offsets), so the
+last link rests on the order match: **derived, not fully proven**. No sky
+draw sets a fog value, which is why §11 found no writer there.
+
+Labyrinth values: dataGlobal haze slots 0/1 are records shared with zone 3
+and zone 0 (`gw2dat_cli parse` prints a shared record once, so read them
+with the sign-extended pointers of A.4): farColor bytes `59 83 3B FF` →
+**RGB (59, 131, 89) = (0.231, 0.514, 0.349)** by day and night; slot 2
+`CA F6 60 FF` → (96, 246, 202).
+
+### A.3 Light colours use the same byte order (derived)
+
+The lighting import (around `0x140c88dbe`) stores light colour bytes as
+`x = byte 2, y = byte 1, z = byte 0`, w = 1. castlemist's `parseMapEnv`
+reads them in stored order (R = byte 0), i.e. **red and blue swapped** with
+respect to the client. Its users were not changed here (outside this task);
+the approximate sky swaps them back for its sun colour. The light slots are
+picked like the haze ones (`0x140c60690`: slot 2 on the flag, 0 at t = 1,
+1 at t = 0, a blend in between). Who writes `EnvContext+0x4e4..0x4f8` (the
+sky's `sunClr` / `sunDir`) is still not traced.
+
+### A.4 Why the Labyrinth had "no light rig" (fixed)
+
+2499169 is a PF v1 packfile with 32-bit pointers. Its light records are
+shared by several presets and stored before the pointer arrays, so those
+self-relative pointers are negative. `Extractor::rdPtr` read 4-byte
+pointers unsigned (8-byte ones wrap by themselves), sending them 4 GB past
+the file, and every preset read empty. Sign-extending 4-byte pointers fixes
+it: dataGlobal lighting[0] now gives its 8 lights (dominant intensity
+1.306). The per-zone blocks carry the same lighting, so the light rig needs
+nothing per-zone.
+
+### A.5 Material card AMAT 1262294 ("flow fire")
+
+`gw2dat_cli amat --file-id 1262294`: 19 shaders; the opaque and the
+transparent effect are both PS 12 + VS 0, render state `0x10006565000`
+(SRC_ALPHA, INV_SRC_ALPHA, as texture cards). PS 12 uniforms (byte
+offsets): `FogColorFar` 0, `Time` 16, `AlphaRef` 80, `colorl` 128, `colorh`
+144, `fireduv` 160, `flowspd` 176, `flowuv` 192, `flowbuv` 208, `firedfl`
+224, `ramprmp` 240, `firesfl` 256, `opacity` 272, `skypara` 288, `skyparb`
+304. The card's 12 constants decode (base-23 Token) to exactly those names
+plus `skypara` / `skyparb`, which the card draw sets itself: the reserved
+table at `0x1427f1550` is filled at `0x1401fc880` with the tokens of
+`skypara`, `skyparb`, `sunDir`, `sunClr`, `cell`, `cellb`, `flptime`.
+
+PS 12, transcribed (VS 0: `v0.xy` = TEXCOORD1 through TexTransform1,
+`v0.zw` = TEXCOORD0 through TexTransform0, `v1` = World·pos):
+
+```
+anim(c) = (|2 frac(T c.y) − 1| (c.w − c.z) + c.z,  frac(T c.x))   // (scale, v offset)
+f1  = 2 t2(v0.xy·s_flowuv + (0, o_flowuv)).xy − 1
+f2  = 2 t3(v0.xy·s_flowbuv + (0, o_flowbuv)).xy − 1
+fl  = f1 + f2;   fd = fl · firedfl.x
+b   = v0.xy·s_fireduv + (0, o_fireduv)
+p1  = frac(flowspd.x T − 0.5);  p2 = frac(flowspd.x T);  w = |2 p2 − 1|
+n   = lerp(t1(fd p2 + b).y, t1(fd p1 + b).y, w)
+k   = smoothstep(saturate((n + 0.05)·2.03593))
+c   = lerp(colorl, colorh, n)·k·3.24;   a = k·1.8
+m   = lerp(ramprmp.x, ramprmp.y, t4(v0.zw).x)
+dm  = fl·m·firesfl.x
+mask= lerp(t0(dm p2 + v0.zw).y, t0(dm p1 + v0.zw).y, w)
+rgb = mask·c·opacity.x;   A = mask·a·opacity.x
+discard if A·skyparb.x − AlphaRef.x < 0
+h   = saturate((1 − smoothstep(saturate((saturate(−normalize(v1).z) − skypara.x)/skypara.y)))·skypara.z + skypara.w)
+out = (lerp(rgb, FogColorFar, h)·skyparb.y,  A·skyparb.x)
+```
+
+Texture binding: D3D register `t_i` = material `textures[i]`. The two
+`.xy` flow fetches (t2, t3) then land on the card's two 3DCX (two-channel)
+textures 919277 and 1763943, both swirl flow maps, which supports it (the
+sampler names `ssN` carry permuted register indices; reading them as the
+binding would put a DXT1 texture on a flow fetch). Labyrinth constants:
+colorl (0.655, 0.510, 0.231), colorh (0.639, 0.133, 0.031), fireduv
+(−0.2, 0, 0, 0.5), flowspd x 0.2 (0.061 on card 3), flowuv
+(0, 0, 0, −0.75), flowbuv (0, 0.139, 1, 1), firedfl x 1, ramprmp
+(1, 1, 0, 1), firesfl x −0.233, opacity 1.
+
+**UNPROVEN** for a bake: `Time` (the swirl animates); the material card's
+quad UVs (`0x140ca7740` builds a different mesh from the texture-card quad;
+not traced; taken as the texture-card quad with `textures[0].textureUV`);
+identity TexTransforms (`textureAnimation` is identity on this map); and
+which effect the sky path's program builder `0x140aab550` picks
+(castlemist's AMAT picker gives PS 12 for opaque and transparent alike).
+
+### A.6 Cloud fog
+
+VS 1645's fog for a cloud is `min((1 − fz)·FogColorNearMinusFar.w +
+FogColorFar.w, fz)·cldPara.z` with `fz = saturate(viewZ·FogParam0.x +
+FogParam0.y)`. With FogParam0.xy as GrSetFog stores them (A.2), `fz =
+saturate((viewZ − d0)/(d1 − d0))` over the blended haze's distRange.
+Derived, with the same caveat as A.2.
+
+### A.7 Which env block
+
+The game blends env blocks by camera position (zone shapes with
+`fadeHorizInner`). A static bake has no camera, so castlemist takes the block
+whose shapes cover most of `parm.rect` (dataGlobal covers what no zone shape
+covers), and dataGlobal's haze when that zone has none of its own. On
+2499169 that is dataLocalArray[2] (27 % of the map against dataGlobal's
+25 %); all its blocks share the same far colour, so the choice does not
+change the sky there. **UNPROVEN** as what a given camera sees.
+
+### A.8 The approximate sky (castlemist)
+
+`make_sky_sampler(…, ApproxInputs*)` and `approx_inputs()`. It is the Map
+Window's default (toggle "Approx sky"; `GW2_MAPWIN_SKY=approx|proven`, with
+day / night / off as before); exports opt in with `gw2dat_cli skybox
+--approx` / `world-export --sky-approx` (manifest setting
+`skyApproximate`). It adds §5's haze and sun glow, §9.4 in full for texture
+cards (haze-dominated ones included), the flow-fire material card, and
+§10.5's clouds. Every input is labelled in the warnings and in `sky.json`
+`approxInputs`:
+
+| input | label | value |
+|---|---|---|
+| FogColorFar, FogParam0.xy, FogColorNearMinusFar.w | derived from static code | the chosen block's haze slot (A.2, A.6) |
+| env block | UNPROVEN guess | A.7 |
+| sunClr.rgb, sunDir | UNPROVEN guess | dataGlobal lighting[slot]'s dominant light; colour in client byte order (A.3), direction as stored |
+| shRed / shGreen / shBlue | UNPROVEN guess | constant: fill colour × clamp(0.3 × fill intensity, 0.12, 0.55) |
+| camera z | UNPROVEN guess | the terrain's median height (cloud planes sit at absolute heights, §10.5) |
+| cardFade, cloudFade | UNPROVEN guess | 1 |
+| Time, AlphaRef | UNPROVEN guess | 0 |
+
+Still left out: cards that aim at `location` (flag 8) or depend on `level`
+(flag 0x80), material cards on any other AMAT, the camera.z > level
+attribute sets, cloud scroll (0 = the load state); the layer order (cards,
+then clouds farthest first) stays UNPROVEN. The Map Window fogs distant
+ground with the approximate sky's FogColorFar. The proven-only bake is
+unchanged.
+
+Open (static): the reader of `+0x14cfd0` into the FogColorFar register; the
+writer of `EnvContext+0x4e4..0x4f8`; the SH globals; `0x140ca7740` and
+`0x140aab550` for material cards.

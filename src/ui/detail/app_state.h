@@ -82,10 +82,11 @@ constexpr UINT_PTR ID_VIEW_THEME_ACCENT = 1013;
 constexpr UINT_PTR ID_TOOLS_CHARACTER = 1019;      // Character Ripper (GW2 API) dialog
 constexpr UINT_PTR ID_TOOLS_DOWNLOAD_NAMES = 1020; // fetch every game name into content_names.tsv
 constexpr UINT_PTR ID_TOOLS_DECODE_TOKEN = 1015;   // token/filename-bytes decoder popup
-constexpr UINT_PTR ID_TOOLS_NPC_CATALOGUE = 1022;  // NPC catalogue window
+constexpr UINT_PTR ID_TOOLS_NPC_CATALOGUE = 1023;  // NPC catalogue window
 constexpr UINT_PTR ID_TOOLS_DATA_STATUS = 1021;    // Data status window: is every export input current?
+constexpr UINT_PTR ID_TOOLS_MAP_WINDOW = 1022;     // Map Window: fly/walk one map (ui/map_window.cpp)
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL = 1016; // Export glTF... (single model, plain decoded textures)
-constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MAP = 1017;   // Export glTF... (whole map scene)
+constexpr UINT_PTR ID_FILE_EXPORT_WORLD_MAP = 1017;  // Export World (Map)... (cell folder, manifest, per-cell glTF, FBX)
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL_ATLAS = 1018; // Export glTF... (single model, baked to a fresh UV atlas)
 constexpr UINT_PTR ID_FILE_EXPORT_VRCHAT_MODEL = 2185;     // Export for VRChat (Model)... (folder: glb, fbx, blend, Textures, materials.json)
 constexpr UINT_PTR ID_FILE_EXPORT_SKYBOX_MAP = 2186;       // Export Skybox (Map)... (folder: sky.json, <mode>/baked, <mode>/skybox)
@@ -230,8 +231,6 @@ constexpr UINT_PTR ID_LAYER_COLL = 2054;
 /// Terrain had no toggle -- it was forced on -- so the ground plane could not be
 /// hidden to look at what sits under it.
 constexpr UINT_PTR ID_LAYER_TERRAIN = 2132;
-/// "Fly": the mesh-only free-camera map view (RenderMode::MapFly).
-constexpr UINT_PTR ID_MODE_FLY = 2133;
 /// "Map": with a map and a model both loaded, picks which owns the surface.
 constexpr UINT_PTR ID_SHOW_MAP = 2134;
 constexpr UINT_PTR ID_LAYER_WATER = 2135;
@@ -298,9 +297,6 @@ constexpr UINT_PTR ID_VIDEO_TRACK = 2100;   // audio-track selector (multi-track
 constexpr UINT_PTR ID_VIDEO_SUBS = 2101;    // subtitle toggle (searches the CINP scripts)
 constexpr UINT_PTR ID_VIDEO_CLIP = 2102;    // which movie of a CINP cinematic to play
 constexpr UINT_PTR TIMER_ANIM = 1;
-/// ~60 Hz pump for the fly view: integrates WASD movement and repaints. Runs
-/// only while the fly view owns the surface.
-constexpr UINT_PTR TIMER_FLY = 4;
 constexpr UINT_PTR TIMER_AUDIO = 2;         // ~10 Hz refresh of the audio seek bar / time
 constexpr UINT_PTR TIMER_VIDEO = 3;         // video frame pump (see on_video_tick)
 constexpr int kAudioSeekMax = 1000;         // seek trackbar range (permille of duration)
@@ -312,6 +308,32 @@ constexpr UINT_PTR ID_DS_FIX = 2202;
 constexpr UINT_PTR ID_DS_KEYS = 2203;
 constexpr UINT_PTR ID_DS_REFRESH = 2204;
 constexpr UINT_PTR ID_DS_CLOSE = 2205;
+// Map window (map_window.cpp): its toolbar, surface, status line and warnings panel.
+constexpr UINT_PTR ID_MW_WALK = 2210;
+constexpr UINT_PTR ID_MW_FLY = 2211;
+constexpr UINT_PTR ID_MW_TERRAIN = 2212;
+constexpr UINT_PTR ID_MW_PROPS = 2213;
+constexpr UINT_PTR ID_MW_COLLISION = 2214;
+constexpr UINT_PTR ID_MW_WATER = 2215;
+constexpr UINT_PTR ID_MW_RESET = 2216;
+constexpr UINT_PTR ID_MW_WARNINGS = 2217;
+constexpr int ID_MW_SURFACE = 2218;
+constexpr int ID_MW_STATUS = 2219;
+constexpr int ID_MW_WARN_EDIT = 2220;
+constexpr UINT_PTR ID_MW_MATERIALS = 2221;
+constexpr UINT_PTR ID_MW_MOTION = 2222;
+constexpr UINT_PTR ID_MW_SHADER = 2223;
+constexpr UINT_PTR ID_MW_SKY = 2224;
+/// The Foliage toggle (a split button) and its menu's sub-modes (spec D6).
+constexpr UINT_PTR ID_MW_FOLIAGE = 2225;
+constexpr UINT_PTR ID_MW_FOLIAGE_COLLIDERS = 2226;
+constexpr UINT_PTR ID_MW_FOLIAGE_ALL = 2227;
+/// The Map window's approximate-sky toggle (on: the approximate sky; off: proven-only).
+constexpr UINT_PTR ID_MW_SKY_APPROX = 2228;
+/// Map window timers (on the map window, not the main one): the 16 ms frame
+/// pump and the ~4 Hz status line.
+constexpr UINT_PTR TIMER_MW_FRAME = 6;
+constexpr UINT_PTR TIMER_MW_STATUS = 7;
 /// Re-checks the dat on disk now and then, so a patch applied while castlemist
 /// is open shows up without a click.
 constexpr UINT_PTR TIMER_DATA_STATUS = 5;
@@ -349,6 +371,15 @@ constexpr UINT WM_APP_SKYBOX_EXPORT_DONE = WM_APP + 17;
 constexpr UINT WM_APP_DATA_STATUS_REFRESH = WM_APP + 18;
 /// The checks finished; lparam = heap std::vector<DataRow>*, owned by the handler.
 constexpr UINT WM_APP_DATA_STATUS_DONE = WM_APP + 19;
+/// Map window worker results. lparam is a heap payload the map window takes
+/// ownership of (map_window.cpp); each carries the window generation and is
+/// dropped when it no longer matches.
+constexpr UINT WM_APP_MAPWIN_WORLD = WM_APP + 20;
+constexpr UINT WM_APP_MAPWIN_MODELS = WM_APP + 21;
+constexpr UINT WM_APP_MAPWIN_COLLISION = WM_APP + 22;
+constexpr UINT WM_APP_MAPWIN_TEXTURES = WM_APP + 23;
+constexpr UINT WM_APP_MAPWIN_SKY = WM_APP + 24;
+constexpr UINT WM_APP_MAPWIN_SHADER = WM_APP + 25;
 
 enum class MiddleTab { Compressed = 0, Decompressed = 1, Structure = 2, Preview = 3 };
 
@@ -554,15 +585,6 @@ struct AppState {
     HWND hwnd_layer_navmesh = nullptr;
     HWND hwnd_map_preview = nullptr; // map: toggle the picked-prop inset preview
     HWND hwnd_show_map = nullptr;    // "Map": surface shows the map, not the model
-    bool map_zone_loaded = false; // whether the zone layer has been lazily loaded
-
-    // --- mesh-only fly view (RenderMode::MapFly) ---
-    HWND hwnd_mode_fly = nullptr;
-    HWND hwnd_fly_hud = nullptr;   // overlay label: position, speed, draws, ms
-    bool fly_looking = false;      // a mouse-look drag is in progress
-    POINT fly_look_last{};
-    LARGE_INTEGER fly_qpc_last{};  // for the movement timestep
-    bool fly_qpc_init = false;
 
     // Blender-style gizmo controls + transform readout (single-model surface).
     HWND hwnd_gizmo_move = nullptr;
@@ -647,16 +669,9 @@ void show_loading(bool loading, uint32_t mft_index);
 void zoom_by(float factor);
 void rotate_90();
 void fit_view();
-void ensure_map_game_materials();
 void set_model_mode(castlemist::render::RenderMode mode);
 void reset_model_view();
 void update_gizmo_readout();
-/// True when the mesh-only fly view currently owns the model surface.
-bool fly_view_active();
-/// Starts/stops TIMER_FLY to match fly_view_active(), and shows/hides the HUD.
-void update_fly_timer();
-/// Refreshes the fly HUD overlay (position, speed, draw calls, frame time).
-void update_fly_hud();
 void set_gizmo_mode_ui(castlemist::render::GizmoMode m);
 int lod_target_submesh();
 void refresh_lod_controls();
@@ -717,8 +732,14 @@ void try_autoload_keys();
 void do_export(HWND hwnd, bool export_compressed);
 void do_export_gltf_model(HWND hwnd);
 void do_export_gltf_model_atlas(HWND hwnd);
-void do_export_gltf_map(HWND hwnd);
+void do_export_world_map(HWND hwnd);
 void on_gltf_export_done(HWND hwnd);
+void on_world_export_done(HWND hwnd, LPARAM lparam);
+bool world_export_running();
+/// Asks a running world export to stop (the app is closing; review I5).
+void cancel_world_export();
+/// Waits up to @p ms for the world export thread to finish; true when none runs.
+bool wait_world_export(int ms);
 void do_export_vrchat_model(HWND hwnd);
 void on_vrchat_model_done(HWND hwnd, LPARAM lparam);
 void do_export_skybox_map(HWND hwnd);
@@ -732,6 +753,8 @@ bool load_index_path(HWND hwnd, const wchar_t* path);
 void on_index_build_done(HWND hwnd, bool ok);
 void do_search();
 void do_clear_search();
+/// A map entry's preview text (world_summary on a private Gw2Dat); preview.cpp. Never throws.
+std::wstring map_preview_text(const std::string& dat_path, uint32_t file_id);
 void populate_struct_container_combo();  // preview.cpp -- lists this entry's own chunks (id + name), from the parsed tree
 void on_struct_container_changed();       // preview.cpp -- combo selection -> jump the tree to that chunk
 
@@ -880,6 +903,8 @@ BakeSelectResult show_bake_select_dialog(HWND owner, const ModelPreview& model);
 // ---- index_ui.cpp -- opening a gw2index SQLite and wiring its filters
 void finish_open_index(HWND hwnd, bool silent);
 void do_open_index(HWND hwnd);
+/// Exe-relative places the gw2index database may live, best first.
+std::vector<std::wstring> index_db_candidates();
 void try_autoload_index(HWND hwnd);
 
 // ---- window_proc.cpp -- the menu and the three window procedures

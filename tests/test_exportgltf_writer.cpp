@@ -12,6 +12,8 @@
 
 #include "internal.h"
 
+#include "castlemist/exportgltf/world_export.h"
+
 #include "castlemist/native/granny_anim.hpp"
 
 #include <algorithm>
@@ -20,6 +22,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <stdexcept>
 
 namespace fs = std::filesystem;
@@ -478,39 +481,6 @@ CM_TEST(exportgltf, animation_bakes_expected_endpoints) {
     CHECK_NEAR(values[values.size() - 3], 2.0, 1e-3);      // last keyframe's X
 }
 
-CM_TEST(exportgltf, map_export_shares_geometry_across_instances) {
-    MapScene scene;
-    scene.models.push_back(make_static_quad());
-    scene.modelFileIds.push_back(1);
-
-    MapInstance a;
-    a.model = 0; a.pos[0] = 0; a.pos[1] = 0; a.pos[2] = 0; a.rot[2] = 0.0f; a.scale = 1.0f;
-    MapInstance b;
-    b.model = 0; b.pos[0] = 10; b.pos[1] = 5; b.pos[2] = 0; b.rot[2] = 1.2f; b.scale = 2.0f;
-    scene.instances = {a, b};
-
-    fs::path dir = make_temp_dir("map");
-    fs::path glbPath = dir / "area.glb";
-    GltfExportResult result = export_map_gltf(scene, glbPath.string());
-    CHECK(result.ok);
-
-    ParsedGlb g = parse_glb(read_bytes(glbPath));
-    // True node instancing: one mesh shared by two placement nodes, not two
-    // vertex-baked copies -- the point of moving off FBX's decomposition risk.
-    CHECK_EQ(g.doc["meshes"].size(), size_t(1));
-
-    std::vector<std::vector<double>> matrices;
-    for (const json& node : g.doc["nodes"]) {
-        if (node.contains("matrix")) matrices.push_back(node["matrix"].get<std::vector<double>>());
-    }
-    CHECK_EQ(matrices.size(), size_t(2));
-    bool differs = false;
-    for (size_t i = 0; i < 16; ++i) {
-        if (std::fabs(matrices[0][i] - matrices[1][i]) > 1e-6) { differs = true; break; }
-    }
-    CHECK(differs); // different placement -> different instance matrices
-}
-
 CM_TEST(exportgltf, root_rotation_and_scale_are_configurable) {
     ModelPreview model = make_static_quad();
     fs::path dir = make_temp_dir("rootxform");
@@ -581,4 +551,130 @@ CM_TEST(exportgltf, morph_targets_export_as_named_shape_keys) {
     CHECK(mesh["primitives"][0]["targets"][0].contains("POSITION"));
     CHECK_EQ(mesh["extras"]["targetNames"][0].get<std::string>(), std::string("Jaw Width+"));
     CHECK_NEAR(mesh["weights"][0].get<double>(), 0.25, 1e-6);
+}
+
+namespace {
+
+// A 1x1-chunk terrain (3x3 samples, flat at map z = -5, i.e. 5 up), one prop
+// whose model loaded, one whose model did not, and one collision instance.
+castlemist::world::WorldScene make_world() {
+    castlemist::world::WorldScene s;
+    s.terrain.present = true;
+    s.terrain.chunksX = s.terrain.chunksY = 1;
+    castlemist::world::TerrainChunk c;
+    c.rect[0] = 0; c.rect[1] = 0; c.rect[2] = 10; c.rect[3] = 10;
+    c.samples = 3;
+    c.heights.assign(9, -5.0f);
+    s.terrain.chunks.push_back(c);
+
+    s.models = {{100}, {200}};
+    castlemist::world::PropInstance p;
+    p.model = 0;
+    const float m[16] = {2,0,0,0, 0,2,0,0, 0,0,2,0, 3,4,5,1};
+    std::copy(m, m + 16, p.world);
+    s.props.push_back(p);
+    p.model = 1;
+    s.props.push_back(p);
+
+    castlemist::world::CollisionMesh hull;
+    hull.verts = {0,0,0, 1,0,0, 0,1,0};
+    hull.indices = {0, 1, 2};
+    s.collision.meshes.push_back(hull);
+    castlemist::world::CollisionInstance ci;
+    const float id[16] = {1,0,0,0, 0,1,0,0, 0,0,-1,0, 0,0,0,1};
+    std::copy(id, id + 16, ci.world);
+    ci.group = "obs";
+    s.collision.instances.push_back(ci);
+    return s;
+}
+
+const json* find_node(const ParsedGlb& g, const std::string& name) {
+    for (const json& n : g.doc["nodes"])
+        if (n.value("name", std::string()) == name) return &n;
+    return nullptr;
+}
+
+} // namespace
+
+CM_TEST(exportgltf, world_export_root_maps_map_space_to_gltf) {
+    // Map (x, y, z) -> glTF (x, -z, -y): east stays +X, up (-Z) becomes +Y,
+    // north (+Y) becomes -Z. Negative determinant: the handedness change.
+    std::array<float, 16> r = map_to_gltf_root(1.0);
+    auto apply = [&](float x, float y, float z, int row) { return r[row] * x + r[4 + row] * y + r[8 + row] * z; };
+    CHECK_NEAR(apply(1, 0, 0, 0), 1.0, 1e-6);
+    CHECK_NEAR(apply(0, 0, -1, 1), 1.0, 1e-6);   // up
+    CHECK_NEAR(apply(0, 1, 0, 2), -1.0, 1e-6);   // north
+    std::array<float, 16> half = map_to_gltf_root(0.5);
+    CHECK_NEAR(half[0], 0.5, 1e-6);
+    CHECK_NEAR(half[9], -0.5, 1e-6);
+}
+
+CM_TEST(exportgltf, world_export_writes_terrain_props_and_skips_unloaded) {
+    castlemist::world::WorldScene s = make_world();
+    std::vector<std::shared_ptr<ModelPreview>> models = {std::make_shared<ModelPreview>(make_static_quad()), nullptr};
+    fs::path glbPath = make_temp_dir("world") / "map.glb";
+    WorldExportReport rep = export_world_gltf(s, models, glbPath.string());
+    CHECK(rep.ok);
+    CHECK_EQ(rep.terrainChunks, size_t(1));
+    CHECK_EQ(rep.propsWritten, size_t(1));
+    CHECK_EQ(rep.propsSkipped, size_t(1));
+    CHECK_EQ(rep.modelsWritten, size_t(1));
+    CHECK_EQ(rep.collisionInstances, size_t(0));  // off by default
+
+    ParsedGlb g = parse_glb(read_bytes(glbPath));
+    const json* root = find_node(g, "GW2_MapToGltf");
+    CHECK(root != nullptr);
+    CHECK_EQ((*root)["children"].size(), size_t(2));  // Terrain, Props
+    CHECK(find_node(g, "Collision") == nullptr);
+
+    // The prop carries PropInstance::world unchanged (both column-major).
+    const json* prop = find_node(g, "prop0_100");
+    CHECK(prop != nullptr);
+    CHECK_NEAR((*prop)["matrix"][0].get<double>(), 2.0, 1e-6);
+    CHECK_NEAR((*prop)["matrix"][12].get<double>(), 3.0, 1e-6);
+    CHECK_NEAR((*prop)["matrix"][14].get<double>(), 5.0, 1e-6);
+
+    // Terrain: 9 vertices, 8 triangles, flat ground's normal is map up (-Z).
+    const json* chunk = find_node(g, "chunk_0_0");
+    CHECK(chunk != nullptr);
+    const json& prim = g.doc["meshes"][(*chunk)["mesh"].get<size_t>()]["primitives"][0];
+    std::vector<double> pos = accessor_values(g, prim["attributes"]["POSITION"].get<int>());
+    std::vector<double> nrm = accessor_values(g, prim["attributes"]["NORMAL"].get<int>());
+    std::vector<double> uv = accessor_values(g, prim["attributes"]["TEXCOORD_0"].get<int>());
+    std::vector<double> idx = accessor_values(g, prim["indices"].get<int>());
+    CHECK_EQ(pos.size(), size_t(27));
+    CHECK_EQ(idx.size(), size_t(24));
+    CHECK_NEAR(nrm[2], -1.0, 1e-6);
+    // Row 0 is the north edge (y = rect[3]) with v = 0 there.
+    CHECK_NEAR(pos[1], 10.0, 1e-6);
+    CHECK_NEAR(uv[1], 0.0, 1e-6);
+    CHECK_NEAR(uv[uv.size() - 1], 1.0, 1e-6);
+    // Every triangle's map-space cross product points up (-Z): outward.
+    for (size_t t = 0; t + 2 < idx.size(); t += 3) {
+        auto P = [&](size_t k, int c) { return pos[static_cast<size_t>(idx[t + k]) * 3 + c]; };
+        double ax = P(1, 0) - P(0, 0), ay = P(1, 1) - P(0, 1);
+        double bx = P(2, 0) - P(0, 0), by = P(2, 1) - P(0, 1);
+        CHECK(ax * by - ay * bx < 0);
+    }
+}
+
+CM_TEST(exportgltf, world_export_collision_and_empty_scene) {
+    castlemist::world::WorldScene s = make_world();
+    WorldExportOptions opt;
+    opt.terrain = false;
+    opt.props = false;
+    opt.collision = true;
+    fs::path dir = make_temp_dir("world_coll");
+    WorldExportReport rep = export_world_gltf(s, {}, (dir / "c.glb").string(), opt);
+    CHECK(rep.ok);
+    CHECK_EQ(rep.collisionInstances, size_t(1));
+    ParsedGlb g = parse_glb(read_bytes(dir / "c.glb"));
+    const json* inst = find_node(g, "obs_0");
+    CHECK(inst != nullptr);
+    CHECK_NEAR((*inst)["matrix"][10].get<double>(), -1.0, 1e-6);
+
+    castlemist::world::WorldScene empty;
+    WorldExportReport none = export_world_gltf(empty, {}, (dir / "e.glb").string());
+    CHECK(!none.ok);
+    CHECK(!fs::exists(dir / "e.glb"));
 }

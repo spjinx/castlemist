@@ -3,6 +3,8 @@
 
 #include "detail/app_state.h"
 
+#include "castlemist/world/load_world.h"
+
 #include "castlemist/core/text.h"
 
 #include <algorithm>
@@ -100,9 +102,43 @@ void on_struct_container_changed() {
     castlemist::structtree::select_chunk_by_offset(g_app->hwnd_struct_tree, static_cast<size_t>(data));
 }
 
+// A map entry's preview text: world_summary (counts only, no geometry) of
+// world::load_world on a private Gw2Dat, plus where the map is viewed and
+// exported. Runs on the extract thread; never throws.
+std::wstring map_preview_text(const std::string& dat_path, uint32_t file_id) {
+    std::string body;
+    try {
+        auto tpl = castlemist::tpl::get_or_auto_load();
+        if (!tpl) {
+            body = "No struct template (gw2_packfile.json) is loaded, so the map cannot be summarised.\n"
+                   "Use File > Load Struct JSON... first.";
+        } else if (file_id == 0) {
+            body = "This entry has no file id, so the map cannot be summarised.";
+        } else {
+            Gw2Dat dat;
+            load_dat_file(dat, dat_path);
+            body = castlemist::world::world_summary(castlemist::world::load_world(dat, file_id, *tpl)).dump(2);
+        }
+    } catch (const std::exception& e) {
+        body = std::string("The map's summary could not be built: ") + e.what();
+    } catch (...) {
+        body = "The map's summary could not be built.";
+    }
+    std::string text = "Map " + std::to_string(file_id) + " (mapc/area).\n\n"
+                       "Open it with Tools > Map Window...; export it with File > Export World (Map)...\n\n"
+                       "world_summary:\n" + body + "\n";
+    std::wstring w = utf8_to_wide(text), out;
+    out.reserve(w.size() + w.size() / 16);
+    for (wchar_t c : w) {   // the edit control wants CRLF
+        if (c == L'\n') out += L'\r';
+        out += c;
+    }
+    return out;
+}
+
 // Walks current_entry.decompressed against the loaded JSON struct template
 // and feeds the resulting ParsedNode tree to the "Structure" tab. Mirrors the
-// same tpl-or-nothing pattern build_model_preview and build_map_scene already
+// same tpl-or-nothing pattern build_model_preview already
 // use: the app works with no template loaded, the tree just explains why it's
 // empty instead of showing one.
 //
@@ -321,14 +357,9 @@ void apply_extracted_entry(uint32_t mft_index, ExtractedEntry&& entry) {
             }
             dye_dialog_model_changed();
             castlemist::render::set_model(*g_app->current_entry.model);
-            // set_model hands the surface to the model but leaves any loaded map
-            // standing behind it. "Fly" is a map-only view, so fall back to a
-            // model mode; the map (and the fly camera where it left off) come
-            // straight back from the "Map" toggle, with nothing re-loaded.
-            if (g_app->model_mode == castlemist::render::RenderMode::MapFly)
-                g_app->model_mode = castlemist::render::RenderMode::Full;
+            // set_model hands the surface to the model but leaves any loaded
+            // scene standing behind it; the "Map" toggle brings it back.
             SendMessageW(g_app->hwnd_show_map, BM_SETCHECK, BST_UNCHECKED, 0);
-            update_fly_timer();
             // A standalone skin/model has no env of its own -> light it with the
             // baked GW2-daylight rig (clears any rig left over from a map view).
             castlemist::render::clear_environment_rig();
@@ -396,51 +427,16 @@ void apply_extracted_entry(uint32_t mft_index, ExtractedEntry&& entry) {
         }
         break;
     case PreviewKind::Map:
+        // A map previews as text: its world_summary, built on the extract
+        // thread (map_preview_text). It is viewed in the Map Window and
+        // exported with File > Export World (Map)...
         castlemist::gfx::clear_texture();
-        if (g_app->current_entry.map && !g_app->current_entry.map->instances.empty()) {
-            const MapScene& ms = *g_app->current_entry.map;
-            std::vector<castlemist::render::SceneInstance> insts;
-            insts.reserve(ms.instances.size());
-            for (const MapInstance& mi : ms.instances) {
-                castlemist::render::SceneInstance si;
-                si.model = mi.model;
-                for (int k = 0; k < 3; ++k) { si.pos[k] = mi.pos[k]; si.rot[k] = mi.rot[k]; }
-                si.scale = mi.scale;
-                si.layer = mi.layer;
-                insts.push_back(si);
-            }
-            castlemist::render::set_scene(ms.models, insts);
-            // Light the scene with the map's own env chunk (real per-map sun + SH
-            // ambient) when present; otherwise fall back to the baked daylight rig.
-            castlemist::render::set_environment_rig(ms.env);
-            // A map opens in the mesh-only fly view: it is the only mode that can
-            // actually push a whole map at frame rate, and it is the one that
-            // frames the scene sensibly. The textured/orbit modes stay one click
-            // away on the toolbar.
-            g_app->model_mode = castlemist::render::RenderMode::MapFly;
-            castlemist::render::set_mode(g_app->model_mode);
-            // Default layers: props + terrain + water on, zones + collision + navmesh off.
-            g_app->map_zone_loaded = false;
-            castlemist::render::set_layer_visible(castlemist::render::LAYER_PROP, true);
-            castlemist::render::set_layer_visible(castlemist::render::LAYER_TERRAIN, true);
-            castlemist::render::set_layer_visible(castlemist::render::LAYER_WATER, true);
-            castlemist::render::set_layer_visible(castlemist::render::LAYER_ZONE, false);
-            castlemist::render::set_layer_visible(castlemist::render::LAYER_COLLISION, false);
-            castlemist::render::set_layer_visible(castlemist::render::LAYER_NAVMESH, false);
-            SendMessageW(g_app->hwnd_layer_prop, BM_SETCHECK, BST_CHECKED, 0);
-            SendMessageW(g_app->hwnd_layer_terrain, BM_SETCHECK, BST_CHECKED, 0);
-            SendMessageW(g_app->hwnd_layer_water, BM_SETCHECK, BST_CHECKED, 0);
-            SendMessageW(g_app->hwnd_layer_zone, BM_SETCHECK, BST_UNCHECKED, 0);
-            SendMessageW(g_app->hwnd_layer_coll, BM_SETCHECK, BST_UNCHECKED, 0);
-            SendMessageW(g_app->hwnd_layer_navmesh, BM_SETCHECK, BST_UNCHECKED, 0);
-            SendMessageW(g_app->hwnd_show_map, BM_SETCHECK, BST_CHECKED, 0);
-            update_fly_timer();
-        } else {
-            castlemist::render::clear_model();
-            SetWindowTextW(g_app->hwnd_text_preview,
-                           L"This is a map (mapc/area), but its prop scene could not be built.\r\n"
-                           L"Load the struct template (gw2_packfile.json) to enable map preview.");
-        }
+        castlemist::render::clear_model();
+        SetWindowTextW(g_app->hwnd_text_preview,
+                       g_app->current_entry.text_preview.empty()
+                           ? L"This is a map (mapc/area).\r\n\r\nOpen it with Tools > Map Window..., or export it with "
+                             L"File > Export World (Map)..."
+                           : g_app->current_entry.text_preview.c_str());
         break;
     case PreviewKind::Text:
         castlemist::gfx::clear_texture();
@@ -568,12 +564,18 @@ void on_entry_selected(uint32_t mft_index) {
     std::string file_path = g_app->data_gw2.file_info.file_path;
     MftData entry_copy = g_app->data_gw2.mft_data_list[mft_index];
     HWND hwnd_main = g_app->hwnd_main;
+    // A map entry's summary needs its file id (load_world); cheap to look up here.
+    uint32_t file_id = 0;
+    {
+        const std::vector<uint32_t> fids = get_by_file_id(g_app->data_gw2, mft_index + 1);
+        if (!fids.empty()) file_id = fids.front();
+    }
 
     // Fully self-contained: touches no shared state (own file handle inside
     // extract_entry, copies of everything else), so it's safe to just detach
     // and let stale results be discarded by generation number when they
     // arrive -- no thread ever needs to be waited on or interrupted.
-    std::thread([hwnd_main, generation, mft_index, file_path = std::move(file_path), entry_copy]() {
+    std::thread([hwnd_main, generation, mft_index, file_path = std::move(file_path), entry_copy, file_id]() {
         auto result = std::make_unique<ExtractResult>();
         result->generation = generation;
         result->mft_index = mft_index;
@@ -582,6 +584,8 @@ void on_entry_selected(uint32_t mft_index) {
             // gw2index DB (base_id = mft_index + 1) for this entry's real
             // type/container/chunks before falling back to byte-sniffing.
             result->entry = extract_entry_indexed(file_path, entry_copy, mft_index);
+            if (result->entry.kind == PreviewKind::Map)
+                result->entry.text_preview = map_preview_text(file_path, file_id);
             result->success = true;
         } catch (const std::exception& e) {
             result->success = false;

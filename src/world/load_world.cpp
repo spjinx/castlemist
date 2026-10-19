@@ -1,6 +1,6 @@
 /// @file
 /// @brief load_world: a map packfile into one WorldScene -- terrain, terrain
-///        materials, props, collision, water and environment, each a section
+///        materials, props, collision, zones, water and environment, each a section
 ///        whose failure is a warning, with the water and environment steps
 ///        (docs/research/gw2-world-frame.md §6), the error policy and the
 ///        summary the CLI prints.
@@ -12,6 +12,8 @@
 #include "castlemist/world/dat_read.h"
 #include "castlemist/world/props.h"
 #include "castlemist/world/terrain.h"
+#include "castlemist/world/zones.h"
+#include "castlemist/world/zone_scatter.h"
 
 #include <algorithm>
 #include <exception>
@@ -99,7 +101,7 @@ void build_water(const WaterSources& in, WorldScene& out) {
     // env (§6.5).
     if (in.envWaterPresets)
         warn.push_back("env: " + std::to_string(in.envWaterPresets) +
-                       " water presets (material, colours, waves per env zone) not read");
+                       " water presets in all env blocks; the dataGlobal ones are in environment.water, the per-zone ones are not read");
 
     out.water = std::move(w);
 }
@@ -127,8 +129,16 @@ void build_environment(const EnvSources& in, WorldScene& out) {
     Environment env;
     env.sky = in.sky;
     env.light = in.light;
+    env.water = in.water;
     if (!env.sky.present) out.warnings.push_back("environment: no sky (no env chunk or no dataGlobal)");
     if (!env.light.present) out.warnings.push_back("environment: no light rig (no readable lighting preset)");
+    if (env.water.empty())
+        out.warnings.push_back("environment: no dataGlobal water presets; the view draws flat water");
+    else
+        out.warnings.push_back("environment: " + std::to_string(env.water.size()) +
+                               " dataGlobal water presets kept as stored; the view pairs water preset k with the "
+                               "chosen lighting preset k (presetIndex " + std::to_string(env.light.presetIndex) +
+                               "), UNPROVEN (note §6)");
     const uint32_t otherPresets = in.counts.lightingPresets > 1 ? in.counts.lightingPresets - 1 : 0;
     const uint32_t zones = in.counts.localBlocks + in.counts.overrideBlocks;
     if (otherPresets || zones)
@@ -158,6 +168,11 @@ void attach_environment(castlemist::model::Extractor& ex, WorldScene& out) {
     } catch (const std::exception& e) {
         out.warnings.push_back(std::string("environment: preset and zone counts not read: ") + e.what());
     }
+    try {
+        in.water = ex.parseMapEnvWater();
+    } catch (const std::exception& e) {
+        out.warnings.push_back(std::string("environment: water presets not read: ") + e.what());
+    }
     build_environment(in, out);
 }
 
@@ -174,9 +189,9 @@ void run_section(std::vector<std::string>& warnings, const char* name, const std
 std::vector<std::string> unread_chunk_warnings(const std::vector<std::pair<std::string, uint16_t>>& chunks) {
     // The chunks the sections read, by the findChunk calls of their readers: parm and trn
     // (parseTerrain, parseTerrainMaterials), prp2 (parseMapProps), havk (parseHavok,
-    // parseHavokWater), watr, shor, rive (parseWater, parseShore, parseRivers) and env
-    // (parseMapSky, parseMapEnv, countEnv, countEnvWaterPresets).
-    static const std::set<std::string> kRead = {"parm", "trn", "prp2", "havk", "watr", "shor", "rive", "env"};
+    // parseHavokWater), watr, shor, rive (parseWater, parseShore, parseRivers), env
+    // (parseMapSky, parseMapEnv, countEnv, countEnvWaterPresets) and zon2 (parseZon2).
+    static const std::set<std::string> kRead = {"parm", "trn", "prp2", "havk", "watr", "shor", "rive", "env", "zon2"};
     std::vector<std::string> out;
     std::set<std::string> seen;
     for (const auto& [fourcc, ver] : chunks) {
@@ -254,17 +269,25 @@ WorldScene load_world(Gw2Dat& dat, uint32_t mapFileId, const nlohmann::json& tpl
         if (!w.terrain.present) return;
         resolve_terrain_materials(w.terrain, ex->parseTerrainMaterials(), dat, tpl, w.warnings);
     });
+    // The props and havk placements are kept for the zones section's link (zones.h).
+    std::vector<Ex::MapProp> props;
+    Ex::MapHavok havok;
     // A chunk that is present but whose reader returns nothing (no template root for its
     // version) is named, not counted as read.
     section("props", [&] {
-        const auto props = ex->parseMapProps();
+        props = ex->parseMapProps();
         if (has("prp2") && props.empty()) w.warnings.push_back("props: prp2 chunk present but no props were read");
         build_props(props, w);
     });
     section("collision", [&] {
-        const auto havok = ex->parseHavok();
+        havok = ex->parseHavok();
         if (has("havk") && !havok.present) w.warnings.push_back("collision: havk chunk present but not read");
         build_collision(havok, w);
+    });
+    section("zones", [&] {
+        build_zones(ex->parseZon2(), havok, props, w);
+        // Phase 2 (world foliage spec D5): the placements without a collider, by the rule in force.
+        scatter_instances(w, zone_scatter_rule_in_force());
     });
     section("water", [&] { attach_water(*ex, w); });
     section("environment", [&] { attach_environment(*ex, w); });
@@ -293,6 +316,30 @@ nlohmann::json world_summary(const WorldScene& w) {
     j["props"] = w.props.size();
     j["animatedProps"] = w.motion.animatedProps.size();
     j["collision"] = {{"meshes", w.collision.meshes.size()}, {"instances", w.collision.instances.size()}};
+    {
+        const ZoneScatter& z = w.zones;
+        size_t byType[3] = {0, 0, 0};
+        for (const ZonePlacement& p : z.placements)
+            if (p.layer < z.layers.size() && z.layers[p.layer].type >= 1 && z.layers[p.layer].type <= 3)
+                ++byType[z.layers[p.layer].type - 1];
+        size_t bySource[3] = {0, 0, 0};   // Collider, Scatter, Density
+        for (const ZoneInstance& i : z.instances)
+            if (size_t(i.source) < 3) ++bySource[size_t(i.source)];
+        const char* scatter = z.mode == ZoneScatterMode::Exact            ? "exact"
+                              : z.mode == ZoneScatterMode::DensityMatched ? "densityMatched"
+                                                                          : "colliders";
+        j["zones"] = {{"present", z.present},
+                      {"placementsByType", json::array({byType[0], byType[1], byType[2]})},
+                      {"colliders",
+                       {{"entries", z.colliderEntries},
+                        {"anchor", z.zonePlacementsLinked},
+                        {"geometry", z.collidersLinkedByGeometry},
+                        {"unlinked", z.collidersUnlinked}}},
+                      {"propCrossChecks", z.propCrossChecks},
+                      {"propDisagreements", z.propDisagreements},
+                      {"instances", json::array({bySource[0], bySource[1], bySource[2]})},
+                      {"scatter", scatter}};
+    }
     j["water"] = {{"plane", w.water.hasPlane},
                   {"planeZ", w.water.hasPlane ? json(w.water.planeZ) : json(nullptr)},
                   {"surfaces", w.water.surfaces.size()},

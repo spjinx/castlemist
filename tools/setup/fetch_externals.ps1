@@ -9,6 +9,13 @@
 
     bink2-2.7d/ and jpegcfg/ are tracked in git and need nothing.
 
+    Every fetched file is stamped with the current time. Expand-Archive keeps
+    each zip entry's own date (json.hpp came out dated 2025-04-11), so a header
+    restored over a newer one looked older than every object built against the
+    old one and ninja rebuilt nothing: stale objects then mixed two versions of
+    the same inline functions (an ODR mismatch that crashed a test). After a
+    re-fetch, build every existing tree once with --clean-first anyway.
+
     -WithBgfx also clones the bgfx / bx / bimg trio at the commits Guild Wars 2
     itself ships (needs git). Without them castlemist still builds; only the
     optional "Game 1:1" render mode is hidden.
@@ -33,6 +40,13 @@ New-Item -ItemType Directory -Force $Dest | Out-Null
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("castlemist-ext-" + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force $tmp | Out-Null
 
+# Stamp every file under $Path with the current time, so a build that already
+# compiled against an older copy sees the fetched files as changed.
+function Set-FetchTime([string]$Path) {
+    $now = Get-Date
+    Get-ChildItem -LiteralPath $Path -Recurse -File -Force | ForEach-Object { $_.LastWriteTime = $now }
+}
+
 # A zip whose single top-level folder becomes external/<Folder>.
 function Get-Zip([string]$Folder, [string]$Witness, [string]$Url) {
     $target = Join-Path $Dest $Folder
@@ -46,6 +60,7 @@ function Get-Zip([string]$Folder, [string]$Witness, [string]$Url) {
     if (Test-Path $target) { Remove-Item -Recurse -Force $target }
     Move-Item $top.FullName $target
     if (-not (Test-Path (Join-Path $target $Witness))) { throw "$Folder downloaded but $Witness is missing" }
+    Set-FetchTime $target   # Expand-Archive kept the zip entries' old dates
 }
 
 # Single files straight into external/<Folder>.
@@ -55,6 +70,7 @@ function Get-Files([string]$Folder, [string]$BaseUrl, [string[]]$Files) {
     Write-Host "  fetching $Folder"
     New-Item -ItemType Directory -Force $target | Out-Null
     foreach ($f in $Files) { Invoke-WebRequest -Uri "$BaseUrl/$f" -OutFile (Join-Path $target $f) -UseBasicParsing }
+    Set-FetchTime $target
 }
 
 # A git checkout of one exact commit (shallow).
@@ -68,6 +84,7 @@ function Get-Commit([string]$Folder, [string]$Repo, [string]$Sha) {
     git -C $target fetch -q --depth 1 $Repo $Sha
     git -C $target checkout -q FETCH_HEAD
     if ($LASTEXITCODE -ne 0) { throw "checking out $Folder failed" }
+    Set-FetchTime $target
 }
 
 Write-Host "Fetching castlemist's libraries into $Dest"
@@ -92,3 +109,6 @@ finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }
 Write-Host 'Done. Next: cmake --preset debug'
+Write-Host 'If anything was fetched over an earlier copy, build each existing tree once with'
+Write-Host '  cmake --build build/<preset> --clean-first'
+Write-Host 'so no object compiled against the old headers survives.'

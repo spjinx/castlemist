@@ -1,8 +1,8 @@
 // patches.h - the patch table for the client-only plaintext emulator.
 //
 // Each patch names a VA *and* a byte signature. The VA is where the patch sat
-// in the build that was reverse-engineered (Gw2-64-disable-aslr.exe, imagebase
-// 0x140000000, as of 2026-07); it is tried first. Game patches move code, so
+// in the most recent build it was checked against (imagebase 0x140000000; see
+// each patch's comment for the build); it is tried first. Game patches move code, so
 // when the bytes there are wrong gw2patch scans the executable sections for
 // the signature instead, and applies the patch only if it matches exactly once.
 // The signature is what keeps a patch working across client updates; the VA is
@@ -36,17 +36,20 @@ struct BytePatch {
 //   plaintext in both directions.
 //
 //   Signature: the PRGA's output step, from the S-box loads through the store
-//   of the result (movzx/add/movzx/movzx, xor, mov [rbx-1],dl). One hit in
-//   each client checked on 2026-10-08, with identical bytes in both:
+//   of the result (movzx/add/movzx/movzx, xor, mov [rbx-1],dl). Exactly one
+//   hit in every client checked, always with these bytes:
+//     July 2026 IDB                               0x140feb9ac
 //     Gw2-64-disable-aslr.exe (PE ts 1789758548)  0x140fef30c
 //     Gw2-64.exe              (PE ts 1790880995)  0x140ff446c
-//   The table VA below (0x140feb9ac) is from the July build and matches neither.
+//     Gw2-64.exe              (PE ts 1791828055)  0x140ff4e1c  (2026-10-14 patch)
+//   The table VA below is the 2026-10-14 build's, so that build takes the fast
+//   path; every other build falls back to the signature.
 // ---------------------------------------------------------------------------
 inline BytePatch rc4_identity() {
     return {
         "rc4-identity",
         "RC4 PRGA: xor dl,[..] -> mov dl,[..] (plaintext channel)",
-        0x140feb9acULL,
+        0x140ff4e1cULL,
         { 0x32, 0x54, 0x3B, 0xFF },
         { 0x8A, 0x54, 0x3B, 0xFF },
         true,

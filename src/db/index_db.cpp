@@ -2,6 +2,8 @@
 
 #include "sqlite3.h"
 
+#include <windows.h>
+
 #include <cstdio>
 #include <cstring>
 
@@ -58,8 +60,24 @@ std::vector<std::string> distinct(const char* col) {
 
 bool open(const std::wstring& db_path, std::string& err) {
     close();
-    // sqlite3_open16 takes a UTF-16 path (wchar_t is UTF-16 on Windows).
-    if (sqlite3_open16(db_path.c_str(), &g_db) != SQLITE_OK) {
+    // sqlite3 creates a missing file, so refuse before it runs.
+    if (GetFileAttributesW(db_path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        std::string narrow;
+        int n = WideCharToMultiByte(CP_UTF8, 0, db_path.c_str(), (int)db_path.size(), nullptr, 0, nullptr, nullptr);
+        if (n > 0) {
+            narrow.resize((size_t)n);
+            WideCharToMultiByte(CP_UTF8, 0, db_path.c_str(), (int)db_path.size(), narrow.data(), n, nullptr, nullptr);
+        }
+        err = "no such file: " + narrow;
+        return false;
+    }
+    std::string utf8;
+    int n = WideCharToMultiByte(CP_UTF8, 0, db_path.c_str(), (int)db_path.size(), nullptr, 0, nullptr, nullptr);
+    if (n > 0) {
+        utf8.resize((size_t)n);
+        WideCharToMultiByte(CP_UTF8, 0, db_path.c_str(), (int)db_path.size(), utf8.data(), n, nullptr, nullptr);
+    }
+    if (sqlite3_open_v2(utf8.c_str(), &g_db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
         err = g_db ? sqlite3_errmsg(g_db) : "sqlite open failed";
         close();
         return false;

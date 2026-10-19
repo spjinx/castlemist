@@ -1,0 +1,2918 @@
+/// @file
+/// @brief Tests for the world export (sub-project 4,
+///        docs/superpowers/specs/2026-10-15-world-export-design.md): the frame
+///        probe first (spec D6 "Frame probe").
+
+#include "test_framework.h"
+
+#include "castlemist/exportgltf/vrchat_export.h"
+#include "castlemist/exportgltf/world_cell.h"
+#include "castlemist/exportgltf/world_export.h"
+#include "castlemist/exportgltf/world_manifest.h"
+#include "castlemist/exportgltf/world_probe.h"
+#include "castlemist/exportgltf/world_folder.h"
+#include "castlemist/exportgltf/world_foliage.h"
+#include "castlemist/exportgltf/world_lods.h"
+#include "castlemist/exportgltf/world_unity_terrain.h"
+#include "world_export_synthetic.h"
+#include "long_path.h"
+#include "sha1.h"
+#include "castlemist/world/frame.h"
+#include "castlemist/world/props.h"
+#include "castlemist/world/surface_rules.h"
+#include "castlemist/world/terrain.h"
+#include "castlemist/world/walk.h"
+#include "castlemist/world/zones.h"
+#include "castlemist/extract/model_types.h"
+#include "castlemist/native/granny_anim.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <future>
+#include <new>
+#include <stdexcept>
+#include <thread>
+#include <filesystem>
+#include <fstream>
+#include <limits>
+#include <map>
+#include <set>
+#include <string>
+#include <vector>
+
+#include "nlohmann/json.hpp"
+
+// Static so this decoder never clashes with the copies other translation units
+// build (test_exportgltf_sky.cpp does the same).
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
+using namespace castlemist::exportgltf;
+
+namespace {
+
+namespace fs = std::filesystem;
+using nlohmann::json;
+
+fs::path fresh_dir(const char* label) {
+    fs::path dir = fs::temp_directory_path() / (std::string("cm_world_export_") + label);
+    std::error_code ec;
+    remove_tree(dir, ec);   // libstdc++'s remove_all spins on paths past MAX_PATH
+    fs::create_directories(dir, ec);
+    return dir;
+}
+
+/// The JSON chunk of a .glb (copied from test_exportgltf_vrchat.cpp).
+json glb_json(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    std::vector<uint8_t> b((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    auto u32 = [&](size_t i) {
+        return static_cast<uint32_t>(b[i]) | (static_cast<uint32_t>(b[i + 1]) << 8) |
+               (static_cast<uint32_t>(b[i + 2]) << 16) | (static_cast<uint32_t>(b[i + 3]) << 24);
+    };
+    if (b.size() < 20) return json();
+    const uint32_t len = u32(12);
+    return json::parse(std::string(reinterpret_cast<const char*>(&b[20]), len));
+}
+
+/// The POSITION accessor of the first primitive of the mesh on the node named @p name.
+const json* position_accessor(const json& g, const std::string& name) {
+    for (const json& n : g["nodes"]) {
+        if (n.value("name", std::string()) != name || !n.contains("mesh")) continue;
+        const json& prim = g["meshes"][n["mesh"].get<size_t>()]["primitives"][0];
+        return &g["accessors"][prim["attributes"]["POSITION"].get<size_t>()];
+    }
+    return nullptr;
+}
+
+} // namespace
+
+CM_TEST(world_probe, bars_in_map_space) {
+    const fs::path dir = fresh_dir("probe");
+    const fs::path glb = dir / "probe.glb";
+    std::string err;
+    CHECK(write_frame_probe(glb.string(), &err));
+    CHECK(err.empty());
+    const json g = glb_json(glb);
+    CHECK(g.is_object());
+
+    // One scene root, GW2_MapToGltf, carrying map_to_gltf_root(1) exactly.
+    const json& roots = g["scenes"][0]["nodes"];
+    CHECK_EQ(roots.size(), size_t(1));
+    const json& root = g["nodes"][roots[0].get<size_t>()];
+    CHECK(root["name"] == "GW2_MapToGltf");
+    const std::array<float, 16> want = map_to_gltf_root(1.0);
+    CHECK_EQ(root["matrix"].size(), size_t(16));
+    for (size_t i = 0; i < 16; ++i) CHECK_EQ(root["matrix"][i].get<float>(), want[i]);
+
+    const json* east = position_accessor(g, "Probe_East");
+    const json* north = position_accessor(g, "Probe_North");
+    const json* up = position_accessor(g, "Probe_Up");
+    CHECK(east && north && up);
+    CHECK_EQ((*east)["min"][0].get<float>(), 0.0f);
+    CHECK_EQ((*east)["max"][0].get<float>(), 300.0f);
+    CHECK_EQ((*east)["min"][1].get<float>(), -10.0f);
+    CHECK_EQ((*east)["max"][1].get<float>(), 10.0f);
+    CHECK_EQ((*north)["max"][1].get<float>(), 200.0f);
+    CHECK_EQ((*up)["min"][2].get<float>(), -100.0f);
+    CHECK_EQ((*up)["max"][2].get<float>(), 0.0f);
+
+    // One unlit material per bar.
+    CHECK_EQ(g["materials"].size(), size_t(3));
+    for (const json& m : g["materials"]) CHECK(m["extensions"].contains("KHR_materials_unlit"));
+}
+
+CM_TEST(world_probe, expect_matches_frame) {
+    const json e = frame_probe_expect();
+    const float dirs[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, -1}};  // east, north, up in map space
+    const char* names[3] = {"east", "north", "up"};
+    for (int a = 0; a < 3; ++a) {
+        float u[3], b[3];
+        castlemist::world::map_to_unity(dirs[a], u);
+        castlemist::world::map_to_blender(dirs[a], b);
+        for (int i = 0; i < 3; ++i) {
+            CHECK_EQ(e["unity"][names[a]][i].get<float>(), u[i]);
+            CHECK_EQ(e["blender"][names[a]][i].get<float>(), b[i]);
+        }
+    }
+    CHECK(e["lengths"] == json::array({3, 2, 1}));
+}
+
+// ------------------------------------------------------- world model files --
+// Task 5: GltfExportOptions::rootMatrix / imageDirUtf8 and VrchatFolderOptions.
+
+namespace {
+
+std::vector<uint8_t> file_bytes(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+GVertex wvtx(float x, float y, float u, float v) {
+    GVertex g{};
+    g.px = x; g.py = y; g.pz = 0;
+    g.nz = 1; g.tx = 1; g.by = 1;
+    g.u = u; g.v = v;
+    return g;
+}
+
+ModelTextureCPU wtex(int w, int h, const std::vector<std::array<uint8_t, 4>>& texels, uint32_t fileId) {
+    ModelTextureCPU t;
+    t.fileId = fileId;
+    t.width = w;
+    t.height = h;
+    for (const auto& p : texels) t.rgba.insert(t.rgba.end(), p.begin(), p.end());
+    return t;
+}
+
+int wadd_tex(ModelPreview& m, ModelTextureCPU t) {
+    m.textures.push_back(std::move(t));
+    return static_cast<int>(m.textures.size()) - 1;
+}
+
+/// glow_quad() of test_exportgltf_vrchat.cpp: one weapon-glow material with a
+/// banded diffuse, a normal and a glow layer, plus one clip.
+ModelPreview glow_quad() {
+    ModelPreview model;
+    ModelMeshCPU m;
+    m.vertices = {wvtx(0, 0, 0, 0), wvtx(1, 0, 1, 0), wvtx(1, 1, 1, 1), wvtx(0, 1, 0, 1)};
+    m.indices = {0, 1, 2, 0, 2, 3};
+    m.vertexCount = 4;
+    m.hasTangents = true;
+    m.materialIndex = 0;
+    model.meshes.push_back(m);
+    ModelMaterialCPU mat;
+    mat.materialFile = 561567;
+    mat.materialName = "Blade";
+    mat.hasRenderState = true;
+    mat.renderState = 0;
+    mat.diffuseTex = wadd_tex(model, wtex(2, 2,
+                                          {{100, 100, 100, 30}, {100, 100, 100, 90}, {100, 100, 100, 128},
+                                           {100, 100, 100, 255}},
+                                          1000));
+    mat.normalTex = wadd_tex(model, wtex(2, 2, std::vector<std::array<uint8_t, 4>>(4, {128, 128, 255, 255}), 3000));
+    ModelMaterialCPU::ExtraTexture x;
+    x.texIndex = wadd_tex(model, wtex(2, 2, std::vector<std::array<uint8_t, 4>>(4, {255, 64, 0, 255}), 2001));
+    x.uvIndex = 0;
+    x.fileId = 2001;
+    x.role = "glow";
+    mat.extraTextures.push_back(x);
+    mat.namedConstants = {{"specstr", 0.5f}, {"glofade", 0.7f}, {"gloptrb", 0.4f}};
+    model.materials.push_back(mat);
+    castlemist::granny::Anim clip;
+    clip.name = "StowedA";
+    model.animClips.push_back(clip);
+    return model;
+}
+
+const json& scene_root(const json& g) { return g["nodes"][g["scenes"][0]["nodes"][0].get<size_t>()]; }
+
+} // namespace
+
+CM_TEST(world_gltf, default_vrchat_folder_unchanged) {
+    const ModelPreview model = glow_quad();
+    const fs::path a = fresh_dir("default_4arg");
+    const fs::path b = fresh_dir("default_5arg");
+    const VrchatFolderResult ra = write_vrchat_folder(model, a.string(), "Dagger", 1766522);
+    const VrchatFolderResult rb = write_vrchat_folder(model, b.string(), "Dagger", 1766522, VrchatFolderOptions{});
+    CHECK(ra.ok);
+    CHECK(rb.ok);
+    const std::vector<uint8_t> glbA = file_bytes(a / "Dagger.glb");
+    CHECK(!glbA.empty());
+    CHECK(glbA == file_bytes(b / "Dagger.glb"));
+    CHECK(file_bytes(a / "materials.json") == file_bytes(b / "materials.json"));
+    CHECK_FALSE(fs::exists(b / "Images"));
+
+    const json g = glb_json(a / "Dagger.glb");
+    const json& root = scene_root(g);
+    CHECK(root["name"] == "GW2_ZupToYup");
+    CHECK(root.contains("rotation"));
+    CHECK_FALSE(root.contains("matrix"));
+    for (const json& im : g["images"]) {
+        CHECK(im.contains("bufferView"));
+        CHECK_FALSE(im.contains("uri"));
+    }
+}
+
+CM_TEST(world_gltf, root_matrix_replaces_rotation) {
+    const ModelPreview model = glow_quad();
+    const fs::path dir = fresh_dir("root_matrix");
+    VrchatFolderOptions opts;
+    opts.gltf.rootMatrix = map_to_gltf_root(1.0);
+    const VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Dagger", 1766522, opts);
+    CHECK(r.ok);
+    const json g = glb_json(dir / "Dagger.glb");
+    const json& root = scene_root(g);
+    CHECK(root["name"] == "GW2_MapToGltf");
+    CHECK_FALSE(root.contains("rotation"));
+    CHECK_FALSE(root.contains("scale"));
+    const std::array<float, 16> want = map_to_gltf_root(1.0);
+    CHECK_EQ(root["matrix"].size(), size_t(16));
+    for (size_t i = 0; i < 16; ++i) CHECK_EQ(root["matrix"][i].get<float>(), want[i]);
+    CHECK(!root["children"].empty());
+}
+
+CM_TEST(world_gltf, images_by_uri) {
+    const ModelPreview model = glow_quad();
+    const fs::path dir = fresh_dir("images_uri");
+    VrchatFolderOptions opts;
+    opts.gltf.rootMatrix = map_to_gltf_root(1.0);
+    opts.gltf.imageDirUtf8 = (dir / "Images").string();
+    opts.gltf.imageUriPrefix = "Images/";
+    const VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Dagger", 1766522, opts);
+    CHECK(r.ok);
+    const json g = glb_json(dir / "Dagger.glb");
+    CHECK(g["images"].size() >= size_t(3));
+    for (const json& im : g["images"]) {
+        CHECK_FALSE(im.contains("bufferView"));
+        CHECK(im.contains("uri"));
+        const std::string uri = im.value("uri", std::string());
+        CHECK(uri.rfind("Images/", 0) == 0);
+        CHECK(uri.size() > 4 && uri.substr(uri.size() - 4) == ".png");
+        CHECK(fs::exists(dir / fs::path(uri)));
+    }
+    // The dat textures are named by their fileId.
+    for (const char* id : {"1000", "3000", "2001"}) {
+        bool found = false;
+        for (const json& im : g["images"])
+            if (im.value("uri", std::string()) == std::string("Images/") + id + ".png") found = true;
+        CHECK(found);
+        CHECK(fs::exists(dir / "Images" / (std::string(id) + ".png")));
+    }
+    // The Poiyomi maps are still written beside them.
+    CHECK(fs::exists(dir / "Textures" / "Blade - BaseColor.png"));
+    CHECK(fs::exists(dir / "materials.json"));
+}
+
+CM_TEST(world_gltf, image_uris_need_no_escaping) {
+    // Generated images are named after the material: the metal-rough map here
+    // would be "Blade #1 %metal ü_metalRough" without the uri sanitising.
+    ModelPreview model = glow_quad();
+    model.materials[0].materialName = "Blade #1 %metal \xC3\xBC";
+    const fs::path dir = fresh_dir("images_uri_escape");
+    VrchatFolderOptions opts;
+    opts.gltf.rootMatrix = map_to_gltf_root(1.0);
+    opts.gltf.imageDirUtf8 = (dir / "Images").string();
+    opts.gltf.imageUriPrefix = "Images/";
+    const VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Dagger", 1766522, opts);
+    CHECK(r.ok);
+    const json g = glb_json(dir / "Dagger.glb");
+    bool sawGenerated = false;
+    for (const json& im : g["images"]) {
+        const std::string uri = im.value("uri", std::string());
+        CHECK(!uri.empty());
+        bool clean = true;
+        for (char c : uri) {
+            const auto u = static_cast<unsigned char>(c);
+            if (!(u < 0x80 && std::isalnum(u)) && c != '.' && c != '_' && c != '/' && c != '-') clean = false;
+        }
+        CHECK(clean);
+        CHECK(fs::exists(dir / fs::path(uri)));
+        if (uri.find("metalRough") != std::string::npos) sawGenerated = true;
+    }
+    CHECK(sawGenerated);
+}
+
+// ------------------------------------------------------------- cell glTF --
+// Task 6: world_cell.h, one .glb per export cell.
+
+namespace {
+
+namespace cw = castlemist::world;
+
+constexpr float kCX0 = -15360.f, kCY1 = 39936.f, kCC = 3072.f;
+
+/// A height that depends only on the global sample (gi, gj), so shared chunk
+/// edges are bit-identical as on real maps (gw2-world-frame.md §3.1).
+float sample_height(int gi, int gj) { return 10.0f + 0.5f * float(gi) - 0.25f * float(gj); }
+
+/// grid() of test_world_cells.cpp (copied), with heights filled in.
+cw::WorldScene cell_grid(int nx, int ny, float pickerScale = 0.25f) {
+    cw::WorldScene s;
+    s.terrain.present = true;
+    s.terrain.chunksX = nx; s.terrain.chunksY = ny;
+    for (int cy = 0; cy < ny; ++cy)
+        for (int cx = 0; cx < nx; ++cx) {
+            cw::TerrainChunk c;
+            c.cx = cx; c.cy = cy; c.samples = 33;
+            c.rect[0] = kCX0 + cx * kCC; c.rect[2] = kCX0 + (cx + 1) * kCC;
+            c.rect[3] = kCY1 - cy * kCC; c.rect[1] = kCY1 - (cy + 1) * kCC;
+            c.material.pickerScale = pickerScale;
+            c.heights.resize(33 * 33);
+            for (int j = 0; j < 33; ++j)
+                for (int i = 0; i < 33; ++i) c.heights[size_t(j) * 33 + i] = sample_height(cx * 32 + i, cy * 32 + j);
+            s.terrain.chunks.push_back(c);
+        }
+    return s;
+}
+
+cw::Cell cell_by_id(const cw::WorldScene& s, const std::string& id) {
+    const cw::CellPlan p = cw::partition_cells(s, cw::CellStats{}, cw::CellBudget{});
+    for (const auto& c : p.cells) if (c.id == id) return c;
+    return cw::Cell{};
+}
+
+void set_all_heights(cw::WorldScene& s, float z) {
+    for (auto& c : s.terrain.chunks) std::fill(c.heights.begin(), c.heights.end(), z);
+}
+
+void add_water(cw::WorldScene& s) {
+    s.water.hasPlane = true; s.water.planeZ = 0;
+    castlemist::model::Extractor::MapEnvWater p;
+    p.depthAttenuation = 10;
+    p.surfaceShallowColor[2] = 255;
+    p.surfaceDeepColor[0] = 255;
+    s.environment.water.push_back(p);
+    s.environment.light.presetIndex = 0;
+}
+
+/// One hull of @p tris triangles (all the same one) placed once, identity transform.
+void add_hull(cw::WorldScene& s, size_t tris) {
+    cw::CollisionMesh m;
+    m.verts = {-9000.f, 33000.f, 1.f, -8000.f, 33000.f, 2.f, -9000.f, 34000.f, 3.f};
+    for (size_t k = 0; k < tris; ++k) m.indices.insert(m.indices.end(), {0u, 1u, 2u});
+    s.collision.meshes.push_back(m);
+    cw::CollisionInstance inst;
+    inst.mesh = uint32_t(s.collision.meshes.size() - 1);
+    inst.world[0] = inst.world[5] = inst.world[10] = inst.world[15] = 1;
+    s.collision.instances.push_back(inst);
+}
+
+void cross3(const float a[3], const float b[3], const float c[3], float out[3]) {
+    const float u[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+    const float v[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+    out[0] = u[1] * v[2] - u[2] * v[1];
+    out[1] = u[2] * v[0] - u[0] * v[2];
+    out[2] = u[0] * v[1] - u[1] * v[0];
+}
+
+/// Column-major 4x4 times a direction.
+void mul_dir(const std::array<float, 16>& m, const float v[3], float out[3]) {
+    for (int r = 0; r < 3; ++r) out[r] = m[0 * 4 + r] * v[0] + m[1 * 4 + r] * v[1] + m[2 * 4 + r] * v[2];
+}
+
+/// The BIN chunk of a .glb.
+std::vector<uint8_t> glb_bin(const fs::path& p) {
+    const std::vector<uint8_t> b = file_bytes(p);
+    auto u32 = [&](size_t i) {
+        return static_cast<uint32_t>(b[i]) | (static_cast<uint32_t>(b[i + 1]) << 8) |
+               (static_cast<uint32_t>(b[i + 2]) << 16) | (static_cast<uint32_t>(b[i + 3]) << 24);
+    };
+    if (b.size() < 20) return {};
+    const size_t binAt = 20 + u32(12);
+    if (b.size() < binAt + 8) return {};
+    const uint32_t len = u32(binAt);
+    if (b.size() < binAt + 8 + len) return {};
+    return std::vector<uint8_t>(b.begin() + std::ptrdiff_t(binAt + 8), b.begin() + std::ptrdiff_t(binAt + 8 + len));
+}
+
+/// Accessor @p a as numbers: FLOAT, UNSIGNED_SHORT or UNSIGNED_INT components.
+std::vector<double> read_accessor(const json& g, const std::vector<uint8_t>& bin, size_t a) {
+    const json& acc = g["accessors"][a];
+    const json& bv = g["bufferViews"][acc["bufferView"].get<size_t>()];
+    const size_t off = bv.value("byteOffset", size_t(0)) + acc.value("byteOffset", size_t(0));
+    const std::string type = acc["type"];
+    const size_t comps = type == "SCALAR" ? 1 : type == "VEC2" ? 2 : type == "VEC3" ? 3 : 4;
+    const size_t n = acc["count"].get<size_t>() * comps;
+    const int ct = acc["componentType"];
+    const size_t cs = ct == 5123 ? 2 : 4;
+    std::vector<double> out;
+    if (off + n * cs > bin.size()) return out;
+    out.resize(n);
+    for (size_t i = 0; i < n; ++i) {
+        if (ct == 5126) { float f; std::memcpy(&f, &bin[off + i * 4], 4); out[i] = f; }
+        else if (ct == 5123) { uint16_t v; std::memcpy(&v, &bin[off + i * 2], 2); out[i] = v; }
+        else { uint32_t v; std::memcpy(&v, &bin[off + i * 4], 4); out[i] = v; }
+    }
+    return out;
+}
+
+const json* node_named(const json& g, const std::string& name) {
+    for (const json& n : g["nodes"]) if (n.value("name", std::string()) == name) return &n;
+    return nullptr;
+}
+
+} // namespace
+
+CM_TEST(world_cell, terrain_welded_vertex_count) {
+    const cw::WorldScene s = cell_grid(4, 4);
+    const cw::Cell c = cell_by_id(s, "c0_0_4x4");
+    CHECK(c.id == "c0_0_4x4");
+    const CellMesh m = build_cell_terrain(s.terrain, c);
+    CHECK_EQ(m.vertices(), size_t(16641));  // (4*32+1)^2: fits 16-bit indices (spec D1)
+    CHECK_EQ(m.idx.size(), size_t(32768 * 3));
+    CHECK_EQ(m.nrm.size(), m.pos.size());
+    CHECK_EQ(m.uv.size(), m.vertices() * 2);
+    if (m.vertices() != 16641 || m.idx.empty()) return;
+    bool small = true;
+    for (uint32_t i : m.idx) if (i >= 65536) small = false;
+    CHECK(small);
+    CHECK_EQ(m.pos[0], -15360.f - c.origin[0]);
+    CHECK_EQ(m.pos[1], 39936.f - c.origin[1]);
+    CHECK_EQ(m.pos[2], sample_height(0, 0));
+    // Last vertex: the south-east corner.
+    const size_t last = m.vertices() - 1;
+    CHECK_EQ(m.pos[last * 3 + 0], -15360.f + 4 * kCC - c.origin[0]);
+    CHECK_EQ(m.pos[last * 3 + 1], 39936.f - 4 * kCC - c.origin[1]);
+    CHECK_EQ(m.pos[last * 3 + 2], sample_height(128, 128));
+    CHECK_EQ(m.uv[0], 0.f);
+    CHECK_EQ(m.uv[1], 0.f);
+    CHECK_EQ(m.uv[m.uv.size() - 2], 1.f);
+    CHECK_EQ(m.uv[m.uv.size() - 1], 1.f);
+    float n[3];
+    cross3(&m.pos[m.idx[0] * 3], &m.pos[m.idx[1] * 3], &m.pos[m.idx[2] * 3], n);
+    CHECK(n[2] < 0);   // up is -Z
+    CHECK(m.nrm[2] < 0);
+}
+
+// The cell terrain is the surface castlemist walks on: each quad split along
+// the same diagonal as CollisionIndex::build (NE-SW, p10-p01), so a ray down hits the
+// same height on both (the Spirit Vale dat test's 32 rays, Task 13). A
+// checkerboard of heights makes every quad's two diagonals differ.
+CM_TEST(world_cell, terrain_matches_collision_index) {
+    cw::WorldScene s = cell_grid(2, 2);
+    for (auto& ch : s.terrain.chunks)
+        for (int j = 0; j < 33; ++j)
+            for (int i = 0; i < 33; ++i)
+                ch.heights[size_t(j) * 33 + i] = float(((ch.cx * 32 + i) + (ch.cy * 32 + j)) % 2) * 40.0f;
+    const cw::Cell c = cell_by_id(s, "c0_0_2x2");
+    CHECK(c.id == "c0_0_2x2");
+    const CellMesh m = build_cell_terrain(s.terrain, c);
+    std::vector<float> tris;
+    for (uint32_t i : m.idx)
+        for (size_t k = 0; k < 3; ++k) tris.push_back(m.pos[size_t(i) * 3 + k] + c.origin[k]);
+    const cw::CollisionIndex fromCell = cw::CollisionIndex::from_triangles({}, tris);
+    const cw::CollisionIndex fromScene = cw::CollisionIndex::build(s, true);
+    CHECK_EQ(fromCell.triangle_count(), fromScene.triangle_count());
+    uint32_t r = 12345u;
+    auto next = [&] { r = r * 1664525u + 1013904223u; return float(r >> 8) / float(1u << 24); };
+    const float down[3] = {0, 0, 1};
+    for (int k = 0; k < 64; ++k) {
+        const float o[3] = {c.rect[0] + next() * (c.rect[2] - c.rect[0]), c.rect[1] + next() * (c.rect[3] - c.rect[1]), -1000};
+        const auto a = fromCell.raycast(o, down, 1e5f), b = fromScene.raycast(o, down, 1e5f);
+        CHECK(a.has_value() && b.has_value());
+        if (a && b) CHECK_NEAR(a->t, b->t, 0.01);
+    }
+}
+
+CM_TEST(world_cell, shared_edge_welded) {
+    const cw::WorldScene s = cell_grid(2, 1);
+    const cw::Cell c = cell_by_id(s, "c0_0_2x1");
+    CHECK(c.id == "c0_0_2x1");
+    const CellMesh m = build_cell_terrain(s.terrain, c);
+    CHECK_EQ(m.vertices(), size_t(65 * 33));
+    std::vector<std::array<float, 3>> p;
+    for (size_t i = 0; i < m.vertices(); ++i) p.push_back({m.pos[i * 3], m.pos[i * 3 + 1], m.pos[i * 3 + 2]});
+    std::sort(p.begin(), p.end());
+    CHECK(std::adjacent_find(p.begin(), p.end()) == p.end());
+    CHECK_EQ(m.idx.size(), size_t(2 * 32 * 32 * 6));
+}
+
+CM_TEST(world_cell, missing_chunk_leaves_its_quads_out) {
+    cw::WorldScene s = cell_grid(2, 1);
+    const cw::Cell c = cell_by_id(s, "c0_0_2x1");
+    s.terrain.chunks.pop_back();   // chunk (1, 0)
+    const CellMesh m = build_cell_terrain(s.terrain, c);
+    CHECK_EQ(m.vertices(), size_t(33 * 33));
+    CHECK_EQ(m.idx.size(), size_t(32 * 32 * 6));
+    for (uint32_t i : m.idx) CHECK(i < m.vertices());
+    if (m.uv.size() >= 2) CHECK_EQ(m.uv[m.uv.size() - 2], 0.5f);  // its east edge is the cell's middle
+}
+
+CM_TEST(world_cell, collider_parts_under_65535) {
+    cw::WorldScene s = cell_grid(4, 4);
+    add_hull(s, 50000);
+    cw::Cell c = cell_by_id(s, "c0_0_4x4");
+    CHECK_EQ(c.collision.size(), size_t(1));
+    const std::vector<CellMesh> parts = build_cell_colliders(s, c);
+    CHECK_EQ(parts.size(), size_t(3));
+    if (parts.size() != 3) return;
+    CHECK_EQ(parts[0].idx.size() / 3, size_t(21845));
+    CHECK_EQ(parts[1].idx.size() / 3, size_t(21845));
+    CHECK_EQ(parts[2].idx.size() / 3, size_t(6310));
+    for (const CellMesh& p : parts) {
+        CHECK(p.vertices() <= size_t(65535));
+        CHECK_EQ(p.vertices(), p.idx.size());
+        bool seq = true;
+        for (size_t i = 0; i < p.idx.size(); ++i) if (p.idx[i] != uint32_t(i)) seq = false;
+        CHECK(seq);
+    }
+    CHECK_EQ(parts[0].pos[0], -9000.f - c.origin[0]);
+    CHECK_EQ(parts[0].pos[1], 33000.f - c.origin[1]);
+    CHECK_EQ(parts[0].pos[2], 1.f);
+}
+
+CM_TEST(world_cell, water_only_where_below) {
+    cw::WorldScene s = cell_grid(1, 1);
+    add_water(s);
+    const cw::Cell c = cell_by_id(s, "c0_0_1x1");
+    set_all_heights(s, -5.f);   // all above the plane (up is -Z)
+    CHECK(build_cell_water(s, c).pos.empty());
+    set_all_heights(s, 5.f);    // all below it
+    const CellMesh w = build_cell_water(s, c);
+    CHECK_EQ(w.vertices(), size_t(33 * 33));
+    CHECK_EQ(w.idx.size(), size_t(32 * 32 * 6));
+    if (w.vertices() != 33 * 33) return;
+    bool flat = true;
+    for (size_t i = 0; i < w.vertices(); ++i) if (w.pos[i * 3 + 2] != 0.f) flat = false;
+    CHECK(flat);
+    CHECK_EQ(w.uv[w.uv.size() - 1], 1.f);
+    s.water.hasPlane = false;
+    CHECK(build_cell_water(s, c).pos.empty());
+}
+
+CM_TEST(world_cell, gltf_layout) {
+    cw::WorldScene s = cell_grid(4, 4);
+    add_water(s);
+    add_hull(s, 4);
+    const cw::Cell c = cell_by_id(s, "c0_0_4x4");
+    const CellMesh terrain = build_cell_terrain(s.terrain, c);
+    set_all_heights(s, 5.f);
+    const CellMesh water = build_cell_water(s, c);
+    CHECK(!water.pos.empty());
+    const std::vector<CellMesh> colliders = build_cell_colliders(s, c);
+    CHECK_EQ(colliders.size(), size_t(1));
+
+    const fs::path dir = fresh_dir("cell_layout");
+    const fs::path glb = dir / "c0_0_4x4.glb";
+    std::string err;
+    CHECK(write_cell_gltf(glb.string(), c, terrain, &water, colliders,
+                          CellImages{"c0_0_4x4_albedo.png", "c0_0_4x4_water.png"}, &err));
+    CHECK(err.empty());
+    const json g = glb_json(glb);
+    CHECK(g.is_object());
+    if (!g.is_object()) return;
+
+    const json& root = scene_root(g);
+    CHECK(root["name"] == "GW2_MapToGltf");
+    const std::array<float, 16> M = map_to_gltf_root(1.0);
+    CHECK_EQ(root["matrix"].size(), size_t(16));
+    for (size_t i = 0; i < 16; ++i) CHECK_EQ(root["matrix"][i].get<float>(), M[i]);
+    CHECK_EQ(root["children"].size(), size_t(1));
+    const json& cell = g["nodes"][root["children"][0].get<size_t>()];
+    CHECK(cell["name"] == "Cell");
+    for (size_t k = 0; k < 3; ++k) CHECK_EQ(cell["translation"][k].get<float>(), c.origin[k]);
+    std::vector<std::string> kids;
+    for (const json& k : cell["children"]) kids.push_back(g["nodes"][k.get<size_t>()]["name"]);
+    CHECK(kids == std::vector<std::string>({"Terrain", "Water", "Collider_0"}));
+
+    CHECK(g["images"][0]["uri"] == "c0_0_4x4_albedo.png");
+    CHECK(g["images"][1]["uri"] == "c0_0_4x4_water.png");
+    std::map<std::string, json> mats;
+    for (const json& m : g["materials"]) mats[m["name"].get<std::string>()] = m;
+    CHECK(mats.count("Terrain") && mats.count("Water") && mats.count("Collision"));
+    CHECK(mats["Water"]["alphaMode"] == "BLEND");
+    CHECK(mats["Terrain"]["pbrMetallicRoughness"].contains("baseColorTexture"));
+    CHECK(mats["Water"]["pbrMetallicRoughness"].contains("baseColorTexture"));
+    CHECK_FALSE(mats["Collision"]["pbrMetallicRoughness"].contains("baseColorTexture"));
+
+    // Faces up after import, read back from the .glb. The root has det < 0, so
+    // glTF takes clockwise as the front face below it: the front normal of a
+    // triangle is M * ((b-a)x(c-a)) of its raw numbers (world_probe.cpp).
+    const json* tnode = node_named(g, "Terrain");
+    CHECK(tnode != nullptr);
+    if (!tnode) return;
+    const std::vector<uint8_t> bin = glb_bin(glb);
+    const json& tprim = g["meshes"][(*tnode)["mesh"].get<size_t>()]["primitives"][0];
+    CHECK_EQ(g["accessors"][tprim["indices"].get<size_t>()]["componentType"].get<int>(), 5123);   // 16-bit
+    const std::vector<double> pos = read_accessor(g, bin, tprim["attributes"]["POSITION"].get<size_t>());
+    const std::vector<double> nrm = read_accessor(g, bin, tprim["attributes"]["NORMAL"].get<size_t>());
+    const std::vector<double> idx = read_accessor(g, bin, tprim["indices"].get<size_t>());
+    CHECK_EQ(pos.size(), size_t(16641 * 3));
+    if (pos.size() != 16641 * 3 || nrm.size() != pos.size() || idx.size() < 3) return;
+    float a[3], b[3], cc[3];
+    for (size_t k = 0; k < 3; ++k) {
+        a[k] = float(pos[size_t(idx[0]) * 3 + k]);
+        b[k] = float(pos[size_t(idx[1]) * 3 + k]);
+        cc[k] = float(pos[size_t(idx[2]) * 3 + k]);
+    }
+    float raw[3], front[3], n0[3];
+    cross3(a, b, cc, raw);
+    mul_dir(M, raw, front);
+    CHECK(front[1] > 0);   // glTF +Y is up
+    bool allUp = true;
+    for (size_t v = 0; v * 3 < nrm.size(); ++v) {
+        const float rn[3] = {float(nrm[v * 3]), float(nrm[v * 3 + 1]), float(nrm[v * 3 + 2])};
+        mul_dir(M, rn, n0);
+        if (!(n0[1] > 0)) allUp = false;
+    }
+    CHECK(allUp);
+    // det(M) < 0: the handedness change the front-face rule above relies on.
+    const float ex[3] = {1, 0, 0}, ey[3] = {0, 1, 0}, ez[3] = {0, 0, 1}, o[3] = {0, 0, 0};
+    float mx[3], my[3], mz[3], xy[3];
+    mul_dir(M, ex, mx); mul_dir(M, ey, my); mul_dir(M, ez, mz);
+    cross3(o, mx, my, xy);
+    CHECK(xy[0] * mz[0] + xy[1] * mz[1] + xy[2] * mz[2] < 0);
+}
+
+CM_TEST(world_cell, water_flat_without_preset) {
+    // Spec D3 "No preset": a plane without an env water preset still gets its
+    // water, in the map view's flat colour.
+    cw::WorldScene s = cell_grid(1, 1);
+    s.water.hasPlane = true; s.water.planeZ = 0;
+    const cw::Cell c = cell_by_id(s, "c0_0_1x1");
+    set_all_heights(s, -5.f);
+    CHECK(build_cell_water(s, c).pos.empty());   // still depth-tested
+    set_all_heights(s, 5.f);
+    const CellMesh water = build_cell_water(s, c);
+    CHECK_EQ(water.vertices(), size_t(33 * 33));
+    const CellMesh terrain = build_cell_terrain(s.terrain, c);
+
+    const fs::path glb = fresh_dir("cell_flat_water") / "c0_0_1x1.glb";
+    CHECK(write_cell_gltf(glb.string(), c, terrain, &water, {}, CellImages{"c0_0_1x1_albedo.png", ""}));
+    const json g = glb_json(glb);
+    CHECK(g.is_object());
+    if (!g.is_object()) return;
+    CHECK_EQ(g["images"].size(), size_t(1));
+    const json* wm = nullptr;
+    for (const json& m : g["materials"]) if (m["name"] == "Water") wm = &m;
+    CHECK(wm != nullptr);
+    if (!wm) return;
+    CHECK((*wm)["alphaMode"] == "BLEND");
+    const json& pbr = (*wm)["pbrMetallicRoughness"];
+    CHECK_FALSE(pbr.contains("baseColorTexture"));
+    CHECK_EQ(pbr["baseColorFactor"].size(), size_t(4));
+    for (size_t k = 0; k < 3; ++k) CHECK_EQ(pbr["baseColorFactor"][k].get<float>(), cw::kFlatWaterTint[k]);
+    CHECK_EQ(pbr["baseColorFactor"][3].get<float>(), cw::kFlatWaterAlpha);
+    CHECK((*wm)["extras"]["note"] == std::string(kFlatWaterNote));
+    CHECK(std::string(kFlatWaterNote).rfind("water: no preset; flat colour", 0) == 0);
+}
+
+CM_TEST(world_cell, odd_chunk_warned_not_dropped_silently) {
+    cw::WorldScene s = cell_grid(2, 1);
+    const cw::Cell c = cell_by_id(s, "c0_0_2x1");
+    cw::TerrainChunk& odd = s.terrain.chunks[1];   // chunk (1, 0)
+    odd.samples = 17;
+    odd.heights.assign(17 * 17, 0.f);
+    std::vector<std::string> warn;
+    const CellMesh m = build_cell_terrain(s.terrain, c, &warn);
+    CHECK_EQ(m.vertices(), size_t(33 * 33));
+    CHECK_EQ(warn.size(), size_t(1));
+    if (warn.size() == 1) {
+        CHECK(warn[0].find("c0_0_2x1") != std::string::npos);
+        CHECK(warn[0].find("(1, 0)") != std::string::npos);
+        CHECK(warn[0].find("17") != std::string::npos);
+    }
+    // A present chunk with no usable samples is warned too.
+    odd.heights.clear();
+    warn.clear();
+    build_cell_terrain(s.terrain, c, &warn);
+    CHECK_EQ(warn.size(), size_t(1));
+    // A full cell warns nothing.
+    warn.clear();
+    build_cell_terrain(cell_grid(2, 1).terrain, c, &warn);
+    CHECK(warn.empty());
+}
+
+// ------------------------------------------------------------ world manifest
+// Spec "manifest.json (version 1)"; schema tools/world/castlemist-world.schema.json.
+
+namespace {
+
+/// The spec's prop (pos {10, 20, 30}, rot {0.3, -0.2, 1.1}, scale 2), built as
+/// test_world.cpp's prop_transform_matches_client builds it.
+cw::PropInstance spec_prop() {
+    castlemist::model::Extractor::MapProp p;
+    p.fileId = 101;
+    p.pos[0] = 10; p.pos[1] = 20; p.pos[2] = 30;
+    p.rot[0] = 0.3f; p.rot[1] = -0.2f; p.rot[2] = 1.1f;
+    p.scale = 2.0f;
+    p.group = "propArray";
+    cw::WorldScene s;
+    cw::build_props({p}, s);
+    return s.props.empty() ? cw::PropInstance{} : s.props[0];
+}
+
+/// Resolve a local "#/$defs/<name>" $ref against @p root.
+const json& schema_deref(const json& root, const json& s) {
+    if (s.is_object() && s.contains("$ref")) {
+        const std::string ref = s["$ref"].get<std::string>();
+        const std::string pre = "#/$defs/";
+        if (ref.rfind(pre, 0) == 0 && root["$defs"].contains(ref.substr(pre.size())))
+            return schema_deref(root, root["$defs"][ref.substr(pre.size())]);
+    }
+    return s;
+}
+
+/// Keys of @p obj are a superset of the schema's `required` and a subset of its `properties`.
+void check_keys(const json& root, const json& schema, const json& obj, const std::string& where) {
+    const json& s = schema_deref(root, schema);
+    CHECK(obj.is_object());
+    CHECK(s.contains("properties"));
+    if (!obj.is_object() || !s.contains("properties")) return;
+    for (const auto& r : s.value("required", json::array()))
+        if (!obj.contains(r.get<std::string>()))
+            ::castlemist::test::fail(__FILE__, __LINE__, where + ": missing required " + r.get<std::string>());
+    for (auto it = obj.begin(); it != obj.end(); ++it)
+        if (!s["properties"].contains(it.key()))
+            ::castlemist::test::fail(__FILE__, __LINE__, where + ": key not in schema " + it.key());
+}
+
+/// The same rule wherever the schema names properties: walks the whole manifest
+/// through properties / additionalProperties / items, so no nested object drifts.
+void check_keys_deep(const json& root, const json& schema, const json& v, const std::string& where) {
+    const json& s = schema_deref(root, schema);
+    if (!s.is_object()) return;
+    if (v.is_object()) {
+        if (s.contains("properties")) {
+            check_keys(root, s, v, where);
+            for (auto it = v.begin(); it != v.end(); ++it)
+                if (s["properties"].contains(it.key()))
+                    check_keys_deep(root, s["properties"][it.key()], it.value(), where + "." + it.key());
+        } else if (s.contains("additionalProperties") && s["additionalProperties"].is_object()) {
+            for (auto it = v.begin(); it != v.end(); ++it)
+                check_keys_deep(root, s["additionalProperties"], it.value(), where + "." + it.key());
+        }
+    } else if (v.is_array() && s.contains("items")) {
+        for (size_t k = 0; k < v.size(); ++k)
+            check_keys_deep(root, s["items"], v[k], where + "[" + std::to_string(k) + "]");
+    }
+}
+
+json read_schema() {
+    std::ifstream in(fs::path(CM_SOURCE_DIR) / "tools" / "world" / "castlemist-world.schema.json");
+    if (!in) return json();
+    try { return json::parse(in); } catch (...) { return json(); }
+}
+
+/// A one-cell scene: 1 x 1 chunk under water, two props of model 101 (the
+/// second non-uniformly scaled), one of model 102 whose folder failed.
+struct SyntheticManifest {
+    cw::WorldScene scene;
+    cw::Cell cell;
+    WorldFolderOptions opts;
+    WorldManifestInput in;
+};
+
+void make_synthetic(SyntheticManifest& m) {
+    m.scene = cell_grid(1, 1);
+    m.scene.mapFileId = 1151420;
+    m.scene.hasBounds = true;
+    m.scene.bounds[0] = kCX0; m.scene.bounds[1] = kCY1 - kCC; m.scene.bounds[2] = kCX0 + kCC; m.scene.bounds[3] = kCY1;
+    add_water(m.scene);
+    m.scene.environment.light.present = true;
+    m.scene.warnings.push_back("scene: a synthetic warning");
+    cw::PropInstance a = spec_prop();
+    a.world[12] = kCX0 + 100; a.world[13] = kCY1 - 100; a.world[14] = -10;
+    cw::PropInstance b = a;
+    b.world[4] *= 2; b.world[5] *= 2; b.world[6] *= 2;   // non-uniform
+    cw::PropInstance c = a;
+    c.model = 1;
+    c.group = "propAnimArray";
+    m.scene.models = {cw::PropModel{101}, cw::PropModel{102}};
+    m.scene.props = {a, b, c};
+    m.cell = cell_by_id(m.scene, "c0_0_1x1");
+    m.cell.props = {0, 1, 2};
+
+    ManifestModel m0;
+    m0.index = 0; m0.fileId = 101; m0.ok = true;
+    m0.folder = "models/101"; m0.glb = "models/101/101.glb"; m0.materials = "models/101/materials.json";
+    m0.triangles = 12; m0.textureBytes = 1398101; m0.clips = {"idle"}; m0.darkDecalMaterials = {"Mat_58246"};
+    m0.uvScroll = json::array({json{{"material", "Mat_1"}, {"uvIndex", 1}, {"scroll", {0, 0.2}}}});
+    ManifestModel m1;
+    m1.index = 1; m1.fileId = 102; m1.ok = false; m1.error = "model did not load";
+
+    ManifestCell mc;
+    mc.cell = &m.cell; mc.glb = "cells/c0_0_1x1.glb"; mc.albedo = "cells/c0_0_1x1_albedo.png";
+    mc.water = "cells/c0_0_1x1_water.png"; mc.albedoW = 256; mc.albedoH = 256;
+    mc.colliderParts = 1; mc.colliderTriangles = 12;
+
+    m.in.scene = &m.scene; m.in.opts = &m.opts;
+    m.in.models = {m0, m1};
+    m.in.cells = {mc};
+    m.in.sky = json{{"json", "sky/sky.json"}, {"default", "day"}, {"equirect", "sky/day/baked/equirect.png"}};
+    m.in.spawn = json{{"map", {kCX0 + 1536, kCY1 - 1536, 5}}};
+    m.in.counts = json{{"animated", 1}, {"animatedResolved", 0}};
+    m.in.warnings = {"export: a synthetic warning"};
+    m.in.clipOf = [](uint32_t) { return std::string(); };
+}
+
+/// A test-local checker for exactly the schema's keyword subset (Task 9 builds
+/// the real one in Python): $ref (local #/$defs), type (string or union),
+/// properties, required, additionalProperties (false or a schema), items, enum,
+/// const, minimum, maximum, minItems, maxItems; the annotations $schema, $id,
+/// $defs, title and description are ignored. Any other keyword is an error.
+bool schema_type_is(const json& v, const std::string& t) {
+    if (t == "null") return v.is_null();
+    if (t == "boolean") return v.is_boolean();
+    if (t == "object") return v.is_object();
+    if (t == "array") return v.is_array();
+    if (t == "string") return v.is_string();
+    if (t == "number") return v.is_number();
+    if (t == "integer")
+        return v.is_number_integer() || (v.is_number_float() && std::isfinite(v.get<double>()) &&
+                                         v.get<double>() == std::floor(v.get<double>()));
+    return false;
+}
+
+void schema_check(const json& root, const json& s, const json& v, const std::string& path,
+                  std::vector<std::string>& errs) {
+    static const std::vector<std::string> kKnown = {
+        "$schema", "$id", "$defs", "$ref", "title", "description", "type", "properties", "required",
+        "additionalProperties", "items", "enum", "const", "minimum", "maximum", "minItems", "maxItems"};
+    if (!s.is_object()) { errs.push_back(path + ": schema is not an object"); return; }
+    for (auto it = s.begin(); it != s.end(); ++it)
+        if (std::find(kKnown.begin(), kKnown.end(), it.key()) == kKnown.end())
+            errs.push_back("schema: unsupported keyword " + it.key() + " at " + path);
+    if (s.contains("$ref")) {
+        const std::string ref = s["$ref"].get<std::string>(), pre = "#/$defs/";
+        if (ref.rfind(pre, 0) != 0 || !root["$defs"].contains(ref.substr(pre.size())))
+            errs.push_back(path + ": unresolved $ref " + ref);
+        else
+            schema_check(root, root["$defs"][ref.substr(pre.size())], v, path, errs);
+    }
+    if (s.contains("type")) {
+        const json types = s["type"].is_array() ? s["type"] : json::array({s["type"]});
+        bool ok = false;
+        for (const auto& t : types) ok = ok || schema_type_is(v, t.get<std::string>());
+        if (!ok) { errs.push_back(path + ": " + v.dump() + " is not of type " + s["type"].dump()); return; }
+    }
+    if (s.contains("const") && v != s["const"]) errs.push_back(path + ": not the const " + s["const"].dump());
+    if (s.contains("enum") && std::find(s["enum"].begin(), s["enum"].end(), v) == s["enum"].end())
+        errs.push_back(path + ": " + v.dump() + " not in enum");
+    if (v.is_number()) {
+        if (s.contains("minimum") && v.get<double>() < s["minimum"].get<double>()) errs.push_back(path + ": below minimum");
+        if (s.contains("maximum") && v.get<double>() > s["maximum"].get<double>()) errs.push_back(path + ": above maximum");
+    }
+    if (v.is_object()) {
+        for (const auto& r : s.value("required", json::array()))
+            if (!v.contains(r.get<std::string>())) errs.push_back(path + ": missing required " + r.get<std::string>());
+        const json props = s.value("properties", json::object());
+        for (auto it = v.begin(); it != v.end(); ++it) {
+            const std::string p = path + "." + it.key();
+            if (props.contains(it.key())) {
+                schema_check(root, props[it.key()], it.value(), p, errs);
+            } else if (s.contains("additionalProperties")) {
+                const json& ap = s["additionalProperties"];
+                if (ap.is_boolean() && !ap.get<bool>()) errs.push_back(path + ": unexpected property " + it.key());
+                else if (ap.is_object()) schema_check(root, ap, it.value(), p, errs);
+            }
+        }
+    }
+    if (v.is_array()) {
+        if (s.contains("minItems") && v.size() < s["minItems"].get<size_t>()) errs.push_back(path + ": too few items");
+        if (s.contains("maxItems") && v.size() > s["maxItems"].get<size_t>()) errs.push_back(path + ": too many items");
+        if (s.contains("items"))
+            for (size_t k = 0; k < v.size(); ++k)
+                schema_check(root, s["items"], v[k], path + "[" + std::to_string(k) + "]", errs);
+    }
+}
+
+/// Every violation of the committed schema by @p man (empty = valid).
+std::vector<std::string> schema_violations(const json& man) {
+    static const json schema = read_schema();
+    std::vector<std::string> errs;
+    if (!schema.is_object()) return {"schema: not readable"};
+    schema_check(schema, schema, man, "manifest", errs);
+    return errs;
+}
+
+/// Fails the test once per violation, naming @p variant.
+void check_valid(const json& man, const std::string& variant) {
+    for (const auto& e : schema_violations(man))
+        ::castlemist::test::fail(__FILE__, __LINE__, variant + ": " + e);
+    CHECK(json::parse(man.dump()) == man);   // no NaN / inf survives a dump
+}
+
+bool has_warning(const json& man, const std::string& needle) {
+    if (!man.contains("warnings")) return false;
+    for (const auto& w : man["warnings"]) if (w.get<std::string>().find(needle) != std::string::npos) return true;
+    return false;
+}
+
+} // namespace
+
+CM_TEST(world_manifest, unity_trs_roundtrip) {
+    const cw::PropInstance p = spec_prop();
+    const float origin[3] = {5, 5, 0};
+    UnityTrs u{};
+    CHECK(unity_trs(p.world, origin, u));
+    CHECK_NEAR(u.s, 2.0, 1e-5);
+    CHECK(u.r[3] >= 0);
+    CHECK_NEAR(double(u.r[0]) * u.r[0] + double(u.r[1]) * u.r[1] + double(u.r[2]) * u.r[2] + double(u.r[3]) * u.r[3],
+               1.0, 1e-5);
+    // Expected: map_matrix_to_unity(M with its translation minus the origin).
+    float local[16], want[16];
+    std::memcpy(local, p.world, sizeof local);
+    for (int k = 0; k < 3; ++k) local[12 + k] -= origin[k];
+    cw::map_matrix_to_unity(local, want);
+    // Rebuilt: T(t) * R(r) * S(s), R the standard (Unity Quaternion) rotation matrix.
+    const double x = u.r[0], y = u.r[1], z = u.r[2], w = u.r[3];
+    const double R[3][3] = {{1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)},
+                            {2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)},
+                            {2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)}};
+    for (int c = 0; c < 3; ++c)
+        for (int r = 0; r < 3; ++r) CHECK_NEAR(u.s * R[r][c], want[c * 4 + r], 1e-4);
+    for (int r = 0; r < 3; ++r) CHECK_NEAR(u.t[r], want[12 + r], 1e-4);
+    // And the Unity transform applied to map_to_unity(v) lands on map_to_unity(M' v).
+    const float v[3] = {1, 2, 3};
+    float mv[3], uv[3], umv[3];
+    for (int r = 0; r < 3; ++r) mv[r] = local[r] * v[0] + local[4 + r] * v[1] + local[8 + r] * v[2] + local[12 + r];
+    cw::map_to_unity(v, uv);
+    cw::map_to_unity(mv, umv);
+    for (int r = 0; r < 3; ++r)
+        CHECK_NEAR(u.s * (R[r][0] * uv[0] + R[r][1] * uv[1] + R[r][2] * uv[2]) + u.t[r], umv[r], 1e-3);
+    // Every branch of Shepperd's method: identity and the three 180-degree turns.
+    const float axes[4][3] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    for (const auto& ax : axes) {
+        float m[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        if (ax[0] + ax[1] + ax[2] > 0)
+            for (int c = 0; c < 3; ++c)
+                for (int r = 0; r < 3; ++r) m[c * 4 + r] = 2 * ax[r] * ax[c] - (r == c ? 1.f : 0.f);
+        const float zero[3] = {0, 0, 0};
+        UnityTrs q{};
+        CHECK(unity_trs(m, zero, q));
+        float um[16];
+        cw::map_matrix_to_unity(m, um);
+        const double qx = q.r[0], qy = q.r[1], qz = q.r[2], qw = q.r[3];
+        const double Q[3][3] = {{1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)},
+                                {2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)},
+                                {2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)}};
+        for (int c = 0; c < 3; ++c)
+            for (int r = 0; r < 3; ++r) CHECK_NEAR(Q[r][c], um[c * 4 + r], 1e-5);
+        CHECK(qw >= 0);
+        CHECK_NEAR(q.s, 1.0, 1e-6);
+    }
+}
+
+CM_TEST(world_manifest, unity_trs_rejects_bad) {
+    const float zero[3] = {0, 0, 0};
+    UnityTrs u{};
+    float nonUniform[16] = {1, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};   // scale (1, 2, 1)
+    CHECK_FALSE(unity_trs(nonUniform, zero, u));
+    float mirrored[16] = {-1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};   // det < 0
+    CHECK_FALSE(unity_trs(mirrored, zero, u));
+    float negUniform[16] = {-2, 0, 0, 0, 0, -2, 0, 0, 0, 0, -2, 0, 0, 0, 0, 1};   // scale -2: det < 0
+    CHECK_FALSE(unity_trs(negUniform, zero, u));
+    float nan[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    nan[13] = std::numeric_limits<float>::quiet_NaN();
+    CHECK_FALSE(unity_trs(nan, zero, u));
+    float inf[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    inf[0] = std::numeric_limits<float>::infinity();
+    CHECK_FALSE(unity_trs(inf, zero, u));
+    const float nanOrigin[3] = {0, std::numeric_limits<float>::quiet_NaN(), 0};
+    float id[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    CHECK_FALSE(unity_trs(id, nanOrigin, u));
+    float zeroScale[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    CHECK_FALSE(unity_trs(zeroScale, zero, u));
+    float shear[16] = {1, 0, 0, 0, 0.6f, 0.8f, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};   // equal lengths, not orthogonal
+    CHECK_FALSE(unity_trs(shear, zero, u));
+    float projective[16] = {1, 0, 0, 0.5f, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    CHECK_FALSE(unity_trs(projective, zero, u));
+    // The spec prop with one axis doubled: non-uniform after a rotation.
+    cw::PropInstance p = spec_prop();
+    for (int r = 0; r < 3; ++r) p.world[8 + r] *= 2;
+    CHECK_FALSE(unity_trs(p.world, zero, u));
+    CHECK(unity_trs(spec_prop().world, zero, u));
+}
+
+CM_TEST(world_manifest, keys_match_schema) {
+    const json schema = read_schema();
+    CHECK(schema.is_object());
+    if (!schema.is_object()) return;
+    CHECK(schema["$schema"] == "https://json-schema.org/draft/2020-12/schema");
+    CHECK(schema["$id"] == "castlemist-world/1");
+    SyntheticManifest m;
+    make_synthetic(m);
+    const json man = world_manifest_json(m.in);
+    CHECK(man.is_object());
+    if (!man.is_object()) return;
+    CHECK_EQ(man.value("version", 0), kWorldManifestVersion);
+    CHECK_EQ(man.value("version", 0), 1);
+    CHECK(man.value("format", std::string()) == "castlemist-world");
+    check_keys(schema, schema, man, "manifest");
+    const bool shaped = man.contains("cells") && man["cells"].is_array() && !man["cells"].empty() &&
+                        man.contains("models") && man["models"].is_array() && !man["models"].empty();
+    CHECK(shaped);
+    if (!shaped) return;
+    const json& cellsS = schema_deref(schema, schema["properties"]["cells"]);
+    check_keys(schema, cellsS["items"], man["cells"][0], "cells[0]");
+    CHECK(!man["cells"][0]["instances"].empty());
+    if (man["cells"][0]["instances"].empty()) return;
+    const json& cellS = schema_deref(schema, cellsS["items"]);
+    check_keys(schema, schema_deref(schema, cellS["properties"]["instances"])["items"], man["cells"][0]["instances"][0],
+               "cells[0].instances[0]");
+    check_keys(schema, schema_deref(schema, schema["properties"]["models"])["items"], man["models"][0], "models[0]");
+    check_keys_deep(schema, schema, man, "manifest");
+    check_valid(man, "keys_match_schema");
+    // The output dumps and parses again (no NaN / inf); kept on disk for inspection.
+    CHECK(json::parse(man.dump()) == man);
+    std::ofstream(fresh_dir("manifest") / "manifest.json") << man.dump(2);
+
+    // Content: one instance written (prop 0); prop 1 is non-uniform, prop 2's model failed.
+    const json& cell = man["cells"][0];
+    CHECK_EQ(cell["instances"].size(), size_t(1));
+    CHECK_EQ(cell["instances"][0]["prop"].get<int>(), 0);
+    CHECK_EQ(cell["instances"][0]["model"].get<int>(), 0);
+    CHECK(cell["instances"][0]["clip"].is_null());
+    CHECK_EQ(cell["instances"][0]["m"].size(), size_t(16));
+    CHECK_EQ(man["counts"]["props"].get<int>(), 3);
+    CHECK_EQ(man["counts"]["propsWritten"].get<int>(), 1);
+    CHECK_EQ(man["counts"]["propsSkipped"].get<int>(), 2);
+    CHECK_EQ(man["counts"]["models"].get<int>(), 2);
+    CHECK_EQ(man["counts"]["modelsFailed"].get<int>(), 1);
+    CHECK_EQ(man["counts"]["cells"].get<int>(), 1);
+    CHECK_EQ(man["counts"]["chunks"].get<int>(), 1);
+    CHECK_EQ(man["counts"]["animated"].get<int>(), 1);
+    CHECK_EQ(man["counts"]["clipsFailedDecode"].get<int>(), 0);
+    CHECK(has_warning(man, "props: 1 placements with a non-uniform or degenerate transform skipped"));
+    CHECK(has_warning(man, "props: 1 placements of failed or missing models skipped"));
+    CHECK(man["warnings"][0] == "scene: a synthetic warning");
+    CHECK(has_warning(man, "export: a synthetic warning"));
+    CHECK(man["models"][1]["status"] == "failed");
+    CHECK(man["models"][1]["error"] == "model did not load");
+    CHECK(man["models"][0]["status"] == "ok");
+    CHECK(man["models"][0]["fbx"].is_null());
+    CHECK(man["models"][0]["uvScroll"][0]["unit"] == "per second, UNPROVEN");
+    CHECK(cell["water"]["texture"] == "cells/c0_0_1x1_water.png");
+    CHECK(cell["chunks"] == json({0, 0, 0, 0}));
+    CHECK(man["map"]["fileId"] == 1151420);
+    // The unity block is unity_trs relative to the cell origin.
+    UnityTrs u{};
+    CHECK(unity_trs(m.scene.props[0].world, m.cell.origin, u));
+    for (size_t k = 0; k < 3; ++k) CHECK_EQ(cell["instances"][0]["unity"]["t"][k].get<float>(), u.t[k]);
+    for (size_t k = 0; k < 4; ++k) CHECK_EQ(cell["instances"][0]["unity"]["r"][k].get<float>(), u.r[k]);
+    CHECK_EQ(cell["instances"][0]["unity"]["s"].get<float>(), u.s);
+    // Frame: the rows of map_to_unity / map_to_blender; units and scale UNPROVEN.
+    CHECK(man["frame"]["toUnity"] == json({{1, 0, 0}, {0, 0, -1}, {0, 1, 0}}));
+    CHECK(man["frame"]["toBlender"] == json({{1, 0, 0}, {0, 1, 0}, {0, 0, -1}}));
+    CHECK(man["frame"]["units"]["perMetre"].is_null());
+    CHECK(man["frame"]["units"]["status"] == "UNPROVEN");
+    CHECK_NEAR(man["frame"]["units"]["unityScale"]["value"].get<double>(), 0.0254, 1e-7);
+    CHECK(man["frame"]["units"]["unityScale"]["status"] == "UNPROVEN");
+    const auto root = map_to_gltf_root(1);
+    for (size_t k = 0; k < 16; ++k) CHECK_EQ(man["frame"]["gltfRoot"][k].get<float>(), root[k]);
+    // Light (spec D5, amended in Task 13): the stored sunDir is the direction the
+    // light travels, so toSun = -sunDir, unityForward = map_to_unity(sunDir).
+    const auto& L = m.scene.environment.light;
+    float uf[3], bd[3];
+    cw::map_to_unity(L.sunDir, uf);
+    cw::map_to_blender(L.sunDir, bd);
+    for (size_t k = 0; k < 3; ++k) {
+        CHECK_EQ(man["light"]["sun"]["toSun"][k].get<float>(), -L.sunDir[k]);
+        CHECK_EQ(man["light"]["sun"]["unityForward"][k].get<float>(), uf[k]);
+        CHECK_EQ(man["light"]["sun"]["blenderDirection"][k].get<float>(), bd[k]);
+        CHECK_NEAR(man["light"]["ambient"][k].get<float>(), L.fillColor[k] * std::min(L.fillIntensity, 1.0f), 1e-6);
+    }
+    // Spawn: unity filled in from map; the probe sits at the spawn.
+    float su[3];
+    const float sm[3] = {kCX0 + 1536, kCY1 - 1536, 5};
+    cw::map_to_unity(sm, su);
+    for (size_t k = 0; k < 3; ++k) CHECK_EQ(man["spawn"]["unity"][k].get<float>(), su[k]);
+    CHECK(man["frameProbe"]["map"] == man["spawn"]["map"]);
+    CHECK(man["frameProbe"]["expect"] == frame_probe_expect());
+    CHECK(man["water"]["plane"] == true);
+    CHECK_EQ(man["water"]["preset"].get<int>(), 0);
+    CHECK(man["terrain"]["present"] == true);
+    CHECK_EQ(man["terrain"]["segments"].get<int>(), 32);
+}
+
+// The env chunk's light direction is the direction the light travels (in map
+// space, up = -Z): every day preset measured stores z > 0, e.g. Spirit Vale's
+// (0.707, 0, 0.707), a sun 45 degrees up in the west. The manifest's vectors
+// must then point the sun down onto the map in each frame.
+CM_TEST(world_manifest, sun_shines_down) {
+    castlemist::model::Extractor::MapEnvLight l;
+    l.present = true;
+    l.sunDir[0] = 0.70710678f; l.sunDir[1] = 0; l.sunDir[2] = 0.70710678f;   // Spirit Vale 1151420, day
+    const json j = world_light_json(l);
+    const json& sun = j["sun"];
+    CHECK(sun["unityForward"][1].get<float>() < -0.7f);      // Unity up = +Y: travels down
+    CHECK(sun["blenderDirection"][2].get<float>() < -0.7f);  // Blender up = +Z: travels down
+    CHECK(sun["toSun"][2].get<float>() < -0.7f);             // map up = -Z: the sun is above
+    // East-west: the light travels east (+X), so the sun is in the west.
+    CHECK(sun["unityForward"][0].get<float>() > 0.7f);
+    CHECK(sun["blenderDirection"][0].get<float>() > 0.7f);
+    CHECK(sun["toSun"][0].get<float>() < -0.7f);
+    // The three agree: unityForward = -map_to_unity(toSun), blenderDirection = -map_to_blender(toSun).
+    float ts[3], u[3], b[3];
+    for (size_t k = 0; k < 3; ++k) ts[k] = sun["toSun"][k].get<float>();
+    cw::map_to_unity(ts, u);
+    cw::map_to_blender(ts, b);
+    for (size_t k = 0; k < 3; ++k) {
+        CHECK_EQ(sun["unityForward"][k].get<float>(), -u[k]);
+        CHECK_EQ(sun["blenderDirection"][k].get<float>(), -b[k]);
+    }
+}
+
+CM_TEST(world_manifest, settings_labelled) {
+    SyntheticManifest m;
+    make_synthetic(m);
+    const json man = world_manifest_json(m.in);
+    const bool shaped = man.contains("settings") && man["settings"].is_object() && !man["settings"].empty();
+    CHECK(shaped);
+    if (!shaped) return;
+    const std::vector<std::string> allowed = {"UNPROVEN", "castlemist's choice", "measured"};
+    size_t unproven = 0;
+    for (auto it = man["settings"].begin(); it != man["settings"].end(); ++it) {
+        const std::string st = it.value().value("status", std::string());
+        if (std::find(allowed.begin(), allowed.end(), st) == allowed.end())
+            ::castlemist::test::fail(__FILE__, __LINE__, "setting " + it.key() + " has status '" + st + "'");
+        CHECK(it.value().contains("value"));
+        CHECK(!it.value().value("source", std::string()).empty());
+        if (st != "UNPROVEN") continue;
+        ++unproven;
+        bool found = false;
+        for (const auto& w : man["warnings"]) {
+            const std::string s = w.get<std::string>();
+            if (s.find(it.key()) != std::string::npos && s.find("UNPROVEN") != std::string::npos) found = true;
+        }
+        if (!found) ::castlemist::test::fail(__FILE__, __LINE__, "no UNPROVEN warning for " + it.key());
+    }
+    CHECK(unproven >= 8);
+    CHECK(man["settings"]["groundRepeatsPerChunk"]["value"] == 8);
+    CHECK(man["settings"]["groundRepeatsPerChunk"]["status"] == "UNPROVEN");
+    CHECK(man["settings"]["unityScale"]["status"] == "UNPROVEN");
+    CHECK(man["settings"]["ambient"]["status"] == "castlemist's choice");
+    CHECK(man["settings"]["texelsPerChunk"]["value"] == 256);
+    CHECK(man["settings"]["cellMaxTriangles"]["value"] == 500000);
+    // World foliage D11 rows: the UNPROVEN ones are warned like the rest.
+    CHECK(man["settings"]["zoneVisualTransform"]["status"] == "UNPROVEN");
+    CHECK(man["settings"]["zoneFade"]["status"] == "UNPROVEN");
+    CHECK(has_warning(man, "settings: zoneVisualTransform"));
+    CHECK(has_warning(man, "settings: zoneFade"));
+    CHECK(man["settings"]["lodCullFovDeg"]["value"] == 60);
+    CHECK(man["settings"]["foliageWind"]["value"] == "none");
+    // The settings are world_export_settings and follow the options.
+    WorldFolderOptions o;
+    o.texelsPerChunk = 128;
+    const auto set = world_export_settings(o);
+    CHECK(!set.empty());
+    bool saw = false;
+    for (const auto& s : set) if (s.name == "texelsPerChunk") { saw = true; CHECK(s.value == 128); }
+    CHECK(saw);
+    // The sky bake kind travels too: proven-only by default, the approximate one UNPROVEN.
+    CHECK(man["settings"]["skyApproximate"]["value"] == false);
+    CHECK(man["settings"]["skyApproximate"]["status"] == "castlemist's choice");
+    o.skyApproximate = true;
+    bool sawSky = false;
+    for (const auto& s : world_export_settings(o))
+        if (s.name == "skyApproximate") { sawSky = true; CHECK(s.value == true); CHECK(s.status == "UNPROVEN"); }
+    CHECK(sawSky);
+}
+
+CM_TEST(world_manifest, validator_sees_mismatches) {
+    // The test-local validator is not vacuous: each kind of drift is caught.
+    SyntheticManifest m;
+    make_synthetic(m);
+    const json man = world_manifest_json(m.in);
+    CHECK(schema_violations(man).empty());
+    json bad = man;
+    bad["light"]["sun"]["intensity"] = nullptr;   // null where the schema wants a number
+    CHECK(!schema_violations(bad).empty());
+    bad = man;
+    bad["map"]["extra"] = 1;                      // additionalProperties: false
+    CHECK(!schema_violations(bad).empty());
+    bad = man;
+    bad["cells"][0]["instances"][0]["unity"]["r"].push_back(0);   // maxItems
+    CHECK(!schema_violations(bad).empty());
+    bad = man;
+    bad["counts"].erase("props");                 // required
+    CHECK(!schema_violations(bad).empty());
+    bad = man;
+    bad["settings"]["texelsPerChunk"]["status"] = "guess";   // enum via $ref
+    CHECK(!schema_violations(bad).empty());
+    bad = man;
+    bad["version"] = 2;                           // const
+    CHECK(!schema_violations(bad).empty());
+    bad = man;
+    bad["counts"]["props"] = -1;                  // minimum
+    CHECK(!schema_violations(bad).empty());
+    bad = man;
+    bad["cells"][0]["glb"] = nullptr;             // type without null
+    CHECK(!schema_violations(bad).empty());
+}
+
+CM_TEST(world_manifest, variants_validate) {
+    // normal (with caller extras in uvScroll, sky and spawn that must not leak)
+    {
+        SyntheticManifest m;
+        make_synthetic(m);
+        m.in.models[0].uvScroll = json::array(
+            {json{{"material", "Mat_1"}, {"uvIndex", 1}, {"scroll", {0, 0.2}}, {"unit", "per frame"}, {"extra", 1}},
+             json{{"material", 7}}});
+        m.in.sky["mode"] = 3;
+        m.in.spawn["unity"] = {1, 2, 3};
+        m.in.spawn["note"] = "extra";
+        const json man = world_manifest_json(m.in);
+        check_valid(man, "normal");
+        CHECK_EQ(man["models"][0]["uvScroll"].size(), size_t(1));
+        CHECK(man["models"][0]["uvScroll"][0]["unit"] == "per second, UNPROVEN");
+        CHECK_FALSE(man["models"][0]["uvScroll"][0].contains("extra"));
+        CHECK(has_warning(man, "malformed uvScroll"));
+        CHECK_FALSE(man["sky"].contains("mode"));
+        CHECK_FALSE(man["spawn"].contains("note"));
+        CHECK(man["spawn"]["unity"] != json({1, 2, 3}));   // recomputed from map
+    }
+    // flat water: plane, no preset -> water.flatColour + note, cell water texture null + note
+    {
+        SyntheticManifest m;
+        make_synthetic(m);
+        m.scene.environment.water.clear();
+        set_all_heights(m.scene, 5.f);
+        m.in.cells[0].water.clear();
+        const json man = world_manifest_json(m.in);
+        check_valid(man, "flat water");
+        CHECK(man["water"]["preset"].is_null());
+        CHECK_EQ(man["water"]["flatColour"].size(), size_t(4));
+        CHECK(man["water"]["note"] == std::string(kFlatWaterNote));
+        CHECK(man["cells"][0]["water"]["texture"].is_null());
+        CHECK(man["cells"][0]["water"]["note"] == std::string(kFlatWaterNote));
+        CHECK(has_warning(man, kFlatWaterNote));
+    }
+    // no plane
+    {
+        SyntheticManifest m;
+        make_synthetic(m);
+        m.scene.water.hasPlane = false;
+        m.in.cells[0].water.clear();
+        const json man = world_manifest_json(m.in);
+        check_valid(man, "no plane");
+        CHECK(man["water"] == json({{"plane", false}}));
+        CHECK(man["cells"][0]["water"].is_null());
+    }
+    // no terrain (c_all), sky / spawn null, bounds null
+    {
+        SyntheticManifest m;
+        make_synthetic(m);
+        m.scene.terrain = cw::Terrain{};
+        m.scene.hasBounds = false;
+        m.cell = cw::Cell{};
+        m.cell.id = "c_all"; m.cell.all = true;
+        m.cell.props = {0, 1, 2};
+        m.in.cells[0].albedo.clear();
+        m.in.cells[0].water.clear();
+        m.in.sky = nullptr;
+        m.in.spawn = nullptr;
+        const json man = world_manifest_json(m.in);
+        check_valid(man, "no terrain");
+        CHECK(man["terrain"] == json({{"present", false}}));
+        CHECK(man["map"]["bounds"].is_null());
+        CHECK(man["sky"].is_null());
+        CHECK(man["spawn"].is_null());
+        CHECK(man["cells"][0]["chunks"].is_null());
+        CHECK(man["cells"][0]["albedoSize"].is_null());
+        CHECK(man["frameProbe"]["map"] == json({0.0, 0.0, 0.0}));
+        CHECK_EQ(man["counts"]["chunks"].get<int>(), 0);
+    }
+}
+
+CM_TEST(world_manifest, textures_pool_optional) {
+    // Ruling W8: `textures` is optional; written with only the schema's keys, left out when malformed.
+    SyntheticManifest m;
+    make_synthetic(m);
+    json man = world_manifest_json(m.in);
+    CHECK_FALSE(man.contains("textures"));
+    check_valid(man, "no textures");
+    m.in.textures = json{{"dir", "textures"}, {"count", 7}, {"extra", 1}};
+    man = world_manifest_json(m.in);
+    CHECK(man["textures"] == json({{"dir", "textures"}, {"count", 7}}));
+    check_valid(man, "textures");
+    m.in.textures = json{{"dir", 3}};
+    man = world_manifest_json(m.in);
+    CHECK_FALSE(man.contains("textures"));
+    CHECK(has_warning(man, "textures lacks"));
+    check_valid(man, "malformed textures");
+}
+
+CM_TEST(world_manifest, non_finite_never_written) {
+    // Ruling W6: never null for a number; optional blocks go null, bad cells are dropped.
+    SyntheticManifest m;
+    make_synthetic(m);
+    const float nan = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
+    m.scene.props[0].world[13] = nan;                 // placement: skipped
+    m.scene.environment.light.sunIntensity = inf;     // light -> null
+    m.scene.bounds[2] = nan;                          // bounds -> null
+    m.scene.water.planeZ = nan;                       // water -> null, cell water -> null
+    m.in.spawn = json{{"map", {1.0, nan, 2.0}}};      // nlohmann keeps the NaN: spawn -> null
+    m.opts.unityScale = inf;                          // option -> default
+    cw::Cell badCell = m.cell;                        // a second cell with a NaN rect: dropped
+    badCell.id = "c9_9_1x1";
+    badCell.rect[0] = nan;
+    badCell.props = {0};
+    ManifestCell bad = m.in.cells[0];
+    bad.cell = &badCell;
+    m.in.cells.push_back(bad);
+    const json man = world_manifest_json(m.in);
+    check_valid(man, "non-finite");
+    CHECK(man["light"].is_null());
+    CHECK(has_warning(man, "light.sun.intensity"));
+    CHECK(man["map"]["bounds"].is_null());
+    CHECK(has_warning(man, "map.bounds"));
+    CHECK(man["water"].is_null());
+    CHECK(has_warning(man, "water.z"));
+    CHECK(man["cells"][0]["water"].is_null());
+    CHECK(man["spawn"].is_null());
+    CHECK(has_warning(man, "spawn.map"));
+    CHECK_NEAR(man["frame"]["units"]["unityScale"]["value"].get<double>(), 0.0254, 1e-7);
+    CHECK_NEAR(man["settings"]["unityScale"]["value"].get<double>(), 0.0254, 1e-7);
+    CHECK(has_warning(man, "option unityScale"));
+    CHECK(man["frameProbe"].is_object());   // placed at the kept cell's centre
+    CHECK_EQ(man["cells"].size(), size_t(1));
+    CHECK(has_warning(man, "cells: c9_9_1x1 dropped: non-finite number in rect"));
+    CHECK(man["cells"][0]["instances"].empty());
+    CHECK_EQ(man["counts"]["props"].get<int>(), 4);
+    CHECK_EQ(man["counts"]["propsWritten"].get<int>(), 0);
+    CHECK_EQ(man["counts"]["propsSkipped"].get<int>(), 4);
+    CHECK_EQ(man["counts"]["cells"].get<int>(), 1);
+    CHECK(has_warning(man, "props: 2 placements with a non-uniform or degenerate transform skipped"));
+    CHECK(has_warning(man, "props: 1 placements in dropped cells skipped"));
+    const std::string text = man.dump();
+    CHECK(text.find("NaN") == std::string::npos);
+}
+
+// ------------------------------------------------------------ world folder
+// Task 8: export_world_folder, the orchestrator (spec "Order of work").
+
+namespace {
+
+namespace tw = castlemist::test_world;
+
+json read_json(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    if (!in) return json();
+    try { return json::parse(in); } catch (...) { return json(); }
+}
+
+WorldFolderOptions synthetic_opts(int threads = 2) {
+    WorldFolderOptions o;
+    o.threads = threads;
+    o.texelsPerChunk = 16;   // small images keep the test fast
+    return o;
+}
+
+const json* instance_of_prop(const json& man, uint32_t prop) {
+    for (const json& c : man["cells"])
+        for (const json& i : c["instances"])
+            if (i["prop"].get<uint32_t>() == prop) return &i;
+    return nullptr;
+}
+
+} // namespace
+
+CM_TEST(world_folder, synthetic_export_complete) {
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource src;
+    const fs::path dir = fresh_dir("folder_complete");
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts());
+    CHECK(r.ok);
+    if (!r.ok) std::printf("    error: %s\n", r.error.c_str());
+    for (const char* f : {"manifest.json", "probe.glb", "cells/c0_0_2x2.glb", "cells/c0_0_2x2_albedo.png",
+                          "cells/c0_0_2x2_water.png", "models/101/101.glb", "models/101/materials.json",
+                          "models/102/102.glb"})
+        if (!fs::exists(dir / f)) ::castlemist::test::fail(__FILE__, __LINE__, std::string("missing ") + f);
+    CHECK_FALSE(fs::exists(dir / "manifest.json.tmp"));
+    const json man = read_json(dir / "manifest.json");
+    check_valid(man, "synthetic export");
+    CHECK_EQ(man["counts"]["props"].get<int>(), 4);
+    CHECK_EQ(man["counts"]["propsWritten"].get<int>(), 4);
+    CHECK_EQ(man["counts"]["models"].get<int>(), 3);   // 101, 102 and the zone-only 103
+    CHECK_EQ(man["counts"]["cells"].get<int>(), 1);
+    CHECK_EQ(man["counts"]["animated"].get<int>(), 1);
+    CHECK_EQ(man["counts"]["animatedResolved"].get<int>(), 1);
+    const json* anim = instance_of_prop(man, 3);
+    CHECK(anim != nullptr);
+    if (anim) CHECK((*anim)["clip"] == json("TestClip"));
+    const json* still = instance_of_prop(man, 0);
+    CHECK(still != nullptr);
+    if (still) CHECK((*still)["clip"].is_null());
+    CHECK_EQ(man["cells"][0]["colliderParts"].get<int>(), 1);
+    CHECK(man["water"]["plane"] == json(true));
+    // The model stage's measurements.
+    CHECK_EQ(man["models"][0]["fileId"].get<int>(), 101);
+    CHECK_EQ(man["models"][0]["triangles"].get<int>(), 12);
+    CHECK(man["models"][0]["status"] == json("ok"));
+    CHECK(man["models"][1]["clips"] == json({"TestClip"}));
+    CHECK(man["models"][0]["glb"] == json("models/101/101.glb"));
+    CHECK(man["cells"][0]["albedo"] == json("cells/c0_0_2x2_albedo.png"));
+    CHECK(man["cells"][0]["albedoSize"] == json({32, 32}));
+    CHECK(man["cells"][0]["water"]["texture"] == json("cells/c0_0_2x2_water.png"));
+    // Ruling W8: dat textures once in the shared pool, referenced from each model folder.
+    CHECK(fs::exists(dir / "textures" / "42.png"));
+    CHECK_FALSE(fs::exists(dir / "textures" / "42.png.tmp"));
+    CHECK_FALSE(fs::exists(dir / "models" / "101" / "Images" / "42.png"));
+    CHECK_FALSE(fs::exists(dir / "models" / "102" / "Images" / "42.png"));
+    CHECK(man["textures"] == json({{"dir", "textures"}, {"count", 1}}));
+    for (const char* id : {"101", "102"}) {
+        const fs::path folder = dir / "models" / id;
+        const json g = glb_json(folder / (std::string(id) + ".glb"));
+        CHECK(scene_root(g).value("name", std::string()) == "GW2_MapToGltf");
+        bool pooled = false;
+        for (const json& im : g["images"]) {
+            const std::string uri = im.value("uri", std::string());
+            CHECK_FALSE(uri.empty());
+            if (!uri.empty()) CHECK(fs::exists(folder / fs::path(uri)));   // every URI resolves from the glb
+            if (uri == "../../textures/42.png") pooled = true;
+        }
+        CHECK(pooled);
+    }
+    CHECK(src.releases.load() >= 1);   // ruling W9
+    // The report agrees with the manifest.
+    CHECK_EQ(r.cells, size_t(1));
+    CHECK_EQ(r.modelsWritten, size_t(3));
+    CHECK_EQ(r.propsWritten, size_t(4));
+    CHECK_EQ(r.chunksUnbaked, size_t(4));   // the synthetic chunks have no resolved material
+    CHECK(r.bytes.count("geometry") && r.bytes.at("geometry") > 0);
+    CHECK(r.seconds.count("models") && r.seconds.count("manifest"));
+    CHECK(report_json(r)["ok"] == json(true));
+}
+
+CM_TEST(world_folder, failed_model_counted_and_skipped) {
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource src;
+    src.failIndex = 0;
+    const fs::path dir = fresh_dir("folder_failed_model");
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts());
+    CHECK(r.ok);
+    const json man = read_json(dir / "manifest.json");
+    check_valid(man, "failed model");
+    CHECK(man["models"][0]["status"] == json("failed"));
+    CHECK(man["models"][0].contains("error"));
+    CHECK_EQ(man["counts"]["propsSkipped"].get<int>(), 3);
+    CHECK_EQ(man["counts"]["modelsFailed"].get<int>(), 1);
+    CHECK_EQ(r.modelsFailed, size_t(1));
+    CHECK_EQ(r.propsSkipped, size_t(3));
+    CHECK_FALSE(fs::exists(dir / "models" / "101" / "101.glb"));
+    CHECK(fs::exists(dir / "models" / "102" / "102.glb"));
+    // Its foliage records (the two colliders of 101) are skipped and counted (world-foliage spec D7).
+    CHECK(man["counts"]["foliage"]["failedModel"] == json(2));
+    CHECK(man["counts"]["foliage"]["emptyModel"] == json(0));
+    CHECK(man["counts"]["modelsEmpty"] == json(0));
+    CHECK(man["counts"]["foliage"]["records"] == json(2));
+    CHECK(has_warning(man, "foliage: 2 placements of failed or missing models skipped"));
+}
+
+CM_TEST(world_folder, manifest_written_last) {
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource src;
+    src.throwDatIo = true;
+    const fs::path dir = fresh_dir("folder_dat_io");
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts());
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("cannot read") != std::string::npos);
+    CHECK_FALSE(fs::exists(dir / "manifest.json"));
+}
+
+CM_TEST(world_folder, refuses_nonempty_dir) {
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource src;
+    const fs::path dir = fresh_dir("folder_nonempty");
+    { std::ofstream(dir / "stray.txt") << "x"; }
+    WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts());
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("not empty") != std::string::npos);
+    CHECK(fs::exists(dir / "stray.txt"));
+    CHECK_EQ(src.loads.load(), 0);
+    // A previous export (manifest.json present) is replaced only with overwrite.
+    fs::remove(dir / "stray.txt");
+    { std::ofstream(dir / "manifest.json") << "{}"; }
+    { std::ofstream(dir / "old.txt") << "x"; }
+    r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts());
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("not empty") != std::string::npos);
+    WorldFolderOptions o = synthetic_opts();
+    o.overwrite = true;
+    r = export_world_folder(s, src, nullptr, dir.string(), o);   // "{}" is not a world export (I6)
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("not a castlemist world export") != std::string::npos);
+    CHECK(fs::exists(dir / "old.txt"));
+    { std::ofstream(dir / "manifest.json") << R"({"format": "castlemist-world", "version": 1})"; }
+    r = export_world_folder(s, src, nullptr, dir.string(), o);
+    CHECK(r.ok);
+    CHECK_FALSE(fs::exists(dir / "old.txt"));
+    CHECK(read_json(dir / "manifest.json")["format"] == json("castlemist-world"));
+}
+
+CM_TEST(world_folder, pool_failure_never_hangs) {
+    // Two claimants for one fileId; the encoder fails by throwing after a delay,
+    // so the second caller is already waiting. Both must return false.
+    const fs::path dir = fresh_dir("pool_failure");
+    SharedImagePool pool((dir / "textures").string());
+    std::atomic<int> encodes{0};
+    auto encoder = [&]() -> std::vector<uint8_t> {
+        ++encodes;
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        throw std::runtime_error("encoder failed");
+    };
+    auto claim = [&] { std::string e; const bool ok = pool.ensure(77, encoder, &e); return std::make_pair(ok, e); };
+    auto a = std::async(std::launch::async, claim);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto b = std::async(std::launch::async, claim);
+    const bool done = a.wait_for(std::chrono::seconds(10)) == std::future_status::ready &&
+                      b.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+    CHECK(done);
+    if (!done) { std::fprintf(stderr, "SharedImagePool::ensure hung\n"); std::_Exit(1); }
+    const auto ra = a.get(), rb = b.get();
+    CHECK_FALSE(ra.first);
+    CHECK_FALSE(rb.first);
+    CHECK_FALSE(ra.second.empty());
+    CHECK_FALSE(rb.second.empty());
+    CHECK_EQ(encodes.load(), 1);   // claimed once; the failure stays failed
+    CHECK_EQ(pool.written(), size_t(0));
+    CHECK_FALSE(fs::exists(dir / "textures" / "77.png"));
+    CHECK_FALSE(fs::exists(dir / "textures" / "77.png.tmp"));
+}
+
+CM_TEST(world_folder, never_throws_and_leaves_no_manifest) {
+    // release_textures() runs outside every pool (after the model stage); one
+    // that throws must come back as an error, not an exception.
+    struct Throwing : tw::SyntheticModelSource {
+        void release_textures() override { throw std::runtime_error("release failed"); }
+    } src;
+    const cw::WorldScene s = tw::synthetic_world();
+    const fs::path dir = fresh_dir("folder_throws");
+    WorldFolderReport r;
+    bool threw = false;
+    try { r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts(1)); } catch (...) { threw = true; }
+    CHECK_FALSE(threw);
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("release failed") != std::string::npos);
+    CHECK_FALSE(fs::exists(dir / "manifest.json"));
+}
+
+CM_TEST(world_folder, overwrite_removes_manifest_first) {
+    // An overwrite whose clear stops part-way (a file held open cannot be
+    // deleted on Windows) must not leave the old manifest behind.
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource src;
+    const fs::path dir = fresh_dir("folder_overwrite_order");
+    { std::ofstream(dir / "manifest.json") << R"({"format": "castlemist-world", "old": true})"; }
+    { std::ofstream(dir / "a_locked.bin") << "x"; }
+    WorldFolderOptions o = synthetic_opts();
+    o.overwrite = true;
+    {
+        std::ifstream held(dir / "a_locked.bin", std::ios::binary);
+        const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), o);
+        if (fs::exists(dir / "a_locked.bin")) {   // the clear was interrupted
+            CHECK_FALSE(r.ok);
+            CHECK(r.error.find("cannot clear") != std::string::npos);
+            CHECK_FALSE(fs::exists(dir / "manifest.json"));
+        } else {
+            CHECK(r.ok);   // the platform deleted the open file: a plain overwrite
+        }
+    }
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), o);
+    // Without a manifest the folder is no longer a previous export: refused.
+    if (!fs::exists(dir / "manifest.json")) CHECK(r.error.find("not empty") != std::string::npos);
+    std::error_code ec;
+    remove_tree(dir, ec);
+    fs::create_directories(dir, ec);
+    const WorldFolderReport r2 = export_world_folder(s, src, nullptr, dir.string(), o);
+    CHECK(r2.ok);
+    CHECK_FALSE(read_json(dir / "manifest.json").contains("old"));
+    CHECK(fs::is_directory(dir / "textures"));
+}
+
+CM_TEST(world_folder, parallel_matches_serial) {
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource a, b;
+    const fs::path d1 = fresh_dir("folder_serial"), d4 = fresh_dir("folder_parallel");
+    const WorldFolderReport r1 = export_world_folder(s, a, nullptr, d1.string(), synthetic_opts(1));
+    const WorldFolderReport r4 = export_world_folder(s, b, nullptr, d4.string(), synthetic_opts(4));
+    CHECK(r1.ok);
+    CHECK(r4.ok);
+    json m1 = read_json(d1 / "manifest.json"), m4 = read_json(d4 / "manifest.json");
+    CHECK(m1.is_object());
+    m1.erase("castlemist");
+    m4.erase("castlemist");
+    CHECK(m1 == m4);
+    json j1 = report_json(r1), j4 = report_json(r4);
+    for (const char* k : {"seconds", "dir", "manifest"}) { j1.erase(k); j4.erase(k); }
+    CHECK(j1 == j4);
+    CHECK(file_bytes(d1 / "cells" / "c0_0_2x2.glb") == file_bytes(d4 / "cells" / "c0_0_2x2.glb"));
+}
+
+// Task 11: set_manifest_fbx records each .fbx that exists beside its .glb.
+CM_TEST(world_folder, set_manifest_fbx) {
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource src;
+    const fs::path dir = fresh_dir("folder_set_fbx");
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts());
+    CHECK(r.ok);
+    { std::ofstream(dir / "models" / "101" / "101.fbx", std::ios::binary); }
+    CHECK_EQ(set_manifest_fbx(dir.string()), size_t(1));
+    CHECK_FALSE(fs::exists(dir / "manifest.json.tmp"));
+    json man = read_json(dir / "manifest.json");
+    check_valid(man, "set_manifest_fbx");
+    CHECK(man["models"][0]["fbx"] == json("models/101/101.fbx"));
+    CHECK(man["models"][1]["fbx"].is_null());
+    CHECK(man["cells"][0]["fbx"].is_null());
+    CHECK(man["frameProbe"]["fbx"].is_null());
+    // Every .fbx present: all four set; a removed one goes back to null.
+    for (const char* f : {"models/102/102.fbx", "cells/c0_0_2x2.fbx", "probe.fbx"})
+        std::ofstream(dir / f, std::ios::binary);
+    CHECK_EQ(set_manifest_fbx(dir.string()), size_t(4));
+    man = read_json(dir / "manifest.json");
+    CHECK(man["models"][1]["fbx"] == json("models/102/102.fbx"));
+    CHECK(man["cells"][0]["fbx"] == json("cells/c0_0_2x2.fbx"));
+    CHECK(man["frameProbe"]["fbx"] == json("probe.fbx"));
+    fs::remove(dir / "probe.fbx");
+    CHECK_EQ(set_manifest_fbx(dir.string()), size_t(3));
+    man = read_json(dir / "manifest.json");
+    CHECK(man["frameProbe"]["fbx"].is_null());
+    check_valid(man, "set_manifest_fbx all");
+    // No manifest: nothing set, nothing written.
+    const fs::path none = fresh_dir("folder_set_fbx_none");
+    CHECK_EQ(set_manifest_fbx(none.string()), size_t(0));
+    CHECK_FALSE(fs::exists(none / "manifest.json"));
+}
+
+// Review I1: an unaligned --region writes the region it actually kept (snapped
+// to whole blocks), so the shipped validator accepts the folder.
+CM_TEST(world_folder, unaligned_region_validates) {
+    const cw::WorldScene s = tw::synthetic_world();   // 2 x 2 chunks, one 4-chunk block
+    tw::SyntheticModelSource src;
+    const fs::path dir = fresh_dir("folder_region");
+    WorldFolderOptions o = synthetic_opts();
+    o.region.cx0 = 1; o.region.cy0 = 1; o.region.cx1 = 1; o.region.cy1 = 1;
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), o);
+    CHECK(r.ok);
+    const json man = read_json(dir / "manifest.json");
+    check_valid(man, "unaligned region");
+    CHECK(man["terrain"]["region"] == json({0, 0, 1, 1}));
+    CHECK_EQ(man["counts"]["chunks"].get<int>(), 4);
+    if (std::system("python --version >NUL 2>&1") == 0) {
+        const std::string cmd = std::string("python -I \"") + CM_SOURCE_DIR + "/tools/world/validate_manifest.py\" \"" +
+                                dir.string() + "\"";
+        CHECK_EQ(std::system(cmd.c_str()), 0);
+    } else {
+        std::printf("    python not on PATH: validate_manifest.py not run\n");
+    }
+    // A region outside the grid keeps nothing: refused, and the folder is not touched.
+    const fs::path out = fresh_dir("folder_region_outside");
+    o.region.cx0 = 5; o.region.cy0 = 5; o.region.cx1 = 6; o.region.cy1 = 6;
+    const WorldFolderReport bad = export_world_folder(s, src, nullptr, out.string(), o);
+    CHECK_FALSE(bad.ok);
+    CHECK(bad.error.find("keeps no cells") != std::string::npos);
+    CHECK_FALSE(fs::exists(out / "cells"));
+}
+
+// Review I6: --overwrite (and the GUI's "Replace?") clear a folder only when its
+// manifest.json is a castlemist world export; any other manifest.json is kept.
+CM_TEST(world_folder, overwrite_needs_world_manifest) {
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource src;
+    WorldFolderOptions o = synthetic_opts();
+    o.overwrite = true;
+    const char* foreign[] = {R"({"dependencies": {"com.unity.ugui": "1.0.0"}})",   // a Unity Packages/ manifest
+                             R"({"format": "something-else"})",
+                             R"(["castlemist-world"])",
+                             "not json {"};
+    for (const char* text : foreign) {
+        const fs::path dir = fresh_dir("folder_foreign_manifest");
+        { std::ofstream(dir / "manifest.json") << text; }
+        { std::ofstream(dir / "keep.txt") << "x"; }
+        CHECK_FALSE(is_world_export_folder(dir.string()));
+        const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), o);
+        CHECK_FALSE(r.ok);
+        CHECK(r.error.find("not a castlemist world export") != std::string::npos);
+        CHECK(fs::exists(dir / "keep.txt"));
+        CHECK(fs::exists(dir / "manifest.json"));
+    }
+    // No manifest at all: refused too, and says why.
+    const fs::path bare = fresh_dir("folder_no_manifest");
+    { std::ofstream(bare / "keep.txt") << "x"; }
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, bare.string(), o);
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("no manifest.json") != std::string::npos);
+    CHECK(fs::exists(bare / "keep.txt"));
+    // A real previous export is recognised and replaced.
+    const fs::path prev = fresh_dir("folder_previous_export");
+    CHECK(export_world_folder(s, src, nullptr, prev.string(), synthetic_opts()).ok);
+    CHECK(is_world_export_folder(prev.string()));
+    CHECK(export_world_folder(s, src, nullptr, prev.string(), o).ok);
+}
+
+// Review I4: an output folder deep enough that the export's files pass MAX_PATH
+// (260) is written in full through extended-length paths, and an overwrite of
+// it clears it; nothing is dropped.
+CM_TEST(world_folder, deep_output_folder_past_max_path) {
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource src;
+    const fs::path top = fs::temp_directory_path() / "cm_world_export_folder_deep";
+    std::error_code ec;
+    CHECK(remove_tree(top, ec));   // a deep tree left by an earlier run (fresh_dir's remove_all cannot)
+    fs::path dir = top;
+    for (int i = 0; dir.native().size() < 230; ++i) dir /= "deep_folder_level_" + std::to_string(i);
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts());
+    CHECK(r.ok);
+    if (!r.ok) std::printf("    error: %s\n", r.error.c_str());
+    CHECK_EQ(r.modelsFailed, size_t(0));
+    CHECK_EQ(r.modelsWritten, size_t(3));
+    for (const std::string& w : r.warnings) CHECK(w.find("could not be written") == std::string::npos);
+    size_t longest = 0, files = 0;
+    CHECK(walk_files(dir, ec, [&](const fs::path& f, uint64_t) { ++files; longest = std::max(longest, f.native().size() - 4); }));
+    std::fprintf(stderr, "    %zu files, longest path %zu characters\n", files, longest);
+    CHECK(longest > 260);
+    CHECK(r.bytes.at("geometry") > 0);
+    for (const char* f : {"manifest.json", "probe.glb", "cells/c0_0_2x2.glb", "models/101/101.glb", "models/101/materials.json"})
+        CHECK(fs::exists(long_path(dir / f)));
+    std::ifstream in(long_path(dir / "manifest.json"), std::ios::binary);
+    const json man = json::parse(in, nullptr, false);
+    in.close();
+    check_valid(man, "deep folder");
+    CHECK(is_world_export_folder(dir.string()));
+    // set_manifest_fbx reaches the deep folder too.
+    { std::ofstream(long_path(dir / "models" / "101" / "101.fbx"), std::ios::binary); }
+    CHECK_EQ(set_manifest_fbx(dir.string()), size_t(1));
+    // Overwrite clears the deep tree (children past MAX_PATH) and writes it again.
+    WorldFolderOptions o = synthetic_opts();
+    o.overwrite = true;
+    const WorldFolderReport r2 = export_world_folder(s, src, nullptr, dir.string(), o);
+    CHECK(r2.ok);
+    if (!r2.ok) std::fprintf(stderr, "    overwrite error: %s\n", r2.error.c_str());
+    CHECK_FALSE(fs::exists(long_path(dir / "models" / "101" / "101.fbx")));
+    CHECK(remove_tree(top, ec));
+    CHECK_FALSE(fs::exists(top));
+}
+
+// Review I5: WorldFolderOptions::cancel stops the export between models and
+// cells (the GUI sets it when the app is closed); a cancelled export is an
+// error and leaves no manifest.json.
+CM_TEST(world_folder, cancel_stops_without_manifest) {
+    const cw::WorldScene s = tw::synthetic_world();
+    std::atomic<bool> cancel{false};
+    struct Cancelling : tw::SyntheticModelSource {
+        std::atomic<bool>* flag = nullptr;
+        std::shared_ptr<ModelPreview> load(uint32_t index, uint32_t fileId) override {
+            *flag = true;   // the user closes the app while the first model loads
+            return tw::SyntheticModelSource::load(index, fileId);
+        }
+    } src;
+    src.flag = &cancel;
+    const fs::path dir = fresh_dir("folder_cancel");
+    WorldFolderOptions o = synthetic_opts(1);
+    o.cancel = &cancel;
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), o);
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("cancelled") != std::string::npos);
+    CHECK_EQ(src.loads.load(), 1);   // nothing after the flag
+    CHECK_FALSE(fs::exists(dir / "manifest.json"));
+    CHECK_FALSE(fs::exists(dir / "cells" / "c0_0_2x2.glb"));
+    // Not set: the same export runs to the end.
+    cancel = false;
+    tw::SyntheticModelSource plain;
+    const fs::path dir2 = fresh_dir("folder_cancel_not_set");
+    CHECK(export_world_folder(s, plain, nullptr, dir2.string(), o).ok);
+}
+
+// Review M2: a model with no drawable meshes is counted apart in the report, so
+// the GUI does not call it broken. World-foliage final review M1: the manifest
+// says "empty" too, and its foliage placements are counted as emptyModel, not
+// failedModel (nothing to draw, so skipping them is right; it is not a failure).
+CM_TEST(world_folder, empty_model_counted_apart) {
+    const cw::WorldScene s = tw::synthetic_world();
+    struct Emptying : tw::SyntheticModelSource {
+        std::shared_ptr<ModelPreview> load(uint32_t index, uint32_t fileId) override {
+            auto m = tw::SyntheticModelSource::load(index, fileId);
+            if (m && index == 0) m->meshes.clear();
+            return m;
+        }
+    } src;
+    const fs::path dir = fresh_dir("folder_empty_model");
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts());
+    CHECK(r.ok);
+    CHECK_EQ(r.modelsFailed, size_t(1));
+    CHECK_EQ(r.modelsEmpty, size_t(1));
+    CHECK(report_json(r)["counts"]["modelsEmpty"] == json(1));
+    const json man = read_json(dir / "manifest.json");
+    check_valid(man, "empty model");
+    CHECK(man["models"][0]["status"] == json("empty"));
+    CHECK(man["models"][0]["error"] == json("This model has no drawable meshes to export."));
+    CHECK(man["counts"]["modelsEmpty"] == json(1));
+    CHECK(man["counts"]["foliage"]["emptyModel"] == json(2));
+    CHECK(man["counts"]["foliage"]["failedModel"] == json(0));
+    CHECK(has_warning(man, "foliage: 2 placements of empty models (no drawable meshes) skipped"));
+    CHECK_FALSE(has_warning(man, "failed or missing models"));
+    CHECK_FALSE(has_warning(man, "101 failed"));
+    // A model that did not load is failed and not empty.
+    tw::SyntheticModelSource failing;
+    failing.failIndex = 0;
+    const fs::path dir2 = fresh_dir("folder_empty_model_failed");
+    const WorldFolderReport r2 = export_world_folder(s, failing, nullptr, dir2.string(), synthetic_opts());
+    CHECK_EQ(r2.modelsFailed, size_t(1));
+    CHECK_EQ(r2.modelsEmpty, size_t(0));
+}
+
+// ------------------------------------------------------------ world foliage
+// World-foliage plan Task 7: foliage/<cell>.bin records, the manifest's foliage
+// blocks and wind flags (docs/superpowers/specs/2026-10-16-world-foliage-design.md D7).
+
+namespace {
+
+std::vector<FoliageRecord> read_records(const fs::path& p) {
+    const std::vector<uint8_t> b = file_bytes(p);
+    std::vector<FoliageRecord> out;
+    for (size_t at = 0; at + kFoliageRecordBytes <= b.size(); at += kFoliageRecordBytes)
+        out.push_back(decode_foliage_record(b.data() + at));
+    return out;
+}
+
+/// map_matrix_to_unity rebuilt from r.unity, against r.m relative to @p origin.
+void check_record_unity(const FoliageRecord& r, const float origin[3]) {
+    float local[16] = {};
+    for (int col = 0; col < 4; ++col)
+        for (int row = 0; row < 3; ++row) local[col * 4 + row] = r.m[col * 3 + row];
+    local[15] = 1;
+    for (int k = 0; k < 3; ++k) local[12 + k] -= origin[k];
+    float want[16];
+    cw::map_matrix_to_unity(local, want);
+    const double x = r.unity.r[0], y = r.unity.r[1], z = r.unity.r[2], w = r.unity.r[3];
+    const double R[3][3] = {{1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)},
+                            {2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)},
+                            {2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)}};
+    for (int c = 0; c < 3; ++c)
+        for (int rr = 0; rr < 3; ++rr) CHECK_NEAR(r.unity.s * R[rr][c], want[c * 4 + rr], 1e-4);
+    for (int rr = 0; rr < 3; ++rr) CHECK_NEAR(r.unity.t[rr], want[12 + rr], 1e-4);
+}
+
+fs::path out_dir(const char* label) { return fs::temp_directory_path() / (std::string("cm_world_export_") + label); }
+
+json export_synthetic(const cw::WorldScene& s, const char* label, const WorldFolderOptions& o,
+                      WorldFolderReport* rep = nullptr) {
+    tw::SyntheticModelSource src;
+    const fs::path dir = fresh_dir(label);
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), o);
+    CHECK(r.ok);
+    if (!r.ok) std::printf("    error: %s\n", r.error.c_str());
+    if (rep) *rep = r;
+    return read_json(dir / "manifest.json");
+}
+
+} // namespace
+
+CM_TEST(world_foliage, record_roundtrip) {
+    FoliageRecord r;
+    r.model = 0x01020304; r.layer = 0x0506; r.flags = 0x0708; r.placement = 0x090A0B0C;
+    for (int k = 0; k < 12; ++k) r.m[k] = 1.5f + float(k);
+    r.unity.t[0] = -1; r.unity.t[1] = -2; r.unity.t[2] = -3;
+    r.unity.r[0] = 0.1f; r.unity.r[1] = 0.2f; r.unity.r[2] = 0.3f; r.unity.r[3] = 0.9f;
+    r.unity.s = 2.5f; r.unityYaw = -0.75f; r.tiltDeg = 12.25f;
+    uint8_t b[kFoliageRecordBytes + 4];
+    std::memset(b, 0xEE, sizeof b);
+    encode_foliage_record(r, b);
+    CHECK_EQ(int(b[kFoliageRecordBytes]), 0xEE);   // exactly 100 bytes written
+    CHECK_EQ(int(b[0]), 0x04);                      // model at 0, little-endian
+    CHECK_EQ(int(b[3]), 0x01);
+    CHECK_EQ(int(b[4]), 0x06);                      // layer at 4
+    CHECK_EQ(int(b[6]), 0x08);                      // flags at 6
+    CHECK_EQ(int(b[8]), 0x0C);                      // placement at 8
+    float f;
+    std::memcpy(&f, b + 12, 4); CHECK_EQ(f, 1.5f);     // m at 12
+    std::memcpy(&f, b + 56, 4); CHECK_EQ(f, 12.5f);    // m[11]
+    std::memcpy(&f, b + 60, 4); CHECK_EQ(f, -1.0f);    // unity.t at 60
+    std::memcpy(&f, b + 72, 4); CHECK_EQ(f, 0.1f);     // unity.r at 72
+    std::memcpy(&f, b + 88, 4); CHECK_EQ(f, 2.5f);     // unity.s at 88
+    std::memcpy(&f, b + 92, 4); CHECK_EQ(f, -0.75f);   // unityYaw at 92
+    std::memcpy(&f, b + 96, 4); CHECK_EQ(f, 12.25f);   // tiltDeg at 96
+    const FoliageRecord d = decode_foliage_record(b);
+    CHECK_EQ(d.model, r.model); CHECK_EQ(d.layer, r.layer); CHECK_EQ(d.flags, r.flags);
+    CHECK_EQ(d.placement, r.placement);
+    for (int k = 0; k < 12; ++k) CHECK_EQ(d.m[k], r.m[k]);
+    for (int k = 0; k < 3; ++k) CHECK_EQ(d.unity.t[k], r.unity.t[k]);
+    for (int k = 0; k < 4; ++k) CHECK_EQ(d.unity.r[k], r.unity.r[k]);
+    CHECK_EQ(d.unity.s, r.unity.s); CHECK_EQ(d.unityYaw, r.unityYaw); CHECK_EQ(d.tiltDeg, r.tiltDeg);
+    CHECK_EQ(kFoliageRecordBytes, size_t(100));
+}
+
+CM_TEST(world_foliage, synthetic_records) {
+    const cw::WorldScene s = tw::synthetic_world();
+    CHECK(cw::fmix32(1) < 0x80000000u);   // the fixture's density-0.5 pair
+    CHECK(cw::fmix32(3) >= 0x80000000u);
+    const json man = export_synthetic(s, "foliage_records", synthetic_opts());
+    const fs::path bin = out_dir("foliage_records") / "foliage" / "c0_0_2x2.bin";
+    CHECK(fs::exists(bin));
+    CHECK_EQ(fs::exists(bin) ? fs::file_size(bin) : 0, uintmax_t(400));
+    const std::vector<FoliageRecord> rs = read_records(bin);
+    CHECK_EQ(rs.size(), size_t(4));
+    if (rs.size() != 4) return;
+    // Sorted by (model, placement): both model-101 records first, the geometry-only one last of them.
+    CHECK(man["models"][0]["fileId"] == json(101));
+    CHECK(man["models"][2]["fileId"] == json(103));
+    CHECK_EQ(rs[0].model, 0u); CHECK_EQ(rs[1].model, 0u); CHECK_EQ(rs[2].model, 2u); CHECK_EQ(rs[3].model, 2u);
+    CHECK_EQ(rs[0].placement, 0u); CHECK_EQ(int(rs[0].layer), 0);
+    CHECK_EQ(int(rs[1].layer), 0xFFFF); CHECK_EQ(rs[1].placement, 0xFFFFFFFFu);
+    CHECK_EQ(rs[2].placement, 1u); CHECK_EQ(rs[3].placement, 3u);
+    CHECK_EQ(int(rs[2].layer), 1); CHECK_EQ(int(rs[3].layer), 1);
+    for (int k = 0; k < 2; ++k) {
+        CHECK((rs[k].flags & 1) != 0);                 // a collider
+        CHECK_EQ((rs[k].flags >> 1) & 3, 0);           // source collider
+    }
+    for (int k = 2; k < 4; ++k) {
+        CHECK((rs[k].flags & 1) == 0);
+        CHECK_EQ((rs[k].flags >> 1) & 3, 2);           // source density
+    }
+    for (const FoliageRecord& r : rs) CHECK((r.flags & kFoliageFlagOutsideTerrain) == 0);
+    // m is the instance's world, absolute (the fixture's instances are in record order).
+    const auto& zi = s.zones.instances;
+    for (size_t k = 0; k < 4; ++k)
+        for (int col = 0; col < 4; ++col)
+            for (int row = 0; row < 3; ++row) CHECK_EQ(rs[k].m[col * 3 + row], zi[k].world[col * 4 + row]);
+    // unity rebuilds m relative to the cell origin.
+    float origin[3];
+    for (size_t k = 0; k < 3; ++k) origin[k] = man["cells"][0]["origin"][k].get<float>();
+    for (const FoliageRecord& r : rs) check_record_unity(r, origin);
+    // tiltDeg: yaw-only instances are upright; placement 3 leans 10 degrees.
+    CHECK_NEAR(rs[0].tiltDeg, 0.0, 1e-3);
+    CHECK_NEAR(rs[3].tiltDeg, 10.0, 1e-3);
+    // unityYaw: the collider tree turns atan2(0.6, 0.8) about map up; the sign is UNPROVEN (terrainTreeYawSign).
+    CHECK_NEAR(std::fabs(rs[0].unityYaw), std::atan2(0.6, 0.8), 1e-4);
+}
+
+CM_TEST(world_foliage, manifest_blocks) {
+    const cw::WorldScene s = tw::synthetic_world();
+    WorldFolderReport rep;
+    const json man = export_synthetic(s, "foliage_blocks", synthetic_opts(), &rep);
+    check_valid(man, "foliage blocks");
+    const json schema = read_schema();
+    check_keys_deep(schema, schema, man, "manifest");
+    CHECK(man.contains("foliage"));
+    if (!man.contains("foliage")) return;
+    const json& f = man["foliage"];
+    CHECK(f["scatter"] == json("colliders"));
+    CHECK(f["recordLayout"] == json("castlemist-foliage-1"));
+    CHECK(f["recordBytes"] == json(100));
+    CHECK_EQ(f["layers"].size(), size_t(2));
+    CHECK(f["layers"][0]["target"] == json("tree"));
+    CHECK(f["layers"][1]["target"] == json("detail"));
+    CHECK(f["layers"][0]["models"] == json({0}));
+    CHECK(f["layers"][1]["models"] == json({2}));
+    CHECK(f["layers"][1]["material"] == json(184994));
+    CHECK(f["layers"][0]["material"].is_null());
+    std::vector<int> fm;
+    for (const json& m : f["models"]) fm.push_back(man["models"][m["model"].get<size_t>()]["fileId"].get<int>());
+    CHECK(fm == std::vector<int>({101, 103}));
+    CHECK(f["models"][0]["zoneTypes"] == json({3}));
+    CHECK(f["models"][0]["wind"].is_null());          // static_cube: no traced game material
+    CHECK(f["models"][0]["terrainDetail"] == json(false));
+    CHECK(f["models"][1]["zoneTypes"] == json({1}));
+    CHECK(f["models"][1]["wind"] == json(true));      // static_grass names VegPara
+    CHECK(f["models"][1]["terrainDetail"] == json(true));
+    CHECK_NEAR(f["models"][1]["fadeFar"].get<double>(), 3000.0, 1e-6);
+    CHECK(f["colliders"]["entries"] == json(2));
+    CHECK(f["colliders"]["linkedByAnchor"] == json(1));
+    CHECK(f["colliders"]["linkedByGeometry"] == json(1));
+    const json& c = man["cells"][0]["foliage"];
+    CHECK(c["file"] == json("foliage/c0_0_2x2.bin"));
+    CHECK(c["records"] == json(4));
+    CHECK(c["colliderTrees"] == json(2));
+    CHECK(c["triangles"] == json(48));               // 4 records of 12-triangle cubes
+    const json& n = man["counts"]["foliage"];
+    CHECK(n["records"] == json(4));
+    CHECK(n["colliderTrees"] == json(2));
+    CHECK(n["modelsFoliageOnly"] == json(1));
+    CHECK(n["density"] == json(2));
+    CHECK(n["scatter"] == json(0));
+    CHECK(n["skipped"] == json(0));
+    CHECK(n["failedModel"] == json(0));
+    CHECK(man["models"][2]["folder"] == json("models/103"));
+    CHECK(fs::exists(out_dir("foliage_blocks") / "models" / "103" / "103.glb"));
+    CHECK(rep.foliage == n);
+    CHECK(report_json(rep)["counts"]["foliage"] == n);
+    CHECK(rep.bytes.count("foliage") && rep.bytes.at("foliage") == 400);
+    CHECK(rep.bytes.at("prop-textures") > 0);   // textures/42.png (folder_bytes' top folder, fixed here)
+    CHECK(rep.bytes.at("terrain") > 0);         // cells/*.png
+    // The settings carry the D11 rows.
+    for (const char* k : {"zoneGrid", "zoneModelSlot", "zoneScatter", "foliageWind", "foliageThinHash", "lodCullFovDeg"})
+        CHECK(man["settings"].contains(k));
+    CHECK(man["settings"]["zoneScatter"]["value"] == json("colliders"));
+}
+
+// Final review M7: a model a layer draws only as its subModel takes that
+// layer's type and fadeFar, as a slot model does.
+CM_TEST(world_foliage, submodel_only_model_has_layer_info) {
+    cw::WorldScene s = tw::synthetic_world();
+    CHECK(s.zones.layers.size() >= 2);
+    if (s.zones.layers.size() < 2) return;
+    cw::ZoneLayer& L = s.zones.layers[1];   // the detail layer (type 1, fadeFar 3000; manifest_blocks)
+    L.hasSubModel = true;
+    L.subModel.model = 1;                   // model 102, in no layer slot
+    std::vector<ManifestModel> models(3);
+    for (uint32_t k = 0; k < 3; ++k) { models[k].index = k; models[k].fileId = 101 + k; models[k].ok = true; }
+    const json f = foliage_manifest_json(s, models, {0, 1, 0});
+    CHECK_EQ(f["models"].size(), size_t(1));
+    if (f["models"].size() != 1) return;
+    CHECK(f["models"][0]["model"] == json(1));
+    CHECK(f["models"][0]["zoneTypes"] == json({int(L.type)}));
+    CHECK_NEAR(f["models"][0]["fadeFar"].get<double>(), 3000.0, 1e-6);
+}
+
+CM_TEST(world_foliage, mode_filters) {
+    const cw::WorldScene s = tw::synthetic_world();
+    WorldFolderOptions o = synthetic_opts();
+    o.foliage = FoliageExport::Colliders;
+    const json man = export_synthetic(s, "foliage_colliders", o);
+    check_valid(man, "foliage colliders");
+    const std::vector<FoliageRecord> rs = read_records(out_dir("foliage_colliders") / "foliage" / "c0_0_2x2.bin");
+    CHECK_EQ(rs.size(), size_t(2));
+    for (const FoliageRecord& r : rs) CHECK((r.flags & 1) != 0);
+    CHECK(man["counts"]["foliage"]["records"] == json(2));
+    // 103 is zone-only and has no collider: not a needed model.
+    for (const json& m : man["models"]) CHECK(m["fileId"] != json(103));
+    o.foliage = FoliageExport::Off;
+    const json off = export_synthetic(s, "foliage_off", o);
+    check_valid(off, "foliage off");
+    CHECK_FALSE(fs::exists(out_dir("foliage_off") / "foliage"));
+    CHECK(off["cells"][0].contains("foliage"));
+    CHECK(off["cells"][0]["foliage"].is_null());
+    CHECK_FALSE(off.contains("foliage"));
+    CHECK_FALSE(off["counts"].contains("foliage"));
+    CHECK_EQ(off["models"].size(), size_t(2));
+}
+
+CM_TEST(world_foliage, wind_flag) {
+    ModelPreview p = tw::static_cube();
+    CHECK(model_wind(p).is_null());                  // no game materials: not traced
+    GameMaterial g;
+    g.ok = true;
+    GameShaderUniform u;
+    u.name = "Wind";
+    g.vsUniforms.push_back(u);
+    p.gameMaterials.push_back(g);
+    CHECK(model_wind(p) == json(false));             // traced, no VegPara
+    GameMaterial bad = g;
+    bad.ok = false;
+    bad.vsUniforms[0].name = "VegPara";
+    p.gameMaterials.push_back(bad);
+    CHECK(model_wind(p) == json(false));             // a failed trace does not count
+    GameShaderUniform veg;
+    veg.name = "VegPara";
+    p.gameMaterials[0].vsUniforms.push_back(veg);
+    CHECK(model_wind(p) == json(true));
+    ModelPreview none = tw::static_cube();
+    none.gameMaterials.push_back(bad);
+    CHECK(model_wind(none).is_null());               // only failed traces: null
+}
+
+CM_TEST(world_foliage, bad_transform_skipped) {
+    cw::WorldScene s = tw::synthetic_world();
+    cw::ZoneInstance zero = s.zones.instances[0];
+    for (int k : {0, 1, 2, 4, 5, 6, 8, 9, 10}) zero.world[k] = 0;   // scale 0
+    zero.world[12] = -14000; zero.world[13] = 38500;
+    zero.collider = 2;
+    cw::ZoneInstance nan = s.zones.instances[0];
+    nan.world[0] = std::numeric_limits<float>::quiet_NaN();
+    nan.world[12] = -14200; nan.world[13] = 38600;
+    nan.collider = 3;
+    s.zones.instances.push_back(zero);
+    s.zones.instances.push_back(nan);
+    const json man = export_synthetic(s, "foliage_bad", synthetic_opts());
+    check_valid(man, "foliage bad transform");
+    CHECK(man["counts"]["foliage"]["skipped"] == json(2));
+    CHECK(man["counts"]["foliage"]["records"] == json(4));
+    size_t lines = 0;
+    for (const json& w : man["warnings"])
+        if (w.get<std::string>() == "foliage: 2 placements with a degenerate transform skipped") ++lines;
+    CHECK_EQ(lines, size_t(1));
+    CHECK_EQ(read_records(out_dir("foliage_bad") / "foliage" / "c0_0_2x2.bin").size(), size_t(4));
+    CHECK_EQ(man["cells"][0]["colliderParts"].get<int>(), 1);   // the hulls stay in the cell
+    CHECK(man["cells"][0]["colliderTriangles"].get<int>() >= 1);
+}
+
+CM_TEST(world_foliage, region_filters_records) {
+    const cw::WorldScene s = tw::synthetic_world();
+    WorldFolderOptions o = synthetic_opts();
+    o.budget.maxChunks = 1;   // 1 x 1 cells, so the region keeps one chunk of the 2 x 2 map
+    o.region.cx0 = 0; o.region.cy0 = 0; o.region.cx1 = 0; o.region.cy1 = 0;
+    const json man = export_synthetic(s, "foliage_region", o);
+    check_valid(man, "foliage region");
+    CHECK_EQ(man["cells"].size(), size_t(1));
+    CHECK(man["cells"][0]["id"] == json("c0_0_1x1"));
+    const std::vector<FoliageRecord> rs = read_records(out_dir("foliage_region") / "foliage" / "c0_0_1x1.bin");
+    CHECK_EQ(rs.size(), size_t(1));   // only the collider tree lies in chunk (0, 0)
+    if (!rs.empty()) CHECK_EQ(rs[0].placement, 0u);
+    for (const FoliageRecord& r : rs) {
+        int cx, cy;
+        cw::chunk_of_point(s.terrain, r.m[9], r.m[10], cx, cy);
+        CHECK(cx == 0 && cy == 0);
+    }
+    // Only the kept cells' zone models are exported: 103 lies outside, so it is not listed.
+    for (const json& m : man["models"]) CHECK(m["fileId"] != json(103));
+    CHECK(man["counts"]["foliage"]["records"] == json(1));
+    CHECK(has_warning(man, "foliage: 3 zone instances outside the region left out"));
+    CHECK_FALSE(fs::exists(out_dir("foliage_region") / "foliage" / "c1_0_1x1.bin"));
+}
+
+CM_TEST(world_foliage, outside_terrain_clamped_bit4) {
+    cw::WorldScene s = tw::synthetic_world();
+    cw::ZoneInstance far = s.zones.instances[0];
+    far.world[12] = -20000;   // west of the map (x0 = -15360)
+    far.placement = 2;
+    far.collider = 3;
+    s.zones.instances.push_back(far);
+    CHECK_FALSE(cw::point_in_chunk_grid(s.terrain, -20000, 39000));
+    CHECK(cw::point_in_chunk_grid(s.terrain, -14500, 39000));
+    WorldFolderOptions o = synthetic_opts();
+    o.budget.maxChunks = 1;
+    const json man = export_synthetic(s, "foliage_outside", o);
+    check_valid(man, "foliage outside");
+    const json* cell = nullptr;
+    for (const json& c : man["cells"]) if (c["id"] == json("c0_0_1x1")) cell = &c;
+    CHECK(cell != nullptr);
+    if (!cell) return;
+    CHECK_EQ((*cell)["chunks"][0].get<int>(), 0);
+    const std::vector<FoliageRecord> rs = read_records(out_dir("foliage_outside") / "foliage" / "c0_0_1x1.bin");
+    CHECK_EQ(rs.size(), size_t(2));
+    size_t outside = 0;
+    for (const FoliageRecord& r : rs) {
+        if (!(r.flags & kFoliageFlagOutsideTerrain)) continue;
+        ++outside;
+        CHECK_EQ(r.m[9], -20000.f);
+        CHECK_EQ(r.placement, 2u);
+    }
+    CHECK_EQ(outside, size_t(1));
+}
+
+// A failed record write stops the export and leaves no manifest.json (spec "Error handling").
+CM_TEST(world_foliage, failed_write_leaves_no_manifest) {
+    const cw::WorldScene s = tw::synthetic_world();
+    const fs::path dir = fresh_dir("foliage_write_fails");
+    struct Blocking : tw::SyntheticModelSource {
+        fs::path block;
+        std::shared_ptr<ModelPreview> load(uint32_t index, uint32_t fileId) override {
+            std::error_code ec;   // the model stage runs before the cells: a folder where the .bin goes
+            fs::create_directories(block, ec);
+            return tw::SyntheticModelSource::load(index, fileId);
+        }
+    } src;
+    src.block = dir / "foliage" / "c0_0_2x2.bin";
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts(1));
+    CHECK_FALSE(r.ok);
+    CHECK(r.error.find("cannot write") != std::string::npos);
+    CHECK(r.error.find("c0_0_2x2.bin") != std::string::npos);
+    CHECK_FALSE(fs::exists(dir / "manifest.json"));
+}
+
+// ---------------------------------------------------------------- unityTerrain (world-foliage spec D7)
+
+namespace {
+
+/// A PNG decoded to @p channels per texel; empty when it does not load.
+struct Png { int w = 0, h = 0; std::vector<uint8_t> px; };
+Png load_png(const fs::path& p, int channels) {
+    Png out;
+    const std::vector<uint8_t> b = file_bytes(p);
+    if (b.empty()) return out;
+    int w = 0, h = 0, comp = 0;
+    stbi_uc* d = stbi_load_from_memory(b.data(), int(b.size()), &w, &h, &comp, channels);
+    if (!d) return out;
+    out.w = w; out.h = h;
+    out.px.assign(d, d + size_t(w) * h * channels);
+    stbi_image_free(d);
+    return out;
+}
+
+uint16_t u16_at(const std::vector<uint8_t>& b, size_t i) { return uint16_t(b[2 * i] | (b[2 * i + 1] << 8)); }
+
+float f32_at(const std::vector<uint8_t>& b, size_t off) {
+    float f;
+    std::memcpy(&f, b.data() + off, 4);
+    return f;
+}
+
+/// Rotates instance @p k of @p s by @p deg about map +X (as the fixture tilts its placement-3 grass).
+void tilt_instance(cw::WorldScene& s, size_t k, float deg) {
+    const float a = deg * 3.14159265f / 180.0f, ca = std::cos(a), sa = std::sin(a);
+    float* w = s.zones.instances[k].world;
+    const float rx[16] = {1, 0, 0, 0, 0, ca, sa, 0, 0, -sa, ca, 0, 0, 0, 0, 1};
+    float out[16] = {};
+    for (int col = 0; col < 4; ++col)
+        for (int row = 0; row < 4; ++row)
+            for (int q = 0; q < 4; ++q) out[col * 4 + row] += w[q * 4 + row] * rx[col * 4 + q];
+    std::copy(out, out + 16, w);
+}
+
+size_t warnings_naming(const json& man, const std::string& needle) {
+    size_t n = 0;
+    for (const json& w : man["warnings"])
+        if (w.is_string() && w.get<std::string>().find(needle) != std::string::npos) ++n;
+    return n;
+}
+
+} // namespace
+
+CM_TEST(unity_terrain, synthetic_tile) {
+    const cw::WorldScene s = tw::synthetic_world();
+    const json man = export_synthetic(s, "ut_tile", synthetic_opts());
+    check_valid(man, "unity terrain tile");
+    const fs::path dir = out_dir("ut_tile");
+    CHECK(man.contains("unityTerrain"));
+    if (!man.contains("unityTerrain")) return;
+    const json& ut = man["unityTerrain"];
+    CHECK(ut["tileChunks"] == json(4));
+    CHECK(ut["heightmapResolution"] == json(129));
+    CHECK(ut["detailResolution"] == json(256));
+    CHECK(ut["detailCellUnits"] == json(48));
+    // Map range of up = -z: z = 10 + 0.5 I - 0.25 J over I, J in [0, 64] -> up in [-42, 6].
+    const double hMin = ut["heightRange"]["min"].get<double>(), hMax = ut["heightRange"]["max"].get<double>();
+    CHECK_NEAR(hMin, -42.0, 1e-4);
+    CHECK_NEAR(hMax, 6.0, 1e-4);
+    CHECK_EQ(ut["tiles"].size(), size_t(1));
+    if (ut["tiles"].size() != 1) return;
+    const json& t = ut["tiles"][0];
+    CHECK(t["id"] == json("t0_0"));
+    CHECK(t["chunks"] == json({0, 0, 1, 1}));
+    CHECK_NEAR(t["position"][0].get<double>(), tw::kSynX0, 1e-3);
+    CHECK_NEAR(t["position"][1].get<double>(), hMin, 1e-4);
+    CHECK_NEAR(t["position"][2].get<double>(), tw::kSynY1 - 4 * tw::kSynChunk, 1e-3);
+    CHECK_NEAR(t["size"][0].get<double>(), 12288.0, 1e-3);
+    CHECK_NEAR(t["size"][1].get<double>(), hMax - hMin, 1e-4);
+    CHECK(t["heights"] == json("terrain/t0_0.r16"));
+    CHECK(t["holes"] == json("terrain/t0_0_holes.png"));
+    CHECK(t["albedo"] == json("terrain/t0_0_albedo.png"));
+    CHECK(t["albedoSize"] == json({64, 64}));
+
+    // .r16: 129 x 129 uint16 LE, row 0 south, normalised by the map range.
+    const std::vector<uint8_t> r16 = file_bytes(dir / "terrain" / "t0_0.r16");
+    CHECK_EQ(r16.size(), size_t(129 * 129 * 2));
+    if (r16.size() == size_t(129 * 129 * 2)) {
+        // Row 0 is the block's south edge, clamped to the map's south row (J = 64): chunk (0, 1) row 32.
+        const cw::TerrainChunk& sw = s.terrain.chunks[2];
+        for (int c : {0, 1, 7, 32}) {
+            const double up = -sw.heights[size_t(32) * 33 + size_t(c)];
+            CHECK_EQ(int(u16_at(r16, size_t(c))), int(std::lround((up - hMin) / (hMax - hMin) * 65535.0)));
+        }
+        // Every sample against the heightfield.
+        const cw::TerrainHeightfield hf = cw::terrain_heightfield(s.terrain, 0, 0, 4);
+        bool all = hf.up.size() == size_t(129 * 129);
+        for (size_t i = 0; all && i < hf.up.size(); ++i)
+            all = int(u16_at(r16, i)) == int(std::lround((hf.up[i] - hMin) / (hMax - hMin) * 65535.0));
+        CHECK(all);
+        // The north-west sample (row 128, column 0) is chunk (0, 0)'s first.
+        const double nw = -s.terrain.chunks[0].heights[0];
+        CHECK_EQ(int(u16_at(r16, size_t(128) * 129)), int(std::lround((nw - hMin) / (hMax - hMin) * 65535.0)));
+    }
+
+    // Holes: 128 x 128, white = surface, row 0 north; the quads beyond the 2 x 2 chunks are black.
+    const Png holes = load_png(dir / "terrain" / "t0_0_holes.png", 1);
+    CHECK_EQ(holes.w, 128);
+    CHECK_EQ(holes.h, 128);
+    if (holes.w == 128 && holes.h == 128) {
+        bool ok = true;
+        for (int y = 0; y < 128; ++y)
+            for (int x = 0; x < 128; ++x)
+                if (holes.px[size_t(y) * 128 + x] != ((x < 64 && y < 64) ? 255 : 0)) ok = false;
+        CHECK(ok);
+    }
+
+    // Albedo: the cell's texels at the same place, the padding mid-grey.
+    const Png cell = load_png(dir / "cells" / "c0_0_2x2_albedo.png", 3);
+    const Png alb = load_png(dir / "terrain" / "t0_0_albedo.png", 3);
+    CHECK_EQ(cell.w, 32);
+    CHECK_EQ(alb.w, 64);
+    CHECK_EQ(alb.h, 64);
+    if (cell.w == 32 && cell.h == 32 && alb.w == 64 && alb.h == 64) {
+        bool same = true, grey = true;
+        for (int y = 0; y < 64; ++y)
+            for (int x = 0; x < 64; ++x)
+                for (int k = 0; k < 3; ++k) {
+                    const uint8_t a = alb.px[(size_t(y) * 64 + x) * 3 + k];
+                    if (x < 32 && y < 32) { if (a != cell.px[(size_t(y) * 32 + x) * 3 + k]) same = false; }
+                    else if (a != 128) grey = false;
+                }
+        CHECK(same);
+        CHECK(grey);
+    }
+
+    // Details: one prototype (the grass, model 2), its two records.
+    CHECK_EQ(ut["detailPrototypes"].size(), size_t(1));
+    if (ut["detailPrototypes"].size() == 1) {
+        const json& dp = ut["detailPrototypes"][0];
+        CHECK(dp["model"] == json(2));
+        CHECK_NEAR(dp["fadeFar"].get<double>(), 3000.0, 1e-6);
+        CHECK_NEAR(dp["minScale"].get<double>(), 0.8, 1e-5);
+        CHECK_NEAR(dp["maxScale"].get<double>(), 1.1, 1e-5);
+    }
+    CHECK_EQ(t["details"].size(), size_t(1));
+    if (t["details"].size() == 1) {
+        CHECK(t["details"][0]["prototype"] == json(0));
+        CHECK(t["details"][0]["counts"] == json("terrain/t0_0_d0.png"));
+        CHECK(t["details"][0]["records"] == json(2));
+    }
+    const Png d0 = load_png(dir / "terrain" / "t0_0_d0.png", 1);
+    CHECK_EQ(d0.w, 256);
+    CHECK_EQ(d0.h, 256);
+    uint64_t sum = 0;
+    for (uint8_t v : d0.px) sum += v;
+    CHECK_EQ(sum, uint64_t(2));
+    if (d0.w == 256) {   // grass at (-13500, 36000): cell (floor(1860 / 48), floor(3936 / 48)) = (38, 82)
+        CHECK_EQ(int(d0.px[size_t(82) * 256 + 38]), 1);
+    }
+
+    // Trees: the collider tree only (the geometry-only collider has no layer type).
+    CHECK_EQ(ut["treePrototypes"].size(), size_t(1));
+    if (ut["treePrototypes"].size() == 1) {
+        CHECK(ut["treePrototypes"][0]["model"] == json(0));
+        CHECK_NEAR(ut["treePrototypes"][0]["fadeFar"].get<double>(), 7500.0, 1e-6);
+    }
+    CHECK(t["trees"]["file"] == json("terrain/t0_0_trees.bin"));
+    CHECK(t["trees"]["records"] == json(1));
+    const std::vector<uint8_t> tb = file_bytes(dir / "terrain" / "t0_0_trees.bin");
+    CHECK_EQ(tb.size(), size_t(24));
+    const std::vector<FoliageRecord> rs = read_records(dir / "foliage" / "c0_0_2x2.bin");
+    CHECK_EQ(rs.size(), size_t(4));
+    if (tb.size() == 24 && rs.size() == 4) {
+        uint32_t proto;
+        std::memcpy(&proto, tb.data(), 4);
+        CHECK_EQ(proto, 0u);
+        const double x0 = tw::kSynX0, y0 = tw::kSynY1 - 4 * tw::kSynChunk;
+        const double u = f32_at(tb, 4), v = f32_at(tb, 8), h = f32_at(tb, 12);
+        CHECK_NEAR(u, (-14500.0 - x0) / 12288.0, 1e-4);
+        CHECK_NEAR(v, (39000.0 - y0) / 12288.0, 1e-4);
+        CHECK_NEAR(h, (15.0 - hMin) / (hMax - hMin), 1e-4);   // z = -15
+        CHECK_NEAR(u * 12288.0 + x0, -14500.0, 1e-4 * 12288.0);
+        CHECK_NEAR(v * 12288.0 + y0, 39000.0, 1e-4 * 12288.0);
+        CHECK_NEAR(h * (hMax - hMin) + hMin, 15.0, 1e-4 * (hMax - hMin));
+        CHECK_EQ(f32_at(tb, 16), rs[0].unityYaw);
+        CHECK_EQ(f32_at(tb, 20), rs[0].unity.s);
+        // Bit 3 on the collider tree only.
+        CHECK((rs[0].flags & kFoliageFlagTerrainTree) != 0);
+        for (size_t k = 1; k < 4; ++k) CHECK((rs[k].flags & kFoliageFlagTerrainTree) == 0);
+    }
+    CHECK(man["counts"]["foliage"]["terrainTrees"] == json(1));
+    CHECK(man["counts"]["foliage"]["detailRecords"] == json(2));
+
+    // Check points (ruling S6): 32 heightmap sample vertices inside the tile's real area, height = that
+    // sample's up value exactly (so Unity's SampleHeight needs no triangle split), = -terrain_height_at there.
+    CHECK_EQ(ut["check"].size(), size_t(32));
+    {
+        const cw::TerrainHeightfield hf = cw::terrain_heightfield(s.terrain, 0, 0, 4);
+        const double step = 12288.0 / 128.0, x0 = hf.rect[0], y0 = hf.rect[1];
+        for (const json& p : ut["check"]) {
+            const float x = p["unity"][0].get<float>(), y = p["unity"][1].get<float>();
+            CHECK(x >= tw::kSynX0 && x <= tw::kSynX0 + 2 * tw::kSynChunk);
+            CHECK(y >= tw::kSynY1 - 2 * tw::kSynChunk && y <= tw::kSynY1);
+            const double fc = (x - x0) / step, fr = (y - y0) / step;
+            const long c = std::lround(fc), r = std::lround(fr);
+            CHECK_NEAR(fc, double(c), 1e-6);
+            CHECK_NEAR(fr, double(r), 1e-6);
+            if (c >= 0 && c <= 128 && r >= 0 && r <= 128 && hf.up.size() == size_t(129 * 129))
+                CHECK_EQ(p["height"].get<float>(), hf.up[size_t(r) * 129 + size_t(c)]);
+            CHECK_NEAR(p["height"].get<double>(), -cw::terrain_height_at(s.terrain, x, y), 1e-3);
+        }
+    }
+    // Deterministic: the same map gives the same points.
+    const json again = export_synthetic(s, "ut_tile2", synthetic_opts());
+    CHECK(again["unityTerrain"]["check"] == ut["check"]);
+    // S5: the importer's default fade factor travels with the block.
+    CHECK(ut["fadeQualityScale"] == man["settings"]["zoneFadeQualityScale"]["value"]);
+    // The settings rows that come with the block.
+    for (const char* k : {"terrainTreeMaxTiltDeg", "terrainTreeYawSign", "detailPlacement", "terrainHeightRowOrder",
+                          "terrainColliderDiagonal"})
+        CHECK(man["settings"].contains(k));
+    CHECK(man["settings"]["terrainTreeMaxTiltDeg"]["value"] == json(5));
+    CHECK(man["settings"]["terrainColliderDiagonal"]["status"] == json("UNPROVEN"));
+    CHECK_EQ(warnings_naming(man, "vertex samples"), size_t(1));   // the diagonal note
+}
+
+CM_TEST(unity_terrain, detail_count_clamps_255) {
+    cw::WorldScene s = tw::synthetic_world();
+    cw::ZoneInstance g = s.zones.instances[2];   // the grass at (-13500, 36000): detail cell (38, 82)
+    g.world[12] += 48;                           // one 48-unit cell east: (39, 82)
+    for (uint32_t k = 0; k < 300; ++k) {
+        g.placement = 1000 + k;
+        s.zones.instances.push_back(g);
+    }
+    const json man = export_synthetic(s, "ut_clamp", synthetic_opts());
+    check_valid(man, "unity terrain clamp");
+    const Png d0 = load_png(out_dir("ut_clamp") / "terrain" / "t0_0_d0.png", 1);
+    CHECK_EQ(d0.w, 256);
+    if (d0.w != 256) return;
+    CHECK_EQ(int(d0.px[size_t(82) * 256 + 39]), 255);
+    CHECK_EQ(int(d0.px[size_t(82) * 256 + 38]), 1);   // the neighbour is unaffected
+    CHECK_EQ(warnings_naming(man, "t0_0"), size_t(1));
+    CHECK(man["unityTerrain"]["tiles"][0]["details"][0]["records"] == json(302));
+}
+
+CM_TEST(unity_terrain, steep_tree_not_terrain) {
+    cw::WorldScene s = tw::synthetic_world();
+    tilt_instance(s, 0, 10.0f);   // the collider tree leans 10 degrees: over terrainTreeMaxTiltDeg
+    const json man = export_synthetic(s, "ut_steep", synthetic_opts());
+    check_valid(man, "unity terrain steep");
+    const std::vector<FoliageRecord> rs = read_records(out_dir("ut_steep") / "foliage" / "c0_0_2x2.bin");
+    CHECK_EQ(rs.size(), size_t(4));
+    if (rs.size() != 4) return;
+    CHECK_NEAR(rs[0].tiltDeg, 10.0, 1e-3);
+    for (const FoliageRecord& r : rs) CHECK((r.flags & kFoliageFlagTerrainTree) == 0);
+    CHECK(man["unityTerrain"]["tiles"][0]["trees"].is_null());
+    CHECK_FALSE(fs::exists(out_dir("ut_steep") / "terrain" / "t0_0_trees.bin"));
+    CHECK(man["unityTerrain"]["treePrototypes"] == json::array());
+    CHECK(man["counts"]["foliage"]["terrainTrees"] == json(0));
+}
+
+CM_TEST(unity_terrain, off_writes_nothing) {
+    const cw::WorldScene s = tw::synthetic_world();
+    WorldFolderOptions o = synthetic_opts();
+    o.unityTerrain = false;
+    const json man = export_synthetic(s, "ut_off", o);
+    check_valid(man, "unity terrain off");
+    CHECK_FALSE(man.contains("unityTerrain"));
+    CHECK_FALSE(fs::exists(out_dir("ut_off") / "terrain"));
+    CHECK_FALSE(man["settings"].contains("terrainColliderDiagonal"));
+    const std::vector<FoliageRecord> rs = read_records(out_dir("ut_off") / "foliage" / "c0_0_2x2.bin");
+    CHECK_EQ(rs.size(), size_t(4));
+    for (const FoliageRecord& r : rs) CHECK((r.flags & kFoliageFlagTerrainTree) == 0);
+}
+
+CM_TEST(unity_terrain, one_chunk_tiles) {
+    // budget.maxChunks 1: one tile per chunk (n = 33), none padded.
+    const cw::WorldScene s = tw::synthetic_world();
+    WorldFolderOptions o = synthetic_opts();
+    o.budget.maxChunks = 1;
+    const json man = export_synthetic(s, "ut_one", o);
+    check_valid(man, "unity terrain 1x1");
+    const json& ut = man["unityTerrain"];
+    CHECK(ut["heightmapResolution"] == json(33));
+    CHECK(ut["detailResolution"] == json(64));
+    CHECK_EQ(ut["tiles"].size(), size_t(4));
+    for (const json& t : ut["tiles"]) {
+        CHECK(t["holes"].is_null());
+        CHECK_EQ(file_bytes(out_dir("ut_one") / t["heights"].get<std::string>()).size(), size_t(33 * 33 * 2));
+    }
+    CHECK(man["counts"]["foliage"]["terrainTrees"] == json(1));
+}
+
+// ============================================================ Task 15b: model LODs
+
+CM_TEST(world_lods, distance_rules) {
+    float d[2];
+    bool file[2];
+    const float none[2] = {0, 0};
+    model_lod_distances(none, d, file);
+    CHECK(d[0] == 3500.f && d[1] == 7500.f && !file[0] && !file[1]);
+    const float some[2] = {1500, -3};
+    model_lod_distances(some, d, file);
+    CHECK(d[0] == 1500.f && file[0] && d[1] == 7500.f && !file[1]);
+    const float big[2] = {2e5f, std::numeric_limits<float>::quiet_NaN()};
+    model_lod_distances(big, d, file);
+    CHECK(d[0] == 100000.f && d[1] == 7500.f && !file[1]);
+
+    float o[2];
+    CHECK_FALSE(prop_lod_override(1000, 2000, 0, o));                     // no OVERRIDE_LOD
+    CHECK_FALSE(prop_lod_override(0, 0, kPropFlagOverrideLod, o));        // both 0: the model's
+    CHECK(prop_lod_override(1000, 2000, kPropFlagOverrideLod | 0x800000u, o));
+    CHECK(o[0] == 1000.f && o[1] == 2000.f);
+    CHECK(prop_lod_override(-5, 3e5f, kPropFlagOverrideLod, o));
+    CHECK(o[0] == 0.f && o[1] == 100000.f);
+    CHECK(prop_lod_override(0, 400, kPropFlagOverrideLod, o) && o[0] == 0.f && o[1] == 400.f);
+    CHECK_FALSE(prop_lod_override(std::numeric_limits<float>::infinity(), 1, kPropFlagOverrideLod, o));
+}
+
+CM_TEST(world_lods, levels_and_sources) {
+    ModelPreview m = tw::static_cube();                 // LOD1 8 triangles, LOD2 4
+    CHECK_EQ(model_lod_levels(m), 3);
+    CHECK(model_lod_triangles(m, 3) == std::vector<uint64_t>({12, 8, 4}));
+    ModelMeshCPU two = m.meshes[0];
+    two.lodIndices = {{}, {0, 1, 2}};                    // an empty LOD1 keeps the numbering
+    CHECK_EQ(mesh_lod_source(two, 0), -1);
+    CHECK_EQ(mesh_lod_source(two, 1), -1);              // repeats LOD0
+    CHECK_EQ(mesh_lod_source(two, 2), 1);
+    ModelMeshCPU plain = m.meshes[0];
+    plain.lodIndices.clear();
+    m.meshes.push_back(plain);                           // a mesh without LODs repeats LOD0
+    CHECK_EQ(model_lod_levels(m), 3);
+    CHECK(model_lod_triangles(m, 3) == std::vector<uint64_t>({24, 20, 16}));
+    m.meshes[0].lodIndices.push_back({0, 1, 2});         // a LOD3 is never selected by the client
+    CHECK_EQ(model_lod_levels(m), 3);
+    ModelPreview none = tw::static_cube();
+    none.meshes[0].lodIndices.clear();
+    CHECK_EQ(model_lod_levels(none), 1);
+    const json j = model_lods_json(tw::static_cube());
+    CHECK(j["levels"] == json(3));
+    CHECK(j["distances"] == json({1500.0, 7500.0}));
+    CHECK(j["distanceSource"] == json({"lodOverride", "default"}));
+    CHECK(j["lodOverride"] == json({1500.0, 0.0}));
+    CHECK(j["triangles"] == json({12, 8, 4}));
+}
+
+// The character, VRChat and model exports write LOD0 only, byte for byte as before:
+// a model with LODs exports exactly as the same model without them.
+CM_TEST(world_lods, other_exports_unchanged) {
+    ModelPreview with = tw::skinned_cube();
+    ModelPreview without = with;
+    for (ModelMeshCPU& mm : without.meshes) mm.lodIndices.clear();
+    const fs::path a = fresh_dir("lods_with"), b = fresh_dir("lods_without");
+    CHECK(write_vrchat_folder(with, a.string(), "M", 101).ok);
+    CHECK(write_vrchat_folder(without, b.string(), "M", 101).ok);
+    CHECK(!file_bytes(a / "M.glb").empty());
+    CHECK(file_bytes(a / "M.glb") == file_bytes(b / "M.glb"));
+    CHECK(file_bytes(a / "materials.json") == file_bytes(b / "materials.json"));
+    CHECK(export_model_gltf(with, (a / "plain.glb").string()).ok);
+    CHECK(export_model_gltf(without, (b / "plain.glb").string()).ok);
+    CHECK(file_bytes(a / "plain.glb") == file_bytes(b / "plain.glb"));
+    // exportLods off on a world-style call is unchanged too.
+    VrchatFolderOptions vo;
+    vo.gltf.rootMatrix = map_to_gltf_root(1.0);
+    const fs::path c = fresh_dir("lods_world_off"), d = fresh_dir("lods_world_off_b");
+    CHECK(write_vrchat_folder(with, c.string(), "M", 101, vo).ok);
+    CHECK(write_vrchat_folder(without, d.string(), "M", 101, vo).ok);
+    CHECK(file_bytes(c / "M.glb") == file_bytes(d / "M.glb"));
+}
+
+CM_TEST(world_lods, world_glb_has_lod_nodes) {
+    ModelPreview m = tw::skinned_cube();
+    ModelMeshCPU half = m.meshes[0];                     // a second mesh with LOD1 only
+    half.meshName = "half";
+    half.lodIndices = {std::vector<uint32_t>(half.indices.begin(), half.indices.begin() + 6)};
+    m.meshes.push_back(half);
+    ModelMeshCPU plain = m.meshes[0];                    // and one without LODs
+    plain.lodIndices.clear();
+    m.meshes.push_back(plain);
+    VrchatFolderOptions vo;
+    vo.gltf.rootMatrix = map_to_gltf_root(1.0);
+    vo.gltf.exportLods = true;
+    const fs::path dir = fresh_dir("lods_world_on");
+    CHECK(write_vrchat_folder(m, dir.string(), "101", 101, vo).ok);
+    const json g = glb_json(dir / "101.glb");
+    std::map<std::string, const json*> nodes;
+    for (const json& n : g["nodes"]) nodes[n.value("name", std::string())] = &n;
+    for (const char* n : {"101_mesh0", "half_1", "101_mesh2", "101_mesh0_LOD1", "101_mesh0_LOD2", "half_1_LOD1"})
+        if (!nodes.count(n)) ::castlemist::test::fail(__FILE__, __LINE__, std::string("no node ") + n);
+    CHECK_FALSE(nodes.count("half_1_LOD2"));            // repeats LOD1: no node of its own
+    CHECK_FALSE(nodes.count("101_mesh2_LOD1"));
+    if (nodes.count("101_mesh0") && nodes.count("101_mesh0_LOD2")) {
+        const json& p0 = g["meshes"][(*nodes["101_mesh0"])["mesh"].get<size_t>()]["primitives"][0];
+        const json& p2 = g["meshes"][(*nodes["101_mesh0_LOD2"])["mesh"].get<size_t>()]["primitives"][0];
+        CHECK(p0["attributes"] == p2["attributes"]);   // the vertex data is shared
+        CHECK(p0["material"] == p2["material"]);
+        CHECK(p0["indices"] != p2["indices"]);
+        CHECK_EQ(g["accessors"][p2["indices"].get<size_t>()]["count"].get<int>(), 12);
+        CHECK((*nodes["101_mesh0_LOD2"]).contains("skin"));
+    }
+    // Every LOD node draws its LOD0 primitive's material: the same glTF material index, never a copy.
+    const size_t materials = g["materials"].size();
+    for (const auto& [name, n] : nodes) {
+        const size_t cut = name.rfind("_LOD");
+        if (cut == std::string::npos || !nodes.count(name.substr(0, cut))) continue;
+        const json& lod = g["meshes"][(*n)["mesh"].get<size_t>()]["primitives"][0];
+        const json& base = g["meshes"][(*nodes[name.substr(0, cut)])["mesh"].get<size_t>()]["primitives"][0];
+        CHECK(lod.contains("material"));
+        CHECK(lod["material"] == base["material"]);
+    }
+    CHECK_EQ(g["materials"].size(), materials);
+    CHECK_EQ(materials, m.materials.size());   // no material written per level
+}
+
+CM_TEST(world_lods, manifest_lods_and_overrides) {
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource src;
+    const fs::path dir = fresh_dir("folder_lods");
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts());
+    CHECK(r.ok);
+    const json man = read_json(dir / "manifest.json");
+    check_valid(man, "lods export");
+    const json& l = man["models"][0]["lods"];
+    CHECK(l["levels"] == json(3));
+    CHECK(l["distances"] == json({1500.0, 7500.0}));
+    CHECK(l["triangles"] == json({12, 8, 4}));
+    CHECK_EQ(man["models"][0]["triangles"].get<int>(), 12);   // still LOD0
+    const json* p1 = instance_of_prop(man, 1);
+    const json* p2 = instance_of_prop(man, 2);
+    CHECK(p1 && (*p1)["lod"] == json({1000.0, 2000.0}));
+    CHECK(p2 && !p2->contains("lod"));                        // lod1 / lod2 stored, no OVERRIDE_LOD
+    CHECK(man["settings"]["lodDistances"]["status"] == json("measured"));
+    CHECK(man["settings"]["lodPropCullHeight"]["value"] == json(0));
+    const json g = glb_json(dir / "models" / "101" / "101.glb");
+    bool lod2 = false;
+    for (const json& n : g["nodes"]) lod2 = lod2 || n.value("name", std::string()) == "101_mesh0_LOD2";
+    CHECK(lod2);
+}
+
+// ============================================================ Task 15d: shared materials
+
+namespace {
+
+std::string sha1_of_file(const fs::path& p) { return sha1_hex(file_bytes(p)); }
+
+/// The world export's write_vrchat_folder options (world_folder.cpp's model stage).
+VrchatFolderOptions world_vo(const fs::path& out, std::vector<json> extras = {}) {
+    VrchatFolderOptions vo;
+    vo.gltf.rootMatrix = map_to_gltf_root(1.0);
+    vo.gltf.sharedImages = std::make_shared<SharedImagePool>((out / "textures").string());
+    vo.gltf.sharedImageUriPrefix = "../../textures/";
+    vo.gltf.generatedImages = std::make_shared<SharedImagePool>((out / "textures" / "gen").string());
+    vo.gltf.generatedImageUriPrefix = "../../textures/gen/";
+    vo.generatedMaps = vo.gltf.generatedImages;
+    vo.generatedMapsPrefix = "../../textures/gen/";
+    vo.materialKeys = true;
+    vo.materialKeyExtras = std::move(extras);
+    return vo;
+}
+
+std::string key_of(const VrchatFolderResult& r, size_t i = 0) {
+    return i < r.materialKeys.size() ? r.materialKeys[i].key : std::string();
+}
+
+/// SyntheticModelSource with every material renamed by model fileId (names[fileId]).
+class RenamingSource : public tw::SyntheticModelSource {
+public:
+    std::map<uint32_t, std::string> names;
+    std::shared_ptr<ModelPreview> load(uint32_t index, uint32_t fileId) override {
+        std::shared_ptr<ModelPreview> m = tw::SyntheticModelSource::load(index, fileId);
+        if (m && names.count(fileId))
+            for (ModelMaterialCPU& mat : m->materials) mat.materialName = names[fileId];
+        return m;
+    }
+};
+
+} // namespace
+
+CM_TEST(world_materials, sha1_known_vectors) {
+    CHECK(sha1_hex(std::string_view()) == "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+    CHECK(sha1_hex(std::string_view("abc")) == "a9993e364706816aba3e25717850c26c9cd0d89d");
+    CHECK(sha1_hex(std::string_view("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")) ==
+          "84983e441c3bd26ebaae4aa1f95129e5e54670f1");
+    const std::string a(1000000, 'a');
+    CHECK(sha1_hex(std::string_view(a)) == "34aa973cd4c4daa4f61eeb2bdbad27316534016f");
+    // 55, 56 and 64 bytes: the padding block boundaries (hashlib's digests).
+    const std::string a55(55, 'a'), a56(56, 'a'), a64(64, 'a');
+    CHECK(sha1_hex(std::string_view(a55)) == "c1c8bbdc22796e28c0e15163d20899b65621d65a");
+    CHECK(sha1_hex(std::string_view(a56)) == "c2db330f6083854c99d4b5bfb6e8f29f201be699");
+    CHECK(sha1_hex(std::string_view(a64)) == "0098ba824b5c16427bd7a1122a5a442a25ec644d");
+}
+
+CM_TEST(world_materials, content_pool_writes_once) {
+    const fs::path dir = fresh_dir("content_pool");
+    SharedImagePool pool((dir / "gen").string());
+    const std::vector<uint8_t> a = {1, 2, 3}, b = {4, 5};
+    const std::string na = pool.ensure_content(a, "_BaseColor");
+    CHECK(na == sha1_hex(a) + "_BaseColor.png");
+    CHECK(pool.ensure_content(a, "_BaseColor") == na);   // the same bytes and role: the same file
+    CHECK(pool.ensure_content(a, "_Packed") != na);      // another role is another file
+    CHECK(pool.ensure_content(b) == sha1_hex(b) + ".png");
+    CHECK(pool.ensure_content({}).empty());
+    CHECK_EQ(pool.written(), size_t(3));
+    CHECK_EQ(pool.bytes_requested(), uint64_t(3 + 3 + 3 + 2));
+    CHECK_EQ(pool.bytes_written(), uint64_t(3 + 3 + 2));
+    CHECK(file_bytes(dir / "gen" / na) == a);
+    CHECK_FALSE(fs::exists(dir / "gen" / (na + ".tmp")));
+    // Concurrent callers for one name: one write, every caller gets the name.
+    SharedImagePool p2((dir / "gen2").string());
+    std::vector<std::future<std::string>> futures;
+    for (int i = 0; i < 8; ++i)
+        futures.push_back(std::async(std::launch::async, [&] { return p2.ensure_content(a, "_X"); }));
+    for (auto& f : futures) CHECK(f.get() == sha1_hex(a) + "_X.png");
+    CHECK_EQ(p2.written(), size_t(1));
+    CHECK_EQ(p2.bytes_written(), uint64_t(3));
+    // Names that differ only by case are one file on Windows: the first spelling wins.
+    SharedImagePool p3((dir / "gen3").string());
+    const std::string up = p3.ensure_content(a, "_Projector");
+    CHECK(p3.ensure_content(a, "_projector") == up);
+    CHECK_EQ(p3.written(), size_t(1));
+}
+
+// An extra layer's pooled name is "_x-<lower-case role>": never a Poiyomi role's
+// name in another case (Spirit Vale: an extra "projector" beside a "Projector" map).
+CM_TEST(world_materials, extra_layer_names) {
+    ModelPreview model = glow_quad();
+    ModelMaterialCPU::ExtraTexture x;
+    x.texIndex = wadd_tex(model, wtex(2, 2, std::vector<std::array<uint8_t, 4>>(4, {9, 9, 9, 255}), 4001));
+    x.fileId = 4001;
+    x.role = "Projector";
+    model.materials[0].extraTextures.push_back(x);
+    const fs::path out = fresh_dir("keys_extra");
+    const auto r = write_vrchat_folder(model, (out / "models" / "1").string(), "1", 1, world_vo(out));
+    CHECK(r.ok);
+    const json mj = read_json(out / "models" / "1" / "materials.json");
+    bool found = false;
+    for (const json& e : mj["materials"][0]["maps"]["extras"]) {
+        const std::string f = e["file"].get<std::string>();
+        if (e["role"] == json("Projector")) {
+            found = true;
+            CHECK(f.size() > 16 && f.substr(f.size() - 16) == "_x-projector.png");
+        }
+    }
+    CHECK(found);
+}
+
+// The key is the content: equal materials of two models share it whatever their
+// names; any look difference (a constant, a texture, the dark-decal flag or the
+// uvScroll) splits it. The glb and materials.json carry it.
+CM_TEST(world_materials, key_is_content_not_name) {
+    const fs::path out = fresh_dir("keys");
+    const ModelPreview base = glow_quad();
+    ModelPreview renamed = base;
+    renamed.materials[0].materialName = "Other blade";
+    ModelPreview tinted = base;
+    tinted.materials[0].namedConstants[0].second = 0.25f;
+    ModelPreview retextured = base;
+    retextured.textures[1] = wtex(2, 2, std::vector<std::array<uint8_t, 4>>(4, {128, 128, 254, 255}), 3001);
+
+    const json plain{{"darkDecal", false}, {"uvScroll", nullptr}};
+    VrchatFolderOptions vo = world_vo(out, {plain});
+    const auto ra = write_vrchat_folder(base, (out / "models" / "1").string(), "1", 1, vo);
+    const auto rb = write_vrchat_folder(renamed, (out / "models" / "2").string(), "2", 2, vo);
+    const auto rc = write_vrchat_folder(tinted, (out / "models" / "3").string(), "3", 3, vo);
+    const auto rd = write_vrchat_folder(retextured, (out / "models" / "4").string(), "4", 4, vo);
+    VrchatFolderOptions dark = vo;
+    dark.materialKeyExtras = {json{{"darkDecal", true}, {"uvScroll", nullptr}}};
+    const auto re = write_vrchat_folder(base, (out / "models" / "5").string(), "5", 5, dark);
+    VrchatFolderOptions scroll = vo;
+    scroll.materialKeyExtras = {json{{"darkDecal", false}, {"uvScroll", {{"uvIndex", 0}, {"scroll", {0, 0.5}}}}}};
+    const auto rf = write_vrchat_folder(base, (out / "models" / "6").string(), "6", 6, scroll);
+    for (const auto* r : {&ra, &rb, &rc, &rd, &re, &rf}) {
+        CHECK(r->ok);
+        CHECK_EQ(r->materialKeys.size(), size_t(1));
+    }
+    const std::string k = key_of(ra);
+    CHECK_EQ(k.size(), size_t(40));
+    CHECK(key_of(rb) == k);
+    if (!rb.materialKeys.empty()) CHECK(rb.materialKeys[0].name == "Other blade");
+    for (const auto* r : {&rc, &rd, &re, &rf}) CHECK(key_of(*r) != k);
+    CHECK(key_of(re) != key_of(rf));
+
+    // materials.json and the glb carry the key; the maps are pooled by content.
+    const json mj = read_json(out / "models" / "1" / "materials.json");
+    CHECK(mj["materials"][0]["key"] == json(k));
+    const json g = glb_json(out / "models" / "1" / "1.glb");
+    CHECK(g["materials"][0]["extras"]["castlemistMaterialKey"] == json(k));
+    CHECK(g["materials"][0]["name"] == json("Blade"));   // the display name stays
+    CHECK_FALSE(fs::exists(out / "models" / "1" / "Textures"));
+    CHECK_FALSE(fs::exists(out / "models" / "1" / "Images"));
+    size_t maps = 0;
+    for (const auto& [role, v] : mj["materials"][0]["maps"].items()) {
+        if (!v.is_object()) continue;
+        const std::string file = v["file"].get<std::string>();
+        CHECK(file.rfind("../../textures/gen/", 0) == 0);
+        const fs::path p = out / "models" / "1" / fs::path(file);
+        CHECK(fs::exists(p));
+        if (fs::exists(p)) CHECK(sha1_of_file(p) == p.filename().string().substr(0, 40));
+        ++maps;
+    }
+    CHECK(maps >= 3);   // baseColor, normal, packed
+    // Model 2's maps are model 1's files: nothing is written twice.
+    const json mj2 = read_json(out / "models" / "2" / "materials.json");
+    CHECK(mj2["materials"][0]["maps"]["baseColor"]["file"] == mj["materials"][0]["maps"]["baseColor"]["file"]);
+    CHECK(mj2["materials"][0]["name"] == json("Other blade"));
+    // Generated glb images (the metal-rough map) are in the pool too, by content.
+    bool metal = false;
+    for (const json& im : g["images"]) {
+        const std::string uri = im.value("uri", std::string());
+        CHECK(uri.rfind("../../textures/", 0) == 0);
+        if (uri.rfind("../../textures/gen/", 0) == 0) {
+            metal = true;
+            const fs::path p = out / "models" / "1" / fs::path(uri);
+            CHECK(fs::exists(p));
+            if (fs::exists(p)) CHECK(sha1_of_file(p) + ".png" == p.filename().string());
+        }
+    }
+    CHECK(metal);
+    const json g2 = glb_json(out / "models" / "2" / "2.glb");
+    CHECK(g2["images"].size() == g["images"].size());
+    for (size_t i = 0; i < g["images"].size() && i < g2["images"].size(); ++i)
+        CHECK(g2["images"][i]["uri"] == g["images"][i]["uri"]);
+}
+
+// Off (every non-world export): no key anywhere, the folder byte for byte as
+// before (Textures/, embedded images).
+CM_TEST(world_materials, other_exports_unchanged) {
+    const ModelPreview model = glow_quad();
+    const fs::path a = fresh_dir("keys_off_a"), b = fresh_dir("keys_off_b");
+    CHECK(write_vrchat_folder(model, a.string(), "Dagger", 1766522).ok);
+    VrchatFolderOptions vo;
+    vo.materialKeyExtras = {json{{"darkDecal", true}}};   // ignored without materialKeys
+    CHECK(write_vrchat_folder(model, b.string(), "Dagger", 1766522, vo).ok);
+    CHECK(file_bytes(a / "Dagger.glb") == file_bytes(b / "Dagger.glb"));
+    CHECK(file_bytes(a / "materials.json") == file_bytes(b / "materials.json"));
+    const std::vector<uint8_t> mj = file_bytes(a / "materials.json"), glb = file_bytes(a / "Dagger.glb");
+    const std::string mjs(mj.begin(), mj.end()), glbs(glb.begin(), glb.end());
+    CHECK(mjs.find("\"key\"") == std::string::npos);
+    CHECK(glbs.find("castlemistMaterialKey") == std::string::npos);
+    CHECK(fs::exists(a / "Textures" / "Blade - BaseColor.png"));
+    CHECK(export_model_gltf(model, (a / "plain.glb").string()).ok);
+    GltfExportOptions go;
+    go.materialKeyInputs = {"x", "y"};   // not one per material: ignored
+    const GltfExportResult r = export_model_gltf(model, (b / "plain.glb").string(), go);
+    CHECK(r.ok && r.materialKeys.empty());
+    CHECK(file_bytes(a / "plain.glb") == file_bytes(b / "plain.glb"));
+}
+
+// The world export: models 102 and 103 have equal materials (synthetic fixture),
+// so they share one key; the manifest's table has one entry per key.
+CM_TEST(world_materials, export_shares_keys) {
+    const cw::WorldScene s = tw::synthetic_world();
+    tw::SyntheticModelSource src;
+    const fs::path dir = fresh_dir("folder_keys");
+    const WorldFolderReport r = export_world_folder(s, src, nullptr, dir.string(), synthetic_opts());
+    CHECK(r.ok);
+    const json man = read_json(dir / "manifest.json");
+    check_valid(man, "shared materials");
+    const json& models = man["models"];
+    CHECK_EQ(models.size(), size_t(3));
+    for (const json& m : models) CHECK_EQ(m["materialKeys"].size(), size_t(1));
+    const std::string k101 = models[0]["materialKeys"][0], k102 = models[1]["materialKeys"][0],
+                      k103 = models[2]["materialKeys"][0];
+    CHECK(k102 == k103);
+    CHECK(k101 != k102);
+    const json& sm = man["sharedMaterials"];
+    CHECK_EQ(sm["entries"].size(), size_t(2));
+    std::set<std::string> keys;
+    for (const json& e : sm["entries"]) keys.insert(e["key"].get<std::string>());
+    CHECK_EQ(keys.size(), size_t(2));
+    const json& shared = sm["entries"][1];
+    CHECK(shared["key"] == json(k102));
+    CHECK(shared["model"] == json(1));   // the first slot: model 102's
+    CHECK(shared["material"] == json(0));
+    CHECK(shared["slots"] == json(2));
+    CHECK(shared["models"] == json(2));
+    CHECK(shared["usedByMeshes"] == json(true));
+    CHECK(shared["name"] == json("Mat_58247"));
+    for (size_t i = 0; i < models.size(); ++i) {
+        const json mj = read_json(dir / models[i]["materials"].get<std::string>());
+        CHECK(mj["materials"][0]["key"] == models[i]["materialKeys"][0]);
+        const json g = glb_json(dir / models[i]["glb"].get<std::string>());
+        CHECK(g["materials"][0]["extras"]["castlemistMaterialKey"] == models[i]["materialKeys"][0]);
+        // LOD levels still draw their LOD0 material (Task 15b): one glTF material, one key.
+        CHECK_EQ(g["materials"].size(), size_t(1));
+        for (const json& mesh : g["meshes"])
+            for (const json& p : mesh["primitives"]) CHECK(p["material"] == json(0));
+        CHECK_FALSE(fs::exists(dir / models[i]["folder"].get<std::string>() / "Textures"));
+    }
+    // The pool: every file once, named by its content; the report's bytes agree.
+    const json& gm = sm["generatedMaps"];
+    CHECK(gm["dir"] == json("textures/gen"));
+    size_t n = 0;
+    uint64_t bytes = 0;
+    for (const auto& e : fs::directory_iterator(dir / "textures" / "gen")) {
+        ++n;
+        bytes += fs::file_size(e.path());
+        CHECK(sha1_of_file(e.path()) == e.path().filename().string().substr(0, 40));
+    }
+    CHECK(n > 0);
+    CHECK_EQ(gm["count"].get<size_t>(), n);
+    CHECK_EQ(gm["bytes"].get<uint64_t>(), bytes);
+    CHECK(gm["bytesRequested"].get<uint64_t>() > bytes);   // 102 and 103 asked for the same maps
+    CHECK_EQ(r.bytes.at("generated-maps"), bytes);
+    CHECK_EQ(r.bytes.at("generated-maps-requested"), gm["bytesRequested"].get<uint64_t>());
+    CHECK_EQ(man["textures"]["count"].get<int>(), 1);   // gen/ is a folder, not a dat texture
+}
+
+// The display name is the most common of the key's slots, the smallest on a tie.
+CM_TEST(world_materials, table_name_most_common) {
+    const cw::WorldScene s = tw::synthetic_world();
+    RenamingSource src;
+    src.names = {{102, "Zeta"}, {103, "Alpha"}};
+    const fs::path dir = fresh_dir("folder_key_names");
+    CHECK(export_world_folder(s, src, nullptr, dir.string(), synthetic_opts()).ok);
+    const json man = read_json(dir / "manifest.json");
+    check_valid(man, "key names");
+    CHECK(man["models"][1]["materialKeys"] == man["models"][2]["materialKeys"]);   // names differ, key equal
+    CHECK_EQ(man["sharedMaterials"]["entries"].size(), size_t(2));
+    CHECK(man["sharedMaterials"]["entries"][1]["name"] == json("Alpha"));   // 1 : 1, the smallest
+    src.names = {{102, "Zeta"}, {103, "Zeta"}, {101, "Alpha"}};
+    const fs::path d2 = fresh_dir("folder_key_names2");
+    CHECK(export_world_folder(s, src, nullptr, d2.string(), synthetic_opts()).ok);
+    const json m2 = read_json(d2 / "manifest.json");
+    CHECK(m2["sharedMaterials"]["entries"][1]["name"] == json("Zeta"));
+    CHECK(m2["sharedMaterials"]["entries"][0]["name"] == json("Alpha"));
+}

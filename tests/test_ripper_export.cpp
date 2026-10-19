@@ -430,3 +430,14 @@ CM_TEST(export, unstartable_blender_log_says_why) {
     CHECK(slurp(r.blenderLog).find("could not start Blender") != std::string::npos);
     fs::remove_all(parent);
 }
+
+// Review M4: find_blender picks the numerically newest "Blender <v>" folder.
+CM_TEST(export, blender_folder_order_is_numeric) {
+    using castlemist::ripper::blender_folder_newer;
+    CHECK(blender_folder_newer("Blender 4.10", "Blender 4.5"));
+    CHECK_FALSE(blender_folder_newer("Blender 4.5", "Blender 4.10"));
+    CHECK(blender_folder_newer("Blender 5.0", "Blender 4.10"));
+    CHECK(blender_folder_newer("Blender 4.5", "Blender 4.1"));
+    CHECK_FALSE(blender_folder_newer("Blender 4.5", "Blender 4.5"));
+    CHECK(blender_folder_newer("Blender 4.5.1", "Blender 4.5"));
+}
