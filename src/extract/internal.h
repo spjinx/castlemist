@@ -147,10 +147,13 @@ void parse_bgfx(const std::vector<uint8_t>& blob, std::vector<uint8_t>& dxbc,
 /// @param m          The material to resolve.
 /// @param get_tex    Callback mapping a texture fileId to a ModelPreview::textures index.
 /// @param effectHint True when the material was classified as an effect.
+/// @param blended    Draw with the AMAT's blended colour effect when it has one
+///                   (the material editor's choice), not its default effect.
 /// @return A GameMaterial whose `ok` is false when no usable shaders were found.
 GameMaterial extract_game_material(Gw2Dat& dat, const nlohmann::json& tpl,
                                    const castlemist::model::Material& m,
-                                   const std::function<int(uint32_t)>& get_tex, bool effectHint);
+                                   const std::function<int(uint32_t)>& get_tex, bool effectHint,
+                                   bool blended = false);
 
 // ------------------------------------------------------------ model preview --
 // model_preview.cpp

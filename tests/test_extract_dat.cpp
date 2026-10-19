@@ -20,6 +20,7 @@
 
 #include "castlemist/exportgltf/sky_export.h"
 #include "castlemist/extract/entry_extractor.h"
+#include "castlemist/extract/material_edit.h"
 #include "castlemist/format/struct_template.h"
 #include "castlemist/native/cmp_decompress_method0.hpp"
 #include "castlemist/native/gw2model.hpp"
@@ -881,4 +882,84 @@ CM_TEST(skyexport_dat, map_3264516_raw) {
     }
     CHECK_FALSE(fs::exists(parent / "Sky" / "day" / "baked"));
     fs::remove_all(parent);
+}
+
+// The material editor's rebuilds against real AMATs: a material rebuilt with no
+// edit comes back the same, another model's AMAT and the blended effect swap in,
+// a donor model's MODL materials load by file id, and an edited texture slot
+// decodes a texture the model did not have.
+CM_TEST(dat, material_editor_rebuilds_with_real_amats) {
+    namespace ex = castlemist::extract;
+    if (!ensure_template()) SKIP("no gw2_packfile.json struct template");
+    Gw2Dat& dat = shared_dat();
+    const nlohmann::json& tpl = *castlemist::tpl::get();
+
+    // By file id: model 1634661 (the rigged boss) and model 771205, whose glass
+    // material (AMAT 57224) is drawn blended. Base ids move with each patch.
+    auto by_file = [&](uint32_t fid) { return extract_base(get_by_base_id(dat, fid)); };
+    ExtractedEntry target = by_file(1634661);
+    ExtractedEntry donor = by_file(771205);
+    if (!target.model || !donor.model) SKIP("model did not build");
+    auto first_ok = [](const ModelPreview& m) -> const GameMaterial* {
+        for (const GameMaterial& g : m.gameMaterials)
+            if (g.ok) return &g;
+        return nullptr;
+    };
+    const GameMaterial* mat = first_ok(*target.model);
+    const GameMaterial* other = first_ok(*donor.model);
+    if (!mat || !other) SKIP("no game-shader material");
+    CHECK(mat->source != nullptr);
+    CHECK(mat->amatFile != 0);
+
+    ModelPreview& model = *target.model;
+    const ex::TextureLookup lookup = ex::model_texture_lookup(dat, model, nullptr);
+
+    ex::MaterialEdit none;
+    none.index = mat->index;
+    std::string error;
+    const GameMaterial same = ex::rebuild_game_material(dat, tpl, *mat, nullptr, none, lookup, &error);
+    CHECK(same.ok);
+    CHECK(error.empty());
+    CHECK_EQ(same.amatFile, mat->amatFile);
+    CHECK(same.psDXBC == mat->psDXBC);
+    CHECK_EQ(same.samplers.size(), mat->samplers.size());
+
+    ex::MaterialEdit swap = none;
+    swap.amatFile = other->amatFile;
+    const GameMaterial swapped = ex::rebuild_game_material(dat, tpl, *mat, nullptr, swap, lookup, &error);
+    CHECK(swapped.ok);
+    CHECK_EQ(swapped.amatFile, other->amatFile);
+    CHECK_EQ(swapped.index, mat->index);
+
+    if (mat->hasBlendedEffect) {
+        ex::MaterialEdit blend = none;
+        blend.blended = true;
+        const GameMaterial b = ex::rebuild_game_material(dat, tpl, *mat, nullptr, blend, lookup, &error);
+        CHECK(b.ok && b.blendedEffect);
+    }
+
+    ex::MaterialEdit bogus = none;
+    bogus.amatFile = 0xFFFFFFF0u;
+    CHECK_FALSE(ex::rebuild_game_material(dat, tpl, *mat, nullptr, bogus, lookup, &error).ok);
+    CHECK_FALSE(error.empty());
+
+    {
+        const auto mats = ex::load_model_materials(dat, tpl, 771205);
+        const castlemist::model::Material* m = ex::find_model_material(mats, other->index);
+        CHECK(m != nullptr);
+        if (m) {
+            const GameMaterial whole = ex::rebuild_game_material(dat, tpl, *mat, m, none, lookup, &error);
+            CHECK(whole.ok);
+            CHECK_EQ(whole.amatFile, other->amatFile);
+            CHECK_EQ(whole.index, mat->index);
+        }
+    }
+
+    // A texture this model does not use: decoded and appended once.
+    const size_t before = model.textures.size();
+    const int ti = lookup(54620);
+    CHECK(ti == static_cast<int>(before));
+    CHECK_EQ(lookup(54620), ti);
+    GameMaterial edited = *mat;
+    if (!edited.samplers.empty()) CHECK(ex::set_sampler_texture(edited, edited.samplers.front().slot, ti));
 }

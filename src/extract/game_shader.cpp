@@ -2,6 +2,7 @@
 /// @brief Extraction of the game's own bgfx (DXBC) material shaders.
 
 #include "internal.h"
+#include "castlemist/extract/material_edit.h"
 
 #include <cstring>
 #include <map>
@@ -108,6 +109,8 @@ static const std::set<std::string> kEngineGlobalUniforms = {
     "SubmodelId", "BacklightColor", "BacklightDirection", "BacklightShadowInfluence",
     "WorldToBacklightShadowA", "WorldToBacklightShadowB"};
 
+bool is_engine_uniform(const std::string& name) { return kEngineGlobalUniforms.count(name) != 0; }
+
 // GW2 "Token" decode (Arena/Services/Token/Token.cpp; client sub_140E3B360):
 // a base-23 packed lowercase string. Verified against the client and the dat --
 // a MODL ModelConstantData.name (token32) decodes straight to the shader's bgfx
@@ -122,9 +125,11 @@ static std::string decode_token(uint32_t token) {
 }
 
 GameMaterial extract_game_material(Gw2Dat& dat, const nlohmann::json& tpl, const castlemist::model::Material& m,
-                                   const std::function<int(uint32_t)>& get_tex, bool effectHint) {
+                                   const std::function<int(uint32_t)>& get_tex, bool effectHint, bool blended) {
     GameMaterial out;
     out.index = m.index;
+    out.amatFile = m.materialFile;
+    out.source = std::make_shared<const castlemist::model::Material>(m);
     uint32_t fnBase = get_by_base_id(dat, m.materialFile);
     if (!fnBase) return out;
     std::vector<uint8_t> amat;
@@ -154,6 +159,16 @@ GameMaterial extract_game_material(Gw2Dat& dat, const nlohmann::json& tpl, const
     // the draws.
     int vsIdx = set.vsIndex;
     int psIdx = set.psIndex;
+    out.hasBlendedEffect = set.hasTrans;
+    // The material editor's "blended effect": the AMAT's best blended colour
+    // effect in place of its default, with that effect's own state.
+    if (blended && set.hasTrans && set.transVsIndex >= 0 && set.transPsIndex >= 0) {
+        vsIdx = set.transVsIndex;
+        psIdx = set.transPsIndex;
+        set.renderState = set.transRenderState;
+        set.passFlags = set.transPassFlags;
+        out.blendedEffect = true;
+    }
     if (std::getenv("GW2_MATDBG")) {
         std::fprintf(stderr,
                      "[mat %u] matId=%u flags=0x%08x sortOrder=%u ps=%d rs=0x%llx passFlags=0x%x "
@@ -226,10 +241,9 @@ GameMaterial extract_game_material(Gw2Dat& dat, const nlohmann::json& tpl, const
             else s.global = 1;                                                            // light buffer / other -> grey
         } else if (b.textureIndex < m.textures.size()) {
             uint32_t fid = m.textures[b.textureIndex].fileId;
-            if (fid == 0) {
-                const std::string role = castlemist::model::detokenizeName64(m.textures[b.textureIndex].token);
-                s.atlas = role == "diffuse" ? 1 : role == "normal" ? 2 : 0;
-            }
+            const std::string role = castlemist::model::detokenizeName64(m.textures[b.textureIndex].token);
+            s.role = role.substr(0, role.find('_'));
+            if (fid == 0) s.atlas = role == "diffuse" ? 1 : role == "normal" ? 2 : 0;
             s.gameTex = fid ? get_tex(fid) : -1;
             if (s.gameTex < 0) s.global = 1; // texture failed to decode -> grey, not white
         } else {

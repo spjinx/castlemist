@@ -97,6 +97,7 @@ try {
     Get-Zip 'libwebp-1.6.0' 'src\webp\decode.h' 'https://github.com/webmproject/libwebp/archive/refs/tags/v1.6.0.zip'
     Get-Zip 'sqlite3' 'sqlite3.c' 'https://www.sqlite.org/2025/sqlite-amalgamation-3500400.zip'
     Get-Files 'xatlas' 'https://raw.githubusercontent.com/jpcy/xatlas/f700c7790aaa030e794b52ba7791a05c085faf0c/source/xatlas' @('xatlas.h', 'xatlas.cpp')
+    Get-Zip 'imgui-1.91.8' 'imgui.h' 'https://github.com/ocornut/imgui/archive/refs/tags/v1.91.8.zip'
 
     if ($WithBgfx) {
         if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw '-WithBgfx needs git on PATH' }

@@ -575,6 +575,13 @@ void build_game_materials(const ModelPreview& model) {
 }
 
 
+bool set_game_material_constants(const GameMaterial& mat) {
+    if (mat.index >= g_game_mats.size() || !g_game_mats[mat.index].ok) return false;
+    g_game_mats[mat.index].vsConsts = mat.vsConsts;
+    g_game_mats[mat.index].psConsts = mat.psConsts;
+    return true;
+}
+
 void build_scene_game_materials(const std::vector<ModelPreview>& models) {
     if (!g_dev) return;
     setup_game_uniforms();

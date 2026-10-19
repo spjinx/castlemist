@@ -533,6 +533,9 @@ void game_update_cb(ID3D11Buffer* b, const std::vector<GameShaderUniform>& u, ui
 UINT game_sem_off(const char* semantic, UINT index);
 bool build_one_game_mat(const GameMaterial& c, const ModelPreview& model, GameMatGPU& g,
                         const std::vector<ComPtr<ID3D11ShaderResourceView>>& srvs);
+/// As above with the material's own textures; albLumSum/albWSum (may be null) accumulate albedo luminance.
+bool build_one_game_mat(const GameMaterial& c, const ModelPreview& model, GameMatGPU& g, double* albLumSum,
+                        double* albWSum);
 void build_game_materials(const ModelPreview& model);
 void setup_game_uniforms();
 void apply_env_uniforms();

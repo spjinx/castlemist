@@ -659,6 +659,11 @@ int run(HINSTANCE hInstance, int cmd_show) {
                     castlemist::render::save_screenshot(dump_path("shot_texreduced.bmp").c_str());
                     castlemist::render::set_submesh_tex_reduced(-1, false);
                 }
+                // Debug: GW2_MATTEST=<donor model fileId> drives the Materials window
+                // headlessly: a live uniform edit, then the first material redrawn
+                // with the donor's first material (shot_mat_*.bmp, mattest.txt).
+                if (const char* mt = std::getenv("GW2_MATTEST"))
+                    run_material_selftest(dump_dir(), static_cast<uint32_t>(std::strtoul(mt, nullptr, 10)));
                 // Baked particle/light effects test: warm the sim over real time
                 // (each save_screenshot renders one frame with wall-clock dt), then
                 // capture two frames to prove the effects animate on an idle model.

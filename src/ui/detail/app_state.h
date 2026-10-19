@@ -20,6 +20,7 @@
 #include <optional>
 #include <set>
 #include <functional>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -243,6 +244,7 @@ constexpr UINT_PTR ID_BAKESEL_OK = 2142;      // "Bake Selected" button
 constexpr UINT_PTR ID_BAKESEL_CANCEL = 2143;  // cancels the export entirely
 constexpr UINT_PTR ID_TEX_FULLRES = 2055;
 constexpr UINT_PTR ID_ARMOR_DYES = 2195;    // "Dyes": the armor dye channels window
+constexpr UINT_PTR ID_MATERIALS = 2196;     // "Materials": the game-shader material editor
 constexpr UINT_PTR ID_AUDIO_PLAY = 2056;
 constexpr UINT_PTR ID_AUDIO_STOP = 2057;
 constexpr UINT_PTR ID_AUDIO_COMBO = 2058;
@@ -527,6 +529,7 @@ struct AppState {
     HWND hwnd_tex_fullres = nullptr;
     HWND hwnd_armor_dyes = nullptr;   // "Dyes" button, shown for armor with a rebuilt atlas
     HWND hwnd_dye_wnd = nullptr;      // the Dyes window, while open
+    HWND hwnd_materials = nullptr;    // "Materials" button (model view)
     HWND hwnd_light_toggle = nullptr;
     HWND hwnd_effects_toggle = nullptr;
     HWND hwnd_cloth_toggle = nullptr;
@@ -870,6 +873,22 @@ void open_look_dialog(HWND owner, const castlemist::character::CharacterManifest
 void open_dye_dialog(HWND owner);
 /// Tells an open Dyes window the model changed (channels, enabled state).
 void dye_dialog_model_changed();
+
+// ---- material_dialog.cpp -- the viewer's game-shader material editor
+/// Opens (or raises) the Materials window for the current model.
+void open_material_dialog(HWND owner);
+/// Re-applies the current model's material edits to @p model's game materials
+/// (rebuilt from scratch just before, e.g. by a dye pick); the caller then
+/// refreshes the renderer. @p dyes: a mount's dye uniforms, re-set on any
+/// material whose shaders an edit replaced (null when none).
+void apply_material_edits(ModelPreview& model, const std::map<std::string, std::array<float, 4>>* dyes);
+/// A model was just loaded into current_entry (dyes/atlas already applied, not
+/// yet uploaded): keeps its authored materials, adds them to the session's
+/// material library and applies any edits this session holds for it.
+void material_edits_model_loaded(uint32_t mft_index, const std::map<std::string, std::array<float, 4>>* dyes);
+/// Debug (GW2_MATTEST): edits the loaded model's materials through the
+/// Materials window and writes screenshots + mattest.txt into @p dir.
+void run_material_selftest(const std::string& dir, uint32_t donorModel);
 /// Re-bakes the current armor model's atlas with g_app->armor_dyes, or sets a
 /// shader-dyed model's (a mount's) dye uniforms from g_app->shader_dyes, and
 /// shows it in every view without reloading the model. False when the model

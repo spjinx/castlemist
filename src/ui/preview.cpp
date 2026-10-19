@@ -237,6 +237,7 @@ bool apply_shader_dyes() {
     const rp::ShaderUniforms u = shader_dye_uniforms_now();
     ModelPreview& model = *g_app->current_entry.model;
     rp::set_shader_dyes(model, *g_app->armor_pristine, u);
+    apply_material_edits(model, &u);
     castlemist::render::refresh_model_materials(model);
     castlemist::gw2bgfxview::set_uniform_overrides(u);
     castlemist::texpanel::set_model(g_app->hwnd_tex_info, &model);
@@ -262,6 +263,7 @@ bool rebake_armor_dyes() {
         model.materials = pristine.materials;
         model.gameMaterials = pristine.gameMaterials;
         castlemist::ripper::apply_armor_preview(model, *atlas);
+        apply_material_edits(model, nullptr);
         castlemist::render::refresh_model_materials(model);
         castlemist::gw2bgfxview::set_atlas_textures(&atlas->diffuse, atlas->normal ? &*atlas->normal : nullptr);
         castlemist::texpanel::set_model(g_app->hwnd_tex_info, &model);
@@ -356,6 +358,10 @@ void apply_extracted_entry(uint32_t mft_index, ExtractedEntry&& entry) {
                 }
             }
             dye_dialog_model_changed();
+            {
+                const auto u = g_app->dye_in_shader ? shader_dye_uniforms_now() : castlemist::ripper::ShaderUniforms{};
+                material_edits_model_loaded(mft_index, g_app->dye_in_shader ? &u : nullptr);
+            }
             castlemist::render::set_model(*g_app->current_entry.model);
             // set_model hands the surface to the model but leaves any loaded
             // scene standing behind it; the "Map" toggle brings it back.

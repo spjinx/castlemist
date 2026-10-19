@@ -18,6 +18,7 @@
 #   ext::webp       static       libwebp 1.6.0 decoder         (WebP)
 #   ext::sqlite     static       SQLite amalgamation           (the dat index)
 #   ext::xatlas     static       xatlas UV atlas generator     (glTF atlas bake)
+#   ext::imgui      static       Dear ImGui 1.91.8 + Win32/DX11 (the Materials window)
 # =============================================================================
 
 set(CASTLEMIST_EXTERNAL_DIR "${PROJECT_SOURCE_DIR}/external"
@@ -135,3 +136,24 @@ add_library(ext_xatlas STATIC "${_xatlas_root}/xatlas.cpp")
 target_include_directories(ext_xatlas PUBLIC "${_xatlas_root}")
 set_target_properties(ext_xatlas PROPERTIES CXX_STANDARD 14 POSITION_INDEPENDENT_CODE ON)
 add_library(ext::xatlas ALIAS ext_xatlas)
+
+# -------------------------------------------------------------- Dear ImGui --
+#
+# The Materials window (src/ui/material_dialog.cpp): an editor-style inspector
+# and material / texture browser. Core plus the Win32 and D3D11 backends; the
+# window owns its own D3D11 device, so nothing else links against it.
+
+set(_imgui_root "${_ext}/imgui-1.91.8")
+_castlemist_require("${_imgui_root}/imgui.h" "Dear ImGui")
+
+add_library(ext_imgui STATIC
+    "${_imgui_root}/imgui.cpp"
+    "${_imgui_root}/imgui_draw.cpp"
+    "${_imgui_root}/imgui_tables.cpp"
+    "${_imgui_root}/imgui_widgets.cpp"
+    "${_imgui_root}/backends/imgui_impl_win32.cpp"
+    "${_imgui_root}/backends/imgui_impl_dx11.cpp")
+target_include_directories(ext_imgui PUBLIC "${_imgui_root}" "${_imgui_root}/backends")
+target_link_libraries(ext_imgui PUBLIC d3d11 d3dcompiler dwmapi imm32)
+set_target_properties(ext_imgui PROPERTIES POSITION_INDEPENDENT_CODE ON)
+add_library(ext::imgui ALIAS ext_imgui)

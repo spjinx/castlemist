@@ -43,6 +43,7 @@ so a re-fetch can change them too.
 | `libwebp-1.6.0/`         | 1.6.0   | `format`           | https://chromium.googlesource.com/webm/libwebp    |
 | `glm-1.0.3/`             | 1.0.3   | `sim`              | https://github.com/g-truc/glm                     |
 | `xatlas/`                | f700c7790a (2022-07-25) | `render` | https://github.com/jpcy/xatlas (source/xatlas/xatlas.{h,cpp}) |
+| `imgui-1.91.8/`          | 1.91.8  | `ui` (Materials window) | https://github.com/ocornut/imgui           |
 | `bink2-2.7d/`            | 2.7d    | `media`            | tracked here                                      |
 | `jpegcfg/`               | --      | `format`           | tracked here                                      |
 

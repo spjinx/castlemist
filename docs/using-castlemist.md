@@ -69,6 +69,21 @@ box.
   texture the model uses. **UV Map** shows a submesh's UV layout. **Game 1:1**
   renders with the game's own shaders (needs the bgfx libraries from
   `fetch_externals.ps1 -WithBgfx`).
+- **Materials** (model toolbar): an editor-style window for the materials
+  **Shader** mode draws with, using only the game's own shaders and textures.
+  Previews are spheres drawn with each material's real shader.
+  - **Mesh Renderer**: one slot per material. Drag a material from the
+    browser onto a slot, or press the slot's target button and double-click one.
+  - **Inspector**: **Shader** picks the AMAT and its default or blended effect;
+    **Textures** take any texture (click a slot, or drop one on it);
+    **Properties** are the shader's uniforms (drag to scrub; right-click to
+    revert or show as a colour).
+  - **Browser**: every material and texture seen this session, with search.
+    **Add model** / **Add texture** bring in more by file id.
+
+  A blue bar marks what is edited. Edits stay with the model for the session
+  and survive dye picks; **Save...** / **Load...** keep them as JSON. Full,
+  Plain and **Game 1:1** are not affected.
 - **Maps** *(struct template)*: the map's placed props (terrain and water
   aren't drawn yet); drag and zoom like models.
 - **Sounds:** play, seek, and pick a clip in multi-sound banks.

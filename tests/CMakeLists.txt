@@ -83,6 +83,7 @@ castlemist_add_test(extract
     SOURCES test_extract_classify.cpp
             test_extract_summary.cpp
             test_extract_material_slots.cpp
+            test_extract_material_edit.cpp
             test_extract_model_load.cpp
     DEPS    castlemist::extract
     PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/extract")

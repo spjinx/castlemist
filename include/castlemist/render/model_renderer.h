@@ -32,6 +32,12 @@ void clear_model();
 /// gizmo and animation state are left alone.
 void refresh_model_materials(const ModelPreview& model);
 
+/// Swaps in @p mat's material constants (GameMaterial::vsConsts / psConsts) for
+/// the current model's game-shader material of the same index, without
+/// rebuilding anything: the constant buffers are refilled every frame. For live
+/// uniform edits; false when that material has no game shader built.
+bool set_game_material_constants(const GameMaterial& mat);
+
 /// --- map / multi-model scene -----------------------------------------------
 /// Map content layers (each independently toggleable).
 enum SceneLayer {

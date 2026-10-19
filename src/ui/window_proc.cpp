@@ -566,6 +566,10 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         g_app->hwnd_armor_dyes =
             CreateWindowExW(0, L"BUTTON", L"Dyes", WS_CHILD, 0, 0, 0, 0, hwnd,
                              reinterpret_cast<HMENU>(ID_ARMOR_DYES), g_hinstance, nullptr);
+        // Game-shader material editor (swap / configure the model's materials live).
+        g_app->hwnd_materials =
+            CreateWindowExW(0, L"BUTTON", L"Materials", WS_CHILD, 0, 0, 0, 0, hwnd,
+                             reinterpret_cast<HMENU>(ID_MATERIALS), g_hinstance, nullptr);
         // Light pre-pass toggle (Shader mode): real deferred directional lighting
         // vs the flat light-buffer stand-in. Defaults ON to match the renderer.
         g_app->hwnd_light_toggle =
@@ -1510,6 +1514,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
             return 0;
         case ID_ARMOR_DYES:
             open_dye_dialog(hwnd);
+            return 0;
+        case ID_MATERIALS:
+            open_material_dialog(hwnd);
             return 0;
         case ID_TEX_FULLRES: {
             bool full = SendMessageW(g_app->hwnd_tex_fullres, BM_GETCHECK, 0, 0) == BST_CHECKED;

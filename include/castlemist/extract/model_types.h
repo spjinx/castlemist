@@ -6,11 +6,14 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "castlemist/native/granny_anim.hpp"
+
+namespace castlemist::model { struct Material; }
 
 /// @defgroup extract extract -- MFT entry to previewable payload
 /// @brief Sniffs a decompressed .dat entry and builds whatever the UI can show.
@@ -260,6 +263,9 @@ struct GameSamplerCPU {
     /// 1 / 2 when this is the material's `diffuse` / `normal` slot naming fileId 0:
     /// the composited armor atlas (see ModelMaterialCPU::atlasDiffuseUv).
     int atlas = 0;
+    /// @brief The material texture slot's role: its token up to the first '_'
+    ///        ("diffuse", "normal", "mask", ...). Empty for an engine-global slot.
+    std::string role;
 };
 
 /// @brief A per-material constant written straight into the shader cbuffer.
@@ -300,6 +306,15 @@ struct GameMaterial {
     /// from the albedo's alpha histogram, which misfires whenever alpha holds a gloss
     /// map instead of coverage.
     bool prepassCutout = false;
+    /// @brief The AMAT (material file id) these shaders were taken from.
+    uint32_t amatFile = 0;
+    /// @brief Drawn with the AMAT's blended colour effect rather than its default one.
+    bool blendedEffect = false;
+    /// @brief The AMAT also has a blended colour effect (see castlemist::model::AmatSet::hasTrans).
+    bool hasBlendedEffect = false;
+    /// @brief The MODL material this was extracted from, kept so the material
+    ///        editor can rebuild it with another AMAT or effect (material_edit.h).
+    std::shared_ptr<const castlemist::model::Material> source;
 };
 /// @}
 
