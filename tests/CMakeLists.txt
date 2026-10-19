@@ -117,6 +117,11 @@ castlemist_add_test(sim
     SOURCES test_sim_cloth.cpp
     DEPS    castlemist::sim)
 
+castlemist_add_test(npc
+    SOURCES test_npc.cpp
+    DEPS    castlemist::npc
+    PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/npc")
+
 castlemist_add_test(exportgltf
     SOURCES test_exportgltf_writer.cpp test_exportgltf_vrchat.cpp test_exportgltf_sky.cpp
             test_exportgltf_world.cpp
@@ -321,7 +326,8 @@ endif()
 
 castlemist_add_test(ripper
     SOURCES test_ripper_dye.cpp test_ripper_shader_dye.cpp test_ripper_atlas.cpp test_ripper_export.cpp test_ripper_skeleton.cpp test_ripper_assemble.cpp test_ripper_look.cpp
-    DEPS    castlemist::ripper ext::json ext::stb)
+    DEPS    castlemist::ripper ext::json ext::stb
+    PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/ripper")
 target_compile_definitions(cm_test_ripper PRIVATE
     CM_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 

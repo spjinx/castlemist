@@ -44,6 +44,9 @@
 //   cntc-dump --dat <path> --out-dir <dir>   -- research: every content pack, decompressed
 //   composite-types --race R --gender G --dat <path> [--type N]
 //            -- research: a race's Composite entries by piece type, physiques, face presets
+//   composite-colors --race R --gender G --dat <path>
+//            -- research: every variant's colour byte tuples by role (components c0-c3, eye, hair, hair2,
+//               pattern, skin); what npc/look.h's byte->dye-shift mapping was measured against
 //   character-assemble --manifest <json> --dat <path> --out <dir | file.glb with --combined>
 //            [--combined] [--weapons stowed|hands|none] [--face N] [--hair N] [--metres] [--index <db>]
 //            [--skin-color ID] [--hair-color ID] [--hair-color2 ID] [--no-look]
@@ -90,6 +93,10 @@
 #include "castlemist/character/look_store.h"
 #include "castlemist/character/manifest_json.h"
 #include "castlemist/db/index_db.h"
+#include "castlemist/npc/catalogue.h"
+#include "castlemist/npc/export.h"
+#include "castlemist/npc/look.h"
+#include "castlemist/npc/tokens.h"
 #include "castlemist/extract/entry_extractor.h"
 #include "castlemist/exportgltf/gltf_export.h"
 #include "castlemist/exportgltf/sky_export.h"
@@ -1945,6 +1952,191 @@ void ensure_cmap(const Args& a) {
     castlemist::cmap::save(cmap_file.wstring());
 }
 
+// The NPC catalogue: the JSON cache beside the exe (or --npc-cache); failing that,
+// built from the dat's content packs (needs the content map), cached.
+std::filesystem::path npc_cache_path(const Args& a) {
+    return has(a, "npc-cache") ? std::filesystem::path(utf8_arg("--npc-cache")) : exe_dir() / "npc_catalogue.json";
+}
+
+castlemist::npc::Catalogue ensure_npc(const Args& a) {
+    namespace npc = castlemist::npc;
+    std::filesystem::path cache = npc_cache_path(a);
+    if (std::optional<npc::Catalogue> c = npc::load(cache)) return std::move(*c);
+    ensure_cmap(a);
+    if (!castlemist::cmap::built()) fail("no content map: pass --cmap, or --dat with an index DB");
+    open_index(a);
+    if (!castlemist::db::is_open()) fail("no index DB: pass --index");
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    std::vector<MftData> entries;
+    std::vector<uint32_t> file_ids;
+    for (uint32_t b : castlemist::db::query_base_ids("", "cntc", 0, false, false, 100000)) {
+        if (b == 0 || b - 1 >= dat.mft_data_list.size()) continue;
+        entries.push_back(dat.mft_data_list[b - 1]);
+        std::vector<uint32_t> f = get_by_file_id(dat, b);
+        file_ids.push_back(f.empty() ? 0 : *std::min_element(f.begin(), f.end()));
+    }
+    auto container_of = [&](uint32_t fid) {
+        uint32_t b = get_by_base_id(dat, fid);
+        return b ? castlemist::db::lookup(b).container : std::string();
+    };
+    npc::Catalogue cat = npc::build_catalogue(dat.file_info.file_path, entries, file_ids, container_of, nullptr);
+    if (!cat.npcs.empty()) npc::save(cat, cache);  // never cache an empty (failed) build
+    return cat;
+}
+
+json npc_json(const castlemist::npc::NpcRecord& n) {
+    json weapons = json::array();
+    for (const auto& w : n.weapons)
+        weapons.push_back({{"slot", w.slot}, {"item", w.item}, {"skin", w.skin}, {"model", w.model}});
+    json looks = json::array();
+    for (const auto& l : n.looks)
+        looks.push_back({{"race", l.race}, {"look", castlemist::npc::decode_token(l.look_token)},
+                         {"token", std::to_string(l.look_token)}});
+    return {{"id", n.id}, {"codename", n.codename}, {"model", n.model}, {"sound_script", n.sound_script}, {"race", n.race},
+            {"modifier", n.modifier}, {"weapons", weapons}, {"skills", n.skills}, {"looks", looks}, {"minipet", n.minipet},
+            {"name", n.name}};
+}
+
+// The NPC catalogue: --model F (body model fileId), --race R, --limit N (default 100).
+void cmd_npc_list(const Args& a) {
+    castlemist::npc::Catalogue cat = ensure_npc(a);
+    const size_t limit = has(a, "limit") ? static_cast<size_t>(to_u64(a.at("limit"))) : 100;
+    const bool by_model = has(a, "model");
+    const uint32_t model = by_model ? static_cast<uint32_t>(to_u64(a.at("model"))) : 0;
+    const std::string race = has(a, "race") ? a.at("race") : std::string();
+    json npcs = json::array();
+    for (const auto& n : cat.npcs) {
+        if (npcs.size() >= limit) break;
+        if (by_model && n.model != model) continue;
+        if (has(a, "race") && n.race != race) continue;
+        npcs.push_back(npc_json(n));
+    }
+    const castlemist::npc::Coverage c = cat.coverage();
+    emit({{"ok", true},
+          {"coverage", {{"npcs", c.npcs}, {"with_model", c.with_model}, {"with_race", c.with_race},
+                        {"with_weapons", c.with_weapons}, {"with_skills", c.with_skills}}},
+          {"warnings", cat.warnings}, {"npcs", npcs}});
+}
+
+// One NPC, plus its body model's animation clips (needs --dat).
+void cmd_npc_show(const Args& a) {
+    castlemist::npc::Catalogue cat = ensure_npc(a);
+    const uint32_t id = static_cast<uint32_t>(to_u64(need(a, "id")));
+    const castlemist::npc::NpcRecord* n = cat.find(id);
+    if (!n) fail("no npc with id " + std::to_string(id));
+    json j = npc_json(*n);
+    json clips = json::array();
+    if (n->model && !has(a, "dat")) {
+        j["clips_note"] = "pass --dat to list clips";
+    } else if (n->model) {
+        Gw2Dat dat;
+        load_dat_file(dat, a.at("dat"));
+        if (auto pv = load_model_by_fileid(dat, n->model))
+            for (const auto& c : pv->animClips)
+                clips.push_back({{"name", c.name}, {"group", castlemist::npc::clip_group(c.name)},
+                                 {"prefix", castlemist::npc::clip_prefix(c.name)}, {"duration", c.duration}});
+    }
+    // The first look (or --look N) mapped onto Character Ripper inputs.
+    if (!n->looks.empty() && !has(a, "dat")) {
+        j["assembly"] = {{"error", "pass --dat to map the look"}};
+    } else if (!n->looks.empty()) {
+        Gw2Dat dat;
+        load_dat_file(dat, a.at("dat"));
+        const size_t li = has(a, "look") ? static_cast<size_t>(to_u64(a.at("look"))) : 0;
+        if (auto comp = castlemist::ripper::load_composite(dat)) {
+            std::string why;
+            if (auto as = castlemist::npc::npc_assembly(*n, li, *comp, &why)) {
+                json pieces = json::array();
+                for (const auto& p : as->manifest.pieces)
+                    pieces.push_back({{"slot", p.slot}, {"token", castlemist::npc::decode_token(p.skin_token)}});
+                j["assembly"] = {{"look", li}, {"race", as->manifest.race}, {"gender", as->manifest.gender},
+                                 {"pieces", pieces}, {"face", as->options.face}, {"hair", as->options.hair},
+                                 {"ears", as->options.ears}, {"skin_style", as->options.skin_style},
+                                 {"physique", as->options.physique}, {"notes", as->notes}};
+            } else {
+                j["assembly"] = {{"look", li}, {"error", why}};
+            }
+        } else {
+            j["assembly"] = {{"error", "no Composite in the dat"}};
+        }
+    }
+    j["ok"] = true;
+    if (!j.contains("clips_note")) j["clips"] = clips;
+    emit(j);
+}
+
+// Export one NPC (--id N) to --out-dir D: body.glb (race-body NPCs dressed from look --look N, default 0), weapon_<slot>.glb, manifest.json (needs --dat).
+void cmd_npc_export(const Args& a) {
+    castlemist::npc::Catalogue cat = ensure_npc(a);
+    const uint32_t id = static_cast<uint32_t>(to_u64(need(a, "id")));
+    need(a, "out-dir");
+    const castlemist::npc::NpcRecord* n = cat.find(id);
+    if (!n) fail("no npc with id " + std::to_string(id));
+    castlemist::npc::ExportOptions opt;
+    if (has(a, "look")) opt.look = static_cast<size_t>(to_u64(a.at("look")));
+    if (!n->looks.empty() && opt.look >= n->looks.size())
+        fail("npc " + std::to_string(id) + " has " + std::to_string(n->looks.size()) + " look(s); --look " +
+             std::to_string(opt.look) + " is out of range");
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    castlemist::npc::ExportResult r =
+        castlemist::npc::export_npc(dat, *n, std::filesystem::path(utf8_arg("--out-dir")), opt);
+    emit({{"ok", r.ok}, {"folder", r.folder.generic_string()}, {"files", r.files}, {"notes", r.notes}});
+}
+
+// What the NPC catalogue's "Open model" shows: the body model, or a race-body NPC dressed from look --look (default 0).
+void cmd_npc_model(const Args& a) {
+    castlemist::npc::Catalogue cat = ensure_npc(a);
+    const uint32_t id = static_cast<uint32_t>(to_u64(need(a, "id")));
+    const castlemist::npc::NpcRecord* n = cat.find(id);
+    if (!n) fail("no npc with id " + std::to_string(id));
+    const size_t look = has(a, "look") ? static_cast<size_t>(to_u64(a.at("look"))) : 0;
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    castlemist::npc::NpcModel m = castlemist::npc::npc_model(dat, *n, look);
+    json out = {{"ok", m.model != nullptr}, {"notes", m.notes}};
+    if (m.model) {
+        size_t verts = 0;
+        for (const auto& mesh : m.model->meshes) verts += mesh.vertices.size();
+        out["meshes"] = m.model->meshes.size();
+        out["vertices"] = verts;
+        out["textures"] = m.model->textures.size();
+        out["joints"] = m.model->joints.size();
+        out["clips"] = m.model->animClips.size();
+    }
+    emit(out);
+}
+
+// Research: one model's rig and animations, by --file-id (works for skeleton-only files too).
+void cmd_clips(const Args& a) {
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    const uint32_t fid = static_cast<uint32_t>(to_u64(need(a, "file-id")));
+    std::shared_ptr<ModelPreview> m = load_model_by_fileid(dat, fid);
+    if (!m) fail("model " + std::to_string(fid) + " did not load");
+    json names = json::array();
+    for (const auto& c : m->animClips) names.push_back({{"name", c.name}, {"duration", c.duration}});
+    emit({{"ok", true}, {"joints", m->joints.size()}, {"meshes", m->meshes.size()}, {"clips", m->animClips.size()},
+          {"clip_tokens", m->animationTokens.size()},
+          {"imports", m->animationImports}, {"animation_model_ref", m->animationModelRef},
+          {"external_skeleton", m->externalSkeletonRef}, {"clip_names", names}});
+}
+
+// Names the minipet characters from the public GW2 API (/v2/minis; goes online, no key) and re-saves the cache.
+void cmd_npc_names(const Args& a) {
+    namespace npc = castlemist::npc;
+    npc::Catalogue cat = ensure_npc(a);
+    if (cat.npcs.empty()) fail("no npc catalogue; build it first");
+    const std::vector<uint32_t> ids = npc::minipet_ids(cat);
+    castlemist::character::WinHttpClient http;
+    castlemist::character::Gw2Api api(http, "");
+    const size_t named = npc::apply_names(cat, api.names("minis", ids));
+    std::filesystem::path cache = npc_cache_path(a);
+    if (!npc::save(cat, cache)) fail("could not write " + cache.string());
+    emit({{"ok", true}, {"minipets", ids.size()}, {"named", named}});
+}
+
 // What uses a file: the content objects that list --file-id (or --base-id's
 // fileIds) as an asset, each with its chat link and the items that grant it.
 // --names adds display names from the public GW2 API (goes online, no key).
@@ -2032,8 +2224,12 @@ void cmd_palette(const Args& a) {
         json pj{{"id", id}, {"base", {p->base[0], p->base[1], p->base[2]}}, {"count", p->colors.size()}};
         if (has(a, "id")) {
             json colors = json::array();
-            for (const auto& c : p->colors)
-                colors.push_back({{"id", c.id}, {"shift", c.materials.empty() ? json() : shift_json(c.materials[0])}});
+            for (const auto& c : p->colors) {
+                json mats = json::array();
+                for (const auto& m : c.materials) mats.push_back(shift_json(m));
+                colors.push_back({{"id", c.id}, {"shift", c.materials.empty() ? json() : shift_json(c.materials[0])},
+                                  {"materials", mats}});
+            }
             pj["colors"] = colors;
         }
         out.push_back(pj);
@@ -2277,8 +2473,77 @@ void cmd_composite_types(const Args& a) {
         }
         return out;
     };
+    json variants = json::array();
+    for (size_t i = 0; i < r->variants.size() && i < 3; ++i) {
+        const auto& v = r->variants[i];
+        json comps = json::array();
+        for (const auto& c : v.components) comps.push_back(c.token);
+        variants.push_back({{"token", v.token}, {"name", castlemist::npc::decode_token(v.token)},
+                            {"components", comps}, {"boneScaleIndex", v.bone_scale_index},
+                            {"skinStyle", v.skin_style}});
+    }
     emit({{"ok", true}, {"types", types}, {"skin_styles", styles}, {"physiques", presets_json(r->body_bone_scales)},
-          {"face_presets", presets_json(r->face_bone_scales)}});
+          {"face_presets", presets_json(r->face_bone_scales)}, {"variants", r->variants.size()},
+          {"variant_samples", variants}, {"skeleton_file", r->skeleton_file}});
+}
+
+// Research: where a Composite token lives, by --name (its decoded spelling): every race whose file data,
+// faces, hair or ears hold it, plus the race's variantRefRace.
+void cmd_composite_find(const Args& a) {
+    namespace rp = castlemist::ripper;
+    using castlemist::npc::decode_token;
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    auto comp = rp::load_composite(dat);
+    if (!comp) fail("no Composite in the dat");
+    const std::string name = need(a, "name");
+    json hits = json::array(), refs = json::object();
+    for (const auto& r : comp->races) {
+        refs[r.name] = r.variant_ref_race ? decode_token(r.variant_ref_race) : std::string();
+        for (const auto& [token, fd] : r.file_data)
+            if (decode_token(token) == name)
+                hits.push_back({{"race", r.name}, {"in", "file_data"}, {"type", static_cast<int>(fd.type)},
+                                {"mesh", fd.mesh_base}, {"token", std::to_string(token)}});
+        auto list = [&](const std::vector<uint64_t>& v, const char* in) {
+            for (uint64_t t : v)
+                if (decode_token(t) == name) hits.push_back({{"race", r.name}, {"in", in}});
+        };
+        list(r.faces, "faces");
+        list(r.hair_styles, "hair_styles");
+        list(r.ears, "ears");
+    }
+    emit({{"ok", true}, {"hits", hits}, {"variant_ref_race", refs}});
+}
+
+// Research (like animmach): every variant colour of a race as raw byte tuples
+// [brightness, contrast, hue, saturation, lightness], labelled by role. The
+// measurement of npc/look.h's byte->DyeShift mapping ran over this output.
+void cmd_composite_colors(const Args& a) {
+    namespace rp = castlemist::ripper;
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    auto comp = rp::load_composite(dat);
+    if (!comp) fail("no Composite in the dat");
+    const auto* r = comp->race(need(a, "race") + need(a, "gender"));
+    if (!r) fail("no such race");
+    auto col = [](const castlemist::composite::VariantColor& c) {
+        return json::array({c.brightness, c.contrast, c.hue, c.saturation, c.lightness});
+    };
+    json variants = json::array();
+    for (const auto& v : r->variants) {
+        json comps = json::array();
+        for (const auto& c : v.components) {
+            json cj = json::array();
+            for (const auto& k : c.colors) cj.push_back(col(k));
+            comps.push_back({{"token", castlemist::npc::decode_token(c.token)}, {"colors", cj}});
+        }
+        variants.push_back({{"token", castlemist::npc::decode_token(v.token)}, {"components", comps},
+                            {"bone_scale_index", v.bone_scale_index}, {"skin_index", v.skin_index},
+                            {"skin_style", v.skin_style},
+                            {"eye", col(v.eye)}, {"hair", col(v.hair)}, {"hair2", col(v.hair2)},
+                            {"pattern", col(v.pattern)}, {"skin", col(v.skin)}});
+    }
+    emit({{"ok", true}, {"race", r->name}, {"variants", variants}});
 }
 
 // What a race can look like: face / hair style counts and its skin and hair
@@ -2723,8 +2988,16 @@ int main(int argc, char** argv) {
         else if (cmd == "cntc-dump") cmd_cntc_dump(a);
         else if (cmd == "palette") cmd_palette(a);
         else if (cmd == "users") cmd_users(a);
+        else if (cmd == "npc-list") cmd_npc_list(a);
+        else if (cmd == "npc-show") cmd_npc_show(a);
+        else if (cmd == "npc-export") cmd_npc_export(a);
+        else if (cmd == "npc-model") cmd_npc_model(a);
+        else if (cmd == "clips") cmd_clips(a);
+        else if (cmd == "npc-names") cmd_npc_names(a);
         else if (cmd == "look-options") cmd_look_options(a);
         else if (cmd == "composite-types") cmd_composite_types(a);
+        else if (cmd == "composite-colors") cmd_composite_colors(a);
+        else if (cmd == "composite-find") cmd_composite_find(a);
         else if (cmd == "look-set") cmd_look_set(a);
         else if (cmd == "look-thumbs") cmd_look_thumbs(a);
         else if (cmd == "character-vrchat") cmd_character_vrchat(a);

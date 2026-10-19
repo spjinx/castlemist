@@ -152,8 +152,9 @@ add_library(ext_imgui STATIC
     "${_imgui_root}/imgui_tables.cpp"
     "${_imgui_root}/imgui_widgets.cpp"
     "${_imgui_root}/backends/imgui_impl_win32.cpp"
-    "${_imgui_root}/backends/imgui_impl_dx11.cpp")
+    "${_imgui_root}/backends/imgui_impl_dx11.cpp"
+    "${PROJECT_SOURCE_DIR}/cmake/shims/imgui_dwmapi.cpp")  # no dwmapi.dll import
 target_include_directories(ext_imgui PUBLIC "${_imgui_root}" "${_imgui_root}/backends")
-target_link_libraries(ext_imgui PUBLIC d3d11 d3dcompiler dwmapi imm32)
+target_link_libraries(ext_imgui PUBLIC d3d11 d3dcompiler imm32)
 set_target_properties(ext_imgui PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(ext::imgui ALIAS ext_imgui)

@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "castlemist/character/manifest.h"
+#include "castlemist/extract/model_types.h"
 #include "castlemist/ripper/atlas.h"
 
 namespace castlemist::ripper {
@@ -54,6 +55,15 @@ struct AssemblyOptions {
     /// VRChat preparation (ripper/vrchat.h make_vrchat_ready) before writing
     /// the combined file: face keys, meshes merged, humanoid bone names.
     bool vrchat = false;
+    /// The race's animation set (the Composite race's skeleton file: locomotion,
+    /// weapon skills, emotes) on the combined character, mirrored with it for glTF.
+    /// Off by default: Character Ripper characters stay as they were.
+    bool animations = false;
+};
+
+struct AssemblyClip {
+    std::string name;
+    float duration = 0;  // seconds
 };
 
 struct AssemblyPart {
@@ -70,6 +80,7 @@ struct AssemblyReport {
     std::vector<AssemblyPart> parts;
     size_t joints = 0;
     std::vector<std::string> physbone_chains;  // vrchat: chain roots for VRC PhysBones
+    std::vector<AssemblyClip> clips;           // options.animations: the clips the character carries
 };
 
 /// Combined: the whole character as ONE rigged .glb. Bare-body parts under
@@ -78,6 +89,12 @@ struct AssemblyReport {
 /// the dat (safe on a worker thread). `glb_path` is UTF-8.
 AssemblyReport assemble_character(const character::CharacterManifest& manifest, const std::string& dat_path,
                                   const std::string& glb_path, const AssemblyOptions& options = {});
+
+/// The combined character exactly as assemble_character builds it, as a model
+/// for the viewer: GW2 space (not mirrored or turned for glTF), nothing written.
+/// `out` is set when the report is ok. Opens its own handle on the dat.
+AssemblyReport assemble_character_model(const character::CharacterManifest& manifest, const std::string& dat_path,
+                                        ModelPreview& out, const AssemblyOptions& options = {});
 
 /// Separate: a folder holding `body.glb` (the full bare body + head, nothing
 /// hidden) and one .glb per armor piece, back item and weapon, every file on

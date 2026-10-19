@@ -131,11 +131,36 @@ struct Context {
         return it->second;
     }
 
+    // The race it shares pieces from (variantRefRace: AsuraFemale -> AsuraMale, CharrFemale -> CharrMale).
+    const composite::CompositeRace* shared = nullptr;
+
+    // Its own piece first, then the shared race's.
     const composite::CompositeFileData* entry(uint64_t token) const {
-        auto it = race->file_data.find(token);
-        return it == race->file_data.end() ? nullptr : &it->second;
+        if (auto it = race->file_data.find(token); it != race->file_data.end()) return &it->second;
+        if (shared)
+            if (auto it = shared->file_data.find(token); it != shared->file_data.end()) return &it->second;
+        return nullptr;
     }
 };
+
+// A name 5-bit packed the way Composite tokens are (a = 1 ... z = 26, first letter lowest, 12 letters at most).
+uint64_t pack_name(const std::string& name) {
+    uint64_t t = 0;
+    for (size_t i = 0; i < name.size() && i < 12; ++i) {
+        const int c = std::tolower(static_cast<unsigned char>(name[i]));
+        if (c < 'a' || c > 'z') return 0;
+        t |= static_cast<uint64_t>(c - 'a' + 1) << (5 * i);
+    }
+    return t;
+}
+
+const composite::CompositeRace* race_by_token(const composite::Composite& comp, uint64_t token) {
+    const uint64_t name_bits = token & ((uint64_t{1} << 60) - 1);  // the top nibble is a variant digit
+    if (!name_bits) return nullptr;
+    for (const composite::CompositeRace& r : comp.races)
+        if (pack_name(r.name) == name_bits) return &r;
+    return nullptr;
+}
 
 // Loads every weapon of the kit and gives each its attach point: the active
 // set in the hands when asked, the rest spread over the holsters.
@@ -196,6 +221,8 @@ std::unique_ptr<Context> open_context(const CharacterManifest& manifest, const s
         rep.error = "unknown race/gender '" + ctx->race_key + "'";
         return nullptr;
     }
+    if (const composite::CompositeRace* ref = race_by_token(ctx->comp, ctx->race->variant_ref_race))
+        if (ref != ctx->race) ctx->shared = ref;
     // The race skeleton, taken from the bare chest (every body part and armor
     // piece of the race shares it).
     if (opt.skin_style >= 0 && static_cast<size_t>(opt.skin_style) < ctx->race->skin_styles.size()) {
@@ -211,6 +238,16 @@ std::unique_ptr<Context> open_context(const CharacterManifest& manifest, const s
         rep.error = "the race skeleton could not be loaded";
         return nullptr;
     }
+    // The race's animation set lives on its Composite skeleton file (same rig, bound by joint name).
+    if (opt.animations && ctx->race->skeleton_file)
+        if (auto anims = detail::load_model(ctx->dat, ctx->race->skeleton_file)) {
+            ctx->skeleton.hasAnimation = anims->hasAnimation;
+            ctx->skeleton.animationVersion = anims->animationVersion;
+            ctx->skeleton.animationType = anims->animationType;
+            ctx->skeleton.animationTokens = std::move(anims->animationTokens);
+            ctx->skeleton.animClips = std::move(anims->animClips);
+            ctx->skeleton.animClipBank = std::move(anims->animClipBank);
+        }
     plan_weapons(*ctx, manifest, opt);
     return ctx;
 }
@@ -796,7 +833,20 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
 }
 
 bool write_glb(ModelPreview model, const std::string& path, const AssemblyOptions& opt, AssemblyReport& rep) {
+    // mirror_x drops clips; with animations on they are mirrored alongside instead.
+    std::vector<castlemist::granny::Anim> clips;
+    std::vector<uint32_t> banks;
+    if (opt.animations) {
+        clips = std::move(model.animClips);
+        banks = std::move(model.animClipBank);
+    }
     detail::mirror_x(model);  // GW2 is left-handed: un-mirror for glTF
+    if (opt.animations && !clips.empty()) {
+        detail::mirror_x(clips);
+        model.animClips = std::move(clips);
+        model.animClipBank = std::move(banks);
+        model.hasAnimation = true;
+    }
     // GW2 characters stand along -Z; the avatar should stand along glTF +Y,
     // still facing +Z: -90 about X, then 180 about the forward axis. Units stay
     // GW2's (inches) unless asked for metres.
@@ -949,14 +999,13 @@ const char* to_string(WeaponPlacement w) {
     return "stowed";
 }
 
-AssemblyReport assemble_character(const CharacterManifest& manifest, const std::string& dat_path,
-                                  const std::string& glb_path, const AssemblyOptions& opt) {
-    AssemblyReport rep;
-    std::unique_ptr<Context> ctx = open_context(manifest, dat_path, opt, rep);
-    if (!ctx) return rep;
+namespace {
+
+// The combined character's selection, shared by assemble_character and assemble_character_model.
+Selection combined_selection(Context& ctx, const CharacterManifest& manifest, const AssemblyOptions& opt) {
     Selection sel;
     sel.armor = armor_pieces(manifest);
-    sel.worn = worn_slots(*ctx, manifest);
+    sel.worn = worn_slots(ctx, manifest);
     sel.back = true;
     sel.weapons.assign(std::begin(kWeaponSlots), std::end(kWeaponSlots));
     sel.drop_shared_holster = true;
@@ -964,13 +1013,42 @@ AssemblyReport assemble_character(const CharacterManifest& manifest, const std::
         sel.hide_body_under_armor = false;
         sel.hair_under_helm_scalp_only = false;
     }
+    return sel;
+}
+
+void list_clips(const ModelPreview& model, AssemblyReport& rep) {
+    for (const castlemist::granny::Anim& c : model.animClips) rep.clips.push_back({c.name, c.duration});
+}
+
+}  // namespace
+
+AssemblyReport assemble_character(const CharacterManifest& manifest, const std::string& dat_path,
+                                  const std::string& glb_path, const AssemblyOptions& opt) {
+    AssemblyReport rep;
+    std::unique_ptr<Context> ctx = open_context(manifest, dat_path, opt, rep);
+    if (!ctx) return rep;
+    const Selection sel = combined_selection(*ctx, manifest, opt);
     ModelPreview model = build(*ctx, manifest, opt, sel, rep);
+    list_clips(model, rep);
     if (opt.vrchat) {
         rep.physbone_chains = make_vrchat_ready(model);
         write_vrchat_maps(model, glb_path);
     }
     if (!write_glb(model, glb_path, opt, rep)) return rep;
     rep.joints = model.joints.size();
+    rep.ok = true;
+    return rep;
+}
+
+AssemblyReport assemble_character_model(const CharacterManifest& manifest, const std::string& dat_path,
+                                        ModelPreview& out, const AssemblyOptions& opt) {
+    AssemblyReport rep;
+    std::unique_ptr<Context> ctx = open_context(manifest, dat_path, opt, rep);
+    if (!ctx) return rep;
+    const Selection sel = combined_selection(*ctx, manifest, opt);
+    out = build(*ctx, manifest, opt, sel, rep);
+    list_clips(out, rep);
+    rep.joints = out.joints.size();
     rep.ok = true;
     return rep;
 }

@@ -146,6 +146,9 @@ castlemist_add_layer(exportgltf DEPS castlemist::extract castlemist::world ext::
 # Recorded in the VRChat export's materials.json.
 target_compile_definitions(castlemist_exportgltf PRIVATE CASTLEMIST_VERSION_STRING="${PROJECT_VERSION}")
 
+# npc: NPC catalogue (cntc pack reader + catalogue) on top of extract/exportgltf.
+castlemist_add_layer(npc DEPS castlemist::extract castlemist::exportgltf castlemist::ripper ext::json)
+
 # ripper turns a character manifest into exported pieces: composite lookup,
 # dye baking and atlas cropping on top of extract + exportgltf.
 castlemist_add_layer(ripper DEPS castlemist::character castlemist::extract castlemist::exportgltf
@@ -183,7 +186,7 @@ endif()
 # dwmapi is *not* linked -- DwmSetWindowAttribute is resolved with GetProcAddress
 # so the exe still starts on a Windows without it.
 castlemist_add_layer(ui     DEPS castlemist::render castlemist::db castlemist::extract
-                                 castlemist::exportgltf castlemist::character castlemist::ripper
+                                 castlemist::exportgltf castlemist::character castlemist::ripper castlemist::npc
                                  ext::imgui comctl32 comdlg32 shell32 user32 gdi32 advapi32 uxtheme)
 
 

@@ -83,6 +83,7 @@ constexpr UINT_PTR ID_VIEW_THEME_ACCENT = 1013;
 constexpr UINT_PTR ID_TOOLS_CHARACTER = 1019;      // Character Ripper (GW2 API) dialog
 constexpr UINT_PTR ID_TOOLS_DOWNLOAD_NAMES = 1020; // fetch every game name into content_names.tsv
 constexpr UINT_PTR ID_TOOLS_DECODE_TOKEN = 1015;   // token/filename-bytes decoder popup
+constexpr UINT_PTR ID_TOOLS_NPC_CATALOGUE = 1023;  // NPC catalogue window
 constexpr UINT_PTR ID_TOOLS_DATA_STATUS = 1021;    // Data status window: is every export input current?
 constexpr UINT_PTR ID_TOOLS_MAP_WINDOW = 1022;     // Map Window: fly/walk one map (ui/map_window.cpp)
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL = 1016; // Export glTF... (single model, plain decoded textures)
@@ -770,6 +771,9 @@ void cl_resolve_asset();
 void cl_search(bool by_file_id);
 LRESULT CALLBACK ChatLinkWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 void open_chat_link_decoder(HWND owner);
+
+// ---- npc_dialog.cpp -- the NPC catalogue window (Tools menu)
+void open_npc_catalogue(HWND owner);
 
 // ---- content_map_service.cpp -- the shared cntc content-map build
 enum class CmapEnsure { Ready, Building, Started, NeedDat, NeedIndex, InUse };

@@ -222,3 +222,75 @@ CM_TEST(composite, live_sylvari_female_body_and_head) {
     CHECK_EQ(sf->hair_styles.size(), size_t{38});
     CHECK_EQ(int(sf->file_data.at(sf->faces[0]).type), 5);
 }
+
+CM_TEST(composite, a_bad_variants_array_leaves_the_rest_of_the_composite_intact) {
+    CompositeBuilder c = one_race();
+    size_t race = 2048;  // one_race() allocates the race first
+    c.arr(race + 200, 2, 1u << 20);  // variants pointer far past the buffer
+    auto comp = parse_composite(c.b);
+    CHECK(comp.has_value());
+    const CompositeRace* r = comp->race("SylvariFemale");
+    CHECK(r != nullptr);
+    CHECK_EQ(r->skeleton_file, 31210u);
+    CHECK(r->file_data.find(kWardenToken) != r->file_data.end());
+    CHECK(r->variants.empty());
+}
+
+CM_TEST(composite, a_bad_file_data_table_still_fails_the_composite) {
+    CompositeBuilder c = one_race();
+    size_t race = 2048;  // one_race() allocates the race first
+    c.arr(race + 104, 1, 1u << 20);  // fileData pointer far past the buffer
+    CHECK(!parse_composite(c.b).has_value());
+}
+
+CM_TEST(composite, parses_race_variants) {
+    CompositeBuilder c = one_race();
+    size_t race = 2048;  // one_race() allocates the race first
+    c.u64(race + 192, 0x1234567ull);  // variantRefRace
+    constexpr size_t kVar = 57, kComp = 28;
+    size_t vars = c.alloc(2 * kVar);
+    c.arr(race + 200, 2, vars);  // variants
+    auto color = [&](size_t at, uint8_t base) { for (int i = 0; i < 5; ++i) c.b[at + i] = base + i; };
+    // variant 0
+    c.u64(vars, 0xABCDEF01ull);
+    c.u32(vars + 8, 7);  // boneScaleIndex
+    size_t comps = c.alloc(2 * kComp);
+    c.arr(vars + 12, 2, comps);
+    c.u64(comps, 0x11ull);
+    for (int k = 0; k < 4; ++k) color(comps + 8 + 5 * k, 10 + 10 * k);
+    c.u64(comps + kComp, 0x22ull);
+    for (int k = 0; k < 4; ++k) color(comps + kComp + 8 + 5 * k, 100 + 10 * k);
+    color(vars + 24, 1);   // eye
+    color(vars + 29, 20);  // hair
+    color(vars + 34, 30);  // hair2
+    color(vars + 39, 40);  // pattern
+    color(vars + 44, 50);  // skin
+    c.u32(vars + 49, 3);   // skinIndex
+    c.u32(vars + 53, 5);   // skinStyle
+    // variant 1: no components
+    c.u64(vars + kVar, 0x99ull);
+    auto comp = parse_composite(c.b);
+    CHECK(comp.has_value());
+    const CompositeRace* r = comp->race("SylvariFemale");
+    CHECK_EQ(r->variant_ref_race, 0x1234567ull);
+    CHECK_EQ(r->variants.size(), size_t{2});
+    const CompositeVariant& v = r->variants[0];
+    CHECK_EQ(v.token, 0xABCDEF01ull);
+    CHECK_EQ(v.bone_scale_index, 7u);
+    CHECK_EQ(v.components.size(), size_t{2});
+    CHECK_EQ(v.components[0].token, 0x11ull);
+    CHECK_EQ(int(v.components[0].colors[0].brightness), 10);
+    CHECK_EQ(int(v.components[0].colors[3].lightness), 44);
+    CHECK_EQ(v.components[1].token, 0x22ull);
+    CHECK_EQ(int(v.components[1].colors[2].hue), 122);
+    CHECK_EQ(int(v.eye.brightness), 1);
+    CHECK_EQ(int(v.hair.contrast), 21);
+    CHECK_EQ(int(v.hair2.hue), 32);
+    CHECK_EQ(int(v.pattern.saturation), 43);
+    CHECK_EQ(int(v.skin.brightness), 50);
+    CHECK_EQ(int(v.skin.lightness), 54);
+    CHECK_EQ(v.skin_index, 3u);
+    CHECK_EQ(v.skin_style, 5u);
+    CHECK_EQ(r->variants[1].token, 0x99ull);
+    CHECK(r->variants[1].components.empty());
+}

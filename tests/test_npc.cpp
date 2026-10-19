@@ -1,0 +1,948 @@
+/// @file
+/// @brief Tests for the npc layer: packed clip-name tokens, clip grouping and the cntc pack reader.
+
+#include "test_framework.h"
+
+#include "castlemist/format/content_map.h"
+#include "castlemist/native/gw2dat.h"
+#include "castlemist/npc/browse.h"
+#include "castlemist/npc/catalogue.h"
+#include "castlemist/npc/export.h"
+#include "castlemist/npc/look.h"
+#include "castlemist/npc/tokens.h"
+#include "character.h"
+#include "decompress.h"
+#include "pack.h"
+
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <initializer_list>
+#include <string>
+#include <vector>
+
+using namespace castlemist::npc;
+using namespace castlemist::npc::detail;
+
+namespace {
+
+// Synthetic cntc packs: PF header (2) .. "cntc" tag (@8) .. "Main" chunk (@12) ..
+// flags (@28) .. 11 array descriptors {u32 count, i64 self-relative pointer} (@32).
+constexpr size_t kChunkPos = 12;
+constexpr size_t kBase = kChunkPos + 16;
+constexpr size_t kArrDescBase = kBase + 4;
+
+size_t arr_desc(int i) { return kArrDescBase + static_cast<size_t>(i) * 12; }
+
+/// @brief Builds one synthetic PF "cntc" -> "Main" (PackContent) buffer.
+struct PackBuilder {
+    std::vector<uint8_t> d;
+
+    void ensure(size_t sz) {
+        if (d.size() < sz) d.resize(sz, 0);
+    }
+    void put_u32(size_t pos, uint32_t v) {
+        ensure(pos + 4);
+        for (int i = 0; i < 4; ++i) d[pos + i] = static_cast<uint8_t>(v >> (8 * i));
+    }
+    void put_i64(size_t pos, int64_t v) {
+        ensure(pos + 8);
+        uint64_t u = static_cast<uint64_t>(v);
+        for (int i = 0; i < 8; ++i) d[pos + i] = static_cast<uint8_t>(u >> (8 * i));
+    }
+    void put_bytes(size_t pos, std::initializer_list<uint8_t> bytes) {
+        ensure(pos + bytes.size());
+        size_t i = 0;
+        for (uint8_t b : bytes) d[pos + (i++)] = b;
+    }
+    /// Array `i` = `count` entries starting at absolute position `target` (count 0 = empty).
+    void set_dynarray(int i, uint32_t count, size_t target) {
+        size_t p = arr_desc(i);
+        put_u32(p, count);
+        if (count != 0) put_i64(p + 4, static_cast<int64_t>(target) - static_cast<int64_t>(p + 4));
+    }
+    /// An 8-byte self-relative pointer at `pos` to absolute `target`.
+    void put_selfrel(size_t pos, size_t target) {
+        put_i64(pos, static_cast<int64_t>(target) - static_cast<int64_t>(pos));
+    }
+    /// NUL-terminated UTF-16LE ASCII string at `pos`; returns the position after it.
+    size_t put_utf16(size_t pos, const std::string& s) {
+        ensure(pos + (s.size() + 1) * 2);
+        for (size_t i = 0; i < s.size(); ++i) {
+            d[pos + i * 2] = static_cast<uint8_t>(s[i]);
+            d[pos + i * 2 + 1] = 0;
+        }
+        return pos + (s.size() + 1) * 2;
+    }
+
+    PackBuilder() {
+        put_bytes(0, {'P', 'F'});
+        put_u32(6, kChunkPos);
+        put_bytes(8, {'c', 'n', 't', 'c'});
+        put_bytes(kChunkPos, {'M', 'a', 'i', 'n'});
+        put_u32(kChunkPos + 4, 1000);
+        put_u32(kBase, 0);
+        for (int i = 0; i <= 10; ++i) set_dynarray(i, 0, 0);
+    }
+};
+
+/// One object at content offset 0 (64 bytes); optional fileRefs (one entry, id 500) and an
+/// external ref at +20 with target file index 2.
+std::vector<uint8_t> tiny_pack(uint32_t type, bool with_file_refs, bool with_external_ref) {
+    PackBuilder b;
+    const size_t ie = 200, eo = 220, fr = 240, frp = 260, content = 300;
+    b.set_dynarray(3, 1, ie);
+    b.put_u32(ie, type);
+    b.put_u32(ie + 4, 0);
+    if (with_external_ref) {
+        b.set_dynarray(5, 1, eo);
+        b.put_u32(eo, 20);
+        b.put_u32(eo + 4, 2);
+    }
+    if (with_file_refs) {
+        b.set_dynarray(2, 1, fr);
+        b.put_selfrel(fr, frp);
+        b.put_bytes(frp, {0xF3, 0x02, 0x00, 0x01});
+    }
+    b.set_dynarray(10, 64, content);
+    b.ensure(content + 64);
+    return b.d;
+}
+
+/// Inverse of decode_token: 5-bit groups, low first, 'a' = 1.
+uint64_t pack_token(const std::string& s) {
+    uint64_t v = 0;
+    for (size_t i = 0; i < s.size(); ++i) v |= static_cast<uint64_t>(s[i] - 'a' + 1) << (5 * i);
+    return v;
+}
+
+struct TObj { uint32_t type, begin, data_id; };
+struct TRef { uint32_t slot, target; };  ///< Absolute content offsets; local ref.
+
+/// A pack of `objs` (content size 1200) with local refs, parsed.
+Pack make_char_pack(const std::vector<TObj>& objs, const std::vector<TRef>& refs,
+                    const std::vector<std::pair<uint32_t, uint64_t>>& u64s,
+                    const std::vector<std::pair<uint32_t, uint32_t>>& u32s) {
+    PackBuilder b;
+    const size_t ie = 100, lo = 400, content = 600;
+    b.set_dynarray(3, static_cast<uint32_t>(objs.size()), ie);
+    for (size_t i = 0; i < objs.size(); ++i) {
+        b.put_u32(ie + i * 16, objs[i].type);
+        b.put_u32(ie + i * 16 + 4, objs[i].begin);
+    }
+    b.set_dynarray(4, static_cast<uint32_t>(refs.size()), lo);
+    for (size_t i = 0; i < refs.size(); ++i) b.put_u32(lo + i * 4, refs[i].slot);
+    b.set_dynarray(10, 1200, content);
+    b.ensure(content + 1200);
+    for (auto& o : objs) b.put_u32(content + o.begin + 40, o.data_id);
+    for (auto& r : refs) b.put_u32(content + r.slot, r.target);
+    for (auto& [pos, v] : u64s) b.put_i64(content + pos, static_cast<int64_t>(v));
+    for (auto& [pos, v] : u32s) b.put_u32(content + pos, v);
+    auto pack = parse_pack(b.d, 1, 1);
+    return *pack;
+}
+
+// ---- catalogue fixtures ----
+// fileRefs pack: [0] = 500, [1] = 777.
+std::vector<uint8_t> cat_file_refs_pack() {
+    PackBuilder b;
+    const size_t ptrs = 200, pairs = ptrs + 16;
+    b.put_selfrel(ptrs, pairs);
+    b.put_selfrel(ptrs + 8, pairs + 4);
+    b.put_bytes(pairs, {0xF3, 0x02, 0x00, 0x01});
+    b.put_bytes(pairs + 4, {0x08, 0x04, 0x00, 0x01});
+    b.set_dynarray(2, 2, ptrs);
+    b.put_u32(260, 1);
+    b.ensure(280);
+    b.set_dynarray(3, 1, 260);
+    b.ensure(400 + 64);
+    b.set_dynarray(10, 64, 400);
+    return b.d;
+}
+
+// One skin (type 66, dataId) with model slot +48 = fileRefs index 1 (777).
+std::vector<uint8_t> cat_skin_pack(uint32_t data_id) {
+    PackBuilder b;
+    b.put_u32(200, 66);
+    b.ensure(216);
+    b.set_dynarray(3, 1, 200);
+    b.put_u32(220, 48);
+    b.set_dynarray(6, 1, 220);
+    const size_t c = 300;
+    b.put_u32(c + 16, 66);
+    b.put_u32(c + 40, data_id);
+    b.put_u32(c + 48, 1);
+    b.ensure(c + 128);
+    b.set_dynarray(10, 128, c);
+    return b.d;
+}
+
+// One weapon item (type 35, +44 = 24) with a +176 external skin link to file index 1, offset 0.
+std::vector<uint8_t> cat_item_pack(uint32_t data_id) {
+    PackBuilder b;
+    b.put_u32(200, 35);
+    b.ensure(216);
+    b.set_dynarray(3, 1, 200);
+    b.put_u32(220, 176);
+    b.put_u32(224, 1);
+    b.set_dynarray(5, 1, 220);
+    b.put_u32(240, 64);
+    b.set_dynarray(6, 1, 240);
+    const size_t c = 300;
+    b.put_u32(c + 16, 35);
+    b.put_u32(c + 40, data_id);
+    b.put_u32(c + 44, 24);
+    b.put_u32(c + 64, 0);
+    b.put_u32(c + 176, 0);
+    b.ensure(c + 288);
+    b.set_dynarray(10, 288, c);
+    return b.d;
+}
+
+// One character (type 67): optional file slots +224/+240 (fileRefs 0, 1) and a +200 external
+// weapon ref to file index 2, offset 0.
+std::vector<uint8_t> cat_char_pack(uint32_t data_id, bool with_files, bool with_weapon) {
+    PackBuilder b;
+    b.put_u32(200, 67);
+    b.ensure(216);
+    b.set_dynarray(3, 1, 200);
+    if (with_weapon) {
+        b.put_u32(220, 200);
+        b.put_u32(224, 2);
+        b.set_dynarray(5, 1, 220);
+    }
+    if (with_files) {
+        b.put_u32(240, 224);
+        b.put_u32(244, 240);
+        b.set_dynarray(6, 2, 240);
+    }
+    const size_t c = 400;
+    b.put_u32(c + 16, 67);
+    b.put_u32(c + 40, data_id);
+    b.put_u32(c + 200, 0);
+    b.put_u32(c + 224, 0);
+    b.put_u32(c + 240, 1);
+    b.ensure(c + 300);
+    b.set_dynarray(10, 300, c);
+    return b.d;
+}
+
+// A minipet (type 48, dataId `mini`) at content 0 whose ref at +100 targets a character (type 67, dataId
+// `chr`) at content 300 of the same pack.
+std::vector<uint8_t> cat_minipet_pack(uint32_t mini, uint32_t chr) {
+    PackBuilder b;
+    const size_t ie = 200, lo = 260, content = 400;
+    b.set_dynarray(3, 2, ie);
+    b.put_u32(ie, 48);
+    b.put_u32(ie + 4, 0);
+    b.put_u32(ie + 16, 67);
+    b.put_u32(ie + 20, 300);
+    b.set_dynarray(4, 1, lo);
+    b.put_u32(lo, 100);
+    b.set_dynarray(10, 600, content);
+    b.ensure(content + 600);
+    b.put_u32(content + 40, mini);
+    b.put_u32(content + 100, 300);
+    b.put_u32(content + 300 + 40, chr);
+    return b.d;
+}
+
+std::string stub_container(uint32_t fid) { return fid == 500 ? "MODL" : fid == 777 ? "AMSP" : ""; }
+
+}  // namespace
+
+namespace cmap = castlemist::cmap;
+
+CM_TEST(npc_catalogue, builds_records_from_the_content_map_and_character_fields) {
+    cmap::clear();
+    std::vector<cmap::PackBytes> packs = {{1, 900, cat_file_refs_pack()},
+                                          {2, 901, cat_skin_pack(6506)},
+                                          {3, 902, cat_item_pack(76158)},
+                                          {4, 903, cat_char_pack(4242, true, true)}};
+    cmap::build_from_packs(packs);
+    Catalogue c = build_catalogue(packs, stub_container);
+    CHECK_EQ(c.npcs.size(), size_t(1));
+    const NpcRecord* r = c.find(4242);
+    CHECK(r != nullptr);
+    if (r) {
+        CHECK_EQ(r->model, 500u);
+        CHECK_EQ(r->sound_script, 777u);
+        CHECK_EQ(r->weapons.size(), size_t(1));
+        if (!r->weapons.empty()) {
+            CHECK_EQ(r->weapons[0].slot, 200u);
+            CHECK_EQ(r->weapons[0].item, 76158u);
+            CHECK_EQ(r->weapons[0].skin, 6506u);
+            CHECK_EQ(r->weapons[0].model, 777u);
+        }
+        CHECK_EQ(c.by_model(500).size(), size_t(1));
+    }
+    Coverage cov = c.coverage();
+    CHECK_EQ(cov.npcs, size_t(1));
+    CHECK_EQ(cov.with_model, size_t(1));
+    CHECK_EQ(cov.with_weapons, size_t(1));
+    cmap::clear();
+}
+
+CM_TEST(npc_catalogue, lists_a_character_the_content_map_does_not_hold) {
+    cmap::clear();
+    std::vector<cmap::PackBytes> packs = {{1, 900, cat_file_refs_pack()},
+                                          {2, 901, cat_skin_pack(6506)},
+                                          {4, 903, cat_char_pack(99, false, false)}};
+    cmap::build_from_packs(packs);
+    Catalogue c = build_catalogue(packs, stub_container);
+    CHECK_EQ(c.npcs.size(), size_t(1));
+    const NpcRecord* r = c.find(99);
+    CHECK(r != nullptr);
+    if (r) CHECK_EQ(r->model, 0u);
+    CHECK_EQ(c.coverage().with_model, size_t(0));
+    cmap::clear();
+}
+
+CM_TEST(npc_catalogue, links_a_minipet_to_its_character) {
+    cmap::clear();
+    std::vector<cmap::PackBytes> packs = {{1, 900, cat_file_refs_pack()},
+                                          {2, 901, cat_skin_pack(6506)},
+                                          {3, 902, cat_minipet_pack(3001, 4242)}};
+    cmap::build_from_packs(packs);
+    Catalogue c = build_catalogue(packs, stub_container);
+    CHECK(cmap::built());
+    const NpcRecord* r = c.find(4242);
+    CHECK(r != nullptr);
+    if (r) CHECK_EQ(r->minipet, 3001u);
+    CHECK_EQ(minipet_ids(c).size(), size_t(1));
+    cmap::clear();
+}
+
+CM_TEST(npc_catalogue, apply_names_sets_names_by_minipet) {
+    Catalogue c;
+    NpcRecord a, b, d;
+    a.id = 1; a.minipet = 30;
+    b.id = 2; b.minipet = 10;
+    d.id = 3;
+    c.npcs = {a, b, d};
+    CHECK((minipet_ids(c) == std::vector<uint32_t>{10, 30}));
+    CHECK_EQ(apply_names(c, {{10, "Ten"}, {99, "Nope"}}), size_t(1));
+    CHECK_EQ(c.npcs[0].name, std::string());
+    CHECK_EQ(c.npcs[1].name, std::string("Ten"));
+    CHECK_EQ(c.npcs[2].name, std::string());
+}
+
+CM_TEST(npc_catalogue, without_a_content_map_the_catalogue_is_empty_with_a_warning) {
+    cmap::clear();
+    std::vector<cmap::PackBytes> packs = {{4, 903, cat_char_pack(99, false, false)}};
+    Catalogue c = build_catalogue(packs, stub_container);
+    CHECK(c.npcs.empty());
+    CHECK_EQ(c.warnings.size(), size_t(1));
+    if (!c.warnings.empty()) CHECK_EQ(c.warnings[0], std::string("content map not loaded"));
+}
+
+CM_TEST(npc_catalogue, round_trips_through_json) {
+    Catalogue c;
+    NpcRecord r;
+    r.id = 7; r.codename = "abc.def"; r.model = 11; r.sound_script = 12;
+    r.race = "charrmale"; r.modifier = "ghost";
+    r.minipet = 321; r.name = "Mini Foo";
+    r.weapons = {{200, 1, 2, 3}};
+    r.skills = {5, 6};
+    r.looks = {{"humanfemale", 18446744073709551615ull}, {"charrmale", 42}};
+    c.npcs.push_back(r);
+    c.warnings.push_back("w");
+    auto path = std::filesystem::temp_directory_path() / "cm_npc_catalogue_rt.json";
+    CHECK(save(c, path));
+    auto l = load(path);
+    CHECK(l.has_value());
+    if (l) {
+        CHECK_EQ(l->npcs.size(), size_t(1));
+        const NpcRecord& g = l->npcs[0];
+        CHECK_EQ(g.id, 7u);
+        CHECK_EQ(g.codename, std::string("abc.def"));
+        CHECK_EQ(g.model, 11u);
+        CHECK_EQ(g.sound_script, 12u);
+        CHECK_EQ(g.race, std::string("charrmale"));
+        CHECK_EQ(g.modifier, std::string("ghost"));
+        CHECK_EQ(g.minipet, 321u);
+        CHECK_EQ(g.name, std::string("Mini Foo"));
+        CHECK_EQ(g.weapons.size(), size_t(1));
+        CHECK_EQ(g.weapons[0].model, 3u);
+        CHECK_EQ(g.skills.size(), size_t(2));
+        CHECK_EQ(g.looks.size(), size_t(2));
+        if (g.looks.size() == 2) {
+            CHECK_EQ(g.looks[0].race, std::string("humanfemale"));
+            CHECK(g.looks[0].look_token == 18446744073709551615ull);
+            CHECK_EQ(g.looks[1].race, std::string("charrmale"));
+            CHECK(g.looks[1].look_token == 42ull);
+        }
+        CHECK_EQ(l->warnings.size(), size_t(1));
+    }
+    std::filesystem::remove(path);
+}
+
+CM_TEST(npc_catalogue, load_rejects_wrong_version) {
+    auto path = std::filesystem::temp_directory_path() / "cm_npc_catalogue_bad.json";
+    { std::ofstream(path) << R"({"version":1,"warnings":[],"npcs":[]})"; }
+    CHECK(!load(path).has_value());
+    { std::ofstream(path) << R"({"version":2,"warnings":[],"npcs":[]})"; }
+    CHECK(!load(path).has_value());
+    { std::ofstream(path) << "not json"; }
+    CHECK(!load(path).has_value());
+    std::filesystem::remove(path);
+    CHECK(!load(path).has_value());
+}
+
+CM_TEST(npc_catalogue, load_rejects_a_cache_without_npcs) {
+    auto path = std::filesystem::temp_directory_path() / "cm_npc_catalogue_nonpcs.json";
+    { std::ofstream(path) << R"({"version":3,"warnings":[]})"; }
+    CHECK(!load(path).has_value());
+    { std::ofstream(path) << R"({"version":3,"warnings":[],"npcs":{}})"; }
+    CHECK(!load(path).has_value());
+    { std::ofstream(path) << R"({"version":3,"warnings":[],"npcs":[]})"; }
+    CHECK(load(path).has_value());
+    std::filesystem::remove(path);
+}
+
+CM_TEST(npc_catalogue, corrupt_compressed_input_gives_empty_bytes_without_throwing) {
+    // 8-byte header claiming a large output, then garbage that is not a valid method-0 stream.
+    std::vector<uint8_t> raw = {0, 0, 0, 0, 0x00, 0x10, 0x00, 0x00};
+    for (int i = 0; i < 40; ++i) raw.push_back(static_cast<uint8_t>(0xA5 ^ (i * 37)));
+    std::vector<uint8_t> out = {1};
+    bool threw = false;
+    try {
+        out = decompress_cntc(raw, true);
+    } catch (...) {
+        threw = true;
+    }
+    CHECK(!threw);
+    CHECK(out.empty());
+    CHECK(decompress_cntc(std::vector<uint8_t>{1, 2, 3}, true).empty());
+}
+
+// fileRefs pack (900) that also carries a character with a +200 weapon ref to file index 2.
+static std::vector<uint8_t> cat_refs_and_char_pack(uint32_t data_id) {
+    PackBuilder b;
+    const size_t ptrs = 300, pairs = ptrs + 16;
+    b.put_selfrel(ptrs, pairs);
+    b.put_selfrel(ptrs + 8, pairs + 4);
+    b.put_bytes(pairs, {0xF3, 0x02, 0x00, 0x01});
+    b.put_bytes(pairs + 4, {0x08, 0x04, 0x00, 0x01});
+    b.set_dynarray(2, 2, ptrs);
+    b.put_u32(200, 67);
+    b.ensure(216);
+    b.set_dynarray(3, 1, 200);
+    b.put_u32(220, 200);
+    b.put_u32(224, 2);
+    b.set_dynarray(5, 1, 220);
+    const size_t c = 400;
+    b.put_u32(c + 16, 67);
+    b.put_u32(c + 40, data_id);
+    b.ensure(c + 300);
+    b.set_dynarray(10, 300, c);
+    return b.d;
+}
+
+CM_TEST(npc_catalogue, a_corrupt_middle_pack_does_not_shift_cross_pack_refs) {
+    cmap::clear();
+    std::vector<uint8_t> garbage(64, 0x5A);
+    std::vector<cmap::PackBytes> packs = {{1, 900, cat_refs_and_char_pack(4242)},
+                                          {2, 901, garbage},
+                                          {3, 902, cat_item_pack(76158)}};
+    cmap::build_from_packs({packs[0], packs[2]});
+    Catalogue c = build_catalogue(packs, stub_container);
+    CHECK_EQ(c.warnings.size(), size_t(1));
+    const NpcRecord* r = c.find(4242);
+    CHECK(r != nullptr);
+    if (r) {
+        CHECK_EQ(r->weapons.size(), size_t(1));
+        if (!r->weapons.empty()) CHECK_EQ(r->weapons[0].item, 76158u);
+    }
+    cmap::clear();
+}
+
+CM_TEST(npc, decodes_a_packed_clip_name) {
+    CHECK_EQ(decode_token(0x80000029dd5604f7ULL), std::string("wgalunge"));
+    CHECK_EQ(decode_token(0x2cdf07c8baULL), std::string("zeropose"));
+}
+
+CM_TEST(npc, rejects_groups_above_z) {
+    CHECK_EQ(decode_token(0x1f), std::string());
+}
+
+CM_TEST(npc, groups_clips_by_action) {
+    CHECK_EQ(clip_group("wgalunge08"), std::string("lunge"));
+    CHECK_EQ(clip_prefix("wgalunge08"), std::string("wga"));
+    CHECK_EQ(clip_group("uamland    l08"), std::string("land    l"));
+    CHECK_EQ(clip_group("zeropose"), std::string("zeropose"));
+    CHECK_EQ(clip_prefix("zeropose"), std::string());
+}
+
+CM_TEST(npc_pack, parses_objects_refs_files_and_strings) {
+    PackBuilder b;
+    const size_t ie = 200, lo = 240, fi = 248, si = 256, st = 264, str = 280, fr = 320, frp = 340, content = 400;
+    // Two objects: type 67 at content offset 0, type 35 at 300; content is 400 bytes.
+    b.set_dynarray(3, 2, ie);
+    b.put_u32(ie + 0, 67);
+    b.put_u32(ie + 4, 0);
+    b.put_u32(ie + 16, 35);
+    b.put_u32(ie + 20, 300);
+    b.set_dynarray(4, 1, lo);
+    b.put_u32(lo, 200);  // reloc inside the 67
+    b.set_dynarray(6, 1, fi);
+    b.put_u32(fi, 240);
+    b.set_dynarray(7, 1, si);
+    b.put_u32(si, 248);
+    b.set_dynarray(9, 1, st);
+    b.put_selfrel(st, str);
+    b.put_utf16(str, "vl8Av.4gynM");
+    b.set_dynarray(2, 2, fr);
+    b.put_selfrel(fr, frp);
+    b.put_selfrel(fr + 8, frp + 4);
+    b.put_bytes(frp, {0xF3, 0x02, 0x00, 0x01});      // fileId 500
+    b.put_bytes(frp + 4, {0x0A, 0x03, 0x00, 0x01});  // fileId 523
+    b.set_dynarray(10, 400, content);
+    b.ensure(content + 400);
+    b.put_u32(content + 40, 777);   // data id of the 67
+    b.put_u32(content + 200, 300);  // local ref -> the 35
+    b.put_u32(content + 240, 1);    // fileRefs index
+    b.put_u32(content + 248, 0);    // strings index
+
+    auto pack = parse_pack(b.d, 7, 900);
+    CHECK(pack.has_value());
+    CHECK_EQ(pack->objects.size(), size_t(2));
+    CHECK_EQ(pack->file_refs.size(), size_t(2));
+    CHECK_EQ(pack->file_refs[0], 500u);
+    CHECK_EQ(pack->file_refs[1], 523u);  // low 0x030A - 0x100 + 1
+    const Object* a = pack->object_at(0);
+    CHECK(a != nullptr);
+    CHECK_EQ(a->type, 67u);
+    CHECK_EQ(a->end, 300u);
+    CHECK_EQ(a->data_id, 777u);
+    CHECK_EQ(a->refs.size(), size_t(1));
+    CHECK_EQ(a->refs[0].field, 200u);
+    CHECK_EQ(a->refs[0].target_offset, 300u);
+    CHECK(!a->refs[0].external);
+    CHECK_EQ(a->files.size(), size_t(1));
+    CHECK_EQ(a->files[0].first, 240u);
+    CHECK_EQ(a->files[0].second, 1u);
+    CHECK_EQ(a->strings.size(), size_t(1));
+    CHECK_EQ(a->strings[0].first, 248u);
+    CHECK_EQ(a->strings[0].second, std::string("vl8Av.4gynM"));
+    CHECK_EQ(pack->u32(*a, 200), 300u);
+    CHECK_EQ(pack->u32(*a, 5000), 0u);
+
+    PackSet set;
+    set.packs.push_back(std::move(*pack));
+    set.finish();
+    auto [rp, ro] = set.resolve(0, set.packs[0].objects[0].refs[0]);
+    CHECK(rp == &set.packs[0]);
+    CHECK(ro != nullptr);
+    CHECK_EQ(ro->type, 35u);
+    CHECK(set.packs[0].object_at(5) == nullptr);
+}
+
+CM_TEST(npc_pack, resolves_external_refs_by_file_id_order_from_the_file_refs_pack) {
+    PackSet set;
+    set.packs.push_back(*parse_pack(tiny_pack(11, false, true), 5, 901));
+    set.packs.push_back(*parse_pack(tiny_pack(22, false, false), 3, 902));
+    set.packs.push_back(*parse_pack(tiny_pack(33, true, false), 4, 900));
+    set.finish();
+    CHECK_EQ(set.shared_file_refs().size(), size_t(1));
+    CHECK_EQ(set.shared_file_refs()[0], 500u);
+    size_t from = 99;
+    for (size_t i = 0; i < set.packs.size(); ++i)
+        if (set.packs[i].file_id == 901) from = i;
+    CHECK(from != 99);
+    const Object& o = set.packs[from].objects[0];
+    CHECK_EQ(o.refs.size(), size_t(1));
+    CHECK(o.refs[0].external);
+    CHECK_EQ(o.refs[0].target_file_index, 2u);
+    auto [rp, ro] = set.resolve(from, o.refs[0]);
+    CHECK(rp != nullptr);
+    CHECK_EQ(rp->file_id, 902u);
+    CHECK(ro != nullptr);
+    CHECK_EQ(ro->type, 22u);
+}
+
+CM_TEST(npc_pack, a_truncated_pack_is_a_warning_not_a_crash) {
+    std::vector<uint8_t> full = tiny_pack(1, false, false);
+    std::vector<uint8_t> cut(full.begin(), full.begin() + 40);
+    CHECK(!parse_pack(cut, 1, 1).has_value());
+    CHECK(!parse_pack({}, 1, 1).has_value());
+}
+
+CM_TEST(npc_character, reads_weapons_skills_race_and_modifier) {
+    PackSet set;
+    set.packs.push_back(make_char_pack(
+        {{9, 0, 4242}, {35, 700, 76158}, {64, 800, 5491}},
+        {{200, 700}, {120, 800}},
+        {{632, pack_token("humanfemale")}, {88, pack_token("undead")}},
+        {{700 + 44, 24}}));
+    set.finish();
+    const Object* c = set.packs[0].object_at(0);
+    CHECK(c != nullptr);
+    CharacterFields f = read_character(set, 0, *c);
+    CHECK_EQ(f.id, 4242u);
+    CHECK_EQ(f.weapons.size(), size_t(1));
+    CHECK_EQ(f.weapons[0].first, 200u);
+    CHECK_EQ(f.weapons[0].second, 76158u);
+    CHECK_EQ(f.skills.size(), size_t(1));
+    CHECK_EQ(f.skills[0], 5491u);
+    CHECK_EQ(f.race, std::string("humanfemale"));
+    CHECK_EQ(f.modifier, std::string("undead"));
+}
+
+CM_TEST(npc_character, reads_look_records) {
+    PackSet set;
+    set.packs.push_back(make_char_pack(
+        {{9, 0, 4242}},
+        {},
+        {{632, pack_token("humanfemale")}, {640, pack_token("banditf")}, {648, 5},
+         {664, pack_token("humanmale")}, {672, pack_token("xpkurzwar")},
+         {696, pack_token("charrmale")}},  // next u64 is zero: not a look
+        {}));
+    set.finish();
+    CharacterFields f = read_character(set, 0, *set.packs[0].object_at(0));
+    CHECK_EQ(f.race, std::string("humanfemale"));
+    CHECK_EQ(f.looks.size(), size_t(2));
+    if (f.looks.size() == 2) {
+        CHECK_EQ(f.looks[0].first, std::string("humanfemale"));
+        CHECK(f.looks[0].second == pack_token("banditf"));
+        CHECK_EQ(f.looks[1].first, std::string("humanmale"));
+        CHECK(f.looks[1].second == pack_token("xpkurzwar"));
+    }
+}
+
+CM_TEST(npc_character, drops_a_slot_ref_whose_target_has_the_wrong_type) {
+    PackSet set;
+    set.packs.push_back(make_char_pack(
+        {{9, 0, 1}, {140, 700, 2}, {35, 800, 3}},
+        {{192, 700}, {168, 800}}, {}, {{800 + 44, 24}}));
+    set.finish();
+    CharacterFields f = read_character(set, 0, *set.packs[0].object_at(0));
+    CHECK(f.weapons.empty());
+    CHECK(f.skills.empty());
+}
+
+CM_TEST(npc_character, a_non_weapon_item_is_not_a_weapon) {
+    PackSet set;
+    set.packs.push_back(make_char_pack({{9, 0, 1}, {35, 700, 2}}, {{200, 700}}, {}, {{700 + 44, 0}}));
+    set.finish();
+    CharacterFields f = read_character(set, 0, *set.packs[0].object_at(0));
+    CHECK(f.weapons.empty());
+}
+
+CM_TEST(npc_export, folder_name_is_filesystem_safe) {
+    NpcRecord r;
+    r.id = 5758;
+    r.codename = "vl8A/.4g+nM";
+    CHECK_EQ(export_folder_name(r), std::string("5758_vl8A_.4g_nM"));
+    r.codename = "";
+    CHECK_EQ(export_folder_name(r), std::string("5758"));
+}
+
+CM_TEST(npc_export, manifest_notes_a_race_body_npc) {
+    NpcRecord r;
+    r.id = 1;
+    r.race = "humanfemale";
+    r.weapons.push_back({200, 76158, 0, 0});
+    std::vector<std::string> want = {"no body model: race-body NPC (humanfemale), outfit data not decoded",
+                                     "weapon 200: no skin model"};
+    CHECK(base_notes(r) == want);
+    r.race = "";
+    CHECK_EQ(base_notes(r)[0], std::string("no body model"));
+}
+
+CM_TEST(npc_export, manifest_lists_clips_weapons_and_files) {
+    NpcRecord r;
+    r.id = 7;
+    r.codename = "x";
+    r.model = 99;
+    Weapon w{200, 1, 2, 3};
+    nlohmann::json j = export_manifest(r, {{"wgalunge08", 1.07}}, {{w, "weapon_200.glb"}}, {"model.glb"}, {"n"});
+    CHECK_EQ(j["version"].get<int>(), 1);
+    CHECK_EQ(j["clips"][0]["group"].get<std::string>(), std::string("lunge"));
+    CHECK_EQ(j["clips"][0]["prefix"].get<std::string>(), std::string("wga"));
+    CHECK_EQ(j["weapons"][0]["file"].get<std::string>(), std::string("weapon_200.glb"));
+    CHECK_EQ(j["files"][0].get<std::string>(), std::string("model.glb"));
+    CHECK_EQ(j["notes"][0].get<std::string>(), std::string("n"));
+}
+
+CM_TEST(npc_export, manifest_lists_look_and_parts) {
+    NpcRecord r;
+    r.id = 7;
+    r.race = "humanmale";
+    r.looks = {{"humanmale", 1}, {"humanmale", 2}};
+    nlohmann::json none = export_manifest(r, {}, {}, {}, {});
+    CHECK_EQ(none["looks"].get<int>(), 2);
+    CHECK(!none.contains("parts"));
+    LookUsed used{1, {{"hair", "used", ""}, {"Coat", "hidden", "under armour"}}};
+    nlohmann::json j = export_manifest(r, {}, {}, {"body.glb"}, {}, &used);
+    CHECK_EQ(j["looks"].get<int>(), 2);
+    CHECK_EQ(j["look_used"].get<int>(), 1);
+    CHECK_EQ(j["parts"].size(), size_t(2));
+    CHECK_EQ(j["parts"][0]["name"].get<std::string>(), std::string("hair"));
+    CHECK_EQ(j["parts"][0]["status"].get<std::string>(), std::string("used"));
+    CHECK_EQ(j["parts"][1]["reason"].get<std::string>(), std::string("under armour"));
+}
+
+CM_TEST(npc_export, npc_model_without_body_or_look_is_a_note) {
+    Gw2Dat dat;  // never opened: nothing to load
+    NpcRecord r;
+    r.id = 9;
+    NpcModel m = npc_model(dat, r);
+    CHECK(m.model == nullptr);
+    CHECK_EQ(m.notes.size(), size_t(1));
+    CHECK_EQ(m.notes[0], std::string("no body model and no look"));
+}
+
+namespace {
+NpcRecord make_npc(uint32_t id, uint32_t model, const std::string& race, const std::string& codename = "") {
+    NpcRecord r;
+    r.id = id;
+    r.model = model;
+    r.race = race;
+    r.codename = codename;
+    return r;
+}
+}  // namespace
+
+CM_TEST(npc_browse, groups_by_model_then_race) {
+    Catalogue cat;
+    cat.npcs = {make_npc(1, 104256, ""), make_npc(2, 104256, ""), make_npc(3, 0, "humanmale")};
+    std::vector<Group> g = group_creatures(cat, "", {});
+    CHECK_EQ(g.size(), size_t(2));
+    CHECK_EQ(g[0].model, uint32_t(104256));
+    CHECK_EQ(g[0].npcs.size(), size_t(2));
+    CHECK_EQ(g[1].race, std::string("humanmale"));
+    CHECK_EQ(group_label(g[1]), std::string("humanmale"));
+    CHECK_EQ(group_label(g[0]), std::string("model 104256"));
+}
+
+CM_TEST(npc_browse, filters_by_id_codename_race_model_and_skill_name) {
+    NpcRecord r = make_npc(5758, 104256, "humanmale", "vl8Av.4gynM");
+    r.skills = {5491};
+    CHECK(matches(r, "5758", {}));
+    CHECK(matches(r, "VL8A", {}));
+    CHECK(matches(r, "human", {}));
+    CHECK(matches(r, "10425", {}));
+    SkillName names = [](uint32_t id) { return id == 5491 ? std::string("Fireball") : std::string(); };
+    CHECK(matches(r, "fireball", names));
+    CHECK(!matches(r, "fireball", {}));
+    r.name = "Rift Hound";
+    CHECK(matches(r, "hound", {}));
+}
+
+CM_TEST(npc_browse, a_filter_matching_nothing_gives_no_groups) {
+    Catalogue cat;
+    cat.npcs = {make_npc(1, 104256, "")};
+    CHECK(group_creatures(cat, "zzzz", {}).empty());
+}
+
+// ---- Look presets -> character assembly --------------------------------------------------------------
+
+namespace {
+/// A token is its name 5-bit packed: a = 1 ... z = 26, first letter in the low bits.
+uint64_t pack_name(const std::string& name) {
+    uint64_t t = 0;
+    for (size_t i = 0; i < name.size(); ++i) t |= static_cast<uint64_t>(name[i] - 'a' + 1) << (5 * i);
+    return t;
+}
+
+castlemist::composite::CompositeFileData piece(uint64_t token, uint8_t type) {
+    castlemist::composite::CompositeFileData f;
+    f.token = token;
+    f.type = type;
+    return f;
+}
+
+/// HumanFemale with a Coat (token "coatx"), hair styles {h0, h1, "hairx"}, faces {f0, "facex"}, and the look "banditvar".
+castlemist::composite::Composite look_composite() {
+    namespace comp = castlemist::composite;
+    comp::Composite c;
+    comp::CompositeRace r;
+    r.name = "HumanFemale";
+    r.file_data[pack_name("coatx")] = piece(pack_name("coatx"), 9);
+    r.hair_styles = {pack_name("haira"), pack_name("hairb"), pack_name("hairx")};
+    r.faces = {pack_name("facea"), pack_name("facex")};
+    comp::CompositeVariant v;
+    v.token = pack_name("banditvar");
+    v.bone_scale_index = 3;
+    v.components = {{pack_name("coatx"), {}}, {pack_name("hairx"), {}}, {pack_name("facex"), {}}};
+    r.variants.push_back(v);
+    c.races.push_back(r);
+    return c;
+}
+
+NpcRecord look_npc(const std::string& race, const std::string& look) {
+    NpcRecord n = make_npc(1082, 0, race);
+    n.looks = {{race, pack_name(look)}};
+    return n;
+}
+}  // namespace
+
+CM_TEST(npc_look, maps_a_variant_to_pieces_face_hair_and_physique) {
+    auto a = npc_assembly(look_npc("humanfemale", "banditvar"), 0, look_composite());
+    CHECK(a.has_value());
+    if (!a) return;
+    CHECK_EQ(a->manifest.race, std::string("Human"));
+    CHECK_EQ(a->manifest.gender, std::string("Female"));
+    CHECK_EQ(a->manifest.pieces.size(), size_t(1));
+    CHECK_EQ(a->manifest.pieces[0].slot, std::string("Coat"));
+    CHECK_EQ(a->manifest.pieces[0].skin_token, pack_name("coatx"));
+    CHECK_EQ(a->manifest.pieces[0].skin_type, std::string("Armor"));  // the ripper only dresses pieces typed Armor
+    CHECK(a->manifest.pieces[0].status == castlemist::character::PieceStatus::Ok);
+    CHECK_EQ(a->options.hair, 2);
+    CHECK_EQ(a->options.face, 1);
+    CHECK_EQ(a->options.physique, -1);  // boneScaleIndex is never applied as a physique
+    bool noted = false;
+    for (const std::string& n : a->notes) noted = noted || n == "physique 3: not in composite";
+    CHECK(noted);
+}
+
+CM_TEST(npc_look, truncated_race_token_resolves) {
+    castlemist::composite::Composite c = look_composite();
+    c.races[0].name = "SylvariFemale";
+    auto a = npc_assembly(look_npc("sylvarifemal", "banditvar"), 0, c);
+    CHECK(a.has_value());
+    if (a) {
+        CHECK_EQ(a->manifest.race, std::string("Sylvari"));
+        CHECK_EQ(a->manifest.gender, std::string("Female"));
+    }
+}
+
+CM_TEST(npc_look, an_unresolvable_look_is_nullopt_with_a_reason_and_never_throws) {
+    std::string why;
+    CHECK(!npc_assembly(look_npc("humanfemale", "nosuchlook"), 0, look_composite(), &why).has_value());
+    CHECK_EQ(why, std::string("variant nosuchlook: not in composite"));
+    why.clear();
+    CHECK(!npc_assembly(look_npc("charrmale", "banditvar"), 0, look_composite(), &why).has_value());
+    CHECK_EQ(why, std::string("race charrmale: not in composite"));
+    why.clear();
+    CHECK(!npc_assembly(look_npc("humanfemale", "banditvar"), 5, look_composite(), &why).has_value());
+    CHECK_EQ(why, std::string("no look record 5"));
+}
+
+CM_TEST(npc_look, a_variant_missing_here_is_found_through_variant_ref_race) {
+    castlemist::composite::Composite c = look_composite();
+    castlemist::composite::CompositeRace other = c.races[0];
+    other.name = "HumanMale";
+    other.variants.clear();
+    other.variant_ref_race = pack_name("humanfemale");
+    c.races.push_back(other);
+    auto a = npc_assembly(look_npc("humanmale", "banditvar"), 0, c);
+    CHECK(a.has_value());
+    if (a) CHECK_EQ(a->manifest.gender, std::string("Male"));
+}
+
+// AsuraFemale -> AsuraMale, CharrFemale -> CharrMale: the race's own file data holds only its own meshes.
+CM_TEST(npc_look, armour_shared_through_variant_ref_race_is_dressed) {
+    castlemist::composite::Composite c = look_composite();
+    castlemist::composite::CompositeRace female = c.races[0];
+    c.races[0].name = "AsuraMale";
+    c.races[0].variants.clear();
+    female.name = "AsuraFemale";
+    female.file_data.clear();  // the coat lives on AsuraMale only
+    female.variant_ref_race = pack_name("asuramale");
+    c.races.push_back(female);
+    auto a = npc_assembly(look_npc("asurafemale", "banditvar"), 0, c);
+    CHECK(a.has_value());
+    if (!a) return;
+    CHECK_EQ(a->manifest.gender, std::string("Female"));
+    CHECK_EQ(a->manifest.pieces.size(), size_t(1));
+    if (!a->manifest.pieces.empty()) CHECK_EQ(a->manifest.pieces[0].slot, std::string("Coat"));
+    for (const std::string& n : a->notes) CHECK(n.find("not in composite") == std::string::npos || n.rfind("physique", 0) == 0);
+}
+
+CM_TEST(npc_look, an_unknown_component_token_is_a_note) {
+    castlemist::composite::Composite c = look_composite();
+    c.races[0].variants[0].components.push_back({pack_name("mystery"), {}});
+    auto a = npc_assembly(look_npc("humanfemale", "banditvar"), 0, c);
+    CHECK(a.has_value());
+    if (!a) return;
+    bool found = false;
+    for (const std::string& n : a->notes) found = found || n == "component mystery: not in composite";
+    CHECK(found);
+    CHECK_EQ(a->manifest.pieces.size(), size_t(1));
+}
+
+CM_TEST(npc_look, measured_colours_become_dyes_and_tints) {
+    castlemist::composite::Composite c = look_composite();
+    castlemist::composite::VariantColor col;
+    col.brightness = 135, col.contrast = 168, col.hue = 249, col.saturation = 38, col.lightness = 189;
+    c.races[0].variants[0].skin = col;
+    c.races[0].variants[0].components[0].colors[1] = col;
+    auto want = castlemist::npc::candidate_color_shift(col);
+    auto got = castlemist::npc::variant_color_shift(col);
+    CHECK(got.has_value());
+    if (got) CHECK_NEAR(got->contrast, want.contrast, 1e-6f);
+    auto a = npc_assembly(look_npc("humanfemale", "banditvar"), 0, c);
+    CHECK(a.has_value());
+    if (!a) return;
+    CHECK(a->options.skin_tint.has_value());
+    if (a->options.skin_tint) CHECK_NEAR(a->options.skin_tint->hue, want.hue, 1e-4f);
+    CHECK_EQ(a->manifest.pieces[0].dyes.size(), size_t(1));
+    if (!a->manifest.pieces[0].dyes.empty()) {
+        const auto& d = a->manifest.pieces[0].dyes[0];
+        CHECK_EQ(d.slot, 1);
+        CHECK(d.shift.has_value());
+        if (d.shift) CHECK_NEAR(d.shift->lightness, want.lightness, 1e-6f);
+    }
+    bool found = false;
+    for (const std::string& n : a->notes) found = found || n == kColorsNote;
+    CHECK(found);
+}
+
+CM_TEST(npc_look, a_non_armour_component_and_an_out_of_range_skin_style_are_notes) {
+    castlemist::composite::Composite c = look_composite();
+    c.races[0].file_data[pack_name("bodyx")] = piece(pack_name("bodyx"), 1);
+    c.races[0].variants[0].components.push_back({pack_name("bodyx"), {}});
+    c.races[0].variants[0].skin_style = 5;
+    auto a = npc_assembly(look_npc("humanfemale", "banditvar"), 0, c);
+    CHECK(a.has_value());
+    if (!a) return;
+    bool t = false, s = false;
+    for (const std::string& n : a->notes) {
+        t = t || n == "component bodyx: type 1 not an armour piece";
+        s = s || n == "skin style 5: not in composite";
+    }
+    CHECK(t);
+    CHECK(s);
+    CHECK_EQ(a->options.skin_style, 0);
+}
+
+CM_TEST(npc_look, colour_mapping_matches_measured_examples) {
+    // The measured mapping (see variant_color_shift and the spec's "Colour bytes"): neutral bytes are the identity shift,
+    // and a real palette skin colour {7, 1.3125, 350, 0.296875, 1.4765625} round-trips through its bytes.
+    using castlemist::composite::VariantColor;
+    auto neutral = castlemist::npc::candidate_color_shift(VariantColor{128, 128, 0, 128, 128});
+    CHECK_NEAR(neutral.brightness, 0.0f, 1e-4f);
+    CHECK_NEAR(neutral.contrast, 1.0f, 1e-4f);
+    CHECK_NEAR(neutral.hue, 0.0f, 1e-4f);
+    CHECK_NEAR(neutral.saturation, 1.0f, 1e-4f);
+    CHECK_NEAR(neutral.lightness, 1.0f, 1e-4f);
+    auto skin = castlemist::npc::candidate_color_shift(VariantColor{135, 168, 249, 38, 189});
+    CHECK_NEAR(skin.brightness, 7.0f, 1e-4f);
+    CHECK_NEAR(skin.contrast, 1.3125f, 1e-4f);
+    CHECK_NEAR(skin.hue, 350.0f, 1.0f);  // one hue byte is 1.4 degrees
+    CHECK_NEAR(skin.saturation, 0.296875f, 1e-4f);
+    CHECK_NEAR(skin.lightness, 1.4765625f, 1e-4f);
+}
+
+CM_TEST(npc_look, physique_none_is_silent_and_out_of_range_is_a_note) {
+    castlemist::composite::Composite c = look_composite();
+    c.races[0].body_bone_scales.resize(14);
+    c.races[0].variants[0].bone_scale_index = 0xFFFFFFFFu;  // "none" in the real data (743 of 1315 HumanFemale variants)
+    auto none = npc_assembly(look_npc("humanfemale", "banditvar"), 0, c);
+    CHECK(none.has_value());
+    if (none) {
+        CHECK_EQ(none->options.physique, -1);
+        for (const std::string& n : none->notes) CHECK(n.rfind("physique", 0) != 0);
+    }
+    c.races[0].variants[0].bone_scale_index = 28;  // beyond the race's 14 physiques
+    auto big = npc_assembly(look_npc("humanfemale", "banditvar"), 0, c);
+    CHECK(big.has_value());
+    if (big) {
+        CHECK_EQ(big->options.physique, -1);
+        bool found = false;
+        for (const std::string& n : big->notes) found = found || n == "physique 28: not in composite";
+        CHECK(found);
+    }
+}

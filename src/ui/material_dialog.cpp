@@ -28,7 +28,6 @@
 #include <vector>
 
 #include <d3d11.h>
-#include <dwmapi.h>
 #include <wrl/client.h>
 
 #include <imgui.h>
@@ -860,10 +859,7 @@ bool create_host(HWND owner) {
         destroy_host();
         return false;
     }
-    if (g_theme_is_dark) {
-        BOOL dark = TRUE;
-        DwmSetWindowAttribute(g_host->wnd, 20 /*DWMWA_USE_IMMERSIVE_DARK_MODE*/, &dark, sizeof dark);
-    }
+    apply_titlebar_theme(g_host->wnd);
     DXGI_SWAP_CHAIN_DESC sd{};
     sd.BufferCount = 2;
     sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;

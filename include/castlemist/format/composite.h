@@ -66,6 +66,23 @@ struct BoneScalePreset {
     uint32_t second_count = 0;  // the record's second array (unknown), its length
 };
 
+/// A variant colour (PackCompositeColorV20): five bytes.
+struct VariantColor {
+    uint8_t brightness = 0, contrast = 0, hue = 0, saturation = 0, lightness = 0;
+};
+struct VariantComponent {
+    uint64_t token = 0;  // a FileData / face / hair / ears token
+    std::array<VariantColor, 4> colors{};
+};
+/// A race's variant: an NPC look preset (token = the look name, 5-bit packed).
+struct CompositeVariant {
+    uint64_t token = 0;
+    uint32_t bone_scale_index = 0;
+    std::vector<VariantComponent> components;
+    VariantColor eye, hair, hair2, pattern, skin;
+    uint32_t skin_index = 0, skin_style = 0;
+};
+
 struct CompositeRace {
     std::string name;  // "SylvariFemale" = API race + gender; also NPC variants ("CreatureCM", ...)
     uint32_t skeleton_file = 0;
@@ -81,6 +98,9 @@ struct CompositeRace {
     std::vector<std::array<uint32_t, 6>> skin_patterns;
     /// Physiques (the character creator's body types) and face presets.
     std::vector<BoneScalePreset> body_bone_scales, face_bone_scales;
+    /// NPC look presets (raceSexData[].variants) and the race token they refer to.
+    uint64_t variant_ref_race = 0;
+    std::vector<CompositeVariant> variants;
 };
 
 /// The undergarments every race wears where it has no armor: FileData named
