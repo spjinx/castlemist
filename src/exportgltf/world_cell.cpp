@@ -171,8 +171,16 @@ std::vector<CellMesh> build_cell_colliders(const cw::WorldScene& s, const cw::Ce
         p.pos.reserve((last - first) * 9);
         for (size_t f = first * 9; f < last * 9; f += 3)
             for (int k = 0; k < 3; ++k) p.pos.push_back(float(double(tris[f + k]) - c.origin[k]));
+        // Havok's triangles wind opposite to the render meshes': as stored, a collider's faces point
+        // into its volume, and Unity's one-sided MeshCollider let players fall through every floor
+        // (2026-10-22: 79 of 84 downward rays met a down-facing collider face first; flipped, 5).
+        // Each triangle is written (0, 2, 1), facing out as the terrain and the props do.
         p.idx.resize((last - first) * 3);
-        for (size_t v = 0; v < p.idx.size(); ++v) p.idx[v] = uint32_t(v);
+        for (size_t v = 0; v < p.idx.size(); v += 3) {
+            p.idx[v] = uint32_t(v);
+            p.idx[v + 1] = uint32_t(v + 2);
+            p.idx[v + 2] = uint32_t(v + 1);
+        }
         parts.push_back(std::move(p));
     }
     return parts;

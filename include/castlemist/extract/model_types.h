@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <utility>
@@ -59,6 +60,10 @@ struct GVertex {
     uint32_t bidx[4] = {0, 0, 0, 0};
     /// @brief Normalized bone weights (offset 128). Unskinned meshes get bone 0, weight 1.
     float bwt[4] = {1, 0, 0, 0};
+    /// @brief Vertex colour, RGBA8 (offset 144; FVF 0x10, else white). GW2's effect
+    ///        shaders read it as parameters (2591650's flow: r = strength, g..b = the
+    ///        alpha step, a = opacity).
+    uint8_t col[4] = {255, 255, 255, 255};
 };
 
 /// @brief A decoded texture referenced by a model material, deduped by fileId.
@@ -224,6 +229,10 @@ struct ModelMaterialCPU {
     ///        exporting them again afterward would be redundant, stale data --
     ///        except the glow layers, which the export makes its emissive.
     std::vector<ExtraTexture> extraTextures;
+    /// @brief The slots whose file is a plain DDS cubemap (e.g. the water 3121604's
+    ///        "projection" / "reflect" 3124565), which no RGBA8 path decodes: texIndex
+    ///        -1, the bytes in ModelPreview::cubeMaps under the fileId.
+    std::vector<ExtraTexture> cubeTextures;
 
     /// @brief Real bgfx blend-state word, carried over from game-shader extraction.
     ///
@@ -331,11 +340,13 @@ struct ModelMeshCPU {
     std::vector<uint32_t> indices;                 ///< LOD0 (full detail).
     std::vector<std::vector<uint32_t>> lodIndices; ///< LOD1..N, indexing the same vertices.
     uint32_t materialIndex = 0;                    ///< Index into ModelPreview::materials.
+    uint32_t meshFlags = 0;                        ///< ModelMeshDataV66.flags (0x4: LOD stand-in, world_lods.h).
     uint32_t fvf = 0;                              ///< Source flexible-vertex-format word.
     uint32_t vertexCount = 0;                      ///< Vertex count as declared by the file.
     int stride = 0;                                ///< Decoded per-vertex byte stride (from the FVF).
     bool hasTangents = false;                      ///< Tangent/bitangent channels were present.
     bool hasSkin = false;                          ///< Vertices carry resolved bone indices and weights.
+    bool hasColor = false;                         ///< Vertices carry a real colour (GVertex::col).
     /// @brief ModelMeshDataV66.meshName, decoded from its token64 (see
     ///        castlemist::model::detokenizeName64) -- an artist-authored
     ///        per-submesh label (e.g. "airship"), lowercase only and missing
@@ -486,6 +497,8 @@ struct ModelPreview {
     std::vector<ModelMeshCPU> meshes;         ///< Submeshes.
     std::vector<ModelMaterialCPU> materials;  ///< Materials, indexed by ModelMeshCPU::materialIndex.
     std::vector<ModelTextureCPU> textures;    ///< Deduped decoded textures.
+    /// The raw "DDS " cubemap files of ModelMaterialCPU::cubeTextures, by fileId.
+    std::map<uint32_t, std::vector<uint8_t>> cubeMaps;
     std::vector<ClothPieceCPU> clothPieces;   ///< Authored cloth (`ModelFileData.clothData`).
     float center[3] = {0, 0, 0};              ///< Bounding-sphere centre, model space.
     float radius = 1.0f;                      ///< Bounding-sphere radius.

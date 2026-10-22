@@ -30,6 +30,12 @@ std::string channel_name(Channel c) {
 
 std::array<float, 3> rgb(const std::array<float, 4>& v) { return {v[0], v[1], v[2]}; }
 
+/// A tint constant read as its .x only: grey (x, x, x). The prop-metalmask lit core reads
+/// envcr.x as a scalar (gw2-material-channels.md: lerp(envcr.x, 0.6*albedo+0.2, ...)), and a
+/// constant stored as (x, 0, 0) is a scalar too; as RGB it made the reflections red (envcr
+/// (0.5, 0, 0) on the Mists vault's 3576632).
+std::array<float, 3> grey(const std::array<float, 4>& v) { return {v[0], v[0], v[0]}; }
+
 /// A source texture as the builder sees it. A 4x4 uniform texture is a
 /// placeholder (13368 white, 529633 flat normal, ...): it stands for its
 /// colour and is never written as a map.
@@ -114,7 +120,9 @@ std::array<float, 3> average_rgb(const ModelTextureCPU& t) {
 
 const char* extra_use(const std::string& role, const ShaderProfile& profile) {
     if (role == "mod") return "detail-multiply2x";
+    if (!profile.interiorRole.empty() && role == profile.interiorRole) return "interior-parallax";
     if (role == "decal") return "lerp-by-decal-alpha";
+    if (role == "perturb") return "uv-offset";
     if (role == "height") return "parallax";
     if (role == "specular") return "specular-color";
     // 842652: offsets the opacity mask's UV. Only where an opacity layer is read.
@@ -139,11 +147,20 @@ public:
                                     "clip unknown: treated as not alpha-tested");
         collect_layers();
         classify_default_alpha();
-        if (const auto v = vec("speccp")) out_.specularTint = rgb(*v);
+        // (x, 0, 0) is a scalar: grey, not red.
+        const auto tint = [&](const std::array<float, 4>& v, bool scalar) {
+            return scalar || (v[1] == 0.0f && v[2] == 0.0f) ? grey(v) : rgb(v);
+        };
+        if (const auto v = vec("speccp")) out_.specularTint = tint(*v, false);
+        // prop-metalmask reads envcr.x; so do 3576632, 3576633 and 3121869, its lit core by their
+        // uniforms (gw2-material-channels.md section 8.3 table), though the table matches them only
+        // as the default profile.
+        const bool envScalar = profile_.maskTintsReflection != Channel::None || mat_.materialFile == 3576632 ||
+                               mat_.materialFile == 3576633 || mat_.materialFile == 3121869;
         if (const auto v = vec("envcr"))
-            out_.reflectionTint = rgb(*v);
+            out_.reflectionTint = tint(*v, envScalar);
         else if (const auto w = vec("envcp"))
-            out_.reflectionTint = rgb(*w);
+            out_.reflectionTint = tint(*w, false);
 
         if (!profile_.supported) {
             out_.warnings.push_back("profile '" + profile_.name +
@@ -571,7 +588,12 @@ private:
         } else if (const auto m = constant("mtlness")) {
             ch[0].value = to_byte(*m);
             out_.metalSource = "mtlness";
-        } else if (const auto c = constant("conduct")) {
+        } else if (const auto c = constant("conduct");
+                   c && profile_.name != "default" && profile_.maskTintsReflection == Channel::None) {
+            // Not for the default profile (an AMAT the table does not have) nor a profile whose
+            // tint is the mask's: `conduct` only tints the specular and reflection toward the
+            // albedo in the shaders read (gw2-material-channels.md, 561567), never the diffuse,
+            // so as full PBR metal it turned props near black (the Mists vault, conduct 1).
             ch[0].value = to_byte(*c);
             out_.metalSource = "conduct";
         }
@@ -1045,6 +1067,8 @@ private:
             if (std::find(mapped_.begin(), mapped_.end(), &l) != mapped_.end()) continue;
             const bool used = std::find(consumed_.begin(), consumed_.end(), &l) != consumed_.end();
             const std::string use = extra_use(l.role, profile_);
+            if (l.usable() && l.placeholder && !used)
+                out_.layerConstants.push_back({l.role, l.uv, {l.constant[0], l.constant[1], l.constant[2], l.constant[3]}});
             if (!l.real() || (used && use.empty())) continue;
             out_.extras.push_back({l.role, use, raw_slot(l, l.role)});
         }

@@ -28,6 +28,7 @@
 
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -123,11 +124,12 @@ namespace Castlemist
                     double fadeFar = FadeFar(model);
                     if (!(fadeFar > 0)) sum.warnings.Add("foliage model " + e.FileId + ": no fadeFar in the manifest: its LODGroup culls at 1e-4");
                     if (!any) sum.warnings.Add("foliage model " + e.FileId + ": no renderer: its LODGroup is empty");
-                    if (e.LodLevels > 1)
+                    if (e.LodLevels > 1 || LodGroups.EffectiveFar(inst, e.FarMeshes).Count > 0)
                     {
-                        // Task 15b: the model's levels, the last ending at the cull (of the LODGroup's own size).
-                        LodGroups.Build(inst, e.LodLevels, e.LodDistances,
-                                        size => FoliageRecords.CullHeight(size, fadeFar, opts.distance), sum.warnings, "foliage model " + e.FileId);
+                        // Task 15b: the model's levels (and its stand-ins), the last ending at the cull (of the LODGroup's own size).
+                        LodGroups.Build(inst, e.LodLevels, e.FarMeshes, e.LodDistances,
+                                        size => FoliageRecords.CullHeight(size, fadeFar, opts.distance), sum.warnings, "foliage model " + e.FileId,
+                                        e.HiddenMeshes);
                         sum.lodTreePrefabs++;
                     }
                     else
@@ -135,7 +137,7 @@ namespace Castlemist
                         float cull = (float)FoliageRecords.CullHeight(b.size.magnitude, fadeFar, opts.distance);
                         LODGroup lg = inst.GetComponent<LODGroup>();
                         if (lg == null) lg = inst.AddComponent<LODGroup>();
-                        lg.SetLODs(new[] { new LOD(cull, rs) });
+                        lg.SetLODs(new[] { new LOD(cull, rs.Where(r => r.gameObject.activeSelf).ToArray()) });
                         lg.RecalculateBounds();
                     }
                     string path = folder + "/" + e.FileId + ".prefab";

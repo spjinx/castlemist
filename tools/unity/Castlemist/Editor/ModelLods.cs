@@ -18,7 +18,7 @@
 // value per model, right for every instance. fov = lodCullFovDeg (60, VRChat's FOV UNPROVEN).
 //
 // Levels: LOD k (k < levels - 1) ends at h(d_{k+1}); the last level ends at the cull height:
-// a prop's lodPropCullHeight (0: never culled, as before) or a foliage tree's
+// a prop's lodPropCullHeight (1% of the screen, divided by the importer's Distance) or a foliage tree's
 // FoliageRecords.CullHeight (fadeFar x fadeQualityScale x Distance). Heights are clamped
 // to 1 and made strictly decreasing (a level squeezed to nothing keeps a 1e-6 relative
 // sliver); a transition at or below the cull height drops the levels after it (they would
@@ -27,6 +27,11 @@
 // Renderers: level k of a LOD0 object "<b>" is "<b>_LOD<j>" for the largest j <= k that
 // exists, else the LOD0 object itself (a mesh without its own level repeats its coarser
 // one, settings.lodMissingLevel).
+//
+// Stand-ins (models[].lods.farMeshes, settings.lodFarMeshes): the "lod" meshes (mesh flag 0x4)
+// are left out of the levels above and drawn alone as one more level, FarLevel(levels), from
+// the next switch distance (d1 for a model with one level, else d2; with three levels they
+// take LOD2's place). A model whose only meshes are stand-ins draws them as ordinary meshes.
 
 using System;
 using System.Collections.Generic;
@@ -36,8 +41,56 @@ namespace Castlemist
 {
     public static class ModelLods
     {
-        /// lodPropCullHeight (castlemist's choice): a prop's last level is never culled.
-        public const double PropCullHeight = 0.0;
+        /// lodPropCullHeight (castlemist's choice): a prop's last level culls below 1% of the
+        /// screen height (GW2's prop fade distance is not traced).
+        public const double PropCullHeight = 0.01;
+
+        /// The prop cull height for the importer's Distance option (a larger Distance culls later).
+        public static double PropCull(double distance)
+        {
+            return distance > 0 ? PropCullHeight / distance : PropCullHeight;
+        }
+
+        /// The level the stand-in meshes take for a model of `levels` levels: 1, 2 or 2.
+        public static int FarLevel(int levels) { return Math.Min(Math.Max(levels, 1), 2); }
+
+        /// The LODGroup's level count: `levels`, or FarLevel(levels) + 1 with stand-ins.
+        public static int LevelCount(int levels, bool hasFar)
+        {
+            if (levels < 1) levels = 1;
+            return hasFar ? FarLevel(levels) + 1 : levels;
+        }
+
+        /// True when the object `name` is one of the stand-ins `far` names (itself or its "_LOD<k>" base).
+        public static bool IsFar(string name, ICollection<string> far)
+        {
+            if (far == null || far.Count == 0 || name == null) return false;
+            string b;
+            LevelOf(name, out b);
+            return far.Contains(name) || far.Contains(b);
+        }
+
+        /// Assign with stand-ins: the others by Assign over `levels`, cut to FarLevel(levels)
+        /// levels, then one level of the stand-ins. `hasFar` says whether the split applied
+        /// (false: no stand-in matched, or nothing else is drawn; then it is Assign's result).
+        public static List<int>[] Assign(IList<string> names, int levels, ICollection<string> far,
+                                         out bool hasFar, List<string> orphans = null)
+        {
+            var normal = new List<int>();
+            var farIdx = new List<int>();
+            for (int i = 0; i < names.Count; ++i) (IsFar(names[i], far) ? farIdx : normal).Add(i);
+            hasFar = farIdx.Count > 0 && normal.Count > 0;
+            if (!hasFar) return Assign(names, levels, orphans);
+            var sub = Assign(normal.ConvertAll(i => names[i]), levels, orphans);
+            int f = FarLevel(levels);
+            var outp = new List<int>[f + 1];
+            for (int k = 0; k < f; ++k) outp[k] = sub[Math.Min(k, sub.Length - 1)].ConvertAll(j => normal[j]);
+            // The stand-ins' own "_LOD<k>" objects (if any) are not drawn: LOD0 objects only.
+            string b;
+            outp[f] = farIdx.FindAll(i => LevelOf(names[i], out b) == 0);
+            if (outp[f].Count == 0) outp[f] = farIdx;
+            return outp;
+        }
 
         static readonly Regex LodSuffix = new Regex(@"_LOD(\d+)$", RegexOptions.CultureInvariant);
 

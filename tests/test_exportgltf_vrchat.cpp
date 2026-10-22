@@ -251,20 +251,28 @@ CM_TEST(vrchat, profile_by_amat_second_survey) {
     CHECK_FALSE(cg.clips);
     CHECK(cg.diffuseAlpha == AlphaUse::Shine);
 
-    for (uint32_t id : {157432u, 3718974u, 15206u}) {
+    for (uint32_t id : {157432u, 3718974u}) {
         const ShaderProfile& fm = profile_for(mat_with_file(id), 0);
-        CHECK(fm.name == "fx-multiply");
-        CHECK_FALSE(fm.supported);
+        CHECK(fm.name == "fx-multiply-bump");
+        CHECK(fm.supported);
+        CHECK(fm.unlit);
     }
+    CHECK(profile_for(mat_with_file(15206), 0).name == "fx-multiply");
+    CHECK(profile_for(mat_with_file(15206), 0).unlit);
 
     const ShaderProfile& fc = profile_for(mat_with_file(221571), 0);
     CHECK(fc.name == "fx-cubemap");
-    CHECK_FALSE(fc.supported);
+    CHECK(fc.supported);
+    CHECK(fc.unlit);
 
+    CHECK(profile_for(mat_with_file(49659), 0).name == "glass-refract");
+    CHECK(profile_for(mat_with_file(63923), 0).name == "glass-refract-mask");
+    CHECK(profile_for(mat_with_file(57026), 0).name == "water-refract");
     for (uint32_t id : {49659u, 63923u, 57026u}) {
         const ShaderProfile& gr = profile_for(mat_with_file(id), 0);
-        CHECK(gr.name == "glass-refract");
-        CHECK_FALSE(gr.supported);
+        CHECK(gr.supported);
+        CHECK_FALSE(gr.clips);
+        CHECK(gr.diffuseAlpha == AlphaUse::Unused);
     }
 
     // More ids on existing profiles.
@@ -291,7 +299,8 @@ CM_TEST(vrchat, profile_by_amat_second_survey) {
     CHECK(profile_for(mat_with_file(48767), 0).name == "fx-premultiplied");
     CHECK(profile_for(mat_with_file(1171330), 0).name == "fx-premultiplied");
     CHECK(profile_for(mat_with_file(977200), 0).name == "fx-fire");
-    CHECK_FALSE(profile_for(mat_with_file(1171331), 0).supported);
+    CHECK(profile_for(mat_with_file(1171331), 0).supported);
+    CHECK(profile_for(mat_with_file(740364), 0).unlit);
 }
 
 CM_TEST(vrchat, profile_decal_modes) {
@@ -495,15 +504,16 @@ CM_TEST(vrchat, mask_role_reads_named_layer) {
     mat.diffuseTex = add_tex(model, solid(8, 8, {120, 60, 30, 255}, 1000));
     add_layer(model, mat, "metalmask", add_tex(model, solid(2, 2, {10, 180, 50, 30}, 1001)), 0);
     add_layer(model, mat, "mask", add_tex(model, solid(2, 2, {1, 2, 3, 4}, 1002)), 0);
+    mat.namedConstants = {{"conduct", 1.0f}};
     MaterialMaps m = build(model, mat, BlendPreset::Cutout);
     CHECK(profile_for(mat, 0).name == "prop-metalmask");
-    CHECK(m.packed.present);
-    CHECK_EQ(px(m.packed.tex, 9, 0), 180);
-    CHECK(m.metalSource == "metalmask.G");
-    // The spec/reflection tint lerp by metalmask.G is not mapped: said.
+    // metalmask.G only tints the specular/reflection in the game: no PBR metal, from it or
+    // from conduct (2026-10-21; as metal it drew the Mists vault near black).
+    CHECK(m.metalSource == "none");
+    CHECK_EQ(px(m.packed.tex, 9, 0), 0);
     CHECK(profile_for(mat, 0).maskTintsReflection == Channel::G);
     CHECK(any_warning(m, "specular/reflection tint lerp(envcr, 0.6*albedo+0.2, metalmask.G) not "
-                         "mapped (Packed.R holds metalmask.G)"));
+                         "mapped"));
 
     // A hand-built profile reading metalmask.G: same result, metalmask is no extra.
     ShaderProfile p;
@@ -522,13 +532,20 @@ CM_TEST(vrchat, mask_role_reads_named_layer) {
 }
 
 CM_TEST(vrchat, mask_role_layer_missing_warns) {
-    // prop-metalmask without its metalmask layer: metal falls to conduct (1.5 -> 255,
-    // fully chrome). Said, once.
+    // A profile reading metalmask.G as metal without its metalmask layer: metal falls to
+    // conduct (1.5 -> 255, fully chrome). Said, once.
+    ShaderProfile p;
+    p.name = "t";
+    p.maskRole = "metalmask";
+    p.maskMetal = Channel::G;
+    const auto run = [&](const ModelPreview& mp, const ModelMaterialCPU& mt) {
+        return build_material_maps(mp, mt, blend_of(BlendPreset::Cutout), p);
+    };
     ModelPreview model;
-    ModelMaterialCPU mat = mat_with_file(3121953);
+    ModelMaterialCPU mat = mat_with_file(1);
     mat.diffuseTex = add_tex(model, solid(8, 8, {120, 60, 30, 255}, 1000));
     mat.namedConstants = {{"conduct", 1.5f}};
-    MaterialMaps m = build(model, mat, BlendPreset::Cutout);
+    MaterialMaps m = run(model, mat);
     CHECK(m.metalSource == "conduct");
     CHECK_EQ(std::count_if(m.warnings.begin(), m.warnings.end(),
                            [](const std::string& w) {
@@ -540,14 +557,14 @@ CM_TEST(vrchat, mask_role_layer_missing_warns) {
     // Failed to decode: resolve already said so; no second "no layer" warning.
     ModelMaterialCPU bad = mat;
     add_layer(model, bad, "metalmask", -1, 0);
-    MaterialMaps b = build(model, bad, BlendPreset::Cutout);
+    MaterialMaps b = run(model, bad);
     CHECK(any_warning(b, "metalmask layer (fileId 4242) failed to decode"));
     CHECK_FALSE(any_warning(b, "no metalmask layer"));
 
     // Present: no warning.
     ModelMaterialCPU ok = mat;
     add_layer(model, ok, "metalmask", add_tex(model, solid(2, 2, {10, 180, 50, 30}, 1001)), 0);
-    CHECK_FALSE(any_warning(build(model, ok, BlendPreset::Cutout), "no metalmask layer"));
+    CHECK_FALSE(any_warning(run(model, ok), "no metalmask layer"));
 }
 
 CM_TEST(vrchat, weapon_glow_emission) {
@@ -605,6 +622,15 @@ CM_TEST(vrchat, conduct_as_metal) {
     mat.namedConstants = {{"conduct", 1.5f}};
     MaterialMaps hi = build(model, mat, BlendPreset::Cutout);
     CHECK_EQ(px(hi.packed.tex, 0, 0), 255);
+
+    // An AMAT the table does not have (default profile; the Mists vault's 3576632): conduct
+    // is not metal, which turned those props near black.
+    ModelMaterialCPU unknown = mat_with_file(3576632);
+    unknown.diffuseTex = mat.diffuseTex;
+    unknown.namedConstants = {{"conduct", 1.0f}, {"envcr", 0.5f}};
+    MaterialMaps u = build(model, unknown, BlendPreset::Opaque);
+    CHECK(u.metalSource != "conduct");
+    CHECK_EQ(px(u.packed.tex, 0, 0), 0);
 }
 
 CM_TEST(vrchat, normal_rebuilt_from_rg) {
@@ -714,6 +740,18 @@ CM_TEST(vrchat, tints_from_constant_vectors) {
     CHECK_NEAR((*m.reflectionTint)[2], 0.3f, 1e-6f);
     CHECK(m.reflectionSource == "envcr");
     CHECK_EQ(px(m.packed.tex, 0, 2), 255);
+
+    // A scalar stored as (x, 0, 0) is grey, not red (the Mists vault's envcr 0.5).
+    mat.namedConstantVectors = {{"envcr", {0.5f, 0.0f, 0.0f, 0.0f}}};
+    MaterialMaps s = build(model, mat, BlendPreset::Cutout);
+    CHECK_NEAR((*s.reflectionTint)[1], 0.5f, 1e-6f);
+    CHECK_NEAR((*s.reflectionTint)[2], 0.5f, 1e-6f);
+    // The prop-metalmask lit core family (3576633) reads envcr.x only, whatever .yz hold.
+    ModelMaterialCPU core = mat_with_file(3576633);
+    core.diffuseTex = mat.diffuseTex;
+    core.namedConstantVectors = {{"envcr", {0.14f, 0.498f, 0.498f, 0.0f}}};
+    MaterialMaps c = build(model, core, BlendPreset::Opaque);
+    CHECK_NEAR((*c.reflectionTint)[1], 0.14f, 1e-6f);
 }
 
 CM_TEST(vrchat, placeholder_glow_with_real_glowmask) {
@@ -2530,4 +2568,68 @@ CM_TEST(vrchat, projector_falloff_reads_prkfall_spelling) {
     MaterialMaps m = build(model, mat, BlendPreset::Opaque);
     CHECK(m.projectorFalloff.has_value());
     if (m.projectorFalloff) CHECK_NEAR((*m.projectorFalloff)[1], 0.66f, 1e-6);
+}
+
+namespace {
+/// A DXT1 cube DDS of `size`^2 with `mips` levels, each face's bytes = its index.
+std::vector<uint8_t> dxt1_cube(uint32_t size, uint32_t mips) {
+    std::vector<uint8_t> d(128, 0);
+    std::memcpy(d.data(), "DDS ", 4);
+    auto put = [&d](size_t o, uint32_t v) { std::memcpy(d.data() + o, &v, 4); };
+    put(4, 124);
+    put(12, size);
+    put(16, size);
+    put(28, mips);
+    std::memcpy(d.data() + 84, "DXT1", 4);
+    put(112, 0xFE00u);
+    for (int f = 0; f < 6; ++f)
+        for (uint32_t l = 0; l < mips; ++l) {
+            const size_t b = std::max<size_t>(1, (size >> l) / 4);
+            d.insert(d.end(), b * b * 8, static_cast<uint8_t>(f));
+        }
+    return d;
+}
+}  // namespace
+
+CM_TEST(vrchat, cube_mips_completed_for_unity) {
+    // GW2's water cube 3124565: 512^2 DXT1 with 8 of 10 levels; Unity wants all 10.
+    const std::vector<uint8_t> in = dxt1_cube(512, 8);
+    const std::vector<uint8_t> out = complete_dds_cube_mips(in);
+    uint32_t mips = 0;
+    std::memcpy(&mips, out.data() + 28, 4);
+    CHECK(mips == 10);
+    CHECK(out.size() == in.size() + 6 * 2 * 8);   // + 2 x 2 and 1 x 1, one block each, per face
+    // Face 1 starts after face 0's complete chain, still face 1's bytes.
+    const size_t face = (in.size() - 128) / 6 + 16;
+    CHECK(out[128 + face] == 1);
+    CHECK(out.back() == 5);
+    // Already complete, or not a cube: unchanged.
+    CHECK(complete_dds_cube_mips(out) == out);
+    std::vector<uint8_t> flat = in;
+    std::memset(flat.data() + 112, 0, 4);
+    CHECK(complete_dds_cube_mips(flat) == flat);
+}
+
+CM_TEST(vrchat, cube_layers_written_as_dds) {
+    ModelPreview model;
+    ModelMaterialCPU mat;
+    mat.materialFile = 3121604;
+    mat.cubeTextures.push_back({-1, 0, 3124565, "reflect"});
+    model.cubeMaps[3124565] = dxt1_cube(16, 2);
+    model.materials.push_back(mat);
+    model.meshes.push_back(quad_mesh(0));
+
+    fs::path dir = fresh_dir("cube_layers");
+    VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Water", 1);
+    CHECK(r.ok);
+    json doc = read_json(dir / "materials.json");
+    const json& cubes = doc["materials"][0]["maps"]["cubemaps"];
+    CHECK(cubes.size() == 1);
+    if (cubes.size() == 1) {
+        CHECK(cubes[0]["role"] == "reflect");
+        CHECK(cubes[0]["fileId"] == 3124565);
+        const std::string file = cubes[0]["file"].get<std::string>();
+        CHECK(file.size() > 4 && file.substr(file.size() - 4) == ".dds");
+        CHECK(fs::exists(dir / file));
+    }
 }

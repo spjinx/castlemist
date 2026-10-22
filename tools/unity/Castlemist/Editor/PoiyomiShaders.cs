@@ -52,7 +52,7 @@ namespace Castlemist
             "_MochieBRDF", "_MochieMetallicMaps", "_MochieMetallicMapsUV", "_MochieMetallicMultiplier",
             "_MochieRoughnessMultiplier", "_MochieSpecularTint", "_MochieReflectionTint",
             "_EnableEmission", "_EmissionMap", "_EmissionMapUV", "_EmissionMask", "_EmissionMaskUV",
-            "_EmissionColor", "_EmissionStrength",
+            "_EmissionColor", "_EmissionStrength", "_LightingMode",
         };
 
         public sealed class Found

@@ -194,7 +194,7 @@ bool SharedImagePool::ensure(uint32_t fileId, const std::function<std::vector<ui
 }
 
 std::string SharedImagePool::ensure_content(const std::vector<uint8_t>& png, const std::string& suffix,
-                                            std::string* error) {
+                                            std::string* error, const std::string& ext) {
     {
         std::lock_guard<std::mutex> lk(impl_->mu);
         impl_->bytesRequested += png.size();
@@ -203,7 +203,7 @@ std::string SharedImagePool::ensure_content(const std::vector<uint8_t>& png, con
         if (error) *error = "Could not encode a generated image.";
         return {};
     }
-    std::string name = sha1_hex(png) + suffix + ".png";
+    std::string name = sha1_hex(png) + suffix + ext;
     {
         // One file per name ignoring case: a later spelling gets the first one's
         // (the export's own suffixes never differ only by case; this is a guard).

@@ -5,7 +5,7 @@
 // (CHECKLIST item 1):
 //   materials        model materials built (usedByMeshes != false): one per
 //                    distinct (key, dark decal, uvScroll) -- Task 15d, the
-//                    shared Materials/Shared/<key>.mat; an entry without a key
+//                    shared Materials/Shared/<fileId>_<name>.mat; an entry without a key
 //                    (an older export) is its own -- + one per terrain cell +
 //                    one per water cell
 //   prefabs          prefabs saved, one per model with status ok

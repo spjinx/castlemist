@@ -287,8 +287,16 @@ std::vector<ManifestSetting> world_export_settings(const WorldFolderOptions& o, 
              "value is not read; the client's 75-unit hysteresis has no Unity counterpart"},
         {"lodMissingLevel", "a mesh without its own LOD1 / LOD2 repeats its coarser level", kU,
          "docs/research/gw2-model-lods.md amendment 2026-10-17; the map renderer's flatten does the same, whether the client hides the mesh is not traced"},
-        {"lodPropCullHeight", 0, kC,
-         "docs/research/gw2-model-lods.md amendment 2026-10-17: a prop's LODGroup never culls (props were never culled before); GW2's prop fade distance is not traced"},
+        {"lodFarMeshes",
+         "models[].lods.farMeshes: meshes with ModelMeshDataV66.flags bit 2 (0x4, every mesh named \"lod\"); the importer draws "
+         "them only as the model's last level, from the last switch distance its other meshes have (d1 with one level, else d2)",
+         kU, "docs/research/gw2-model-lods.md amendment 2026-10-21: measured on eleven Mists models; when the client draws them is not traced"},
+        {"uv1InUv4", true, kC,
+         "models: a mesh with a GW2 UV1 carries a copy in TEXCOORD_4 (TEXCOORD_1..3 all written): Unity's lightmapper "
+         "owns UV1 (Generate Lightmap UVs overwrites it), so the castlemist shaders read GW2's UV1 from UV4"},
+        {"lodPropCullHeight", 0.01, kC,
+         "docs/research/gw2-model-lods.md amendment 2026-10-21: every prop's LODGroup culls below 1% screen height (divided by the "
+         "importer's Distance); GW2's prop fade distance is not traced"},
         {"skyApproximate", o.skyApproximate, o.skyApproximate ? kU : kC,
          o.skyApproximate ? "docs/research/gw2-sky.md amendment 2026-10-17: haze, sun glow, haze-dominated and "
                             "material cards and clouds baked with the labelled inputs in sky/sky.json approxInputs"

@@ -23,11 +23,15 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 
 namespace Castlemist
 {
     public enum TerrainMode { Mesh, UnityTerrain }
     public enum FoliageMode { Off, ColliderTrees, Trees, All }
+    /// The model materials' shaders: Poiyomi Pro / Toon (PoiyomiMaterials), or castlemist's own
+    /// Castlemist/GW2 and Castlemist/GW2 Particle (CastlemistMaterials, tools/unity/Castlemist/Shaders).
+    public enum ShaderMode { Poiyomi, Castlemist }
 
     /// The importer window's Terrain / Foliage / Density / Distance (spec D8, D9).
     public sealed class ImportOptions
@@ -37,6 +41,25 @@ namespace Castlemist
         /// Density 0..1 (D9); Distance x0.1..2, multiplying every fadeFar the importer uses
         /// (on top of the manifest's fadeQualityScale, ruling S5).
         public float density = 1f, distance = 1f;
+        public ShaderMode shader = ShaderMode.Poiyomi;
+        /// Model fileIds whose placements are not put in the scene (comma or space separated), for
+        /// props the game hides by means the export does not decode (3132765 in the Mists vault: a
+        /// shell of slabs over the walkway). Their prefabs are still built.
+        public string skipModels = "";
+
+        /// skipModels as fileIds; throws ArgumentException for an entry that is not a number.
+        public HashSet<long> SkipModelIds()
+        {
+            var ids = new HashSet<long>();
+            foreach (string s in (skipModels ?? "").Split(new[] { ',', ' ', ';', '\t' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                long id;
+                if (!long.TryParse(s, NumberStyles.None, CultureInfo.InvariantCulture, out id))
+                    throw new ArgumentException("skip models: '" + s + "' is not a model fileId");
+                ids.Add(id);
+            }
+            return ids;
+        }
 
         public const float MinDistance = 0.1f, MaxDistance = 2f;
 
@@ -52,6 +75,7 @@ namespace Castlemist
             if (!(density >= 0f && density <= 1f)) throw new ArgumentException("density must be in 0..1, not " + density);
             if (!(distance >= MinDistance && distance <= MaxDistance))
                 throw new ArgumentException("distance must be in 0.1..2, not " + distance);
+            SkipModelIds();
         }
 
         /// The batch / dry-run spelling: mesh|terrain, off|colliders|trees|all.
@@ -66,6 +90,16 @@ namespace Castlemist
                 case FoliageMode.Trees: return "trees";
                 default: return "all";
             }
+        }
+
+        /// The batch spelling: poiyomi|castlemist.
+        public static string Name(ShaderMode s) { return s == ShaderMode.Castlemist ? "castlemist" : "poiyomi"; }
+
+        public static ShaderMode ParseShader(string s)
+        {
+            if (s == "poiyomi") return ShaderMode.Poiyomi;
+            if (s == "castlemist") return ShaderMode.Castlemist;
+            throw new ArgumentException("shader must be poiyomi or castlemist, not '" + s + "'");
         }
 
         public static TerrainMode ParseTerrain(string s)
@@ -90,7 +124,9 @@ namespace Castlemist
         public override string ToString()
         {
             return "terrain=" + Name(terrain) + " foliage=" + Name(foliage) + " density=" +
-                   density.ToString("R", CultureInfo.InvariantCulture) + " distance=" + distance.ToString("R", CultureInfo.InvariantCulture);
+                   density.ToString("R", CultureInfo.InvariantCulture) + " distance=" + distance.ToString("R", CultureInfo.InvariantCulture) +
+                   (shader == ShaderMode.Poiyomi ? "" : " shader=" + Name(shader)) +   // Poiyomi: the line as before
+                   (SkipModelIds().Count == 0 ? "" : " skip=" + string.Join(",", SkipModelIds().OrderBy(x => x)));
         }
     }
 

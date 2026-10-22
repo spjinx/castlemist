@@ -77,4 +77,9 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
 /// Never empty ("_"). UTF-8 is kept.
 std::string safe_file_name(const std::string& s);
 
+/// @brief A DDS cubemap with its mip chain completed down to 1 x 1 (the missing
+///        levels repeat the smallest block), as Unity's DDS importer requires;
+///        anything else (not a block-compressed cube, already complete) as it is.
+std::vector<uint8_t> complete_dds_cube_mips(const std::vector<uint8_t>& dds);
+
 }  // namespace castlemist::exportgltf

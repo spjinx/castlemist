@@ -107,7 +107,8 @@ namespace Castlemist.Tests
                 Check(Math.Abs(ModelLods.ScreenHeight(100, 3500) - 100 / (3500 * k)) < 1e-12, "formula");
                 Check(double.IsPositiveInfinity(ModelLods.ScreenHeight(100, 0)) && ModelLods.ScreenHeight(0, 10) == 0, "edges");
                 double[] h = ModelLods.TransitionHeights(100, new[] { 1500.0, 7500.0 }, 3, ModelLods.PropCullHeight);
-                Check(h.Length == 3 && Math.Abs(h[0] - 100 / (1500 * k)) < 1e-12 && Math.Abs(h[1] - 100 / (7500 * k)) < 1e-12 && h[2] == 0, "props");
+                Check(h.Length == 3 && Math.Abs(h[0] - 100 / (1500 * k)) < 1e-12 && Math.Abs(h[1] - 100 / (7500 * k)) < 1e-12 && h[2] == ModelLods.PropCullHeight, "props");
+                Check(ModelLods.PropCull(2) == ModelLods.PropCullHeight / 2 && ModelLods.PropCull(0) == ModelLods.PropCullHeight, "prop cull x Distance");
                 // A tree culled (fadeFar 5000) before its LOD2 switch (7500): LOD2 dropped.
                 double cull = FoliageRecords.CullHeight(100, 5000);
                 h = ModelLods.TransitionHeights(100, new[] { 1500.0, 7500.0 }, 3, cull);
@@ -137,14 +138,39 @@ namespace Castlemist.Tests
                 ModelLods.Assign(new[] { "z_LOD1", "y_0_LOD3" }, 2, orphans);
                 Check(orphans.Count == 3, "orphans: z_LOD1 has no LOD0; y_0_LOD3 has none and is past the levels");
             });
+            Run("lods.far", () =>
+            {
+                var far = new HashSet<string> { "lod_1" };
+                bool hasFar;
+                // One level: the stand-in is LOD1.
+                List<int>[] a = ModelLods.Assign(new[] { "buttress_0", "lod_1" }, 1, far, out hasFar);
+                Check(hasFar && a.Length == 2 && string.Join(",", a[0]) == "0" && string.Join(",", a[1]) == "1", "1 level");
+                Check(ModelLods.LevelCount(1, true) == 2 && ModelLods.LevelCount(2, true) == 3 && ModelLods.LevelCount(3, true) == 3 &&
+                      ModelLods.LevelCount(3, false) == 3, "level counts");
+                // Two levels: LOD0, LOD1, then the stand-in.
+                a = ModelLods.Assign(new[] { "a_0", "a_0_LOD1", "lod_1" }, 2, far, out hasFar);
+                Check(a.Length == 3 && string.Join(",", a[1]) == "1" && string.Join(",", a[2]) == "2", "2 levels");
+                // Three levels: the stand-in takes LOD2's place; its own _LOD1 is never drawn.
+                a = ModelLods.Assign(new[] { "a_0", "a_0_LOD1", "a_0_LOD2", "lod_1", "lod_1_LOD1" }, 3, far, out hasFar);
+                Check(a.Length == 3 && string.Join(",", a[1]) == "1" && string.Join(",", a[2]) == "3", "3 levels");
+                Check(ModelLods.IsFar("lod_1_LOD1", far) && !ModelLods.IsFar("a_0", far) && !ModelLods.IsFar("lod_1", null), "IsFar");
+                // Only stand-ins: drawn as ordinary meshes.
+                a = ModelLods.Assign(new[] { "lod_1" }, 1, far, out hasFar);
+                Check(!hasFar && a.Length == 1 && string.Join(",", a[0]) == "0", "stand-ins only");
+                // No stand-in present: Assign's own result.
+                a = ModelLods.Assign(new[] { "a_0" }, 1, far, out hasFar);
+                Check(!hasFar && a.Length == 1, "none present");
+            });
             Run("manifest.lods", () =>
             {
                 WorldManifest m = WorldManifest.Parse(Minimal.Replace("\"models\":[]",
                     "\"models\":[{\"index\":0,\"fileId\":11,\"status\":\"ok\",\"lods\":{\"levels\":3,\"distances\":[1500,7500]," +
-                    "\"distanceSource\":[\"lodOverride\",\"default\"],\"lodOverride\":[1500,0],\"triangles\":[12,8,4]}}," +
+                    "\"distanceSource\":[\"lodOverride\",\"default\"],\"lodOverride\":[1500,0],\"triangles\":[12,8,4]," +
+                    "\"farMeshes\":[\"lod_1\"],\"farTriangles\":2}}," +
                     "{\"index\":1,\"fileId\":12,\"status\":\"ok\"}]"));
                 Check(m.Models[0].LodLevels == 3 && m.Models[0].LodDistances[1] == 7500, "lods");
-                Check(m.Models[1].LodLevels == 1 && m.Models[1].LodDistances == null, "absent");
+                Check(m.Models[0].FarMeshes.Count == 1 && m.Models[0].FarMeshes[0] == "lod_1", "farMeshes");
+                Check(m.Models[1].LodLevels == 1 && m.Models[1].LodDistances == null && m.Models[1].FarMeshes.Count == 0, "absent");
                 Throws<ManifestException>(() => WorldManifest.Parse(Minimal.Replace("\"models\":[]",
                     "\"models\":[{\"index\":0,\"fileId\":11,\"status\":\"ok\",\"lods\":{\"levels\":4,\"distances\":[1,2]}}]")), "levels");
             });
@@ -165,6 +191,14 @@ namespace Castlemist.Tests
                 Check(q.terrain == TerrainMode.Mesh && q.foliage == FoliageMode.ColliderTrees && q.distance == 0.5f && q.density == 1f, "quest");
                 Check(ImportOptions.ParseTerrain("terrain") == TerrainMode.UnityTerrain && ImportOptions.ParseFoliage("colliders") == FoliageMode.ColliderTrees, "parse");
                 Throws<ArgumentException>(() => ImportOptions.ParseFoliage("some"), "foliage must be");
+                Check(ImportOptions.ParseShader("castlemist") == ShaderMode.Castlemist && new ImportOptions().shader == ShaderMode.Poiyomi, "shader");
+                Check(!new ImportOptions().ToString().Contains("shader") &&
+                      new ImportOptions { shader = ShaderMode.Castlemist }.ToString().EndsWith(" shader=castlemist"), "shader in the options line");
+                Throws<ArgumentException>(() => ImportOptions.ParseShader("toon"), "shader must be");
+                var skip = new ImportOptions { skipModels = " 3132765, 12;7\t" }.SkipModelIds();
+                Check(skip.SetEquals(new long[] { 3132765, 12, 7 }), "skip models parse");
+                Check(new ImportOptions { skipModels = "12,7" }.ToString().EndsWith(" skip=7,12"), "skip in the options line");
+                Throws<ArgumentException>(() => new ImportOptions { skipModels = "12,abc" }.Validate(), "skip models");
                 Throws<ArgumentException>(() => new ImportOptions { distance = 3f }.Validate(), "distance");
                 Throws<ArgumentException>(() => new ImportOptions { density = -0.1f }.Validate(), "density");
                 Check(FoliagePlan.PatchCapacity(12) == 1820 && FoliagePlan.PatchCapacity(30000) == 1 && FoliagePlan.PatchCapacity(0) == 21845, "capacity");

@@ -194,6 +194,21 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
             else if (slots.back().role == "normal") mat.atlasNormalUv = static_cast<int8_t>(t.uvIndex);
         }
         const std::set<uint32_t> layerFiles = layer_only_files(slots);
+        // The normal map by role: a material with a slot named "normal" takes that file (the
+        // biggest normal-format one if it names several); a normal-format (BC5) file whose
+        // roles are all UV-offset data ("perturb", "*ptrb", "distort", "flow") is never it --
+        // 3036412's "perturb" was taken for the normal by size (2026-10-22).
+        std::set<uint32_t> normalRoleFiles, offsetOnlyFiles;
+        for (const auto& sl : slots)
+            if (sl.role == "normal") normalRoleFiles.insert(sl.fileId);
+        for (const auto& sl : slots)
+            if (sl.role == "perturb" || sl.role.find("ptrb") != std::string::npos ||
+                sl.role.rfind("distort", 0) == 0 || sl.role.rfind("flow", 0) == 0)
+                offsetOnlyFiles.insert(sl.fileId);
+        for (const auto& sl : slots)
+            if (!(sl.role == "perturb" || sl.role.find("ptrb") != std::string::npos ||
+                  sl.role.rfind("distort", 0) == 0 || sl.role.rfind("flow", 0) == 0))
+                offsetOnlyFiles.erase(sl.fileId);
         long bestDiffuseArea = -1, bestNormalArea = -1;
         for (uint32_t fid : mat.textureFileIds) {
             if (layerFiles.count(fid)) continue;
@@ -202,6 +217,8 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
             const ModelTextureCPU& t = out->textures[ti];
             long area = static_cast<long>(t.width) * t.height;
             if (t.isNormal) {
+                if (offsetOnlyFiles.count(fid)) continue;
+                if (!normalRoleFiles.empty() && !normalRoleFiles.count(fid)) continue;
                 if (area > bestNormalArea) { bestNormalArea = area; mat.normalTex = ti; }
             } else {
                 if (area > bestDiffuseArea) { bestDiffuseArea = area; mat.diffuseTex = ti; }
@@ -315,6 +332,17 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
         // every slot that isn't the diffuse's / normal's own role is kept as an
         // ExtraTexture instead of silently dropped (see that struct's doc comment).
         assign_texture_slots(mat, slots, layerFiles, get_texture);
+        // A slot no RGBA8 path decodes may be a DDS cubemap (the water 3121604's
+        // projection / reflect): kept raw, for the export to write as .dds.
+        for (const auto& s : slots) {
+            if (s.fileId == 0 || get_texture(s.fileId) >= 0) continue;
+            if (!out->cubeMaps.count(s.fileId)) {
+                std::vector<uint8_t> bytes;
+                if (!read_dds_cube_by_fileid(dat, s.fileId, bytes)) continue;
+                out->cubeMaps.emplace(s.fileId, std::move(bytes));
+            }
+            mat.cubeTextures.push_back({-1, s.uv, s.fileId, s.role});
+        }
 
         out->materials.push_back(std::move(mat));
         if (want_game) out->gameMaterials.push_back(std::move(gm));
@@ -326,9 +354,11 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
         ModelMeshCPU mesh;
         mesh.materialIndex = src.materialIndex;
         mesh.meshName = src.meshName;
+        mesh.meshFlags = src.flags;
         mesh.fvf = src.fvf;
         mesh.vertexCount = src.vertexCount;
         mesh.hasTangents = src.hasTangents;
+        mesh.hasColor = src.hasColor;
         // Smooth-skin only if the mesh has per-vertex blend data AND its bindings
         // resolved to bones.
         int resolved = 0;
@@ -349,6 +379,7 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
         for (const auto& v : src.vertices) {
             GVertex g{v.px, v.py, v.pz, v.nx, v.ny, v.nz, v.tx, v.ty, v.tz, v.bx, v.by, v.bz, v.u, v.v};
             for (int c = 0; c < 7; ++c) { g.uv1[c][0] = v.uv[c][0]; g.uv1[c][1] = v.uv[c][1]; }
+            for (int c = 0; c < 4; ++c) g.col[c] = v.color[c];
             if (smoothSkin) {
                 for (int c = 0; c < 4; ++c) {
                     int raw = v.boneIdx[c];

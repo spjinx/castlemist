@@ -8,6 +8,9 @@
 //   AlphaMask, RimMask                             -> sRGB off (data maps)
 //   BaseColor                                      -> sRGB, alphaIsTransparency
 //   EmissionMap, Emission, Decal, Projector        -> sRGB (colour maps)
+//   x-<role> (a raw layer, materials.json extras): x-parallax, x-mod, x-glow, x-decal,
+//   x-projector, x-interior -> sRGB (colour); every other x-<role> (mask, mskptrb, ramp,
+//   a uv-offset diffuse, metalmask, ...) -> sRGB off: shaders read them as numbers
 // The world export's shared map pool (Task 15d, textures/gen/ under a world root)
 // names the same roles "<sha1>_<Role>.png"; a pool file without a role (a
 // generated glb image) gets the world defaults only.
@@ -119,7 +122,13 @@ namespace Castlemist
                     return Role.Data;
                 case "BaseColor": return Role.BaseColor;
                 case "EmissionMap": case "Emission": case "Decal": case "Projector": return Role.Colour;
-                default: return Role.Unknown;
+                default:
+                    if (!role.StartsWith("x-", StringComparison.Ordinal)) return Role.Unknown;
+                    switch (role.Substring(2))
+                    {
+                        case "parallax": case "mod": case "glow": case "decal": case "projector": case "interior": return Role.Colour;
+                        default: return Role.Data;
+                    }
             }
         }
 

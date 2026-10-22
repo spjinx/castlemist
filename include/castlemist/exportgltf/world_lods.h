@@ -27,6 +27,7 @@
 #include "castlemist/extract/model_types.h"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "nlohmann/json.hpp"
@@ -41,6 +42,31 @@ inline constexpr float kLodDefaultDistance[2] = {3500.0f, 7500.0f};
 inline constexpr float kLodMaxDistance = 100000.0f;
 /// LOD0..LOD2: the client selects from two distances.
 inline constexpr int kMaxLodLevels = 3;
+/// ModelMeshDataV66.flags bit 2: a LOD stand-in mesh. Measured 2026-10-21 on ten
+/// Mists models (3132914, 3132801, 3413761, 3135444, 3132862, 3135004, 3124756,
+/// 3132869, 1790913, 3124820, 3133039): every mesh named "lod" (token 0x11EC) has it,
+/// no other mesh does; it covers the model's bounds at a fraction of the triangles,
+/// textured from a shared 64 x 64 atlas (AMAT 27352). When the client draws it is
+/// UNPROVEN (not traced): the export makes it the model's last level only
+/// (settings.lodFarMeshes).
+inline constexpr uint32_t kMeshFlagLodProxy = 0x4;
+/// ModelMeshDataV66.flags bit 0: a second stand-in, named "lod01" (3132865, 3132869:
+/// beside a flag-4 "lod", with fewer triangles). Measured 2026-10-21; UNPROVEN like bit 2.
+inline constexpr uint32_t kMeshFlagLodProxy2 = 0x1;
+
+/// @brief True for a stand-in mesh (kMeshFlagLodProxy or kMeshFlagLodProxy2).
+bool mesh_is_lod_proxy(const ModelMeshCPU& m);
+
+/// @brief Appends the model's authored cloth pieces (ModelPreview::clothPieces) as static
+///        meshes named "cloth" in their rest shape, as the client draws them (a vendor
+///        curtain such as 3135444 is cloth plus a "lod" stand-in, nothing else). Normals
+///        that disagree with the winding are flipped (the ripper's add_cloth_meshes rule).
+///        Returns the meshes added.
+int append_cloth_meshes(ModelPreview& m);
+
+/// @brief The glTF node name of model mesh @p i (model_export.cpp): "<meshName>_<i>",
+///        or "<stem>_mesh<i>" when the file did not name the mesh.
+std::string mesh_node_name(const ModelPreview& m, size_t i, const std::string& stem);
 
 /// @brief The model's switch distances: lodOverride[k] when > 0 (clamped to
 ///        kLodMaxDistance), else kLodDefaultDistance[k]. @p fromFile[k] says which.
@@ -63,15 +89,20 @@ bool mesh_drawable(const ModelMeshCPU& m);
 int mesh_lod_source(const ModelMeshCPU& m, int level);
 
 /// @brief 1 + the highest level any drawable mesh has its own set for, capped at
-///        kMaxLodLevels; 1 = no LODs.
+///        kMaxLodLevels; 1 = no LODs. Stand-in meshes (kMeshFlagLodProxy) are not counted.
 int model_lod_levels(const ModelPreview& m);
 
-/// @brief Triangles drawn at each of @p levels levels (mesh_lod_source per mesh).
+/// @brief Triangles drawn at each of @p levels levels (mesh_lod_source per mesh),
+///        stand-in meshes left out (model_lods_json's farTriangles).
 std::vector<uint64_t> model_lod_triangles(const ModelPreview& m, int levels);
 
 /// @brief The manifest's models[].lods: {levels, distances [2], distanceSource
 ///        ["lodOverride" | "default"] x2, lodOverride ([2] as stored, or null when
-///        the MODL version has no field), triangles [levels]}.
-nlohmann::json model_lods_json(const ModelPreview& m);
+///        the MODL version has no field), triangles [levels], farMeshes [the node
+///        names of the stand-in meshes, mesh_node_name with @p stem], farTriangles,
+///        hiddenMeshes [the flag-1 stand-ins of a model that also has flag-4 ones: drawn
+///        at no level]}. farMeshes are the flag-4 stand-ins, or the flag-1 ones when there
+///        are none.
+nlohmann::json model_lods_json(const ModelPreview& m, const std::string& stem = std::string());
 
 } // namespace castlemist::exportgltf

@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -71,6 +72,47 @@ bool write_file(const fs::path& p, const std::vector<uint8_t>& bytes) {
     return !out.fail();
 }
 
+}  // namespace
+
+std::vector<uint8_t> complete_dds_cube_mips(const std::vector<uint8_t>& dds) {
+    // DDS_HEADER (after "DDS "): flags @8, height @12, width @16, mipMapCount @28,
+    // fourCC @84, caps2 @112; data from 128. GW2's cubes stop at 4 x 4 (512: 8 of
+    // 10 levels), which Unity's DDS importer refuses ("Invalid mipCount").
+    auto u32 = [&dds](size_t o) {
+        uint32_t v = 0;
+        std::memcpy(&v, dds.data() + o, 4);
+        return v;
+    };
+    if (dds.size() < 128 || std::memcmp(dds.data(), "DDS ", 4) != 0 || !(u32(112) & 0x200u)) return dds;
+    const uint32_t h = u32(12), w = u32(16), have = std::max<uint32_t>(1, u32(28));
+    const std::string fourcc(reinterpret_cast<const char*>(dds.data()) + 84, 4);
+    const size_t block = fourcc == "DXT1" ? 8 : (fourcc == "DXT3" || fourcc == "DXT5") ? 16 : 0;
+    if (block == 0 || w == 0 || h == 0 || have == 1) return dds;
+    uint32_t full = 1;
+    while ((std::max(w, h) >> full) > 0) ++full;
+    if (have >= full) return dds;
+    auto level_bytes = [&](uint32_t l) {
+        const size_t lw = std::max<uint32_t>(1, w >> l), lh = std::max<uint32_t>(1, h >> l);
+        return ((lw + 3) / 4) * ((lh + 3) / 4) * block;
+    };
+    size_t face = 0;
+    for (uint32_t l = 0; l < have; ++l) face += level_bytes(l);
+    if (dds.size() < 128 + 6 * face) return dds;
+    std::vector<uint8_t> out(dds.begin(), dds.begin() + 128);
+    const uint32_t mips = full;
+    std::memcpy(out.data() + 28, &mips, 4);
+    for (int f = 0; f < 6; ++f) {
+        const uint8_t* src = dds.data() + 128 + static_cast<size_t>(f) * face;
+        out.insert(out.end(), src, src + face);
+        // The missing levels (2 x 2, 1 x 1: one block each) repeat the smallest block.
+        const uint8_t* last = src + face - level_bytes(have - 1);
+        for (uint32_t l = have; l < full; ++l) out.insert(out.end(), last, last + level_bytes(l));
+    }
+    return out;
+}
+
+namespace {
+
 /// Writes one material's maps under `Textures/` and builds their JSON.
 class MapWriter {
 public:
@@ -111,6 +153,32 @@ public:
                     {"uv", slot.uv},
                     {"fileId", slot.fileId ? json(slot.fileId) : json()},
                     {"source", slot.source}};
+    }
+
+    /// A DDS cubemap layer, written as it is stored ("<sha1>_x-<role>.dds" in the
+    /// pool, else "Textures/<Mat> - <role>.dds"): {file, uv, fileId, role}, or null.
+    json write_cube(const std::vector<uint8_t>& dds, const ModelMaterialCPU::ExtraTexture& t) {
+        const std::string role = safe_file_name(t.role.empty() ? "cube" : t.role);
+        std::string rel;
+        if (pool_) {
+            std::string err;
+            const std::string leaf = pool_->ensure_content(dds, "_x-" + lower_ascii(role), &err, ".dds");
+            if (leaf.empty()) {
+                warnings_.push_back(role + " cubemap (fileId " + std::to_string(t.fileId) + ") could not be written to " +
+                                    poolPrefix_ + ": left out" + (err.empty() ? "" : " (" + err + ")"));
+                return json();
+            }
+            rel = poolPrefix_ + leaf;
+        } else {
+            const std::string leaf = matFile_ + " - " + unique_name(role, suffixes_) + ".dds";
+            rel = "Textures/" + leaf;
+            if (!write_file(folder_ / "Textures" / u8path(leaf), dds)) {
+                warnings_.push_back(role + " cubemap (fileId " + std::to_string(t.fileId) + ") could not be written to " +
+                                    rel + ": left out");
+                return json();
+            }
+        }
+        return json{{"file", rel}, {"uv", t.uvIndex}, {"fileId", t.fileId}, {"role", t.role}};
     }
 
 private:
@@ -264,6 +332,18 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
             extras.push_back(std::move(e));
         }
         jm["extras"] = std::move(extras);
+        json cubemaps = json::array();
+        for (const ModelMaterialCPU::ExtraTexture& t : mat.cubeTextures) {
+            auto it = model.cubeMaps.find(t.fileId);
+            if (it == model.cubeMaps.end()) continue;
+            json c = mw.write_cube(complete_dds_cube_mips(it->second), t);
+            if (!c.is_null()) cubemaps.push_back(std::move(c));
+        }
+        jm["cubemaps"] = std::move(cubemaps);
+        json constants = json::array();
+        for (const MaterialMaps::LayerConstant& c : maps.layerConstants)
+            constants.push_back({{"role", c.role}, {"uv", c.uv}, {"rgba", {c.rgba[0], c.rgba[1], c.rgba[2], c.rgba[3]}}});
+        jm["layerConstants"] = std::move(constants);
 
         json rim;
         if (maps.rim.present) {
@@ -303,6 +383,23 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
                                  maps.emissionBaked.present;
         json gw2 = json::object();
         for (const auto& [n, v] : mat.namedConstants) gw2[n] = v;
+        // The whole float4 of each constant (a shader may read .y-.w: 1507908's stepcol.w).
+        json gw2Vectors = json::object();
+        for (const auto& [n, v] : mat.namedConstantVectors) gw2Vectors[n] = {v[0], v[1], v[2], v[3]};
+        // MODL texTransforms as stored: what the VS's TexTransform<uv> animates per UV set
+        // (scroll in UV per settings.uvScrollUnitSeconds, rotate read as radians per second;
+        // both UNPROVEN, gw2-world-materials.md).
+        json texTransforms = json::array();
+        for (const ModelTexTransformCPU& t : mat.texTransforms)
+            texTransforms.push_back({{"uv", t.uvIndex},
+                                     {"scroll", {t.scroll[0], t.scroll[1]}},
+                                     {"scrollFreq", {t.scrollFreq[0], t.scrollFreq[1]}},
+                                     {"scale", {t.scale[0], t.scale[1]}},
+                                     {"scaleFreq", {t.scaleFreq[0], t.scaleFreq[1]}},
+                                     {"rotate", t.rotate},
+                                     {"flipbook", {{"columns", t.columns}, {"rows", t.rows},
+                                                   {"count", t.count}, {"fps", t.fps}}},
+                                     {"flags", t.flags}});
 
         json m{
             {"name", matName},
@@ -322,6 +419,7 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
             {"renderQueueOffset", mat.sortLayer},  // draw order from the material's sort layer
             {"sortOrder", mat.sortOrder},           // raw
             {"cull", mat.isEffect ? "Off" : "Back"},
+            {"unlit", profile.unlit},  // the game applies no lighting (fog only)
             {"maps", std::move(jm)},
             {"emission", hasEmission ? json{{"color", rgb_json(maps.emissionColor)},
                                                   {"colorSpace", "sRGB"},
@@ -332,6 +430,8 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
             {"specularTint", maps.specularTint ? rgb_json(*maps.specularTint) : json()},
             {"reflectionTint", maps.reflectionTint ? rgb_json(*maps.reflectionTint) : json()},
             {"gw2", std::move(gw2)},
+            {"gw2Vectors", std::move(gw2Vectors)},
+            {"texTransforms", std::move(texTransforms)},
             {"warnings", warnings},
         };
         materials.push_back(std::move(m));

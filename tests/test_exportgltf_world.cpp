@@ -543,9 +543,11 @@ CM_TEST(world_cell, collider_parts_under_65535) {
     for (const CellMesh& p : parts) {
         CHECK(p.vertices() <= size_t(65535));
         CHECK_EQ(p.vertices(), p.idx.size());
-        bool seq = true;
-        for (size_t i = 0; i < p.idx.size(); ++i) if (p.idx[i] != uint32_t(i)) seq = false;
-        CHECK(seq);
+        // Every triangle reversed, (0, 2, 1): Havok winds opposite to the render meshes.
+        bool reversed = true;
+        for (size_t i = 0; i + 2 < p.idx.size(); i += 3)
+            if (p.idx[i] != uint32_t(i) || p.idx[i + 1] != uint32_t(i + 2) || p.idx[i + 2] != uint32_t(i + 1)) reversed = false;
+        CHECK(reversed);
     }
     CHECK_EQ(parts[0].pos[0], -9000.f - c.origin[0]);
     CHECK_EQ(parts[0].pos[1], 33000.f - c.origin[1]);
@@ -2533,6 +2535,61 @@ CM_TEST(world_lods, levels_and_sources) {
     CHECK(j["distanceSource"] == json({"lodOverride", "default"}));
     CHECK(j["lodOverride"] == json({1500.0, 0.0}));
     CHECK(j["triangles"] == json({12, 8, 4}));
+    CHECK(j["farMeshes"] == json::array());
+    CHECK(j["farTriangles"] == json(0));
+}
+
+// A mesh with ModelMeshDataV66.flags bit 2 (the "lod" stand-in) is no level of its own:
+// left out of levels and triangles, listed by its node name in farMeshes.
+CM_TEST(world_lods, stand_in_meshes) {
+    ModelPreview m = tw::static_cube();
+    ModelMeshCPU proxy = m.meshes[0];
+    proxy.lodIndices = {{0, 1, 2}, {0, 1, 2}, {0, 1, 2}};   // its own sets do not add levels
+    proxy.meshFlags = kMeshFlagLodProxy;
+    proxy.meshName = "lod";
+    m.meshes.push_back(proxy);
+    CHECK(mesh_is_lod_proxy(m.meshes[1]));
+    CHECK_FALSE(mesh_is_lod_proxy(m.meshes[0]));
+    CHECK_EQ(model_lod_levels(m), 3);
+    CHECK(model_lod_triangles(m, 3) == std::vector<uint64_t>({12, 8, 4}));
+    const json j = model_lods_json(m, "77");
+    CHECK(j["farMeshes"] == json({"lod_1"}));
+    CHECK(j["farTriangles"] == json(12));
+    CHECK(j["hiddenMeshes"] == json::array());
+    m.meshes[0].meshName.clear();
+    CHECK_EQ(mesh_node_name(m, 0, "77"), std::string("77_mesh0"));
+
+    // A flag-1 "lod01" beside the flag-4 "lod" (3132865): hidden, never a level.
+    ModelMeshCPU second = proxy;
+    second.meshFlags = kMeshFlagLodProxy2;
+    m.meshes.push_back(second);
+    const json k = model_lods_json(m, "77");
+    CHECK(k["farMeshes"] == json({"lod_1"}));
+    CHECK(k["hiddenMeshes"] == json({"lod_2"}));
+    CHECK_EQ(model_lod_levels(m), 3);
+    // Only a flag-1 stand-in: it is the far level.
+    m.meshes.erase(m.meshes.begin() + 1);
+    CHECK(model_lods_json(m, "77")["farMeshes"] == json({"lod_1"}));
+}
+
+// Cloth pieces become static meshes ("cloth"), normals turned to agree with the winding.
+CM_TEST(world_lods, cloth_pieces_as_meshes) {
+    ModelPreview m;
+    ClothPieceCPU cp;
+    cp.materialIndex = 2;
+    GVertex v{};
+    v.nz = -1.0f;   // against the counter-clockwise winding below (face normal +z)
+    cp.vertices = {v, v, v};
+    cp.vertices[1].px = 1.0f;
+    cp.vertices[2].py = 1.0f;
+    cp.indices = {0, 1, 2};
+    m.clothPieces.push_back(cp);
+    m.clothPieces.push_back(ClothPieceCPU{});   // empty: skipped
+    CHECK_EQ(append_cloth_meshes(m), 1);
+    CHECK_EQ(m.meshes.size(), size_t(1));
+    CHECK(m.meshes[0].meshName == "cloth");
+    CHECK_EQ(m.meshes[0].materialIndex, 2u);
+    CHECK(m.meshes[0].vertices[0].nz > 0.0f);
 }
 
 // The character, VRChat and model exports write LOD0 only, byte for byte as before:
@@ -2621,7 +2678,7 @@ CM_TEST(world_lods, manifest_lods_and_overrides) {
     CHECK(p1 && (*p1)["lod"] == json({1000.0, 2000.0}));
     CHECK(p2 && !p2->contains("lod"));                        // lod1 / lod2 stored, no OVERRIDE_LOD
     CHECK(man["settings"]["lodDistances"]["status"] == json("measured"));
-    CHECK(man["settings"]["lodPropCullHeight"]["value"] == json(0));
+    CHECK(man["settings"]["lodPropCullHeight"]["value"] == json(0.01));
     const json g = glb_json(dir / "models" / "101" / "101.glb");
     bool lod2 = false;
     for (const json& n : g["nodes"]) lod2 = lod2 || n.value("name", std::string()) == "101_mesh0_LOD2";

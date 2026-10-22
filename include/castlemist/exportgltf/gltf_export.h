@@ -70,9 +70,10 @@ public:
     ///        as ensure(). Returns that file name, or "" (with @p error) when @p png
     ///        is empty or the write failed. Every call adds png.size() to
     ///        bytes_requested(); the one that writes a name adds it to bytes_written().
-    ///        @p suffix (e.g. "_BaseColor") must be a legal file-name part.
+    ///        @p suffix (e.g. "_BaseColor") must be a legal file-name part; @p ext is
+    ///        the file's extension (".dds" for a cubemap written as it is stored).
     std::string ensure_content(const std::vector<uint8_t>& png, const std::string& suffix = {},
-                               std::string* error = nullptr);
+                               std::string* error = nullptr, const std::string& ext = ".png");
     const std::string& dir() const;
     size_t written() const;   ///< files written successfully so far
     uint64_t bytes_requested() const;   ///< ensure_content: the bytes every call asked for
@@ -137,6 +138,17 @@ struct GltfExportOptions {
     ///        named "<LOD0 node name>_LOD<k>" after the LOD0 nodes. False (the
     ///        default) writes LOD0 only, byte for byte as before.
     bool exportLods = false;
+
+    /// @brief World export only: a mesh that has a GW2 UV1 also gets it copied to
+    ///        TEXCOORD_4 (with TEXCOORD_1..3 all written, so Blender keeps the slots in
+    ///        order). Unity's lightmapper owns UV1 ("Generate Lightmap UVs" overwrites it);
+    ///        the castlemist shaders read GW2's UV1 from UV4 instead. False writes as before.
+    bool uv1CopyToUv4 = false;
+
+    /// @brief World export only: a mesh with a GW2 vertex colour writes it as COLOR_0
+    ///        (as stored: GW2's effect shaders read it as parameters, see GVertex::col).
+    ///        Off by default, since glTF viewers multiply the base colour by COLOR_0.
+    bool vertexColors = false;
 
     /// @brief Set (world export only, Task 15d): generated images (the emissive
     ///        bake, the metal-rough map) go into this content pool once each, as

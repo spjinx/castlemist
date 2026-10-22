@@ -109,3 +109,7 @@ docs/assets/*.tmp.png
 
 # tools/emu/build.bat output
 /tools/emu/bin/
+
+# dotnet build output of the Unity editor-script tests
+tools/unity/Tests~/bin/
+tools/unity/Tests~/obj/
