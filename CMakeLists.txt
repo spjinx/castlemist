@@ -149,6 +149,9 @@ target_compile_definitions(castlemist_exportgltf PRIVATE CASTLEMIST_VERSION_STRI
 # npc: NPC catalogue (cntc pack reader + catalogue) on top of extract/exportgltf.
 castlemist_add_layer(npc DEPS castlemist::extract castlemist::exportgltf castlemist::ripper ext::json)
 
+# skillfx: GW2 skill visual effects (content links, arcdps log pairing) exported for Unity.
+castlemist_add_layer(skillfx DEPS castlemist::extract castlemist::exportgltf castlemist::format ext::json ext::stb)
+
 # ripper turns a character manifest into exported pieces: composite lookup,
 # dye baking and atlas cropping on top of extract + exportgltf.
 castlemist_add_layer(ripper DEPS castlemist::character castlemist::extract castlemist::exportgltf
