@@ -678,3 +678,33 @@ CM_TEST(exportgltf, world_export_collision_and_empty_scene) {
     CHECK(!none.ok);
     CHECK(!fs::exists(dir / "e.glb"));
 }
+
+CM_TEST(exportgltf, vertex_colours_only_when_asked) {
+    // GW2's fx-flow (2591650) reads its parameters from the vertex colour; the world
+    // export writes it as COLOR_0, other exports leave it out (viewers tint by it).
+    ModelPreview model = make_static_quad();
+    model.meshes[0].hasColor = true;
+    for (GVertex& v : model.meshes[0].vertices) {
+        v.col[0] = 255; v.col[1] = 51; v.col[2] = 204; v.col[3] = 102;
+    }
+    fs::path dir = make_temp_dir("vcol");
+
+    fs::path plain = dir / "plain.glb";
+    CHECK(export_model_gltf(model, plain.string()).ok);
+    ParsedGlb a = parse_glb(read_bytes(plain));
+    CHECK(!a.doc["meshes"][0]["primitives"][0]["attributes"].contains("COLOR_0"));
+
+    GltfExportOptions opts;
+    opts.vertexColors = true;
+    fs::path coloured = dir / "coloured.glb";
+    CHECK(export_model_gltf(model, coloured.string(), opts).ok);
+    ParsedGlb b = parse_glb(read_bytes(coloured));
+    const json& attrs = b.doc["meshes"][0]["primitives"][0]["attributes"];
+    CHECK(attrs.contains("COLOR_0"));
+    if (attrs.contains("COLOR_0")) {
+        std::vector<double> c = accessor_values(b, attrs["COLOR_0"].get<int>());
+        CHECK_EQ(c.size(), model.meshes[0].vertices.size() * 4);
+        CHECK_NEAR(c[1], 0.2, 1e-6);
+        CHECK_NEAR(c[3], 0.4, 1e-6);
+    }
+}

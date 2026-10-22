@@ -207,6 +207,10 @@ std::vector<std::vector<uint8_t>> build_mips(std::vector<uint8_t> level0, int w,
 ///        any other magic, a block-compressed or other format, or short pixels.
 bool decode_dds_bytes(const std::vector<uint8_t>& bytes, size_t i0, ModelTextureCPU& out);
 
+/// @brief The raw bytes of @p fileId when it is a plain "DDS " cubemap (DDSCAPS2_CUBEMAP);
+///        false (never throws) for anything else.
+bool read_dds_cube_by_fileid(Gw2Dat& dat, uint32_t fileId, std::vector<uint8_t>& bytes);
+
 /// @brief Header-only texture: fileId, baseId, size, fmt, mipCount, isNormal; `rgba` left empty.
 bool peek_texture_by_fileid(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out);
 

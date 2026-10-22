@@ -43,12 +43,17 @@ struct Vertex {
     // GrFvf supports 8 UV channels (bits 8-15); absent channels copy UV0.
     uint8_t boneIdx[4] = {0, 0, 0, 0};   // BlendIndices (FVF 0x4): index into Mesh.boneBindings
     float   boneWt[4] = {1, 0, 0, 0};    // BlendWeights (FVF 0x2): normalized [0,1]
+    uint8_t color[4] = {255, 255, 255, 255}; // Color (FVF 0x10), RGBA (stored BGRA)
 };
 
 struct Mesh {
     uint32_t fvf = 0;
     uint32_t vertexCount = 0;
     uint32_t materialIndex = 0;
+    // ModelMeshDataV66.flags. Bit 2 (0x4) is set on every mesh named "lod" (token 0x11EC)
+    // measured (2026-10-21, 10 Mists models): a low-detail stand-in covering the model's
+    // bounds, textured from a shared atlas -- see world_lods.h kMeshFlagLodProxy.
+    uint32_t flags = 0;
     bool hasTangents = false;
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;         // LOD0 (full detail) index buffer
@@ -62,6 +67,7 @@ struct Mesh {
     std::vector<uint64_t> boneBindings;
     std::vector<int> boneBindingSkelIndex; // boneBindings[k] -> skeleton bone index (-1 = unresolved)
     bool hasSkin = false;                 // FVF carries blend weights + indices
+    bool hasColor = false;                // FVF carries a vertex colour (0x10)
 
     // ModelMeshDataV66.meshName (token64, decoded via detokenizeName64 below)
     // and .materialName (a real char_ptr C string) -- an artist-authored label
@@ -3752,6 +3758,7 @@ private:
         Mesh mesh;
         size_t off; json fj;
         if (fieldOffset(meshType, "materialIndex", off, fj)) mesh.materialIndex = rd32(s + off);
+        if (fieldOffset(meshType, "flags", off, fj)) mesh.flags = rd32(s + off);
         if (fieldOffset(meshType, "meshName", off, fj)) mesh.meshName = detokenizeName64(rd64(s + off));
         if (fieldOffset(meshType, "materialName", off, fj)) {
             size_t strAt = follow(s + off);
@@ -3915,7 +3922,7 @@ private:
     void decodeVertices(size_t base, uint32_t vbytes, Mesh& mesh) {
         uint32_t fvf = mesh.fvf;
         int stride = 0;
-        int posOff = -1, nrmOff = -1, tfOff = -1, uvOff = -1, wtOff = -1, idxOff = -1;
+        int posOff = -1, nrmOff = -1, tfOff = -1, uvOff = -1, wtOff = -1, idxOff = -1, colOff = -1;
         bool uvHalf = false;
         int uvOffN[8]; bool uvHalfN[8]; for(int c=0;c<8;++c){uvOffN[c]=-1;uvHalfN[c]=false;} // 8 UV channels (GrFvf TEXCOORD0..7)
         auto add = [&](int sz) { int o = stride; stride += sz; return o; };
@@ -3923,7 +3930,7 @@ private:
         if (fvf & 0x2)  wtOff  = add(4);                      // blend weights (4 x u8 norm)
         if (fvf & 0x4)  idxOff = add(4);                      // blend indices (4 x u8 -> boneBindings)
         if (fvf & 0x8)  nrmOff = add((fvf & 0x04000000) ? 4 : 12); // normal
-        if (fvf & 0x10) add(4);                               // color BGRA
+        if (fvf & 0x10) colOff = add(4);                      // color BGRA
         if (fvf & 0x20) add(12);                              // tangent
         if (fvf & 0x40) add(12);                              // bitangent
         if (fvf & 0x80) tfOff = add(12);                      // tangent frame (N,T,B as u8x4)
@@ -3943,6 +3950,7 @@ private:
         if (stride <= 0) return;
         mesh.hasTangents = (tfOff >= 0);
         mesh.hasSkin = (wtOff >= 0 && idxOff >= 0);
+        mesh.hasColor = (colOff >= 0);
         uint32_t vc = vbytes / (uint32_t)stride;
         if (mesh.vertexCount && vc > mesh.vertexCount) vc = mesh.vertexCount;
         mesh.vertices.reserve(vc);
@@ -3952,10 +3960,12 @@ private:
             Vertex out{};
             if (posOff >= 0) { out.px = rdf(v + posOff); out.py = rdf(v + posOff + 4); out.pz = rdf(v + posOff + 8); }
             if (tfOff >= 0) {
-                // tangent frame: 3 x (4 x u8 norm) = Normal, Tangent, Bitangent
-                out.nx = u8n(v + tfOff);     out.ny = u8n(v + tfOff + 1);  out.nz = u8n(v + tfOff + 2);
-                out.tx = u8n(v + tfOff + 4); out.ty = u8n(v + tfOff + 5);  out.tz = u8n(v + tfOff + 6);
-                out.bx = u8n(v + tfOff + 8); out.by = u8n(v + tfOff + 9);  out.bz = u8n(v + tfOff + 10);
+                // tangent frame: 3 x (4 x u8 norm) = Normal, Tangent, Bitangent, each stored BGRA
+                // like a D3DCOLOR (measured 2026-10-22: read as RGB, 45-100% of normals were > 45 deg
+                // off every adjacent face; as BGR, 0% flipped and a mean 0.3-6 deg from the faces).
+                out.nx = u8n(v + tfOff + 2);  out.ny = u8n(v + tfOff + 1); out.nz = u8n(v + tfOff);
+                out.tx = u8n(v + tfOff + 6);  out.ty = u8n(v + tfOff + 5); out.tz = u8n(v + tfOff + 4);
+                out.bx = u8n(v + tfOff + 10); out.by = u8n(v + tfOff + 9); out.bz = u8n(v + tfOff + 8);
             } else if (nrmOff >= 0) {
                 out.nx = rdf(v + nrmOff); out.ny = rdf(v + nrmOff + 4); out.nz = rdf(v + nrmOff + 8);
             } else out.nz = 1.0f;
@@ -3971,6 +3981,10 @@ private:
             if (uvOffN[0] < 0) { uvs[0][0] = uvs[0][1] = 0; }
             out.u = uvs[0][0]; out.v = uvs[0][1];
             if (idxOff >= 0) for (int c = 0; c < 4; ++c) out.boneIdx[c] = d_[v + idxOff + c];
+            if (colOff >= 0) {
+                out.color[0] = d_[v + colOff + 2]; out.color[1] = d_[v + colOff + 1];
+                out.color[2] = d_[v + colOff];     out.color[3] = d_[v + colOff + 3];
+            }
             if (wtOff >= 0) {
                 int sum = 0; for (int c = 0; c < 4; ++c) sum += d_[v + wtOff + c];
                 if (sum <= 0) { out.boneWt[0] = 1; for (int c = 1; c < 4; ++c) out.boneWt[c] = 0; }

@@ -32,6 +32,11 @@
 //      stripped and render pink).
 //  §5  existing .mat assets are updated in place, so GUIDs stay stable; user
 //      edits are overwritten (spec D6 "Re-import").
+//  Lighting Type (_LightingMode, a KeywordEnum: the float and its
+//      _LIGHTINGMODE_<NAME> keyword): Realistic (6), which reads the normal map, for
+//      every material but the particle-like ones -- Additive, Soft Additive and the two
+//      Multiplicative presets, and what materials.json marks unlit -- which keep Flat
+//      (5, Poiyomi's default). Poiyomi 10.0 and 11.0 number the modes the same.
 // Without Poiyomi (a bare batchmode project), the Standard shader is used with
 // the same blend table and one warning; that is the path batchmode can test.
 
@@ -49,6 +54,19 @@ namespace Castlemist
     {
         public Shader Shader;
         public bool Poiyomi;
+        /// ShaderMode.Castlemist: Shader is Castlemist/GW2, ParticleShader Castlemist/GW2 Particle
+        /// (CastlemistMaterials); Poiyomi is then false and Presets empty.
+        public bool Castlemist;
+        public Shader ParticleShader;
+        /// Castlemist/GW2 when it is in the project and compiles (any ShaderMode): it draws the
+        /// parallax-layer GW2 effects Poiyomi cannot (CastlemistMaterials.IsParallax).
+        public Shader ParallaxShader;
+        /// Castlemist/GW2 Distort when it is in the project and compiles (any ShaderMode): GW2's
+        /// screen-distortion effects (CastlemistMaterials.IsDistort).
+        public Shader DistortShader;
+        /// The export's settings.uv1InUv4, and the import's unityScale (set by the importer).
+        public bool Uv1InUv4;
+        public float UnityScale = 0.0254f;
         /// The Poiyomi shader's name and version (shader_master_label), null for Standard.
         public string ShaderName, Version;
         /// The chosen shader's _Mode presets (PoiyomiShaders.ParsePresets); empty: the importer's own table.
@@ -56,16 +74,52 @@ namespace Castlemist
         public List<string> Warnings;
         public int Built;
 
-        /// "SHADER poiyomi=found name=... version=... presets=<n>" or "SHADER poiyomi=absent name=Standard".
+        /// "SHADER poiyomi=found name=... version=... presets=<n>", "SHADER poiyomi=absent name=Standard",
+        /// or "SHADER castlemist name=Castlemist/GW2 particle=Castlemist/GW2 Particle".
         public string Line
         {
             get
             {
+                if (Castlemist) return "SHADER castlemist name=" + Shader.name + " particle=" + ParticleShader.name;
                 return Poiyomi
                     ? "SHADER poiyomi=found name=" + ShaderName + " version=" + (Version ?? "unknown") +
                       " family=" + (PoiyomiShaders.IsPro(ShaderName) ? "Pro" : "Toon") + " presets=" + Presets.Count
                     : "SHADER poiyomi=absent name=" + (Shader != null ? Shader.name : "none");
             }
+        }
+
+        public const string LitShader = "Castlemist/GW2", ParticleShaderName = "Castlemist/GW2 Particle";
+
+        /// ShaderMode.Castlemist: castlemist's two shaders when both are in the project and compile,
+        /// else (with a warning) Create(warnings) as for Poiyomi.
+        public static MaterialContext Create(List<string> warnings, ShaderMode mode)
+        {
+            MaterialContext c = CreateFor(warnings, mode);
+            Shader par = Shader.Find(ParallaxShaderName);
+            if (par != null && !PoiyomiMaterials.HasErrors(par)) c.ParallaxShader = par;
+            else warnings.Add("materials: '" + ParallaxShaderName + "' is missing or has compile errors: the GW2 parallax effects " +
+                              "(fx-parallax-*) fall back to Poiyomi");
+            Shader dis = Shader.Find(DistortShaderName);
+            if (dis != null && !PoiyomiMaterials.HasErrors(dis)) c.DistortShader = dis;
+            else warnings.Add("materials: '" + DistortShaderName + "' is missing or has compile errors: the GW2 distortion " +
+                              "effects (fx-distort-*) fall back to the plain material");
+            return c;
+        }
+
+        public const string ParallaxShaderName = LitShader;   // the parallax block of the one GW2 shader
+        public const string DistortShaderName = "Castlemist/GW2 Distort";
+
+        static MaterialContext CreateFor(List<string> warnings, ShaderMode mode)
+        {
+            if (mode == ShaderMode.Castlemist)
+            {
+                Shader lit = Shader.Find(LitShader), particle = Shader.Find(ParticleShaderName);
+                if (lit != null && particle != null && !PoiyomiMaterials.HasErrors(lit) && !PoiyomiMaterials.HasErrors(particle))
+                    return new MaterialContext { Warnings = warnings, Castlemist = true, Shader = lit, ParticleShader = particle };
+                warnings.Add("materials: '" + LitShader + "' or '" + ParticleShaderName + "' is missing or has compile errors " +
+                             "(copy tools/unity/Castlemist with its Shaders folder): Poiyomi is used instead");
+            }
+            return Create(warnings);
         }
 
         /// The Poiyomi shader PoiyomiShaders.Choose picks among PoiyomiShaders.Names, or Standard with a warning.
@@ -137,7 +191,7 @@ namespace Castlemist
         // the Standard fallback, and for Poiyomi only when its _Mode description
         // has no presets (ctx.Presets empty). Poiyomi 10.0.9, 10.0.23 and 11.0.22
         // declare the same rows.
-        struct Preset
+        public struct Preset
         {
             public int Queue, Src, Dst, ZWrite, AddSrc, AddDst;
             public string RenderType;
@@ -150,8 +204,32 @@ namespace Castlemist
         }
 
         public const int Opaque = 0, Cutout = 1, Fade = 2, Transparent = 3, TransClipping = 9;
+        public const int LightingFlat = 5, LightingRealistic = 6;
 
-        static Preset PresetFor(int mode)
+        static readonly string[] LightingKeywords =
+        {
+            "_LIGHTINGMODE_TEXTURERAMP", "_LIGHTINGMODE_MULTILAYER_MATH", "_LIGHTINGMODE_WRAPPED", "_LIGHTINGMODE_SKIN",
+            "_LIGHTINGMODE_SHADEMAP", "_LIGHTINGMODE_FLAT", "_LIGHTINGMODE_REALISTIC", "_LIGHTINGMODE_CLOTH",
+            "_LIGHTINGMODE_SDF", "_LIGHTINGMODE_PBR",
+        };
+
+        /// Additive, Soft Additive, Multiplicative, 2x Multiplicative, or unlit in the game:
+        /// drawn like a particle, so the importer keeps Flat lighting on it.
+        public static bool ParticleLike(int mode, bool unlit)
+        {
+            return unlit || (mode >= 4 && mode <= 7);
+        }
+
+        /// Poiyomi's Lighting Type: the float and its one keyword (KeywordEnum order, index = value).
+        static void SetLighting(MaterialContext ctx, Material mat, int lighting)
+        {
+            if (!ctx.Poiyomi || !mat.HasProperty("_LightingMode")) return;
+            foreach (string k in LightingKeywords) mat.DisableKeyword(k);
+            mat.SetFloat("_LightingMode", lighting);
+            mat.EnableKeyword(LightingKeywords[lighting]);
+        }
+
+        public static Preset PresetFor(int mode)
         {
             switch (mode)
             {
@@ -216,12 +294,18 @@ namespace Castlemist
         public static Material BuildModelMaterial(MaterialContext ctx, MaterialsFile.MaterialEntry e, string modelFolder,
                                                   bool darkDecal, WorldManifest.UvScroll scroll, string assetPath)
         {
+            if (ctx.DistortShader != null && CastlemistMaterials.IsDistort(e))
+                return CastlemistMaterials.BuildDistort(ctx, e, modelFolder, assetPath);
+            if (ctx.ParallaxShader != null && CastlemistMaterials.IsParallax(e))
+                return CastlemistMaterials.BuildParallax(ctx, e, modelFolder, assetPath);
+            if (ctx.Castlemist) return CastlemistMaterials.BuildModelMaterial(ctx, e, modelFolder, darkDecal, scroll, assetPath);
             string tag = Path.GetFileName(modelFolder) + "/" + e.Name;
             Material mat = GetOrCreate(ctx, assetPath);
             int mode = darkDecal ? Fade : e.Mode;
             ApplyPreset(ctx, mat, mode);
             if (!darkDecal && !e.Exact && e.Blend != null) ApplyRawBlend(ctx, mat, e.Blend);
             if (mode == Cutout || mode == TransClipping) SetF(mat, "_Cutoff", (float)e.AlphaCutoff);
+            SetLighting(ctx, mat, ParticleLike(mode, e.Unlit) ? LightingFlat : LightingRealistic);
             SetF(mat, "_Cull", e.Cull == "Off" ? (float)CullMode.Off : (float)CullMode.Back);
             mat.renderQueue = ctx.QueueFor(mode) + e.RenderQueueOffset;
 
@@ -318,8 +402,10 @@ namespace Castlemist
         /// Terrain (Opaque) or water (Fade) material with one main texture.
         public static Material BuildSimple(MaterialContext ctx, string assetPath, Texture tex, int mode)
         {
+            if (ctx.Castlemist) return CastlemistMaterials.BuildSimple(ctx, assetPath, tex, mode);
             Material mat = GetOrCreate(ctx, assetPath);
             ApplyPreset(ctx, mat, mode);
+            SetLighting(ctx, mat, LightingRealistic);
             mat.renderQueue = ctx.QueueFor(mode);
             SetColor(mat, "_Color", Color.white);
             if (mat.HasProperty("_MainTex")) mat.SetTexture("_MainTex", tex);
@@ -329,20 +415,22 @@ namespace Castlemist
             return mat;
         }
 
-        static Material GetOrCreate(MaterialContext ctx, string assetPath)
+        static Material GetOrCreate(MaterialContext ctx, string assetPath) { return GetOrCreate(ctx.Shader, assetPath); }
+
+        /// The .mat at assetPath with `shader`, created when missing; an existing one is updated in
+        /// place (stable GUID) and starts from the keywords a new material of the shader has.
+        public static Material GetOrCreate(Shader shader, string assetPath)
         {
             var mat = AssetDatabase.LoadAssetAtPath<Material>(assetPath);
             if (mat != null)
             {
-                // Update in place (stable GUID); start from the keywords a new
-                // material of the shader has, as a first import does.
-                if (mat.shader != ctx.Shader) mat.shader = ctx.Shader;
-                var fresh = new Material(ctx.Shader);
+                if (mat.shader != shader) mat.shader = shader;
+                var fresh = new Material(shader);
                 mat.shaderKeywords = fresh.shaderKeywords;
                 Object.DestroyImmediate(fresh);
                 return mat;
             }
-            mat = new Material(ctx.Shader) { name = Path.GetFileNameWithoutExtension(assetPath) };
+            mat = new Material(shader) { name = Path.GetFileNameWithoutExtension(assetPath) };
             AssetDatabase.CreateAsset(mat, assetPath);
             return mat;
         }
@@ -416,10 +504,10 @@ namespace Castlemist
             }
         }
 
-        static void SetTex(MaterialContext ctx, Material mat, string prop, string folder, MaterialsFile.MapRef m, string tag)
+        public static void SetTex(MaterialContext ctx, Material mat, string prop, string folder, MaterialsFile.MapRef m, string tag)
         {
             string path = AssetPath(folder + "/" + m.File.Replace('\\', '/'));
-            var tex = AssetDatabase.LoadAssetAtPath<Texture2D>(path);
+            var tex = AssetDatabase.LoadAssetAtPath<Texture>(path);   // a Texture2D, or a .dds Cubemap
             if (tex == null) { ctx.Warnings.Add(tag + ": " + prop + " texture missing: " + path); return; }
             if (mat.HasProperty(prop)) mat.SetTexture(prop, tex);
         }

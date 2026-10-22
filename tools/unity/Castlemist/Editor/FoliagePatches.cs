@@ -73,11 +73,12 @@ namespace Castlemist
             if (modelPrefabs.TryGetValue(model, out prefab))
             {
                 Matrix4x4 toRoot = prefab.transform.worldToLocalMatrix;
+                ICollection<string> far = LodGroups.EffectiveFar(prefab, m.Models[model].FarMeshes);
                 foreach (MeshFilter mf in prefab.GetComponentsInChildren<MeshFilter>(true))
                 {
                     var mr = mf.GetComponent<MeshRenderer>();
                     if (mf.sharedMesh == null || mr == null) continue;
-                    if (LodGroups.IsLodObject(mf.gameObject)) continue;   // Task 15b: patches keep LOD0 only
+                    if (LodGroups.IsLodObject(mf.gameObject, far)) continue;   // Task 15b: patches keep LOD0 only, no stand-ins
                     list.Add(new Part { Mesh = mf.sharedMesh, ToRoot = toRoot * mf.transform.localToWorldMatrix, Materials = mr.sharedMaterials });
                 }
             }

@@ -394,3 +394,39 @@ runtime value of `G`; GW2's prop fade/cull distance (the export never culls a
 prop, `settings.lodPropCullHeight` 0); what `DROP_LOD_2` (bit 4) and
 `DISABLE_LOD` (bit 7) do (bit 4 is tested near the prop's fade code at
 `0x140cb49ec`; not acted on).
+
+## Amendment 2026-10-21: "lod" stand-in meshes, and props cull
+
+**Section 3 is wrong about one thing.** Some models carry a separate low-detail
+mesh beside their real ones. It is not a separate model file and not an
+impostor card. It is an ordinary MODL mesh:
+
+- its `ModelMeshDataV66.meshName` decodes to "lod" (token `0x11EC`, sometimes
+  with a numeric suffix in the top nibble);
+- its `ModelMeshDataV66.flags` is `4` (bit 2), and no other mesh in the sample has it;
+- it covers the model's whole bounds with a fraction of the triangles
+  (3132914: 302 against 1514; 3135004: 2202 against about 18 000);
+- its material is AMAT 27352 (`prop-lit`, Cutout), a shared 64 x 64 atlas.
+
+Measured with `gw2dat_cli parse` on eleven models of the Mists vault map 3560860:
+3132914, 3132801, 3413761, 3135444, 3132862, 3135004, 3124756, 3132869, 1790913,
+3124820, 3133039. In 3135444 (a vendor curtain), the stand-in is the only mesh:
+the curtain itself is cloth, which the export does not write.
+
+Before this, the world export drew the stand-in all the time, on top of the
+real meshes. That is the "lod_1 next to buttress_0" case, and the overlap made
+some models look wrong.
+
+**What the export does now.** The parser keeps the flags (`Mesh::flags`, then
+`ModelMeshCPU::meshFlags`). `models[].lods.farMeshes` lists the stand-ins'
+node names, and `levels` and `triangles` leave them out. The Unity importer
+draws them only as one more level after the model's own levels: from `d1`
+for a model with one level, otherwise from `d2` (with three levels they take
+LOD2's place). A model with nothing but stand-ins draws them as ordinary
+meshes. Where the client actually switches to the stand-in has not been
+traced, so this is `settings.lodFarMeshes`, UNPROVEN.
+
+**Props cull.** Every model prefab now gets a LODGroup, a model without LODs
+included. Its last level culls below 1% of the screen height, divided by the
+importer's Distance option (`settings.lodPropCullHeight` 0.01, castlemist's
+choice). GW2's prop fade distance is still not traced.

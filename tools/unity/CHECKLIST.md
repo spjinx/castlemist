@@ -75,7 +75,7 @@ the manifest changes.
    `foliageTrees`; Task 15b added the three `lod` counts; Task 15d made
    `materials` one per material key, so the fixture's 5 became 4). `LODS ... OK` checks
    every model prefab, tree prefab and `instances[].lod` instance's LODGroup, and
-   `MATERIALS ... OK` (Task 15d) one `Materials/Shared/<key>.mat` per key and
+   `MATERIALS ... OK` (Task 15d) one `Materials/Shared/<fileId>_<name>.mat` per key and
    variant, never two, with every prefab renderer on its model's shared material. Compare the line for the same options on both sides. In
    batchmode, `FOLIAGE_TREES checked=<n> ... OK` also checks every foliage tree
    instance against its record's `m`, `FOLIAGE_PATCHES` the patches, and in

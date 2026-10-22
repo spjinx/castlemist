@@ -207,6 +207,8 @@ namespace Castlemist
         public double[,] ToUnity = { { 1, 0, 0 }, { 0, 0, -1 }, { 0, 1, 0 } };
         public bool TerrainPresent;
         public bool DarkDecalRule = true;
+        /// settings.uv1InUv4: the models' meshes carry GW2's UV1 in UV4 too (false in an older export).
+        public bool Uv1InUv4;
         public readonly List<ModelEntry> Models = new List<ModelEntry>();
         public readonly List<CellEntry> Cells = new List<CellEntry>();
         public WaterEntry Water;   // null: no water block
@@ -246,6 +248,12 @@ namespace Castlemist
             /// LodDistances the model's switch distances, model units (null when absent).
             public int LodLevels = 1;
             public double[] LodDistances;
+            /// models[].lods.farMeshes: the FBX object names of the model's "lod" stand-in meshes
+            /// (mesh flag 0x4), drawn as its last level only (settings.lodFarMeshes); empty when none.
+            public List<string> FarMeshes = new List<string>();
+            /// models[].lods.hiddenMeshes: the "lod01" stand-ins (mesh flag 0x1) of a model that also
+            /// has a flag-4 one; never drawn. Empty when none.
+            public List<string> HiddenMeshes = new List<string>();
             /// models[].materialKeys (Task 15d): the key of each materials.json entry; empty when absent.
             public List<string> MaterialKeys = new List<string>();
             public bool Ok { get { return Status == "ok"; } }
@@ -463,6 +471,8 @@ namespace Castlemist
             JObj settings = r.OptObj("settings");
             JObj dd = settings != null ? settings.OptObj("darkDecalRule") : null;
             if (dd != null) m.DarkDecalRule = dd.Bool("value", true);
+            JObj u4 = settings != null ? settings.OptObj("uv1InUv4") : null;
+            if (u4 != null) m.Uv1InUv4 = u4.Bool("value", false);
             JObj fq = settings != null ? settings.OptObj("zoneFadeQualityScale") : null;
             if (fq != null) m.ZoneFadeQualityScale = fq.OptNum("value", 1.0);
 
@@ -493,6 +503,8 @@ namespace Castlemist
                     e.LodLevels = (int)lods.OptNum("levels", 1);
                     if (e.LodLevels < 1 || e.LodLevels > 3) throw new ManifestException(lods.Path + ".levels: " + e.LodLevels + " is not 1..3");
                     e.LodDistances = lods.Vec("distances", 2);
+                    e.FarMeshes = lods.Strings("farMeshes");
+                    e.HiddenMeshes = lods.Strings("hiddenMeshes");
                 }
                 foreach (JObj u in mo.Objs("uvScroll"))
                 {
@@ -698,6 +710,8 @@ namespace Castlemist
             /// The material's content key (Task 15d); null in an export before it.
             public string Key;
             public bool UsedByMeshes = true, Exact = true;
+            /// The game shades it without lighting (fog only); false in an export before the field.
+            public bool Unlit;
             public int Mode;
             public BlendRaw Blend;  // null: no game blend word
             public double AlphaCutoff = 0.25;
@@ -709,9 +723,60 @@ namespace Castlemist
             public double EmissionStrength;
             public double[] SpecularTint, ReflectionTint;  // null: none
             public bool HasRim, HasProjector, HasExtras;
+            /// maps.extras[] with a file: the layers castlemist ships raw, with their role and
+            /// hinted use ("detail-multiply2x" for a mod layer).
+            public readonly List<Extra> Extras = new List<Extra>();
+            /// The shader profile castlemist matched ("default" when the AMAT is not in its table).
+            public string Profile;
+            /// The material's AMAT (GW2 shader) fileId; 0 when the export had none.
+            public long Amat;
+            /// gw2: the named material constants (x); gw2Vectors: their whole float4 (empty in an older export).
+            public readonly Dictionary<string, double> Gw2 = new Dictionary<string, double>(StringComparer.Ordinal);
+            public readonly Dictionary<string, double[]> Gw2Vectors = new Dictionary<string, double[]>(StringComparer.Ordinal);
+            /// texTransforms: the MODL per-UV-set animation, as stored (empty in an older export).
+            public readonly List<TexTransform> TexTransforms = new List<TexTransform>();
+
+            public Extra ExtraOf(string role) { return Extras.Find(x => x.Role == role); }
+            /// The DDS cubemap layers (maps.cubemaps; the water 3121604's projection / reflect).
+            public readonly List<Extra> Cubemaps = new List<Extra>();
+            public Extra CubeOf(string role) { return Cubemaps.Find(x => x.Role == role); }
+
+            /// maps.layerConstants: layers whose texture is a placeholder for one colour, role -> RGBA 0..1.
+            public readonly Dictionary<string, Color32Value> LayerConstants = new Dictionary<string, Color32Value>(StringComparer.Ordinal);
+
+            /// Constant `name` component `c` (0..3): gw2Vectors when present, else gw2 for x, else `fallback`.
+            public double Const(string name, int c, double fallback)
+            {
+                double[] v;
+                if (Gw2Vectors.TryGetValue(name, out v) && v != null && c < v.Length) return v[c];
+                double x;
+                if (c == 0 && Gw2.TryGetValue(name, out x)) return x;
+                return fallback;
+            }
             public readonly List<string> Warnings = new List<string>();
 
             public MapRef Map(string role) { MapRef r; return Maps.TryGetValue(role, out r) ? r : null; }
+        }
+
+        /// A placeholder layer's constant colour, 0..1 per channel.
+        public sealed class Color32Value
+        {
+            public double R, G, B, A;
+            public double Channel(int c) { return c == 0 ? R : c == 1 ? G : c == 2 ? B : A; }
+        }
+
+        /// One MODL texTransform: what TexTransform<Uv> animates in the game's vertex shader.
+        public sealed class TexTransform
+        {
+            public int Uv;
+            public double[] Scroll = { 0, 0 };
+            public double Rotate;
+        }
+
+        public sealed class Extra
+        {
+            public MapRef Map;
+            public string Role, Use;
         }
 
         public static readonly string[] MapRoles =
@@ -739,6 +804,7 @@ namespace Castlemist
                     Cull = m.OptStr("cull") ?? "Back",
                     UsedByMeshes = m.Bool("usedByMeshes", true),
                     Exact = m.Bool("exact", true),
+                    Unlit = m.Bool("unlit", false),
                     Mode = (int)m.OptNum("mode", 0),
                     AlphaCutoff = m.OptNum("alphaCutoff", 0.25),
                     RenderQueueOffset = (int)m.OptNum("renderQueueOffset", 0),
@@ -761,6 +827,31 @@ namespace Castlemist
                         e.Maps[role] = new MapRef { File = mr.Str("file"), Uv = (int)mr.OptNum("uv", 0) };
                     }
                     e.HasExtras = maps.OptArr("extras").Count > 0;
+                    foreach (JObj lc in maps.Objs("layerConstants"))
+                    {
+                        double[] v = lc.OptVec("rgba", 4);
+                        if (v != null)
+                            e.LayerConstants[lc.Str("role")] = new Color32Value { R = v[0] / 255.0, G = v[1] / 255.0, B = v[2] / 255.0, A = v[3] / 255.0 };
+                    }
+                    foreach (JObj x in maps.Objs("cubemaps"))
+                    {
+                        if (x.IsNull("file")) continue;
+                        e.Cubemaps.Add(new Extra
+                        {
+                            Map = new MapRef { File = x.Str("file"), Uv = (int)x.OptNum("uv", 0) },
+                            Role = x.OptStr("role"),
+                        });
+                    }
+                    foreach (JObj x in maps.Objs("extras"))
+                    {
+                        if (x.IsNull("file")) continue;
+                        e.Extras.Add(new Extra
+                        {
+                            Map = new MapRef { File = x.Str("file"), Uv = (int)x.OptNum("uv", 0) },
+                            Role = x.OptStr("role"),
+                            Use = x.OptStr("use"),
+                        });
+                    }
                 }
                 JObj em = m.OptObj("emission");
                 if (em != null)
@@ -769,6 +860,22 @@ namespace Castlemist
                     e.EmissionColor = em.OptVec("color", 3) ?? new double[] { 1, 1, 1 };
                     e.EmissionStrength = em.OptNum("strength", 1);
                 }
+                e.Profile = m.OptStr("profile");
+                e.Amat = m.IsNull("amat") ? 0 : (long)m.OptNum("amat", 0);
+                JObj g = m.OptObj("gw2");
+                if (g != null)
+                    foreach (KeyValuePair<string, object> kv in g.Raw)
+                        if (kv.Value is double) e.Gw2[kv.Key] = (double)kv.Value;
+                JObj gv = m.OptObj("gw2Vectors");
+                if (gv != null)
+                    foreach (string k in gv.Raw.Keys) e.Gw2Vectors[k] = gv.OptVec(k, 4);
+                foreach (JObj t in m.Objs("texTransforms"))
+                    e.TexTransforms.Add(new TexTransform
+                    {
+                        Uv = (int)t.OptNum("uv", 0),
+                        Scroll = t.OptVec("scroll", 2) ?? new double[] { 0, 0 },
+                        Rotate = t.OptNum("rotate", 0),
+                    });
                 e.SpecularTint = m.OptVec("specularTint", 3);
                 e.ReflectionTint = m.OptVec("reflectionTint", 3);
                 e.HasRim = !m.IsNull("rim");

@@ -273,7 +273,14 @@ bool peek_texture_by_fileid(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU& out) 
     if (base == 0 || base - 1 >= dat.mft_data_list.size()) return false;
     AtexHeader hd;
     size_t total = 0;
-    if (!peek_mft_header(dat, base - 1, hd, &total)) return false;
+    if (!peek_mft_header(dat, base - 1, hd, &total)) {
+        // A plain "DDS " entry (ruling P9; the 64 x 64 ramp 23493 of 1998356 / 574526): its size
+        // comes from decoding it, as decode_texture_capped does.
+        std::vector<uint8_t> bytes;
+        if (!read_mft_atex_bytes(dat, base - 1, bytes) || !decode_dds_bytes(bytes, base - 1, out)) return false;
+        out.fileId = fileId;
+        return true;
+    }
     out.fileId = fileId;
     out.baseId = base;
     out.width = hd.width;
@@ -290,7 +297,10 @@ bool decode_texture_by_fileid_res(Gw2Dat& dat, uint32_t fileId, ModelTextureCPU&
         return false;
     }
     size_t i0 = resolve_res_index(dat, base - 1, want_full);
-    if (!decode_mft_atex(dat, i0, out)) return false;
+    if (!decode_mft_atex(dat, i0, out)) {
+        std::vector<uint8_t> bytes;   // a plain "DDS " entry (ruling P9)
+        if (!read_mft_atex_bytes(dat, base - 1, bytes) || !decode_dds_bytes(bytes, base - 1, out)) return false;
+    }
     out.fileId = fileId;
     return true;
 }
@@ -367,6 +377,21 @@ bool castlemist::extract::decode_dds_bytes(const std::vector<uint8_t>& bytes, si
         out.channels = compute_channels(out.rgba, false);
         out.hasCutout = compute_alpha_cutout(out.rgba);
         return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool castlemist::extract::read_dds_cube_by_fileid(Gw2Dat& dat, uint32_t fileId, std::vector<uint8_t>& bytes) {
+    try {
+        const uint32_t base = get_by_base_id(dat, fileId);
+        if (base == 0 || base - 1 >= dat.mft_data_list.size()) return false;
+        if (!read_mft_atex_bytes(dat, base - 1, bytes)) return false;
+        // DDS_HEADER: dwCaps2 at byte 112 (4 magic + 108); 0x200 = DDSCAPS2_CUBEMAP.
+        if (bytes.size() < 128 || std::memcmp(bytes.data(), "DDS ", 4) != 0) return false;
+        uint32_t caps2 = 0;
+        std::memcpy(&caps2, bytes.data() + 112, 4);
+        return (caps2 & 0x200u) != 0;
     } catch (...) {
         return false;
     }

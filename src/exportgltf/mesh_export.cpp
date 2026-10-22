@@ -24,7 +24,8 @@ constexpr int kElementArrayBuffer = 34963;
 } // namespace
 
 std::vector<MeshExportInfo> write_meshes(GltfWriter& w, const ModelPreview& model,
-                                         const std::vector<int>& materialIndices, int lodLevels) {
+                                         const std::vector<int>& materialIndices, int lodLevels,
+                                         bool uv1CopyToUv4, bool vertexColors) {
     std::vector<MeshExportInfo> out;
     out.reserve(model.meshes.size());
 
@@ -33,7 +34,7 @@ std::vector<MeshExportInfo> write_meshes(GltfWriter& w, const ModelPreview& mode
         if (mesh.vertices.empty() || mesh.indices.size() < 3) continue;
 
         size_t n = mesh.vertices.size();
-        std::vector<float> positions, normals, uvs, tangents;
+        std::vector<float> positions, normals, uvs, tangents, colors;
         std::vector<uint16_t> joints;
         std::vector<float> weights;
         positions.reserve(n * 3);
@@ -66,6 +67,19 @@ std::vector<MeshExportInfo> write_meshes(GltfWriter& w, const ModelPreview& mode
         }
         if (mesh.exportUv1 && std::find(extraChannels.begin(), extraChannels.end(), uint8_t{1}) == extraChannels.end())
             extraChannels.push_back(1);
+        // extraSource[e]: the GVertex channel TEXCOORD_<extraChannels[e]> is read from.
+        std::vector<uint8_t> extraSource(extraChannels);
+        if (uv1CopyToUv4 && std::find(extraChannels.begin(), extraChannels.end(), uint8_t{1}) != extraChannels.end()) {
+            for (uint8_t c : {uint8_t{2}, uint8_t{3}})
+                if (std::find(extraChannels.begin(), extraChannels.end(), c) == extraChannels.end()) {
+                    extraChannels.push_back(c);
+                    extraSource.push_back(c);
+                }
+            if (std::find(extraChannels.begin(), extraChannels.end(), uint8_t{4}) == extraChannels.end()) {
+                extraChannels.push_back(4);
+                extraSource.push_back(1);
+            }
+        }
         std::vector<std::vector<float>> extraUvs(extraChannels.size());
         for (auto& e : extraUvs) e.reserve(n * 2);
 
@@ -82,7 +96,7 @@ std::vector<MeshExportInfo> write_meshes(GltfWriter& w, const ModelPreview& mode
             normals.push_back(v.nx); normals.push_back(v.ny); normals.push_back(v.nz);
             uvs.push_back(v.u); uvs.push_back(v.v);
             for (size_t e = 0; e < extraChannels.size(); ++e) {
-                const float* c = v.uv1[extraChannels[e] - 1];
+                const float* c = v.uv1[extraSource[e] - 1];
                 extraUvs[e].push_back(c[0]);
                 extraUvs[e].push_back(c[1]);
             }
@@ -98,6 +112,8 @@ std::vector<MeshExportInfo> write_meshes(GltfWriter& w, const ModelPreview& mode
                 tangents.push_back(v.tx); tangents.push_back(v.ty); tangents.push_back(v.tz);
                 tangents.push_back(dot < 0.0f ? -1.0f : 1.0f);
             }
+            if (vertexColors && mesh.hasColor)
+                for (int k = 0; k < 4; ++k) colors.push_back(v.col[k] / 255.0f);
             if (mesh.hasSkin) {
                 for (int k = 0; k < 4; ++k) joints.push_back(static_cast<uint16_t>(v.bidx[k]));
                 for (int k = 0; k < 4; ++k) weights.push_back(v.bwt[k]);
@@ -121,6 +137,11 @@ std::vector<MeshExportInfo> write_meshes(GltfWriter& w, const ModelPreview& mode
         if (mesh.hasTangents) {
             int tanAcc = w.add_accessor(tangents.data(), tangents.size() * sizeof(float), kFloat, "VEC4", n, kArrayBuffer);
             attributes["TANGENT"] = tanAcc;
+        }
+        if (vertexColors && mesh.hasColor) {
+            // GW2's vertex colour, as stored (its effect shaders read it as parameters).
+            int colAcc = w.add_accessor(colors.data(), colors.size() * sizeof(float), kFloat, "VEC4", n, kArrayBuffer);
+            attributes["COLOR_0"] = colAcc;
         }
         if (mesh.hasSkin) {
             int jointsAcc = w.add_accessor(joints.data(), joints.size() * sizeof(uint16_t), kUnsignedShort, "VEC4",

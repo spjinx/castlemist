@@ -11,7 +11,8 @@
 //
 //   ... -executeMethod Castlemist.BatchEntry.ImportWorld -castlemistWorld Assets/<export>
 //     [-castlemistScale <s>] [-castlemistTerrain mesh|terrain]
-//     [-castlemistFoliage off|colliders|trees|all] [-castlemistDensity f]
+//     [-castlemistFoliage off|colliders|trees|all] [-castlemistDensity f] [-castlemistShader poiyomi|castlemist]
+//     [-castlemistSkipModels <fileId,fileId,...>]
 //     [-castlemistDistance f] [-castlemistQuest]
 //     [-castlemistExpectShader "<Poiyomi shader name>"|Standard] [-castlemistScreenshot <file.png>]
 //
@@ -123,7 +124,7 @@ namespace Castlemist
                 ImportSummary sum = WorldImporter.Import(folder, scale, opts);
                 WorldImporter.Log(sum);
                 bool cellsOk = CheckCells(folder, opts);
-                bool shaderOk = CheckShader(folder);
+                bool shaderOk = CheckShader(folder, opts.shader);
                 string shot = Arg("-castlemistScreenshot");
                 bool shotOk = shot == null || Screenshot(folder, shot);
                 code = sum.errors.Count == 0 && (sum.probeLine == null || sum.probeOk) && sum.terrainCheckOk && cellsOk && shaderOk && shotOk ? 0 : 1;
@@ -145,6 +146,8 @@ namespace Castlemist
             if ((a = Arg("-castlemistFoliage")) != null) o.foliage = ImportOptions.ParseFoliage(a);
             if ((a = Arg("-castlemistDensity")) != null) o.density = float.Parse(a, CultureInfo.InvariantCulture);
             if ((a = Arg("-castlemistDistance")) != null) o.distance = float.Parse(a, CultureInfo.InvariantCulture);
+            if ((a = Arg("-castlemistShader")) != null) o.shader = ImportOptions.ParseShader(a);
+            if ((a = Arg("-castlemistSkipModels")) != null) o.skipModels = a;
             o.Validate();
             return o;
         }
@@ -210,7 +213,7 @@ namespace Castlemist
             bool instOk = maxErr < 1e-4;
             Debug.Log("INSTANCES checked=" + checkedInst + " maxRelErr=" + maxErr.ToString("E2", CultureInfo.InvariantCulture) +
                       " rootScale=" + scale.ToString("R", CultureInfo.InvariantCulture) + (instOk ? " OK" : " FAIL"));
-            if (m.UnityTerrain == null) opts = new ImportOptions { terrain = TerrainMode.Mesh, foliage = opts.foliage, density = opts.density, distance = opts.distance };
+            if (m.UnityTerrain == null) opts = new ImportOptions { terrain = TerrainMode.Mesh, foliage = opts.foliage, density = opts.density, distance = opts.distance, shader = opts.shader, skipModels = opts.skipModels };
             var errs = new List<string>();
             FoliagePlan plan = FoliagePlan.Build(m, c => FoliageRecords.Read(folder + "/" + c.FoliageFile), opts, errs);
             bool foliageOk = CheckFoliage(m, root, plan, folder, opts);
@@ -222,11 +225,11 @@ namespace Castlemist
         }
 
         /// MATERIALS (Task 15d): one .mat per (key, dark decal, uvScroll) in Materials/Shared,
-        /// never two for one: per key, the .mat files named for it ("<key>.mat",
-        /// "<key>_<8 hex>.mat") are exactly its variants the models use; and every renderer of
-        /// every model prefab and foliage tree prefab (LOD levels included) draws a Shared .mat
-        /// whose key is one of that model's materialKeys. Skipped (with the line) for an export
-        /// without keys.
+        /// never two for one: the .mat files there are exactly the variants the models use, each
+        /// named WorldImporter.SharedMaterialStems ("<fileId>_<name>" of its first entry); and every
+        /// renderer of every model prefab and foliage tree prefab (LOD levels included) draws a
+        /// Shared .mat whose key is one of that model's materialKeys. Skipped (with the line) for an
+        /// export without keys.
         static bool CheckMaterials(string folder, WorldManifest m)
         {
             var fails = new List<string>();
@@ -234,6 +237,9 @@ namespace Castlemist
             int keyed = 0, renderers = 0;
             var drawn = new HashSet<Material>();
             string sharedDir = folder + "/Materials/Shared/";
+            Dictionary<string, string> stems = WorldImporter.SharedMaterialStems(folder, m);
+            var keyOfStem = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (KeyValuePair<string, string> kv in stems) keyOfStem[kv.Value] = kv.Key.Split('|')[0];
             foreach (WorldManifest.ModelEntry e in m.Models)
             {
                 if (!e.Ok || e.Materials == null || e.MaterialKeys.Count == 0) continue;
@@ -247,7 +253,8 @@ namespace Castlemist
                     WorldManifest.UvScroll sc = e.UvScroll.FirstOrDefault(u => u.Material == me.Name);
                     HashSet<string> vs;
                     if (!variantsOfKey.TryGetValue(me.Key, out vs)) variantsOfKey[me.Key] = vs = new HashSet<string>(StringComparer.Ordinal);
-                    vs.Add(WorldImporter.SharedMaterialFile(me.Key, WorldImporter.SharedMaterialVariant(me.Key, dark, sc)));
+                    string stem;
+                    if (stems.TryGetValue(WorldImporter.SharedMaterialVariant(me.Key, dark, sc), out stem)) vs.Add(stem);
                 }
                 var keys = new HashSet<string>(e.MaterialKeys, StringComparer.Ordinal);
                 foreach (string pp in new[] { folder + "/Prefabs/" + e.FileId + ".prefab", folder + "/Prefabs/Foliage/" + e.FileId + ".prefab" })
@@ -260,8 +267,8 @@ namespace Castlemist
                             if (sm == null || sm.name == "Default-Material") continue;   // warned at import
                             ++renderers;
                             string path = AssetDatabase.GetAssetPath(sm);
-                            string stem = System.IO.Path.GetFileNameWithoutExtension(path);
-                            if (!path.StartsWith(sharedDir, StringComparison.Ordinal) || stem.Length < 40 || !keys.Contains(stem.Substring(0, 40)))
+                            string stem = System.IO.Path.GetFileNameWithoutExtension(path), key;
+                            if (!path.StartsWith(sharedDir, StringComparison.Ordinal) || !keyOfStem.TryGetValue(stem, out key) || !keys.Contains(key))
                                 fails.Add(r.gameObject.name + " in " + pp + ": " + path + " is not one of the model's shared materials");
                             else drawn.Add(sm);
                         }
@@ -275,9 +282,8 @@ namespace Castlemist
             var onDisk = new Dictionary<string, List<string>>(StringComparer.Ordinal);   // key -> .mat stems
             foreach (string guid in AssetDatabase.FindAssets("t:Material", new[] { folder + "/Materials/Shared" }))
             {
-                string stem = System.IO.Path.GetFileNameWithoutExtension(AssetDatabase.GUIDToAssetPath(guid));
-                if (stem.Length < 40) { fails.Add("Materials/Shared/" + stem + ".mat: not named by a key"); continue; }
-                string key = stem.Substring(0, 40);
+                string stem = System.IO.Path.GetFileNameWithoutExtension(AssetDatabase.GUIDToAssetPath(guid)), key;
+                if (!keyOfStem.TryGetValue(stem, out key)) { fails.Add("Materials/Shared/" + stem + ".mat: no material variant has this name"); continue; }
                 List<string> l;
                 if (!onDisk.TryGetValue(key, out l)) onDisk[key] = l = new List<string>();
                 l.Add(stem);
@@ -305,10 +311,10 @@ namespace Castlemist
         /// _Cutoff (Cutout and TransClipping), _Cull, the render queue, and with Poiyomi _Mode, the RenderType tag of
         /// the shader's own preset row, _MainTexPan (uvScroll on the base colour's UV), MOCHIE_PBR for a packed map
         /// and _EMISSION for emission.
-        static bool CheckShader(string folder)
+        static bool CheckShader(string folder, ShaderMode shaderMode)
         {
             WorldManifest m = WorldManifest.Parse(System.IO.File.ReadAllText(folder + "/manifest.json"));
-            MaterialContext ctx = MaterialContext.Create(new List<string>());
+            MaterialContext ctx = MaterialContext.Create(new List<string>(), shaderMode);
             var fails = new List<string>();
             string got = ctx.Poiyomi ? ctx.ShaderName : "Standard";
             string expect = Arg("-castlemistExpectShader");
@@ -321,13 +327,14 @@ namespace Castlemist
                 var mat = AssetDatabase.LoadAssetAtPath<Material>(mp);
                 if (mat == null) continue;
                 all.Add(mat);
-                if (mat.shader != ctx.Shader) fails.Add(mat.name + ": shader " + mat.shader.name);
+                if (mat.shader != ctx.Shader && (!ctx.Castlemist || mat.shader != ctx.ParticleShader)) fails.Add(mat.name + ": shader " + mat.shader.name);
             }
             var shaders = new HashSet<Shader>(all.Select(x => x.shader));
             foreach (Shader s in shaders)
                 if (PoiyomiMaterials.HasErrors(s)) fails.Add("shader " + s.name + " has compile errors");
 
             int n = 0, tex = 0, cut = 0, cullOff = 0, pan = 0, packed = 0, emis = 0;
+            Dictionary<string, string> stems = WorldImporter.SharedMaterialStems(folder, m);
             Func<float, double, bool> near = (a, b) => Math.Abs(a - b) <= 1e-5 * Math.Max(1.0, Math.Abs(b));
             foreach (WorldManifest.ModelEntry e in m.Models)
             {
@@ -340,14 +347,16 @@ namespace Castlemist
                     if (!me.UsedByMeshes || me.Key == null) continue;
                     bool dark = m.DarkDecalRule && e.DarkDecalMaterials.Contains(me.Name);
                     WorldManifest.UvScroll sc = e.UvScroll.FirstOrDefault(u => u.Material == me.Name);
-                    string path = folder + "/Materials/Shared/" + WorldImporter.SharedMaterialFile(me.Key, WorldImporter.SharedMaterialVariant(me.Key, dark, sc)) + ".mat";
+                    string stem;
+                    stems.TryGetValue(WorldImporter.SharedMaterialVariant(me.Key, dark, sc), out stem);
+                    string path = folder + "/Materials/Shared/" + stem + ".mat";
                     var mat = AssetDatabase.LoadAssetAtPath<Material>(path);
                     string tag = e.FileId + "/" + me.Name;
                     if (mat == null) { fails.Add(tag + ": no " + path); continue; }
                     ++n;
                     int mode = dark ? PoiyomiMaterials.Fade : me.Mode;
                     var bad = new List<string>();
-                    if (mat.shader != ctx.Shader) bad.Add("shader " + mat.shader.name);
+                    if (mat.shader != ctx.Shader && (!ctx.Castlemist || mat.shader != ctx.ParticleShader)) bad.Add("shader " + mat.shader.name);
                     MaterialsFile.MapRef bc = me.Map("baseColor");
                     if (bc != null)
                     {
@@ -357,7 +366,7 @@ namespace Castlemist
                         if (have != want) bad.Add("_MainTex " + have + ", want " + want);
                         else ++tex;
                     }
-                    if (mat.GetColor("_Color") != Color.white) bad.Add("_Color " + mat.GetColor("_Color"));
+                    if (mat.HasProperty("_Color") && mat.GetColor("_Color") != Color.white) bad.Add("_Color " + mat.GetColor("_Color"));
                     if (mode == PoiyomiMaterials.Cutout || mode == PoiyomiMaterials.TransClipping)
                     {
                         if (!near(mat.GetFloat("_Cutoff"), me.AlphaCutoff)) bad.Add("_Cutoff " + mat.GetFloat("_Cutoff") + ", want " + me.AlphaCutoff);
@@ -559,8 +568,10 @@ namespace Castlemist
         {
             WorldManifest.ModelEntry e = m.Models[model];
             want = null;
-            if (e.LodLevels <= 1 || lg == null) return 1;
-            want = ModelLods.TransitionHeights(lg.size, e.LodDistances, e.LodLevels,
+            if (lg == null) return 1;
+            int n = ModelLods.LevelCount(e.LodLevels, LodGroups.HasFarLevel(lg.gameObject, e.FarMeshes));
+            if (n <= 1) return 1;
+            want = ModelLods.TransitionHeights(lg.size, e.LodDistances, n,
                                               FoliageRecords.CullHeight(lg.size, FadeFar(m, model), opts.distance));
             return want.Length;
         }
@@ -599,10 +610,12 @@ namespace Castlemist
             return null;
         }
 
-        /// LODS (Task 15b): every model prefab whose model has lods.levels > 1 has a LODGroup with that
-        /// many levels, strictly decreasing heights equal to ModelLods.TransitionHeights of its size and
-        /// the model's distances, every LOD with renderers, each level drawing as many renderers as LOD0,
-        /// every active renderer in some level and every LOD renderer with its LOD0's materials; a model without LODs has no LODGroup. Each tree
+        /// LODS (Task 15b): every model prefab has a LODGroup with ModelLods.LevelCount levels (its
+        /// lods.levels, plus one for its "lod" stand-ins) less those the prop cull drops, strictly
+        /// decreasing heights equal to ModelLods.TransitionHeights of its size, the model's distances and
+        /// ModelLods.PropCull, every LOD with renderers, each level but the stand-ins' drawing as many
+        /// renderers as LOD0, every active renderer in some level and every LOD renderer with its LOD0's
+        /// materials. Each tree
         /// prefab of such a model has the levels its cull leaves (TreeLevels); each instance with
         /// instances[].lod has the heights of its own distances.
         static bool CheckLods(string folder, WorldManifest m, GameObject root, ImportOptions opts)
@@ -615,34 +628,33 @@ namespace Castlemist
                 var p = AssetDatabase.LoadAssetAtPath<GameObject>(folder + "/Prefabs/" + e.FileId + ".prefab");
                 if (p == null) continue;
                 LODGroup lg = p.GetComponent<LODGroup>();
-                if (e.LodLevels <= 1)
+                bool far = LodGroups.HasFarLevel(p, e.FarMeshes);
+                int n = ModelLods.LevelCount(e.LodLevels, far);
+                if (n <= 1) ++plain;
                 {
-                    if (lg != null) fails.Add(e.FileId + ": a LODGroup on a model without LODs");
-                    ++plain;
-                }
-                else
-                {
-                    string why = LodGroups.Problem(lg, e.LodLevels);
-                    if (why == null) why = Heights(lg, ModelLods.TransitionHeights(lg.size, e.LodDistances, e.LodLevels, ModelLods.PropCullHeight));
+                    double[] want = lg != null ? ModelLods.TransitionHeights(lg.size, e.LodDistances, n, ModelLods.PropCull(opts.distance)) : null;
+                    string why = LodGroups.Problem(lg, want != null ? want.Length : n);
+                    if (why == null) why = Heights(lg, want);
                     if (why == null)
                     {
                         LOD[] lods = lg.GetLODs();
                         var inLod = new HashSet<Renderer>(lods.SelectMany(l => l.renderers));
-                        if (lods.Any(l => l.renderers.Length != lods[0].renderers.Length)) why = "levels draw different renderer counts";
+                        int same = far && lods.Length == n ? lods.Length - 1 : lods.Length;   // the stand-ins' level differs
+                        if (lods.Take(same).Any(l => l.renderers.Length != lods[0].renderers.Length)) why = "levels draw different renderer counts";
                         else if (p.GetComponentsInChildren<Renderer>(false).Any(r => !inLod.Contains(r))) why = "an active renderer in no level";
                         else why = SameMaterials(p);
                     }
                     if (why != null) fails.Add(e.FileId + ": " + why);
                     ++prefabs;
-                    levelsSum += e.LodLevels;
+                    levelsSum += n;
                 }
                 var tp = AssetDatabase.LoadAssetAtPath<GameObject>(folder + "/Prefabs/Foliage/" + e.FileId + ".prefab");
-                if (tp != null && e.LodLevels > 1)
+                if (tp != null && n > 1)
                 {
                     LODGroup tl = tp.GetComponent<LODGroup>();
                     double[] want;
-                    int n = TreeLevels(m, e.Position, tl, opts, out want);
-                    string why = LodGroups.Problem(tl, n);
+                    int tn = TreeLevels(m, e.Position, tl, opts, out want);
+                    string why = LodGroups.Problem(tl, tn);
                     if (why == null && want != null) why = Heights(tl, want);
                     if (why == null)
                     {
@@ -660,12 +672,15 @@ namespace Castlemist
                 if (props == null) continue;
                 foreach (WorldManifest.InstanceEntry i in c.Instances)
                 {
-                    if (i.Lod == null || i.Model < 0 || i.Model >= m.Models.Count || m.Models[i.Model].LodLevels <= 1) continue;
+                    if (i.Lod == null || i.Model < 0 || i.Model >= m.Models.Count) continue;
                     Transform t = props.Find(m.Models[i.Model].FileId + "_" + i.Prop);
                     if (t == null) continue;
                     LODGroup lg = t.GetComponent<LODGroup>();
-                    string why = LodGroups.Problem(lg, m.Models[i.Model].LodLevels);
-                    if (why == null) why = Heights(lg, ModelLods.TransitionHeights(lg.size, i.Lod, m.Models[i.Model].LodLevels, ModelLods.PropCullHeight));
+                    if (lg == null || lg.lodCount < 2) continue;   // one level: Override leaves it
+                    // Override keeps the prefab's cull height and level count.
+                    LOD[] own = lg.GetLODs();
+                    string why = LodGroups.Problem(lg, own.Length);
+                    if (why == null) why = Heights(lg, ModelLods.TransitionHeights(lg.size, i.Lod, own.Length, own[own.Length - 1].screenRelativeTransitionHeight));
                     if (why != null) fails.Add("instance " + t.name + ": " + why);
                     ++overrides;
                 }

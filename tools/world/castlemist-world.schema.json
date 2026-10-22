@@ -91,7 +91,9 @@
         "lodDistances": { "$ref": "#/$defs/setting" },
         "lodDistanceScale": { "$ref": "#/$defs/setting" },
         "lodMissingLevel": { "$ref": "#/$defs/setting" },
+        "lodFarMeshes": { "$ref": "#/$defs/setting" },
         "lodPropCullHeight": { "$ref": "#/$defs/setting" },
+        "uv1InUv4": { "$ref": "#/$defs/setting" },
         "zoneGrid": { "$ref": "#/$defs/setting" },
         "zoneModelSlot": { "$ref": "#/$defs/setting" },
         "zoneFlagBit0": { "$ref": "#/$defs/setting" },
@@ -481,7 +483,16 @@
             "distances": { "type": "array", "items": { "type": "number", "minimum": 0 }, "minItems": 2, "maxItems": 2 },
             "distanceSource": { "type": "array", "items": { "enum": ["lodOverride", "default"] }, "minItems": 2, "maxItems": 2 },
             "lodOverride": { "type": ["array", "null"], "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
-            "triangles": { "type": "array", "items": { "$ref": "#/$defs/count" }, "minItems": 1, "maxItems": 3 }
+            "triangles": { "type": "array", "items": { "$ref": "#/$defs/count" }, "minItems": 1, "maxItems": 3 },
+            "farMeshes": {
+              "description": "Optional (2026-10-21; settings.lodFarMeshes): the glb node names of the model's stand-in meshes (ModelMeshDataV66.flags 0x4, the meshes named 'lod'), left out of levels and triangles.",
+              "type": "array", "items": { "type": "string" }
+            },
+            "farTriangles": { "description": "Optional: the stand-in meshes' triangles.", "$ref": "#/$defs/count" },
+            "hiddenMeshes": {
+              "description": "Optional: the flag-1 ('lod01') stand-ins of a model that also has flag-4 ones; the importer draws them at no level.",
+              "type": "array", "items": { "type": "string" }
+            }
           }
         }
       }

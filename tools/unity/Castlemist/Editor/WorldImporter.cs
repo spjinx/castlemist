@@ -7,11 +7,13 @@
 //
 // What it builds, all under <folder>/ (re-import updates in place: .mat,
 // .prefab and .controller assets keep their GUIDs; the scene is rebuilt):
-//   Materials/Shared/<key>.mat       one per material key (Task 15d: sharedMaterials; every model's
-//                                    slots of that key, LOD renderers included, remap to it), from
-//                                    the key's first used materials.json entry (PoiyomiMaterials);
-//                                    "<key>_<8 hex>.mat" for a slot the manifest gives another dark
-//                                    decal or uvScroll
+//   Materials/Shared/<fileId>_<name>.mat  one per material key (Task 15d: sharedMaterials; every model's
+//                                    slots of that key, LOD renderers included, remap to it), built
+//                                    from and named after the key's first used materials.json entry
+//                                    (its model's fileId and the entry's fileName; SharedMaterialStems);
+//                                    a slot the manifest gives another dark decal or uvScroll gets its
+//                                    own .mat, named after its own first entry. Shared .mat files no
+//                                    variant names (an earlier import's) are deleted
 //   Materials/<fileId>/<Mat>.mat     from models/<fileId>/materials.json, for an export without keys
 //   Materials/terrain/<id>.mat       Poiyomi Opaque, _MainTex = cells/<id>_albedo.png
 //   Materials/water/<id>.mat         Poiyomi Fade, _MainTex = cells/<id>_water.png
@@ -106,7 +108,7 @@ namespace Castlemist
             sum.warnings.Add("unityScale = " + unityScale.ToString("R") + " (UNPROVEN: 'GW2 inches', spec D7)");
             CastlemistPostprocessor.ClearCache();
             // The mode in force: Terrain mode needs the export's unityTerrain block.
-            var eff = new ImportOptions { terrain = opts.terrain, foliage = opts.foliage, density = opts.density, distance = opts.distance };
+            var eff = new ImportOptions { terrain = opts.terrain, foliage = opts.foliage, density = opts.density, distance = opts.distance, shader = opts.shader, skipModels = opts.skipModels };
             if (eff.terrain == TerrainMode.UnityTerrain && m.UnityTerrain == null)
             {
                 sum.errors.Add("unityTerrain: missing: Terrain mode needs the export's unityTerrain block " +
@@ -118,6 +120,7 @@ namespace Castlemist
             var b = new Build(root, m, sum, eff);
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
             b.Timed("fbxSettings", b.FbxBaseSettings);
+            b.UnityScale = unityScale;
             b.Timed("materials", b.Materials);
             b.Timed("modelImport", b.ModelImport);
             b.Timed("prefabs", b.Prefabs);
@@ -150,17 +153,31 @@ namespace Castlemist
             return v;
         }
 
-        /// The .mat file name of a variant: the key, or "<key>_<first 8 hex of SHA-1(variant)>"
-        /// for a dark-decal or uvScroll variant. A key's file name never changes, so
-        /// re-importing keeps the GUID of every unchanged key.
-        public static string SharedMaterialFile(string key, string variant)
+        /// The Materials/Shared .mat file names: variant (SharedMaterialVariant) -> "<fileId>_<fileName>"
+        /// of the variant's first used, keyed materials.json entry, models in manifest order (the
+        /// entry its .mat is built from). One entry has one variant, so the names are unique. A
+        /// model whose materials.json is missing or unreadable is skipped (the import reports it).
+        public static Dictionary<string, string> SharedMaterialStems(string root, WorldManifest m)
         {
-            if (variant == key) return key;
-            using (var sha = System.Security.Cryptography.SHA1.Create())
+            var stems = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (WorldManifest.ModelEntry e in m.Models)
             {
-                byte[] h = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(variant));
-                return key + "_" + BitConverter.ToString(h, 0, 4).Replace("-", "").ToLowerInvariant();
+                if (!e.Ok || e.Materials == null) continue;
+                string path = root + "/" + e.Materials.Replace('\\', '/');
+                if (!File.Exists(path)) continue;
+                MaterialsFile f;
+                try { f = MaterialsFile.Parse(File.ReadAllText(path), path); }
+                catch (ManifestException) { continue; }
+                foreach (MaterialsFile.MaterialEntry me in f.Materials)
+                {
+                    if (!me.UsedByMeshes || me.Key == null) continue;
+                    bool dark = m.DarkDecalRule && e.DarkDecalMaterials.Contains(me.Name);
+                    WorldManifest.UvScroll sc = e.UvScroll.FirstOrDefault(u => u.Material == me.Name);
+                    string variant = SharedMaterialVariant(me.Key, dark, sc);
+                    if (!stems.ContainsKey(variant)) stems[variant] = Build.Safe(e.FileId + "_" + me.FileName);
+                }
             }
+            return stems;
         }
 
         /// Writes the summary to the log: warnings, errors, PLAN and PROBE lines.
@@ -182,6 +199,7 @@ namespace Castlemist
             readonly WorldManifest m;
             readonly ImportSummary sum;
             public readonly List<string> Times = new List<string>();
+            public float UnityScale = 0.0254f;   // the import's unityScale (materials: depth distances)
             MaterialContext ctx;
             // Per model position in models[] (what instances and records name): name -> material, the prefab.
             readonly Dictionary<int, Dictionary<string, Material>> modelMats = new Dictionary<int, Dictionary<string, Material>>();
@@ -242,7 +260,7 @@ namespace Castlemist
                 AssetDatabase.CreateFolder(path.Substring(0, slash), path.Substring(slash + 1));
             }
 
-            static string Safe(string s)
+            public static string Safe(string s)
             {
                 char[] bad = Path.GetInvalidFileNameChars();
                 var c = s.Select(ch => bad.Contains(ch) || ch == '|' ? '_' : ch).ToArray();
@@ -285,7 +303,9 @@ namespace Castlemist
             // Step 3.
             public void Materials()
             {
-                ctx = MaterialContext.Create(sum.warnings);
+                ctx = MaterialContext.Create(sum.warnings, opts.shader);
+                ctx.Uv1InUv4 = m.Uv1InUv4;
+                ctx.UnityScale = UnityScale;
                 sum.shaderLine = ctx.Line;
                 EnsureFolder(root + "/Materials/terrain");
                 EnsureFolder(root + "/Materials/water");
@@ -298,6 +318,20 @@ namespace Castlemist
                     }
                 if (anyKeys) EnsureFolder(root + "/Materials/Shared");
                 var shared = new Dictionary<string, Material>(StringComparer.Ordinal);   // variant -> .mat (Task 15d)
+                Dictionary<string, string> stems = SharedMaterialStems(root, m);
+                if (anyKeys)
+                {
+                    // An earlier import's .mat files (key-named before 2026-10-21, or a variant gone).
+                    var keep = new HashSet<string>(stems.Values, StringComparer.Ordinal);
+                    int stale = 0;
+                    foreach (string guid in AssetDatabase.FindAssets("t:Material", new[] { root + "/Materials/Shared" }))
+                    {
+                        string mp = AssetDatabase.GUIDToAssetPath(guid);
+                        if (keep.Contains(Path.GetFileNameWithoutExtension(mp))) continue;
+                        if (AssetDatabase.DeleteAsset(mp)) ++stale;
+                    }
+                    if (stale > 0) sum.warnings.Add("materials: " + stale + " Materials/Shared .mat file(s) no material names any more: deleted");
+                }
 
                 AssetDatabase.StartAssetEditing();
                 try
@@ -336,7 +370,7 @@ namespace Castlemist
                                 if (!shared.TryGetValue(variant, out mat))
                                 {
                                     mat = PoiyomiMaterials.BuildModelMaterial(ctx, me, folder, dark, sc,
-                                        root + "/Materials/Shared/" + SharedMaterialFile(me.Key, variant) + ".mat");
+                                        root + "/Materials/Shared/" + stems[variant] + ".mat");
                                     shared[variant] = mat;
                                 }
                             }
@@ -463,12 +497,12 @@ namespace Castlemist
                         inst.name = e.FileId.ToString();
                         foreach (Transform t in inst.GetComponentsInChildren<Transform>(true))
                             GameObjectUtility.SetStaticEditorFlags(t.gameObject, StaticFlags);
-                        // Task 15b: LOD0..LODn from the model's LOD objects (LodGroups, ModelLods).
-                        if (e.LodLevels > 1)
-                        {
-                            LodGroups.Build(inst, e.LodLevels, e.LodDistances, size => ModelLods.PropCullHeight, sum.warnings, "model " + e.FileId);
-                            sum.lodPrefabs++;
-                        }
+                        // Task 15b: LOD0..LODn from the model's LOD objects and its "lod" stand-ins
+                        // (LodGroups, ModelLods); every model culls at ModelLods.PropCull.
+                        int built = LodGroups.Build(inst, e.LodLevels, e.FarMeshes, e.LodDistances,
+                                                    size => ModelLods.PropCull(opts.distance), sum.warnings, "model " + e.FileId,
+                                                    e.HiddenMeshes);
+                        if (built > 1) sum.lodPrefabs++;
                         string path = root + "/Prefabs/" + e.FileId + ".prefab";
                         bool ok;
                         GameObject saved = PrefabUtility.SaveAsPrefabAsset(inst, path, out ok);
@@ -543,7 +577,8 @@ namespace Castlemist
             {
                 mapRoot = new GameObject("GW2_" + m.MapFileId);
                 mapRoot.transform.localScale = Vector3.one * unityScale;
-                int skipped = 0;
+                int skipped = 0, skippedByOption = 0;
+                HashSet<long> skip = opts.SkipModelIds();
                 foreach (WorldManifest.CellEntry c in m.Cells)
                 {
                     Vector3 origin = V(m.MapToUnity(c.Origin));
@@ -558,13 +593,14 @@ namespace Castlemist
                         GameObject prefab;
                         if (i.Model < 0 || i.Model >= m.Models.Count || !prefabs.TryGetValue(i.Model, out prefab)) { ++skipped; continue; }
                         WorldManifest.ModelEntry e = m.Models[i.Model];
+                        if (skip.Contains(e.FileId)) { ++skippedByOption; continue; }
                         var go = (GameObject)PrefabUtility.InstantiatePrefab(prefab, props);
                         go.name = e.FileId + "_" + i.Prop;
                         go.transform.localPosition = V(i.T);
                         go.transform.localRotation = new Quaternion((float)i.R[0], (float)i.R[1], (float)i.R[2], (float)i.R[3]);
                         go.transform.localScale = Vector3.one * (float)i.S;
                         // Task 15b: OVERRIDE_LOD placements get their own heights on the instance.
-                        if (i.Lod != null && e.LodLevels > 1 && LodGroups.Override(go, i.Lod)) sum.lodOverrides++;
+                        if (i.Lod != null && LodGroups.Override(go, i.Lod)) sum.lodOverrides++;
                         RuntimeAnimatorController ac;
                         if (i.Clip != null && controllers.TryGetValue(i.Model + "\n" + i.Clip, out ac))
                         {
@@ -580,6 +616,7 @@ namespace Castlemist
                 }
                 if (foliage != null) foliage.Finish();
                 if (skipped > 0) sum.warnings.Add("instances: " + skipped + " skipped (their model has no prefab)");
+                if (skippedByOption > 0) sum.warnings.Add("instances: " + skippedByOption + " not placed (Skip models: " + opts.skipModels + ")");
             }
 
             void CellContent(WorldManifest.CellEntry c, Transform cell, Vector3 origin)
@@ -759,7 +796,8 @@ namespace Castlemist
     {
         DefaultAsset folder;
         float unityScale = (float)WorldManifest.DefaultUnityScale;
-        ImportOptions opts = new ImportOptions();
+        const string SkipModelsPref = "Castlemist.ImportWorld.SkipModels";
+        ImportOptions opts = new ImportOptions { skipModels = EditorPrefs.GetString(SkipModelsPref, "") };
         string loadedFor;
         string status = "";
 
@@ -768,8 +806,17 @@ namespace Castlemist
             GetWindow<ImportWorldWindow>(true, "Castlemist: Import World", true).minSize = new Vector2(420, 280);
         }
 
+        // A window left open across a script reload can come back without its options
+        // (not serialized): make them again rather than throw on every repaint.
+        void OnEnable()
+        {
+            if (opts == null) opts = new ImportOptions { skipModels = EditorPrefs.GetString(SkipModelsPref, "") };
+            if (status == null) status = "";
+        }
+
         void OnGUI()
         {
+            OnEnable();
             EditorGUILayout.HelpBox("Pick a castlemist world export folder (it must hold manifest.json) that has been copied under Assets/.", MessageType.None);
             folder = (DefaultAsset)EditorGUILayout.ObjectField("Export folder", folder, typeof(DefaultAsset), false);
             string path = folder != null ? AssetDatabase.GetAssetPath(folder) : null;
@@ -797,8 +844,23 @@ namespace Castlemist
             opts.distance = EditorGUILayout.Slider(new GUIContent("Distance",
                 "Multiplies every fade distance (fadeFar x the manifest's fadeQualityScale), for the LODGroup culls and the Terrain distances (D9)."),
                 opts.distance, ImportOptions.MinDistance, ImportOptions.MaxDistance);
-            if (GUILayout.Button(new GUIContent("Quest preset", "Terrain Mesh, Foliage Collider trees, Distance 0.5 (D9).")))
+            EditorGUI.BeginChangeCheck();
+            opts.skipModels = EditorGUILayout.TextField(new GUIContent("Skip models",
+                "Model fileIds not to place, comma separated (e.g. 3132765: the Mists vault's slabs over the walkway). Remembered."),
+                opts.skipModels ?? "");
+            if (EditorGUI.EndChangeCheck()) EditorPrefs.SetString(SkipModelsPref, opts.skipModels);
+            opts.shader = (ShaderMode)EditorGUILayout.Popup(new GUIContent("Shader",
+                "Poiyomi: Poiyomi Pro / Toon (Realistic lighting; Flat for particle-like materials). " +
+                "Castlemist GW2: castlemist's own Castlemist/GW2 (one shader, no keywords) and GW2 Particle (VRC Light Volumes; tools/unity/Castlemist/Shaders)."),
+                (int)opts.shader, new[] { "Poiyomi", "Castlemist GW2" });
+            if (GUILayout.Button(new GUIContent("Quest preset", "Terrain Mesh, Foliage Collider trees, Distance 0.5 (D9); keeps the Shader.")))
+            {
+                ShaderMode keep = opts.shader;
+                string skipKeep = opts.skipModels;
                 opts = ImportOptions.Quest();
+                opts.shader = keep;
+                opts.skipModels = skipKeep;
+            }
             using (new EditorGUI.DisabledScope(path == null))
             {
                 if (GUILayout.Button("Import"))

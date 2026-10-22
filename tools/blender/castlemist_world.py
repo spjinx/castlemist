@@ -669,6 +669,7 @@ def _glb_to_fbx(src, out):
         use_armature_deform_only=False,
         use_mesh_modifiers=False,
         mesh_smooth_type='FACE',
+        colors_type='LINEAR',   # GW2 vertex colours are effect parameters: as stored, not sRGB-encoded
         bake_anim=True,
         bake_anim_use_all_actions=True,
         bake_anim_use_nla_strips=False,

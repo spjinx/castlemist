@@ -117,6 +117,14 @@ struct ShaderProfile {
     Channel rimMaskChannel = Channel::None;
     /// The colour pass applies no lighting (fog only): not mapped, warned.
     bool unlit = false;
+    /// Draw as Additive where the effect's own state word has no blend (1946706: the
+    /// colour is a glow on black, alpha a constant; read right only when added).
+    /// UNPROVEN: where the client gets the blend for it is not traced.
+    bool assumeAdditive = false;
+    /// A layer drawn as an interior seen through the surface (3036412: "decal" at its UV minus
+    /// the view in tangent space x pardist), lerped with the diffuse by the mask; empty when none.
+    /// Ships raw with the hint "interior-parallax" (the importer's interior block).
+    std::string interiorRole;
     /// A layer blended in by world-up facing (77238 "projector": moss/snow),
     /// `w = smoothstep(prjfall.x, prjfall.y, f(N)) * saturate(2 * a)`; empty when none.
     /// Ships as MaterialMaps::projector, described for an importer, never baked.

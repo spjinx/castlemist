@@ -135,6 +135,7 @@ void export_one_model(const cw::WorldScene& scene, uint32_t mi, ModelSource& src
     mm.fileId = fileId;
     std::shared_ptr<ModelPreview> m = src.load(mi, fileId);
     if (!m) { mm.error = "model did not load"; return; }
+    append_cloth_meshes(*m);   // drawn in game as simulated cloth: exported in its rest shape
     mm.meshes = static_cast<int>(m->meshes.size());
     mm.materialCount = static_cast<int>(m->materials.size());
     mm.wind = model_wind(*m);   // world-foliage spec D7: recorded, not acted on (D10)
@@ -169,7 +170,9 @@ void export_one_model(const cw::WorldScene& scene, uint32_t mi, ModelSource& src
         for (const auto& [id, b] : out.texBytes) mm.textureBytes += b;
 
         for (const ModelMeshCPU& mesh : m->meshes) mm.triangles += mesh.indices.size() / 3;
-        mm.lods = model_lods_json(*m);   // Task 15b: levels, switch distances, triangles per level
+        // Task 15b: levels, switch distances, triangles per level; the stand-in meshes by the
+        // node names models/<fileId>/<fileId>.glb gives them.
+        mm.lods = model_lods_json(*m, std::to_string(fileId));
         for (const auto& clip : m->animClips) mm.clips.push_back(clip.name);
         out.clipTokens = m->animClipTokens;
         out.allTokens = m->animationTokens;
@@ -219,6 +222,8 @@ void export_one_model(const cw::WorldScene& scene, uint32_t mi, ModelSource& src
         vo.gltf.imageUriPrefix = "Images/";
         vo.gltf.sharedImages = pools.dat;                 // dat textures: <out>/textures/<fileId>.png (W8)
         vo.gltf.sharedImageUriPrefix = "../../textures/"; // from models/<fileId>/<fileId>.glb
+        vo.gltf.uv1CopyToUv4 = true;                      // GW2 UV1 also in UV4: Unity's lightmapper owns UV1
+        vo.gltf.vertexColors = true;                      // GW2 vertex colours: effect parameters (2591650)
         vo.gltf.exportLods = true;                        // Task 15b: <node>_LOD1 / _LOD2 (world_lods.h)
         // Task 15d: generated images and Poiyomi maps once per content in textures/gen/,
         // and every material keyed by its content (materials.json "key", glTF extras).

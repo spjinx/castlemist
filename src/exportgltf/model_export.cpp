@@ -81,7 +81,8 @@ GltfExportResult export_model_gltf(const ModelPreview& model, const std::string&
     if (!opts.materialKeyInputs.empty() && opts.materialKeyInputs.size() == materialIndices.size())
         result.materialKeys = write_material_keys(w, materialIndices, opts.materialKeyInputs);
     std::vector<MeshExportInfo> meshes =
-        write_meshes(w, model, materialIndices, opts.exportLods ? model_lod_levels(model) : 1);
+        write_meshes(w, model, materialIndices, opts.exportLods ? model_lod_levels(model) : 1, opts.uv1CopyToUv4,
+                     opts.vertexColors);
     result.particlesJsonPath = write_particle_sidecar(model, materialIndices, glbPath);
 
     std::vector<JointExportInfo> joints;
@@ -100,9 +101,7 @@ GltfExportResult export_model_gltf(const ModelPreview& model, const std::string&
         // (this exact model: most of them are just "airship") and glTF node
         // names aren't required to be unique but Blender's Outliner is much
         // more useful when they are.
-        const std::string& meshName = model.meshes[mesh.sourceIndex].meshName;
-        std::string nodeName = !meshName.empty() ? meshName + "_" + std::to_string(mesh.sourceIndex)
-                                                 : stem + "_mesh" + std::to_string(mesh.sourceIndex);
+        const std::string nodeName = mesh_node_name(model, mesh.sourceIndex, stem);
         json node{{"name", nodeName}, {"mesh", mesh.meshIndex}};
         if (skinIndex >= 0 && model.meshes[mesh.sourceIndex].hasSkin) node["skin"] = skinIndex;
         rootChildren.push_back(w.add_node(std::move(node)));
@@ -111,9 +110,7 @@ GltfExportResult export_model_gltf(const ModelPreview& model, const std::string&
     // the levels a mesh has its own index set for (world_lods.h).
     for (const MeshExportInfo& mesh : meshes) {
         if (mesh.lods.empty()) continue;
-        const std::string& meshName = model.meshes[mesh.sourceIndex].meshName;
-        const std::string base = !meshName.empty() ? meshName + "_" + std::to_string(mesh.sourceIndex)
-                                                   : stem + "_mesh" + std::to_string(mesh.sourceIndex);
+        const std::string base = mesh_node_name(model, mesh.sourceIndex, stem);
         for (const auto& [level, meshIndex] : mesh.lods) {
             json node{{"name", base + "_LOD" + std::to_string(level)}, {"mesh", meshIndex}};
             if (skinIndex >= 0 && model.meshes[mesh.sourceIndex].hasSkin) node["skin"] = skinIndex;

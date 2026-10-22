@@ -46,6 +46,12 @@ MaterialShading material_shading(const ModelMaterialCPU& mat) {
     s.profile = &profile_for(mat, mat.renderState);
     s.blend = decode_blend(mat.renderState, mat.hasRenderState, mat.isEffect,
                            alpha_tested(*s.profile));
+    if (s.profile->assumeAdditive && s.blend.preset == BlendPreset::Opaque) {
+        // One / One, as Poiyomi's Additive preset draws it (shader_profiles.h).
+        s.blend.preset = s.blend.nearest = BlendPreset::Additive;
+        s.blend.srcRgb = s.blend.dstRgb = s.blend.srcA = s.blend.dstA = 2;
+        s.blend.exact = true;
+    }
     return s;
 }
 

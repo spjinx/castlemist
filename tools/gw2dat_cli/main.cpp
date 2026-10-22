@@ -74,6 +74,8 @@
 #include <set>
 #include <stdexcept>
 #include <span>
+#include <iostream>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -105,6 +107,7 @@
 #include "../../src/npc/decompress.h"
 #include "../../src/npc/pack.h"
 #include "castlemist/extract/entry_extractor.h"
+#include "castlemist/exportgltf/vrchat_export.h"
 #include "castlemist/exportgltf/gltf_export.h"
 #include "castlemist/exportgltf/sky_export.h"
 #include "castlemist/exportgltf/world_export.h"
@@ -843,6 +846,70 @@ void cmd_scananim(const Args& a) {
     j["ok"] = true; j["scanned"] = scanned; j["modl"] = modl;
     j["withClips"] = withClips; j["animationOnly"] = animOnly; j["withImports"] = withImports;
     j["hits"] = std::move(hits);
+    emit(j);
+}
+
+/// amatscan --dat --template --ids <file of MODL base ids, one per line> --amats <a,b,...>:
+/// one archive load, then each model's materials; prints one JSON line per material whose
+/// AMAT (materialFile) is listed: {"fileId", "baseId", "amat", "material", "triangles"}.
+/// Finds test models for a GW2 shader port.
+void cmd_amatscan(const Args& a) {
+    std::ifstream tin(need(a, "template"), std::ios::binary);
+    if (!tin) fail("cannot open template");
+    json tpl;
+    tin >> tpl;
+    std::set<uint32_t> amats;
+    {
+        std::stringstream ss(need(a, "amats"));
+        std::string tok;
+        while (std::getline(ss, tok, ',')) if (!tok.empty()) amats.insert(static_cast<uint32_t>(std::stoul(tok)));
+    }
+    std::ifstream ids(need(a, "ids"));
+    if (!ids) fail("cannot open --ids");
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    uint32_t base = 0;
+    size_t scanned = 0, failed = 0;
+    while (ids >> base) {
+        if (base == 0 || base - 1 >= dat.mft_data_list.size()) continue;
+        ++scanned;
+        try {
+            const MftData& e = dat.mft_data_list[base - 1];
+            std::vector<uint8_t> data = decompress_entry(read_entry_bytes(dat.file_info.file_path, e), e.compression_flag);
+            castlemist::model::Model model = castlemist::model::Extractor(data, tpl).extract();
+            std::vector<uint32_t> fids = get_by_file_id(dat, base);
+            for (const auto& mt : model.materials) {
+                if (!amats.count(mt.materialFile)) continue;
+                size_t tris = 0;
+                for (const auto& m : model.meshes)
+                    if (m.materialIndex == mt.index) tris += m.indices.size() / 3;
+                json j{{"fileId", fids.empty() ? 0u : fids.front()}, {"baseId", base}, {"amat", mt.materialFile},
+                       {"material", mt.index}, {"triangles", tris}};
+                std::cout << j.dump() << "\n";
+            }
+        } catch (const std::exception&) {
+            ++failed;
+        }
+    }
+    std::cout << json{{"ok", true}, {"scanned", scanned}, {"failed", failed}}.dump() << std::endl;
+}
+
+/// model-export --dat --file-id <model> --out-dir <dir>: one model's VRChat folder (glb +
+/// materials.json, textures beside it), as the world export writes it per model but self-
+/// contained: GW2 UV1 copied to UV4, vertex colours, DDS cubemaps. For checking shader ports.
+void cmd_model_export(const Args& a) {
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    const uint32_t fileId = static_cast<uint32_t>(to_u64(need(a, "file-id")));
+    std::shared_ptr<ModelPreview> m = load_model_by_fileid(dat, fileId, true);
+    if (!m) fail("model " + std::to_string(fileId) + " has no usable geometry");
+    castlemist::exportgltf::VrchatFolderOptions vo;
+    vo.gltf.uv1CopyToUv4 = true;
+    vo.gltf.vertexColors = true;
+    const std::string id = std::to_string(fileId);
+    const castlemist::exportgltf::VrchatFolderResult r =
+        castlemist::exportgltf::write_vrchat_folder(*m, need(a, "out-dir"), id, fileId, vo);
+    json j{{"ok", r.ok}, {"error", r.error}, {"warnings", r.warnings}};
     emit(j);
 }
 
@@ -3122,6 +3189,8 @@ int main(int argc, char** argv) {
         else if (cmd == "sniff") cmd_sniff(a);
         else if (cmd == "resolve") cmd_resolve(a);
         else if (cmd == "model") cmd_model(a);
+        else if (cmd == "amatscan") cmd_amatscan(a);
+        else if (cmd == "model-export") cmd_model_export(a);
         else if (cmd == "skel") cmd_skel(a);
         else if (cmd == "map") cmd_map(a);
         else if (cmd == "skybox") cmd_skybox(a);

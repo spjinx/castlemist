@@ -134,13 +134,13 @@ std::vector<Entry> build_table() {
         p.specLayer = SpecLayer::GlossInAlpha;
         t.push_back({{1729747}, p});
     }
-    // prop-metalmask (note section 8.3): the 561567 lit core; metal = metalmask.G
-    // (t2), mod x2 on UV1; spec/reflection tint lerp(envcr.x, 0.6*albedo+0.2,
-    // metalmask.G) (not mapped, warned).
+    // prop-metalmask (note section 8.3): the 561567 lit core, mod x2 on UV1; metalmask.G (t2)
+    // only lerps the spec/reflection tint, lerp(envcr.x, 0.6*albedo+0.2, metalmask.G) (not
+    // mapped, warned). The diffuse is always drawn, so it is no PBR metal (2026-10-21: as
+    // metal it turned the Mists vault's stairs near black); metalmask ships as an extra.
     {
         ShaderProfile p = make("prop-metalmask", AlphaUse::HolesAndShine, true);
         p.maskRole = "metalmask";
-        p.maskMetal = Channel::G;
         p.maskTintsReflection = Channel::G;
         t.push_back({{3121953}, p});
     }
@@ -179,12 +179,63 @@ std::vector<Entry> build_table() {
         t.push_back({{19092, 23497, 57224, 23496, 21471, 46460, 25489, 43029, 45993, 49624, 55650,
                       55903, 882285, 217286, 87345, 1053007},
                      p});
+        // 1478777 (Mists vault glow planes, 3132790; ps 22 read 2026-10-21): the same, One /
+        // InvSrcColor, rgb = diffuse.rgb x a with a = diffuse.A x diffade x a view-angle ramp
+        // (t1 at |N.V|, not mapped) x a soft depth fade (t12, not mapped).
+        t.push_back({{1478777}, p});
+        // 709501, 2434562 (Mists vault, 3124566; ps 31 read 2026-10-22): the same, One /
+        // InvSrcColor, colour = diffuse x the vertex colour, a = its alpha x a soft depth
+        // fade (depfade.x / dfadevl.x GW2 units), rgb x 2 x a.
+        t.push_back({{709501, 2434562}, p});
+    }
+    // fx-flow (2591650 SrcA / One, 2759298 One / InvSrcA; ps 23 read 2026-10-22): the diffuse at
+    // uv0 + (flow map at (uv0 + (time x flow.w, 0)) x flow.x) x 2 - 1) x |vc.r|^flow.z x flow.y,
+    // vc = the vertex colour; a = smoothstep01((diffuse.a - vc.g) / (vc.b - vc.g)) x vc.a x a soft
+    // depth fade (depfade.x); rgb = diffuse x lerp(startcl, endcl, smoothstep01 of (a -
+    // stepcol.x) / (stepcol.y - stepcol.x)) x 2 (2759298: x diffuse.a x a, premultiplied).
+    {
+        ShaderProfile p = make("fx-flow", AlphaUse::Opacity, false);
+        p.unlit = true;
+        t.push_back({{2591650, 2759298}, p});
     }
     t.push_back({{20760, 23408, 54721, 14196, 19116, 53260, 217998, 48767, 1171330},
                  make("fx-premultiplied", AlphaUse::Intensity, false)});
-    t.push_back({{740364, 965703, 977200, 1171331}, unsupported(make("fx-fire", AlphaUse::Unused, false))});
-    t.push_back({{709206, 47396, 27304, 339341, 630598},
-                 unsupported(make("fx-distort", AlphaUse::Unused, false))});
+    // fx-fire (read 2026-10-22; port_fire/SPEC.md). One / InvSrcA, premultiplied, unlit, procedural:
+    //   740364 (ps 2): a fireshape silhouette (t0.G, UV0) and a firedetail noise (t1.G, UV1) displaced
+    //     by two flow maps (t2, t3 at UV1) with a two-phase time blend, colour lerp(colorl, colorh,
+    //     noise), alpha smoothstep(noise) x shape x ramp-scaled distortion (t4.R) x opacity, rgb x 3.24,
+    //     a x 1.8, faded at silhouettes by the view-space normal and by depfade.
+    //   965703 (ps 2): the same structure, one flow map tapped twice, ramp.G picks rampflw / rampstp,
+    //     colour stepped by stepcol, o.a = K x premult (0 additive .. 1 premultiplied), x fadedif.
+    //   977200 / 1171331 (ps 34, particles only): 4 x mask x noise x noise (scrolled by speed, per-
+    //     particle uv1..3 offsets), perturbed by flow x perturb, coloured by colorl / colorh
+    //     (1171331: x normalize(dye palette at dyedot)), x vertex colour x 2.
+    // The diffuse is a data map, not colour: shipped raw as the extra "diffuse" (linear in Unity).
+    {
+        ShaderProfile p = make("fx-fire", AlphaUse::Opacity, false);
+        p.unlit = true;
+        p.baseColorRole = "none";      // no such layer: BaseColor left out, the diffuse goes out as an extra
+        p.diffuseUse = "fire-shape";
+        t.push_back({{740364, 965703, 977200, 1171331}, p});
+    }
+    // Screen distortion (read 2026-10-22): the grabbed scene at the pixel + (map.xy x 2 - 1) x
+    // distort x the view-space reflection's xy, foreground taps rejected; the importer's
+    // Castlemist/GW2 Distort. fx-distort-opaque (50159, ps 31): + distort as a bias, opaque.
+    // fx-distort-opaque-mask (339341, ps 26): offset x mask(uv1).R, no view reflection, opaque.
+    // fx-distort-mask (47396, ps 46): two normals blended, alpha = mask, AlphaRef discard.
+    // fx-distort-soft (709206, ps 39, particles): alpha = mask.R x vertex alpha x soft fade
+    // (depdist), colour x vertex colour x 2, no foreground test.
+    // fx-distort-step (592660 ps 11, 27304 ps 31): alpha = step(mask.G; stepmin, stepcol)
+    // [592660: x ramp x soft fade]; colour x modxcol x 2.
+    // fx-distort-lit (630598, ps 11, character armour): diffuse x grab x 2 (offset = normal.xy x
+    // 0.025 x reflection x distance fade), fresnel dim, sun transmission, env cube by gloss x
+    // fresnel, spec^256 x gloss; alpha = saturate(2a), gloss = saturate(2a - 1).
+    t.push_back({{50159}, make("fx-distort-opaque", AlphaUse::Unused, false)});
+    t.push_back({{339341}, make("fx-distort-opaque-mask", AlphaUse::Unused, false)});
+    t.push_back({{47396}, make("fx-distort-mask", AlphaUse::Unused, false)});
+    t.push_back({{709206}, make("fx-distort-soft", AlphaUse::Unused, false)});
+    t.push_back({{592660, 27304}, make("fx-distort-step", AlphaUse::Unused, false)});
+    t.push_back({{630598}, make("fx-distort-lit", AlphaUse::Unused, false)});
 
     // fx-alpha: straight opacity in alpha (SrcA/InvSrcA), rgb not premultiplied.
     t.push_back({{23507, 19255}, make("fx-alpha", AlphaUse::Opacity, false)});
@@ -226,6 +277,65 @@ std::vector<Entry> build_table() {
         p.opacityChannel = Channel::R;
         p.unlit = true;
         t.push_back({{842652}, p});
+        // fx-parallax-ramp (1507908, Mists vault walls; ps 32 read 2026-10-21): the same
+        // layers -- colour = t3 "parallax" at UV0 + t0 offset x paraper - view x pardist,
+        // opacity x mask.R (t1 at UV1 + t2 "mskptrb" offset) -- times a view-angle ramp
+        // (t4 "ramp" at |N.V|, not mapped) and a soft depth fade (t12, not mapped).
+        p.name = "fx-parallax-ramp";
+        t.push_back({{1507908}, p});
+        // fx-parallax-fade (1730340, Mists vault domes and stars; ps 32 read 2026-10-22): 1507908
+        // without the step: opacity x ramp x mask x parfade, soft depth fade (depdist).
+        p.name = "fx-parallax-fade";
+        t.push_back({{1730340}, p});
+    }
+    // prop-interior (3036412, Mists vault orbs; ps 68 read 2026-10-22): lit (GW2's sun, light
+    // buffer and VSM shadows); albedo = lerp(decal at UV1 - viewTS x pardist + normalTS.xy x
+    // 0.01833, diffuse at UV0 + (perturb x 2 - 1) x difptrb, mask.G at UV1 + (perturb x 2 - 1) x
+    // mskptrb) x mod x 2 x subsurface; shine = the same lerp of saturate(2a - 1); a fresnel
+    // reflection lerp (shine x envcr.w x (0.75 + 0.25 (1 - N.V)^2)) toward cube x envcr.rgb;
+    // rim = sun x rimcp.rgb x (1 - N.V)^rimcp.w.
+    {
+        ShaderProfile p = make("prop-interior", AlphaUse::Shine, false);
+        p.interiorRole = "decal";
+        t.push_back({{3036412}, p});
+        // The same core (ps 71 read 2026-10-22) without the perturb, with three normals blended
+        // (normal, decalnormal x mask.B, addnormal: not mapped), the glow x glofade x 2: 1601802;
+        // 2314655 also steps the mask (stepmin, decfade) and discards cutout.G x opacity < 0.5.
+        t.push_back({{1601802, 2314655}, p});
+    }
+    // prop-burn (3122105, Mists vault; ps 38 read 2026-10-22): lit; discard cutout.R x opacity
+    // < 0.5; colour = lerp(diffuse, decal, step(mask.G x saturate(2 decal.a), stepmin, decfade)),
+    // mod lerped in by modfade; emission = smoothstep01(saturate((cutout.rgb x opacity + burnoff -
+    // 1) x -10)) x burncol x 2 (the burn edge) + glow x glofade x 2 x a Time pulse (not mapped).
+    {
+        ShaderProfile p = make("prop-burn", AlphaUse::Shine, false);
+        t.push_back({{3122105}, p});
+    }
+    // fx-ramp-glow (1998356, Mists vault glows; ps 22 read 2026-10-22): One / InvSrcColor,
+    // unlit; a = diffuse.a x ramp(|N.V|).r x diffade x soft depth fade (depdist); rgb = diffuse.rgb
+    // x color.rgb x a (premultiplied in the shader).
+    {
+        ShaderProfile p = make("fx-ramp-glow", AlphaUse::Opacity, false);
+        p.unlit = true;
+        t.push_back({{1998356}, p});
+    }
+    // fx-perturb-mod-glow (574526, Mists vault glows; ps 11 read 2026-10-22): One / InvSrcColor,
+    // unlit; p = perturb(UV1) x 2 - 1; rgb = diffuse(UV0).rgb x mod(UV2 + p x modptrb x mask.R) x 2;
+    // a = diffuse(UV0 + p x difptrb).a x ramp(|N.V|).r x diffade x mask(UV3).G; rgb x a.
+    {
+        ShaderProfile p = make("fx-perturb-mod-glow", AlphaUse::Opacity, false);
+        p.unlit = true;
+        t.push_back({{574526}, p});
+    }
+    // fx-perturb-glow (1946706, Mists sparkles; ps 31 read 2026-10-21): colour =
+    // diffuse at UV0 + (t1 "perturb" x 2 - 1) x perturb, x the colour constant, fogged;
+    // alpha a constant; no lighting. The effect's state has no blend bits, but the diffuse
+    // is a glow on black: assumeAdditive.
+    {
+        ShaderProfile p = make("fx-perturb-glow", AlphaUse::Unused, false);
+        p.unlit = true;
+        p.assumeAdditive = true;
+        t.push_back({{1946706}, p});
     }
     // prop-projector (note section 8.3, hand-read: 77238 = 835499, 69856 = 69792 = 512093 =
     // 512112 by opcode stream): prop-lit with mod; albedo = lerp(diffuse*mod*2,
@@ -238,12 +348,47 @@ std::vector<Entry> build_table() {
         p.clips = true;
         t.push_back({{512093, 512112}, p});
     }
-    // Unsupported: need their own pass.
-    t.push_back({{157432, 3718974, 15206},
-                 unsupported(make("fx-multiply", AlphaUse::Unused, false))});
-    t.push_back({{221571}, unsupported(make("fx-cubemap", AlphaUse::Unused, false))});
-    t.push_back({{49659, 63923, 57026},
-                 unsupported(make("glass-refract", AlphaUse::Unused, false))});
+    // Multiply decals (read 2026-10-22), unlit, fogged toward their neutral colour.
+    // fx-multiply (15206, ps 12, DstColor / Zero): o = diffuse, fog to white.
+    // fx-multiply-bump (157432 ps 16, 3718974 ps 16; DstColor / SrcColor = 2x multiply): the
+    // sun in the tangent frame (shSunData), o = dot(L, normal map) - L.z + 0.5, i.e. the bump
+    // shading against a flat surface (0.5 = no change), fog to 0.5; 3718974: rgb = 2 x that x
+    // t1 (UV1) x opacity + 0.5.
+    {
+        ShaderProfile p = make("fx-multiply", AlphaUse::Unused, false);
+        p.unlit = true;
+        t.push_back({{15206}, p});
+        // The diffuse slot is the normal map (RG): it ships raw as the "diffuse" extra, use
+        // "normal-map"; 3718974's colour layer has no role token ("unnamed").
+        p.name = "fx-multiply-bump";
+        p.baseColorRole = "unnamed";
+        p.diffuseUse = "normal-map";
+        t.push_back({{157432, 3718974}, p});
+    }
+    // fx-cubemap (221571, ps 21, opaque; Twilight 543947): o = (cube.rgb / cube.a)^2 along
+    // -V - 0.03 x t0.rgb (t0 = perturb, castlemist's diffuse), fog. The cube is a DDS
+    // (materials.json maps.cubemaps).
+    {
+        ShaderProfile p = make("fx-cubemap", AlphaUse::Unused, false);
+        p.unlit = true;
+        t.push_back({{221571}, p});
+    }
+    // Refracting glass (ps 31 read 2026-10-22; Castlemist/GW2 Distort _Glass 1): the grabbed scene at
+    // the pixel + (distort.xy + 1) x distort x the view-space reflection's xy (foreground taps
+    // rejected) x modxcol x 2, dimmed by 1 - 0.3 fresnel^6 and lerped to saturate(scene x sun x 1.5)
+    // where the sun shines through; a decal (UV1) lit by SH + sun x shadow covers it by
+    // saturate(2 decal.a); fresnel^1.5 env-cube reflection and a pow 256 sun highlight, both x
+    // min(1, 1 - saturate(2a) + saturate(2a - 1)). The distort map (UV0) is also the lighting normal.
+    // glass-refract (49659): opaque. glass-refract-mask (63923): SrcA/InvSrcA, alpha = mask.G (UV1),
+    // AlphaRef discard, the highlight also x the sun shadow.
+    t.push_back({{49659}, make("glass-refract", AlphaUse::Unused, false)});
+    t.push_back({{63923}, make("glass-refract-mask", AlphaUse::Unused, false)});
+    // water-refract (57026, ps 36, e.g. hylek well 422751; _Glass 2): SrcA/InvSrcA, alpha = mask.R
+    // (UV2), AlphaRef discard; normal (UV0) x mask.G and decalnormal (UV1) x mask.B each shift their
+    // own scene tap by (n.xy + 1) x distort (no view reflection; the decalnormal's tap subtracted),
+    // lerped by fresnel^1.5; 0.25 fresnel^1.5 env cube; speccp x 2 x sun x pow(N.H, speccp.w).
+    // No SH, no shadow, no tint.
+    t.push_back({{57026}, make("water-refract", AlphaUse::Unused, false)});
     return t;
 }
 

@@ -72,6 +72,11 @@ struct MaterialMaps {
     /// A layer kept raw, by role, with a hint of how the game uses it ("detail-multiply2x", ...).
     struct Extra { std::string role, use; MapSlot slot; };
     std::vector<Extra> extras;
+    /// A layer whose texture is a placeholder for one colour (13368 white, 27338 black, ...):
+    /// no map is written, the constant is (materials.json `layerConstants`). 1601802's mask is
+    /// (0, 0, 0, 255): the shader reads mask.G = 0 from it.
+    struct LayerConstant { std::string role; uint8_t uv = 0; std::array<uint8_t, 4> rgba{}; };
+    std::vector<LayerConstant> layerConstants;
     /// Where each packed channel came from, e.g. "mask.R", "diffuseAlpha",
     /// "specular.A", "conduct", "mtlness", "specstr", "envcr", "none".
     std::string metalSource, smoothSource, reflectionSource, specularSource;
