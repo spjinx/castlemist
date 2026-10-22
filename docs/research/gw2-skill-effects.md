@@ -161,5 +161,28 @@ Still unseen orphan models: 1764341, 1764452,
 1764454, 1764462, 1764464, 1764477, 1764479, 1764494, 1764500, and the core-range
 57435, 54214, 55354. These are probably Mantra of Flame and Firebrand traits.
 
+## Exporting (skillfx-export)
+
+```
+gw2dat_cli skillfx-export --template dumps/packfile/gw2_packfile.json --dat <Gw2.dat> --index <gw2_index.db>
+    --seed 44364,41714 --logs "<arcdps.cbtlogs>/Standard Kitty Golem (16199)" --ei EffectGUIDs.cs --out <dir>
+```
+
+First run (2026-10-22, all four golem logs): namespace `Bp5rI.` = 137 skills, 49 pairings,
+51 effect models exported (0 failed), 27 effects still unlinked. Tome of Justice:
+`skills/44364-tome-of-justice/` → `shared/1764329.glb` + sidecar (9 clouds / 19 emitters), and
+its pages 41258 → 1764455, 40635 → 1764407, 42449 → 1764300, 40015 → 1764457 (arcdps), 42898
+→ 296840 (content). `evtc-pairs` (same flags, no `--out`) prints just the pairings.
+
+- A GW2 patch moves cntc entries: re-index after one, or cross-pack refs break (2026-10-22's
+  patch broke them with the 10-15 index).
+- Many effect models are particles only. They export through
+  `GltfExportOptions::allowEffectsOnly` (materials, textures and sidecar, no meshes).
+- Pairing picks, for each use of an effect, the candidate skill seen with that effect most
+  often (ties go to the cast). A chapter's effect coincides with a buff it applies, and a
+  mantra charge's with axe auto-attacks.
+- One model can belong to several effect objects (1764407: `zivX5`, `wVI2c`), so
+  "unlinked" is per effect, not per model.
+
 The content map (`cmap::users_of`) can't see type-183 users: it keys objects by
 (type, dataId) and effect dataIds repeat. Use `cgraph --files`.
