@@ -6,6 +6,7 @@
 #include "castlemist/format/cntc_pack.h"
 #include "castlemist/skillfx/effects.h"
 #include "castlemist/skillfx/evtc.h"
+#include "castlemist/skillfx/pairing.h"
 #include "castlemist/skillfx/skill_set.h"
 
 #include <cstdint>
@@ -15,6 +16,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -410,4 +412,73 @@ CM_TEST(skillfx, evtc_reads_real_zevtc) {
     for (const EvtcAgent& a : log->agents) firebrand = firebrand || a.elite == 62;
     CHECK(firebrand);
     CHECK(effect_guids(*log).size() >= 200);
+}
+
+namespace {
+/// The GUID an IDTOGUID event with these src/dst words carries.
+Guid guid_from(uint64_t src, uint64_t dst) {
+    Guid g{};
+    std::memcpy(g.data(), &src, 8);
+    std::memcpy(g.data() + 8, &dst, 8);
+    return g;
+}
+/// A Firebrand log: IDTOGUID for content ids 1..4 (src = id, dst = 0x1000 + id), then `events`.
+EvtcLog firebrand_log(std::vector<LogBuilder::Ev> events) {
+    std::vector<LogBuilder::Ev> all;
+    for (uint32_t id = 1; id <= 4; ++id) all.push_back({0, id, 0x1000u + id, id, evtc::kIdToGuid});
+    all.insert(all.end(), events.begin(), events.end());
+    return *read_evtc(LogBuilder({{kPlayer, 62, "Musa"}}, {{41258, "Chapter 1: Searing Spell"}}, all).d);
+}
+LogBuilder::Ev cast(uint64_t t, uint32_t skill) { return {t, kPlayer, 0, skill, evtc::kAnimationStart}; }
+LogBuilder::Ev buff(uint64_t t, uint32_t skill) { return {t, kPlayer, 0, skill, evtc::kBuffApply}; }
+LogBuilder::Ev fx(uint64_t t, uint32_t id) { return {t, kPlayer, 0, id, evtc::kEffectAgent}; }
+Guid G(uint32_t id) { return guid_from(id, 0x1000u + id); }
+}  // namespace
+
+CM_TEST(skillfx, pairs_cast_then_effect) {
+    auto p = pair_effects({firebrand_log({cast(1000, 41258), fx(1400, 1), cast(9000, 41258), fx(9500, 1)})}, 62, {});
+    CHECK_EQ(p.size(), size_t{1});
+    if (p.size() == 1) {
+        CHECK_EQ(p[0].skill_id, 41258u);
+        CHECK(p[0].effect == G(1));
+        CHECK_EQ(p[0].count, 2u);
+        CHECK_EQ(p[0].skill_name, std::string("Chapter 1: Searing Spell"));
+    }
+}
+
+CM_TEST(skillfx, instant_skill_via_buff_marker) {
+    // The effect event is written before the buff at the same millisecond: time decides, not file order.
+    auto p = pair_effects({firebrand_log({cast(4000, 44602), fx(4470, 2), buff(4470, 45447), cast(8000, 44602),
+                                          buff(8470, 45447), fx(8470, 2)})},
+                          62, {45447});
+    CHECK_EQ(p.size(), size_t{1});
+    if (p.size() == 1) {
+        CHECK_EQ(p[0].skill_id, 45447u);
+        CHECK(p[0].effect == G(2));
+        CHECK_EQ(p[0].count, 2u);
+    }
+}
+
+CM_TEST(skillfx, single_sighting_dropped_and_shared_kept) {
+    auto p = pair_effects({firebrand_log({cast(1000, 42898), fx(1200, 4), cast(5000, 42925), fx(5200, 4),
+                                          cast(9000, 42898), fx(9200, 4), cast(13000, 42925), fx(13200, 4),
+                                          cast(17000, 41258), fx(17100, 3), fx(17150, 3)})},
+                          62, {});
+    CHECK_EQ(p.size(), size_t{2});
+    if (p.size() == 2) {
+        CHECK_EQ(p[0].skill_id, 42898u);
+        CHECK(p[0].effect == G(4));
+        CHECK_EQ(p[1].skill_id, 42925u);
+        CHECK(p[1].effect == G(4));
+    }
+}
+
+CM_TEST(skillfx, ei_guids_parse) {
+    std::istringstream cs(
+        "    public static readonly Guid FirebrandTomeOfJusticeOpen = new(\"D573910FDB59434ABF6E7433061995BD\");\n"
+        "    // not a guid line\n");
+    auto ei = read_ei_guids(cs);
+    const Guid want{0xd5, 0x73, 0x91, 0x0f, 0xdb, 0x59, 0x43, 0x4a, 0xbf, 0x6e, 0x74, 0x33, 0x06, 0x19, 0x95, 0xbd};
+    CHECK_EQ(ei.size(), size_t{1});
+    CHECK(ei.count(want) && ei.at(want) == "FirebrandTomeOfJusticeOpen");
 }
