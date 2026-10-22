@@ -127,7 +127,7 @@ bool bake_chunk_albedo(const TerrainChunk& c, const TextureLookup& tex, const Ba
             float puv[2], guv[2];
             page_uv(m, sx, ty, puv);
             ground_uv(sx, ty, s.groundRepeats, guv);
-            TerrainBlendInput in;
+            TerrainBlendInput in{};   // an absent slot's texel stays 0: the blend still multiplies it by its 0 weight
             in.picker = picker ? sample_bilinear(*picker, 0, puv[0], puv[1], false, false) : pickerSolid;
             in.modx = modx ? sample_bilinear(*modx, 0, puv[0], puv[1], false, false) : modxSolid;
             for (int k = 0; k < 4; ++k) {
