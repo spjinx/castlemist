@@ -64,12 +64,14 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <span>
 #include <sstream>
@@ -99,6 +101,9 @@
 #include "castlemist/npc/export.h"
 #include "castlemist/npc/look.h"
 #include "castlemist/npc/tokens.h"
+// Layer-internal cntc pack reader (research commands only; the npc layer exports all symbols).
+#include "../../src/npc/decompress.h"
+#include "../../src/npc/pack.h"
 #include "castlemist/extract/entry_extractor.h"
 #include "castlemist/exportgltf/gltf_export.h"
 #include "castlemist/exportgltf/sky_export.h"
@@ -2269,6 +2274,118 @@ void cmd_cntc_dump(const Args& a) {
     emit({{"ok", true}, {"packs", packs}});
 }
 
+// Research aid: the content graph around one object. From --content-type T --content-id N
+// (dataId) it follows every local/external pointer breadth-first to --depth D (default 3),
+// printing each object reached with its string slots and its file slots (fileId + container).
+// --reverse also lists the objects that point AT the root.
+void cmd_cgraph(const Args& a) {
+    namespace nd = castlemist::npc::detail;
+    open_index(a);
+    if (!castlemist::db::is_open()) fail("no index DB (build it in castlemist, or pass --index)");
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    const uint32_t root_type = static_cast<uint32_t>(to_u64(need(a, "content-type")));
+    const uint32_t root_id = static_cast<uint32_t>(to_u64(need(a, "content-id")));
+    const int max_depth = has(a, "depth") ? static_cast<int>(to_u64(a.at("depth"))) : 3;
+    const size_t max_nodes = has(a, "max") ? to_u64(a.at("max")) : 300;
+
+    nd::PackSet set;
+    for (uint32_t b : castlemist::db::query_base_ids("", "cntc", 0, false, false, 100000)) {
+        if (b == 0 || b - 1 >= dat.mft_data_list.size()) continue;
+        const MftData& e = dat.mft_data_list[b - 1];
+        std::vector<uint8_t> raw = read_entry_bytes(dat.file_info.file_path, e);
+        std::vector<uint8_t> bytes = nd::decompress_cntc(raw, e.compression_flag != 0);
+        std::vector<uint32_t> f = get_by_file_id(dat, b);
+        const uint32_t fid = f.empty() ? 0 : *std::min_element(f.begin(), f.end());
+        std::optional<nd::Pack> p = bytes.empty() ? std::nullopt : nd::parse_pack(bytes, b, fid);
+        if (!p) {
+            if (!fid) continue;
+            nd::Pack placeholder;  // keep the slot: external refs count packs in fileId order
+            placeholder.base_id = b;
+            placeholder.file_id = fid;
+            p = std::move(placeholder);
+        }
+        set.packs.push_back(std::move(*p));
+    }
+    set.finish();
+    const std::vector<uint32_t>& refs = set.shared_file_refs();
+
+    auto container = [&](uint32_t fid) {
+        const uint32_t b = get_by_base_id(dat, fid);
+        return b ? castlemist::db::lookup(b).container : std::string();
+    };
+    auto node_json = [&](size_t pi, const nd::Object& o) {
+        json files = json::array();
+        for (const auto& [field, idx] : o.files) {
+            const uint32_t fid = idx < refs.size() ? refs[idx] : 0;
+            files.push_back({{"field", field}, {"fileId", fid}, {"container", fid ? container(fid) : ""}});
+        }
+        json strings = json::array();
+        for (const auto& [field, s] : o.strings) strings.push_back({{"field", field}, {"s", s}});
+        return json{{"pack", set.packs[pi].base_id}, {"offset", o.begin}, {"type", o.type},
+                    {"dataId", o.data_id}, {"uid", set.packs[pi].u32(o, 20)}, {"size", o.end - o.begin},
+                    {"files", files}, {"strings", strings}};
+    };
+    auto pack_index = [&](const nd::Pack* p) { return static_cast<size_t>(p - set.packs.data()); };
+
+    // Root: first object of the type with that dataId.
+    size_t root_pack = SIZE_MAX;
+    const nd::Object* root = nullptr;
+    for (size_t pi = 0; pi < set.packs.size() && !root; ++pi)
+        for (const nd::Object& o : set.packs[pi].objects)
+            if (o.type == root_type && o.data_id == root_id) {
+                root_pack = pi;
+                root = &o;
+                break;
+            }
+    if (!root) fail("no object of type " + std::to_string(root_type) + " with dataId " + std::to_string(root_id));
+
+    struct Item {
+        size_t pack;
+        const nd::Object* obj;
+        int depth;
+        json via;
+    };
+    std::set<std::pair<size_t, uint32_t>> seen{{root_pack, root->begin}};
+    std::deque<Item> queue{{root_pack, root, 0, nullptr}};
+    json nodes = json::array();
+    while (!queue.empty() && nodes.size() < max_nodes) {
+        Item it = std::move(queue.front());
+        queue.pop_front();
+        json j = node_json(it.pack, *it.obj);
+        j["depth"] = it.depth;
+        if (!it.via.is_null()) j["via"] = it.via;
+        nodes.push_back(std::move(j));
+        if (it.depth >= max_depth) continue;
+        for (const nd::Ref& r : it.obj->refs) {
+            auto [tp, to] = set.resolve(it.pack, r);
+            if (!tp || !to) continue;
+            const size_t tpi = pack_index(tp);
+            if (!seen.insert({tpi, to->begin}).second) continue;
+            queue.push_back({tpi, to, it.depth + 1,
+                             json{{"fromType", it.obj->type}, {"fromDataId", it.obj->data_id}, {"field", r.field},
+                                  {"external", r.external}}});
+        }
+    }
+    json out{{"ok", true}, {"packs", set.packs.size()}, {"nodes", nodes}};
+    if (has(a, "reverse")) {
+        json users = json::array();
+        for (size_t pi = 0; pi < set.packs.size(); ++pi)
+            for (const nd::Object& o : set.packs[pi].objects)
+                for (const nd::Ref& r : o.refs) {
+                    auto [tp, to] = set.resolve(pi, r);
+                    if (to == root) {
+                        json j = node_json(pi, o);
+                        j["field"] = r.field;
+                        users.push_back(std::move(j));
+                        break;
+                    }
+                }
+        out["users"] = users;
+    }
+    emit(out);
+}
+
 void cmd_character(const Args& a) {
     namespace ch = castlemist::character;
     std::string key;
@@ -3022,6 +3139,7 @@ int main(int argc, char** argv) {
         else if (cmd == "decompress") cmd_decompress(a);
         else if (cmd == "encode-texture") cmd_encode_texture(a);
         else if (cmd == "cntc-dump") cmd_cntc_dump(a);
+        else if (cmd == "cgraph") cmd_cgraph(a);
         else if (cmd == "palette") cmd_palette(a);
         else if (cmd == "users") cmd_users(a);
         else if (cmd == "npc-list") cmd_npc_list(a);
