@@ -38,25 +38,27 @@ std::vector<Pairing> pair_effects(const std::vector<EvtcLog>& logs, uint32_t eli
         for (const auto& [id, name] : log.skills)
             if (!name.empty()) names.emplace(static_cast<uint32_t>(id), name);
 
-        std::vector<Marker> markers;
+        // Per player: one player's casts never claim another's effects.
+        std::map<uint64_t, std::vector<Marker>> markers;
         for (const EvtcEvent& e : log.events) {
             if (!player.count(e.src)) continue;
-            if (e.statechange == evtc::kAnimationStart) markers.push_back({e.time, e.skill_id, true});
+            if (e.statechange == evtc::kAnimationStart) markers[e.src].push_back({e.time, e.skill_id, true});
             else if (e.statechange == evtc::kBuffApply && marker_buffs.count(e.skill_id))
-                markers.push_back({e.time, e.skill_id, false});
+                markers[e.src].push_back({e.time, e.skill_id, false});
         }
-        std::stable_sort(markers.begin(), markers.end(), [](const Marker& a, const Marker& b) { return a.time < b.time; });
+        for (auto& [src, v] : markers)
+            std::stable_sort(v.begin(), v.end(), [](const Marker& a, const Marker& b) { return a.time < b.time; });
 
-        std::map<Guid, uint64_t> last;  // repeats of one effect closer than kRepeatMs are one use
+        std::map<std::pair<uint64_t, Guid>, uint64_t> last;  // repeats of one effect closer than kRepeatMs are one use
         for (const EvtcEvent& e : log.events) {
             if (!is_effect_event(e.statechange) || !player.count(e.src)) continue;
             auto g = guids.find(e.skill_id);
             if (g == guids.end()) continue;
-            auto l = last.find(g->second);
+            auto l = last.find({e.src, g->second});
             if (l != last.end() && e.time - l->second < kRepeatMs) continue;
-            last[g->second] = e.time;
+            last[{e.src, g->second}] = e.time;
             Occurrence o{g->second, {}};
-            for (const Marker& m : markers)
+            for (const Marker& m : markers[e.src])
                 if (m.time <= e.time && e.time - m.time <= window_ms) o.candidates.push_back(m);
             if (!o.candidates.empty()) occ.push_back(std::move(o));
         }

@@ -124,7 +124,7 @@ castlemist_add_test(npc
 
 castlemist_add_test(skillfx
     SOURCES test_skillfx.cpp
-    DEPS    castlemist::skillfx ext::json)
+    DEPS    castlemist::skillfx ext::json ext::stb)
 
 castlemist_add_test(exportgltf
     SOURCES test_exportgltf_writer.cpp test_exportgltf_vrchat.cpp test_exportgltf_sky.cpp

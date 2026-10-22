@@ -58,7 +58,8 @@ constexpr uint8_t kBuffApply = 69;       ///< CBTS_BUFFAPPLY
 /// @brief Parses a log; a .zevtc's first zip entry is inflated first. nullopt if it isn't one.
 std::optional<EvtcLog> read_evtc(std::span<const uint8_t> file);
 
-/// @brief IDTOGUID events: content id (skill_id) -> GUID (src's 8 bytes then dst's, little-endian).
+/// @brief IDTOGUID events of effects (overstack_value 0; ids are numbered per content type):
+/// content id (skill_id) -> GUID (src's 8 bytes then dst's, little-endian).
 std::map<uint32_t, Guid> effect_guids(const EvtcLog& log);
 
 /// @brief The first entry of a zip archive, inflated (stored or deflate); empty on failure.

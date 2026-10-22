@@ -71,7 +71,8 @@ std::optional<EvtcLog> read_evtc(std::span<const uint8_t> file) {
 std::map<uint32_t, Guid> effect_guids(const EvtcLog& log) {
     std::map<uint32_t, Guid> out;
     for (const EvtcEvent& e : log.events) {
-        if (e.statechange != evtc::kIdToGuid) continue;
+        // Ids are numbered per content type (overstack_value); 0 = effect, others (markers, ...) are ignored.
+        if (e.statechange != evtc::kIdToGuid || e.overstack != 0) continue;
         Guid g{};
         std::memcpy(g.data(), &e.src, 8);
         std::memcpy(g.data() + 8, &e.dst, 8);

@@ -10,6 +10,13 @@
 #include "castlemist/skillfx/pairing.h"
 
 #include <nlohmann/json.hpp>
+
+// A private copy of stb's zlib compressor, to build deflated .zevtc test files.
+#define STB_IMAGE_WRITE_STATIC
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
+#include <algorithm>
 #include "castlemist/skillfx/skill_set.h"
 
 #include <cstdint>
@@ -215,7 +222,7 @@ struct LogBuilder {
     void fixed(const std::string& s, size_t n) {
         for (size_t i = 0; i < n; ++i) d.push_back(i < s.size() ? static_cast<uint8_t>(s[i]) : 0);
     }
-    struct Ev { uint64_t time, src, dst; uint32_t skill; uint8_t statechange; };
+    struct Ev { uint64_t time, src, dst; uint32_t skill; uint8_t statechange; uint32_t overstack = 0; };
     /// Header, agents {addr, elite, name}, skills {id, name}, then events.
     LogBuilder(const std::vector<std::tuple<uint64_t, uint32_t, std::string>>& agents,
                const std::vector<std::pair<int32_t, std::string>>& skills, const std::vector<Ev>& events) {
@@ -244,7 +251,7 @@ struct LogBuilder {
             u64(e.dst);
             u32(0);  // value
             u32(0);  // buff_dmg
-            u32(0);  // overstack
+            u32(e.overstack);  // IDTOGUID: the content type (0 = effect)
             u32(e.skill);
             for (int i = 0; i < 4; ++i) u16(0);  // instids
             fixed("", 8);                       // iff .. is_moving
@@ -400,6 +407,120 @@ CM_TEST(skillfx, evtc_reads_stored_zip) {
     check_searing_spell_log(read_evtc(stored_zip(searing_spell_log())));
 }
 
+// Review I1: IDTOGUID ids are per content type; a marker with the same local id must not
+// replace the effect's GUID.
+CM_TEST(skillfx, idtoguid_keeps_effects_only) {
+    LogBuilder b({{kPlayer, 62, "Musa"}}, {},
+                 {{0, 0x0011223344556677ull, 0x8899aabbccddeeffull, 9001, evtc::kIdToGuid, 0},
+                  {0, 0x1111111111111111ull, 0x2222222222222222ull, 9001, evtc::kIdToGuid, 1}});
+    auto g = effect_guids(*read_evtc(b.d));
+    const Guid want{0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88};
+    CHECK(g.count(9001) && g.at(9001) == want);
+}
+
+// Review I4: header-only and cut-short files must not crash (a cut-off event is covered by
+// searing_spell_log's trailing bytes).
+CM_TEST(skillfx, evtc_short_files_do_not_crash) {
+    std::vector<uint8_t> full = searing_spell_log();
+    for (size_t n : {size_t{0}, size_t{4}, size_t{16}, size_t{18}, size_t{60}, size_t{150}}) {
+        std::vector<uint8_t> cut(full.begin(), full.begin() + static_cast<std::ptrdiff_t>(std::min(n, full.size())));
+        std::optional<EvtcLog> log = read_evtc(cut);
+        if (log) CHECK(log->events.size() <= 3);
+    }
+}
+
+namespace {
+/// Wraps `data` as a zip entry named `name`: deflated or stored, with the sizes in the local
+/// header or (data descriptor, flag bit 3) only after the data and in the central directory.
+std::vector<uint8_t> zip_entry(const std::vector<uint8_t>& data, bool deflate, bool descriptor, const std::string& name);
+}  // namespace
+
+namespace {
+std::vector<uint8_t> zip_entry(const std::vector<uint8_t>& data, bool deflate, bool descriptor, const std::string& name) {
+    std::vector<uint8_t> body = data;
+    if (deflate) {  // stb's zlib stream minus its 2-byte header and 4-byte adler32 = raw deflate
+        int n = 0;
+        unsigned char* z = stbi_zlib_compress(const_cast<unsigned char*>(data.data()), static_cast<int>(data.size()), &n, 8);
+        body.assign(z + 2, z + n - 4);
+        STBIW_FREE(z);
+    }
+    const uint16_t method = deflate ? 8 : 0, flags = descriptor ? 8 : 0;
+    const uint32_t csize = static_cast<uint32_t>(body.size()), usize = static_cast<uint32_t>(data.size());
+    LogBuilder z({}, {}, {});
+    z.d.clear();
+    z.u32(0x04034b50);
+    z.u16(20);
+    z.u16(flags);
+    z.u16(method);
+    z.u16(0);
+    z.u16(0);
+    z.u32(0);
+    z.u32(descriptor ? 0 : csize);
+    z.u32(descriptor ? 0 : usize);
+    z.u16(static_cast<uint16_t>(name.size()));
+    z.u16(0);
+    z.fixed(name, name.size());
+    z.d.insert(z.d.end(), body.begin(), body.end());
+    if (descriptor) {
+        z.u32(0x08074b50);
+        z.u32(0);
+        z.u32(csize);
+        z.u32(usize);
+    }
+    const uint32_t cd = static_cast<uint32_t>(z.d.size());
+    z.u32(0x02014b50);
+    z.u16(20);
+    z.u16(20);
+    z.u16(flags);
+    z.u16(method);
+    z.u16(0);
+    z.u16(0);
+    z.u32(0);
+    z.u32(csize);
+    z.u32(usize);
+    z.u16(static_cast<uint16_t>(name.size()));
+    z.u16(0);
+    z.u16(0);
+    z.u16(0);
+    z.u16(0);
+    z.u32(0);
+    z.u32(0);  // local header at 0
+    z.fixed(name, name.size());
+    const uint32_t cd_size = static_cast<uint32_t>(z.d.size()) - cd;
+    z.u32(0x06054b50);
+    z.u16(0);
+    z.u16(0);
+    z.u16(1);
+    z.u16(1);
+    z.u32(cd_size);
+    z.u32(cd);
+    z.u16(0);
+    return z.d;
+}
+}  // namespace
+
+CM_TEST(skillfx, evtc_reads_deflated_zip_with_data_descriptor) {
+    check_searing_spell_log(read_evtc(zip_entry(searing_spell_log(), true, true, "20261022-065900")));
+}
+
+CM_TEST(skillfx, evtc_reads_stored_zip_with_data_descriptor) {
+    check_searing_spell_log(read_evtc(zip_entry(searing_spell_log(), false, true, "other-name.evtc")));
+}
+
+// Review I3: markers and effects are matched per player. Firebrand B's cast must not claim
+// Firebrand A's effect.
+CM_TEST(skillfx, markers_are_per_player) {
+    constexpr uint64_t kOther = 0x7d1;
+    std::vector<LogBuilder::Ev> ev;
+    for (uint32_t id = 1; id <= 4; ++id) ev.push_back({0, id, 0x1000u + id, id, evtc::kIdToGuid});
+    for (uint64_t t : {1000ull, 9000ull}) {
+        ev.push_back({t, kOther, 0, 41258, evtc::kAnimationStart});
+        ev.push_back({t + 400, kPlayer, 0, 1, evtc::kEffectAgent});
+    }
+    auto log = read_evtc(LogBuilder({{kPlayer, 62, "Musa"}, {kOther, 62, "Other"}}, {}, ev).d);
+    CHECK(pair_effects({*log}, 62, {}).empty());
+}
+
 // One of the user's real (deflated) golem logs, when present.
 CM_TEST(skillfx, evtc_reads_real_zevtc) {
     const std::filesystem::path p =
@@ -414,7 +535,7 @@ CM_TEST(skillfx, evtc_reads_real_zevtc) {
     bool firebrand = false;
     for (const EvtcAgent& a : log->agents) firebrand = firebrand || a.elite == 62;
     CHECK(firebrand);
-    CHECK(effect_guids(*log).size() >= 200);
+    CHECK(effect_guids(*log).size() >= 30);  // 38 effect GUIDs (of 229 IDTOGUID entries; the rest are other content types)
 }
 
 namespace {

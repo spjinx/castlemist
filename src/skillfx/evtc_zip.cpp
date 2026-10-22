@@ -20,7 +20,18 @@ std::vector<uint8_t> unzip_first(std::span<const uint8_t> z) {
     uint32_t csize = u32(18);
     const size_t data = 30 + static_cast<size_t>(u16(26)) + u16(28);
     if (data > z.size()) return {};
-    // Bit 3 (sizes in a trailing data descriptor) leaves 0 here: take the rest of the file.
+    // Flag bit 3 leaves the sizes 0 here (they follow the data): take them from the central
+    // directory's first entry, found through the end-of-central-directory record.
+    if ((u16(6) & 8) || csize == 0) {
+        for (size_t e = z.size() >= 22 ? z.size() - 22 : 0; e + 22 <= z.size(); --e) {
+            if (u32(e) == 0x06054b50) {
+                const size_t cd = u32(e + 16);
+                if (u32(cd) == 0x02014b50) csize = u32(cd + 20);
+                break;
+            }
+            if (e == 0 || z.size() - e > 0xffff + 22) break;
+        }
+    }
     if (csize == 0 || data + csize > z.size()) csize = static_cast<uint32_t>(z.size() - data);
     if (method == 0) return {z.begin() + static_cast<std::ptrdiff_t>(data), z.begin() + static_cast<std::ptrdiff_t>(data + csize)};
     if (method != 8) return {};
