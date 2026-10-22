@@ -116,5 +116,43 @@ combat logs, which record each effect a client plays together with its GUID. Mat
 The other 37 (Tome of Justice's chapters among them) aren't in EI: it only lists effects
 it uses for its own mechanics.
 
+## Pairings from arcdps logs (2026-10-22)
+
+Three golem logs recorded by the user (arcdps build 20261021). Casts are statechange 67
+`ANIMATIONSTART`. Instant skills (mantra charges) leave no cast event, but the buff each
+one applies shows up as statechange 69 with a `Bp5rI.` skill id (e.g. Solace 45447,
+Potence 44187, Truth 43653, Lore 44988, Liberation 46651). Effects are statechange 60
+(ground) or 62 (agent), and 46 maps each content id to the object's GUID. The log's skill
+table also names the skills the API lacks (all the chapters).
+
+Every chapter played the same effect in both of its casts (◆ = an effect no client data
+references):
+
+| tome (open effect) | slot | skill | effect → model |
+|---|---|---|---|
+| Justice (1764329) | 1 | 41258 Searing Spell | ◆ Bmt2N.6V01V → 1764455 |
+| | 2 | 40635 Igniting Burst | ◆ Bmt2N.wVI2c → 1764407 |
+| | 3 | 42449 Heated Rebuke | ◆ Bmt2N.ue/3G → 1764300 |
+| | 4 | 40015 Scorched Aftermath | ◆ Bmt2N.tppFs + ◆ Bmt2N.Ywrtv → 1764457 (+ EI ScorchedAftermath1, another namespace) |
+| | 5 | 42898 Epilogue: Ashes of the Just | content-linked 296840; plus a shared GUID EI calls "MirageCloak" (all three epilogues) |
+| Resolve (1764313) | 1 | 45022 Desert Bloom | ◆ Bmt2N.oXZPA → 1764465 |
+| | 2 | 40679 Radiant Recovery | ◆ Bmt2N.gpVwr → 1764409 |
+| | 3 | 45128 Azure Sun | ◆ Bmt2N.xzBkM → 1764302 |
+| | 4 | 42008 Shining River | ◆ Bmt2N.GiTDx → 1764474 (+ EI ShiningRiver2) |
+| | 5 | 42925 Epilogue: Eternal Oasis | "MirageCloak" only |
+| Courage (1764322) | 1 | 42986 Unflinching Charge | ◆ Bmt2N.08tc7 → 1764436 |
+| | 2 | 41968 Daring Challenge | ◆ Bmt2N.EmMs4 → 1764411 |
+| | 3 | 41836 Valiant Bulwark | ◆ Bmt2N.LOKCN → 1764345 |
+| | 4 | 40988 Stalwart Stand | ◆ Bmt2N.03a1Y → 1764441 (+ EI StalwartStand1) |
+| | 5 | 44455 Epilogue: Unbroken Lines | "MirageCloak" only |
+
+Mantras (each charge plays one cone + one ground symbol): Solace cone 1764358 + symbol
+1764399; Potence 1764394 + 1764358; Truth 1764404 + 1764358; Lore 1764387 + 1764358;
+Liberation 1764382 + 1764358. Mantra of Flame wasn't recorded.
+
+Still unseen orphan models: 1764377 (EI: Mantra of Flame cone), 1764341, 1764452,
+1764454, 1764462, 1764464, 1764477, 1764479, 1764494, 1764500, and the core-range
+57435, 54214, 55354. These are probably Mantra of Flame and Firebrand traits.
+
 The content map (`cmap::users_of`) can't see type-183 users: it keys objects by
 (type, dataId) and effect dataIds repeat. Use `cgraph --files`.
