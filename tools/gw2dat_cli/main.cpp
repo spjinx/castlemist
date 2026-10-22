@@ -103,9 +103,7 @@
 #include "castlemist/npc/export.h"
 #include "castlemist/npc/look.h"
 #include "castlemist/npc/tokens.h"
-// Layer-internal cntc pack reader (research commands only; the npc layer exports all symbols).
-#include "../../src/npc/decompress.h"
-#include "../../src/npc/pack.h"
+#include "castlemist/format/cntc_pack.h"
 #include "castlemist/extract/entry_extractor.h"
 #include "castlemist/exportgltf/vrchat_export.h"
 #include "castlemist/exportgltf/gltf_export.h"
@@ -2346,7 +2344,7 @@ void cmd_cntc_dump(const Args& a) {
 // printing each object reached with its string slots and its file slots (fileId + container).
 // --reverse also lists the objects that point AT the root; --prefix P lists a codename namespace instead.
 void cmd_cgraph(const Args& a) {
-    namespace nd = castlemist::npc::detail;
+    namespace nd = castlemist::cntc;
     open_index(a);
     if (!castlemist::db::is_open()) fail("no index DB (build it in castlemist, or pass --index)");
     Gw2Dat dat;

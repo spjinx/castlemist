@@ -1,10 +1,6 @@
 #include "castlemist/npc/catalogue.h"
 
 #include "character.h"
-#include "decompress.h"
-#include "pack.h"
-
-#include "castlemist/native/cmp_decompress_method0.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -15,22 +11,6 @@
 #include <span>
 
 namespace castlemist::npc {
-
-namespace detail {
-
-std::vector<uint8_t> decompress_cntc(std::span<const uint8_t> raw, bool compressed) {
-    std::vector<uint8_t> s = castlemist::cmp::strip_crc32(raw);
-    if (!compressed) return s;
-    if (s.size() < 8) return {};
-    uint32_t u = s[4] | (s[5] << 8) | (s[6] << 16) | (static_cast<uint32_t>(s[7]) << 24);
-    try {
-        return castlemist::cmp::decompress_method0(std::span<const uint8_t>(s).subspan(8), u);
-    } catch (const std::exception&) {
-        return {};  // corrupt stream: the caller records "unreadable" and continues
-    }
-}
-
-}  // namespace detail
 
 namespace {
 

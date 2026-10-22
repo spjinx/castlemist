@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include "pack.h"
+#include "castlemist/format/cntc_pack.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -14,6 +14,14 @@
 #include <vector>
 
 namespace castlemist::npc::detail {
+
+// The cntc reader lives in format (castlemist/format/cntc_pack.h); the npc code names it unqualified.
+using cntc::decompress_cntc;
+using cntc::Object;
+using cntc::Pack;
+using cntc::PackSet;
+using cntc::parse_pack;
+using cntc::Ref;
 
 /// @brief The fields of a character object that the catalogue records.
 struct CharacterFields {

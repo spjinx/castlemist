@@ -1,11 +1,12 @@
-#include "pack.h"
+#include "castlemist/format/cntc_pack.h"
 
 #include "castlemist/format/content_schema.h"
+#include "castlemist/native/cmp_decompress_method0.hpp"
 
 #include <algorithm>
 #include <cstring>
 
-namespace castlemist::npc::detail {
+namespace castlemist::cntc {
 
 namespace {
 
@@ -204,4 +205,16 @@ std::pair<const Pack*, const Object*> PackSet::resolve(size_t from, const Ref& r
     return {target, target->object_at(r.target_offset)};
 }
 
-}  // namespace castlemist::npc::detail
+std::vector<uint8_t> decompress_cntc(std::span<const uint8_t> raw, bool compressed) {
+    std::vector<uint8_t> s = castlemist::cmp::strip_crc32(raw);
+    if (!compressed) return s;
+    if (s.size() < 8) return {};
+    uint32_t u = s[4] | (s[5] << 8) | (s[6] << 16) | (static_cast<uint32_t>(s[7]) << 24);
+    try {
+        return castlemist::cmp::decompress_method0(std::span<const uint8_t>(s).subspan(8), u);
+    } catch (const std::exception&) {
+        return {};  // corrupt stream: the caller records "unreadable" and continues
+    }
+}
+
+}  // namespace castlemist::cntc

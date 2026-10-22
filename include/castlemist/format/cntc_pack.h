@@ -1,7 +1,7 @@
 /// @file
 /// @brief Read-only reader for cntc (PackContent) packs: objects, their refs, file and string slots.
 ///
-/// Layer-internal (not installed under include/). Layout: PF header; `u16 @6` = first chunk; chunks
+/// Shared by the npc and skillfx layers. Layout: PF header; `u16 @6` = first chunk; chunks
 /// `{fourcc, u32 size}` + body until "Main"; at Main+16 a u32 flags then 11 array descriptors
 /// `{u32 count, i64 pointer}` (pointer relative to its own position). Arrays used here: 2 fileRefs,
 /// 3 indexEntries, 4 localOffsets, 5 externalOffsets, 6 fileIndices, 7 stringIndices, 9 strings,
@@ -17,7 +17,7 @@
 #include <utility>
 #include <vector>
 
-namespace castlemist::npc::detail {
+namespace castlemist::cntc {
 
 /// @brief A pointer out of an object into another object (same pack or another pack).
 struct Ref {
@@ -70,4 +70,10 @@ private:
     size_t anchor_ = static_cast<size_t>(-1);  ///< Index of the fileRefs pack after finish().
 };
 
-}  // namespace castlemist::npc::detail
+/// @brief Turns the raw bytes of one MFT entry (as read from the dat) into file bytes.
+/// @param raw Entry bytes including the periodic CRC32 framing.
+/// @param compressed True when the entry's compression flag is set.
+/// @return The decompressed bytes; empty (never throws) when the stream is too short or corrupt.
+std::vector<uint8_t> decompress_cntc(std::span<const uint8_t> raw, bool compressed);
+
+}  // namespace castlemist::cntc

@@ -11,8 +11,6 @@
 #include "castlemist/npc/look.h"
 #include "castlemist/npc/tokens.h"
 #include "character.h"
-#include "decompress.h"
-#include "pack.h"
 
 #include <cstdint>
 #include <filesystem>
