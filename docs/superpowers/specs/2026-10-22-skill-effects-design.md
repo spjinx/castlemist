@@ -156,9 +156,11 @@ Claude only parses the files offline. It never launches, attaches to or hooks th
 - **Reader** (`skillfx/evtc.{h,cpp}`): the public EVTC layout (header, agents, skills,
   then 64-byte combat items, zip-wrapped when `.zevtc`). It reads three kinds of event:
   - skill activations (cast start/end, with the skill id);
-  - effect events (statechange 45, or 51 on newer builds: effect content id, source
-    agent, time, duration, tracking id);
-  - id-to-GUID events, which map each effect content id to its 16-byte GUID. That GUID
+  - effect events. Current arcdps (2026) logs 60 `EFFECTGROUNDCREATE`, 61
+    `EFFECTGROUNDREMOVE`, 62 `EFFECTAGENTCREATE` and 63 `EFFECTAGENTREMOVE`: effect
+    content id, source agent, time. Builds before 2025-05-26 used 45/51 instead
+    (both retired); read those as well for older logs;
+  - id-to-GUID events (46 `IDTOGUID`), which map each effect content id to its 16-byte GUID. That GUID
     is the effect object's +0.
 - **Pairing:** each effect event whose source is the recording player is assigned to that
   player's most recent cast that started before it and within 3 s. Pairs seen in at least
