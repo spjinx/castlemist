@@ -6,7 +6,10 @@
 #include "castlemist/format/cntc_pack.h"
 #include "castlemist/skillfx/effects.h"
 #include "castlemist/skillfx/evtc.h"
+#include "castlemist/skillfx/export.h"
 #include "castlemist/skillfx/pairing.h"
+
+#include <nlohmann/json.hpp>
 #include "castlemist/skillfx/skill_set.h"
 
 #include <cstdint>
@@ -481,4 +484,106 @@ CM_TEST(skillfx, ei_guids_parse) {
     const Guid want{0xd5, 0x73, 0x91, 0x0f, 0xdb, 0x59, 0x43, 0x4a, 0xbf, 0x6e, 0x74, 0x33, 0x06, 0x19, 0x95, 0xbd};
     CHECK_EQ(ei.size(), size_t{1});
     CHECK(ei.count(want) && ei.at(want) == "FirebrandTomeOfJusticeOpen");
+}
+
+namespace {
+Effect model_effect(uint32_t model, uint8_t tag) {
+    Effect e;
+    e.model = model;
+    e.kind = 6;
+    e.guid.fill(tag);
+    return e;
+}
+nlohmann::json read_json(const std::filesystem::path& p) {
+    std::ifstream f(p);
+    return nlohmann::json::parse(f);
+}
+}  // namespace
+
+CM_TEST(skillfx, export_layout_shared_and_failure) {
+    SkillSet set;
+    set.skill_namespace = "AAAAA.";
+    SkillEntry a;
+    a.id = 1;
+    a.label = "Tome of Justice";
+    a.links.effects = {model_effect(100, 1)};
+    SkillEntry b;
+    b.id = 2;
+    b.label = "Chapter 1: Searing Spell";
+    b.links.effects = {model_effect(100, 1), model_effect(200, 2)};
+    set.skills = {a, b};
+    set.unlinked = {model_effect(300, 3)};
+
+    const std::filesystem::path out = std::filesystem::temp_directory_path() / "cm_test_skillfx_export";
+    std::filesystem::remove_all(out);
+    std::map<uint32_t, int> calls;
+    ExportReport rep = export_skill_set(set, out, [&](uint32_t model, const std::filesystem::path& glb) {
+        ++calls[model];
+        if (model == 200) return std::string("bad model");
+        std::filesystem::create_directories(glb.parent_path());
+        std::ofstream(glb) << "glb";
+        return std::string();
+    });
+    CHECK_EQ(calls[100], 1);
+    CHECK(std::filesystem::exists(out / "shared" / "100.glb"));
+    CHECK(std::filesystem::exists(out / "unlinked" / "300.glb"));
+    CHECK(std::filesystem::exists(out / "skill_set.json"));
+    CHECK_EQ(rep.failed, size_t{1});
+    CHECK_EQ(rep.skills, size_t{2});
+    nlohmann::json sb = read_json(out / "skills" / "2-chapter-1-searing-spell" / "skill.json");
+    CHECK_EQ(sb["effects"].size(), size_t{2});
+    CHECK_EQ(sb["effects"][0]["glb"].get<std::string>(), std::string("shared/100.glb"));
+    CHECK_EQ(sb["effects"][1]["error"].get<std::string>(), std::string("bad model"));
+    nlohmann::json ul = read_json(out / "unlinked" / "unlinked.json");
+    CHECK_EQ(ul["effects"][0]["glb"].get<std::string>(), std::string("unlinked/300.glb"));
+    std::filesystem::remove_all(out);
+}
+
+CM_TEST(skillfx, labels_api_then_log_then_slot) {
+    SkillSet set;
+    SkillEntry tome, page, slot, bare;
+    tome.id = 44364;
+    page.id = 41258;
+    slot.id = 41169;
+    slot.bundle_item = 83470;
+    slot.bundle_slot = 3;
+    bare.id = 46331;
+    bare.codename = "Bp5rI.yh6N3";
+    set.skills = {tome, page, slot, bare};
+    Pairing p;
+    p.skill_id = 41258;
+    p.skill_name = "Chapter 1: Searing Spell";
+    p.count = 2;
+    cntc::PackSet none;
+    apply_pairings(set, {p}, {}, none, test_container, {{44364, "Tome of Justice"}}, {});
+    CHECK_EQ(set.skills[0].label, std::string("Tome of Justice"));
+    CHECK_EQ(set.skills[1].label, std::string("Chapter 1: Searing Spell"));
+    CHECK_EQ(set.skills[2].label, std::string("83470 slot 4"));
+    CHECK_EQ(set.skills[3].label, std::string("Bp5rI.yh6N3"));
+}
+
+CM_TEST(skillfx, pairing_moves_effect_out_of_unlinked) {
+    cntc::PackSet s = make_set({
+        {kSkillType, 41258, {{500, "Bp5rI.FkCbn"}}, {}, {}},
+        {kEffectType, 6, {{100, "Bmt2N.6V01V"}}, {{48, 1764455}}, {}},
+    });
+    SkillSet set;
+    SkillEntry e;
+    e.id = 41258;
+    set.skills = {e};
+    set.unlinked = {read_effect(s, 0, obj(s, 1), test_container)};
+    Pairing p;
+    p.skill_id = 41258;
+    p.effect = test_guid(1);
+    p.count = 2;
+    apply_pairings(set, {p}, effect_index(s), s, test_container, {}, {{test_guid(1), "SomeEIName"}});
+    CHECK(set.unlinked.empty());
+    CHECK_EQ(set.skills[0].links.effects.size(), size_t{1});
+    if (!set.skills[0].links.effects.empty()) {
+        const Effect& f = set.skills[0].links.effects[0];
+        CHECK_EQ(f.model, 1764455u);
+        CHECK_EQ(f.source, std::string("arcdps"));
+        CHECK_EQ(f.count, 2u);
+        CHECK_EQ(f.ei_name, std::string("SomeEIName"));
+    }
 }

@@ -104,6 +104,10 @@
 #include "castlemist/npc/look.h"
 #include "castlemist/npc/tokens.h"
 #include "castlemist/format/cntc_pack.h"
+#include "castlemist/skillfx/evtc.h"
+#include "castlemist/skillfx/export.h"
+#include "castlemist/skillfx/pairing.h"
+#include "castlemist/skillfx/skill_set.h"
 #include "castlemist/extract/entry_extractor.h"
 #include "castlemist/exportgltf/vrchat_export.h"
 #include "castlemist/exportgltf/gltf_export.h"
@@ -2339,21 +2343,9 @@ void cmd_cntc_dump(const Args& a) {
     emit({{"ok", true}, {"packs", packs}});
 }
 
-// Research aid: the content graph around one object. From --content-type T --content-id N
-// (dataId) it follows every local/external pointer breadth-first to --depth D (default 3),
-// printing each object reached with its string slots and its file slots (fileId + container).
-// --reverse also lists the objects that point AT the root; --prefix P lists a codename namespace instead.
-void cmd_cgraph(const Args& a) {
+// Every content pack (cntc) of the dat, parsed and ordered for cross-pack refs (needs the index DB).
+castlemist::cntc::PackSet load_cntc_packs(Gw2Dat& dat) {
     namespace nd = castlemist::cntc;
-    open_index(a);
-    if (!castlemist::db::is_open()) fail("no index DB (build it in castlemist, or pass --index)");
-    Gw2Dat dat;
-    load_dat_file(dat, need(a, "dat"));
-    const uint32_t root_type = has(a, "prefix") || has(a, "files") || has(a, "find") || has(a, "hex-of") ? 0 : static_cast<uint32_t>(to_u64(need(a, "content-type")));
-    const uint32_t root_id = has(a, "prefix") || has(a, "files") || has(a, "find") || has(a, "hex-of") ? 0 : static_cast<uint32_t>(to_u64(need(a, "content-id")));
-    const int max_depth = has(a, "depth") ? static_cast<int>(to_u64(a.at("depth"))) : 3;
-    const size_t max_nodes = has(a, "max") ? to_u64(a.at("max")) : 300;
-
     nd::PackSet set;
     for (uint32_t b : castlemist::db::query_base_ids("", "cntc", 0, false, false, 100000)) {
         if (b == 0 || b - 1 >= dat.mft_data_list.size()) continue;
@@ -2373,6 +2365,25 @@ void cmd_cgraph(const Args& a) {
         set.packs.push_back(std::move(*p));
     }
     set.finish();
+    return set;
+}
+
+// Research aid: the content graph around one object. From --content-type T --content-id N
+// (dataId) it follows every local/external pointer breadth-first to --depth D (default 3),
+// printing each object reached with its string slots and its file slots (fileId + container).
+// --reverse also lists the objects that point AT the root; --prefix P lists a codename namespace instead.
+void cmd_cgraph(const Args& a) {
+    namespace nd = castlemist::cntc;
+    open_index(a);
+    if (!castlemist::db::is_open()) fail("no index DB (build it in castlemist, or pass --index)");
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    const uint32_t root_type = has(a, "prefix") || has(a, "files") || has(a, "find") || has(a, "hex-of") ? 0 : static_cast<uint32_t>(to_u64(need(a, "content-type")));
+    const uint32_t root_id = has(a, "prefix") || has(a, "files") || has(a, "find") || has(a, "hex-of") ? 0 : static_cast<uint32_t>(to_u64(need(a, "content-id")));
+    const int max_depth = has(a, "depth") ? static_cast<int>(to_u64(a.at("depth"))) : 3;
+    const size_t max_nodes = has(a, "max") ? to_u64(a.at("max")) : 300;
+
+    nd::PackSet set = load_cntc_packs(dat);
     const std::vector<uint32_t>& refs = set.shared_file_refs();
 
     auto container = [&](uint32_t fid) {
@@ -2565,6 +2576,116 @@ void cmd_cgraph(const Args& a) {
         out["users"] = users;
     }
     emit(out);
+}
+
+// ---- skill effects (skillfx): a codename namespace's skills and their effects, paired from
+// arcdps logs the user recorded (castlemist only reads the files). Shared by evtc-pairs and
+// skillfx-export: --dat --index --seed A,B (skill ids of the namespace) [--logs DIR]
+// [--ei EffectGUIDs.cs] [--elite 62].
+struct SkillFxRun {
+    Gw2Dat dat;
+    castlemist::cntc::PackSet packs;
+    castlemist::skillfx::SkillSet set;
+    std::vector<castlemist::skillfx::Pairing> pairs;
+    std::map<castlemist::skillfx::Guid, std::string> ei;
+    std::function<std::string(uint32_t)> container;
+};
+
+void skillfx_prepare(const Args& a, SkillFxRun& run) {
+    namespace sfx = castlemist::skillfx;
+    open_index(a);
+    if (!castlemist::db::is_open()) fail("no index DB (build it in castlemist, or pass --index)");
+    load_dat_file(run.dat, need(a, "dat"));
+    run.packs = load_cntc_packs(run.dat);
+    run.container = [&dat = run.dat](uint32_t fid) {
+        const uint32_t b = get_by_base_id(dat, fid);
+        return b ? castlemist::db::lookup(b).container : std::string();
+    };
+    std::vector<uint32_t> seeds;
+    std::stringstream ss(need(a, "seed"));
+    for (std::string t; std::getline(ss, t, ',');)
+        if (!t.empty()) seeds.push_back(static_cast<uint32_t>(to_u64(t)));
+    run.set = sfx::build_skill_set(run.packs, seeds, run.container);
+    if (run.set.skill_namespace.empty()) fail("no skill of --seed found in the content packs");
+
+    std::vector<sfx::EvtcLog> logs;
+    if (has(a, "logs"))
+        for (const auto& f : std::filesystem::directory_iterator(std::filesystem::u8path(utf8_arg("--logs")))) {
+            const std::string ext = f.path().extension().string();
+            if (ext != ".evtc" && ext != ".zevtc") continue;
+            std::ifstream in(f.path(), std::ios::binary);
+            std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            if (auto log = sfx::read_evtc(bytes)) logs.push_back(std::move(*log));
+            else std::fprintf(stderr, "skipped (not an arcdps log): %s\n", f.path().string().c_str());
+        }
+    std::set<uint32_t> markers;
+    for (const sfx::SkillEntry& e : run.set.skills) markers.insert(e.id);
+    const uint32_t elite = has(a, "elite") ? static_cast<uint32_t>(to_u64(a.at("elite"))) : 62;
+    run.pairs = sfx::pair_effects(logs, elite, markers);
+    if (has(a, "ei")) {
+        std::ifstream cs(std::filesystem::u8path(utf8_arg("--ei")));
+        run.ei = sfx::read_ei_guids(cs);
+    }
+}
+
+// The pairings the logs give, with each effect's codename and model.
+void cmd_evtc_pairs(const Args& a) {
+    namespace sfx = castlemist::skillfx;
+    SkillFxRun run;
+    skillfx_prepare(a, run);
+    const auto index = sfx::effect_index(run.packs);
+    json out = json::array();
+    for (const sfx::Pairing& p : run.pairs) {
+        json j{{"skill", p.skill_id}, {"name", p.skill_name}, {"count", p.count}};
+        if (auto it = index.find(p.effect); it != index.end()) {
+            sfx::Effect f = sfx::read_effect(run.packs, it->second.first, *it->second.second, run.container);
+            j["codename"] = f.codename;
+            j["model"] = f.model;
+        }
+        if (auto n = run.ei.find(p.effect); n != run.ei.end()) j["ei_name"] = n->second;
+        out.push_back(j);
+    }
+    emit({{"ok", true}, {"pairs", out}});
+}
+
+// Exports every skill of the namespace with its effects (see castlemist/skillfx/export.h).
+void cmd_skillfx_export(const Args& a) {
+    namespace sfx = castlemist::skillfx;
+    namespace fs = std::filesystem;
+    SkillFxRun run;
+    skillfx_prepare(a, run);
+    std::vector<uint32_t> ids;
+    for (const sfx::SkillEntry& e : run.set.skills) ids.push_back(e.id);
+    std::map<uint32_t, std::string> api_names;
+    try {
+        castlemist::character::WinHttpClient http;
+        castlemist::character::Gw2Api api(http, "");
+        api_names = api.names("skills", ids);
+    } catch (const std::exception& ex) {
+        std::fprintf(stderr, "no API names (%s); labels come from the logs and codenames\n", ex.what());
+    }
+    sfx::apply_pairings(run.set, run.pairs, sfx::effect_index(run.packs), run.packs, run.container, api_names, run.ei);
+
+    // One model -> .glb (+ particle sidecar), and every mesh-particle emitter's mesh beside it.
+    auto export_one = [&](uint32_t model, const fs::path& glb) -> std::string {
+        std::shared_ptr<ModelPreview> m = load_model_by_fileid(run.dat, model);
+        if (!m) return "model did not load";
+        fs::create_directories(glb.parent_path());
+        auto r = castlemist::exportgltf::export_model_gltf(*m, glb.string());
+        if (!r.ok) return r.error.empty() ? std::string("export failed") : r.error;
+        for (const auto& em : m->emitters) {
+            if (!em.hasMesh || !em.meshFileId) continue;
+            const fs::path mesh = glb.parent_path() / (std::to_string(em.meshFileId) + ".glb");
+            if (fs::exists(mesh)) continue;
+            if (auto mm = load_model_by_fileid(run.dat, em.meshFileId)) castlemist::exportgltf::export_model_gltf(*mm, mesh.string());
+        }
+        return {};
+    };
+    const fs::path out = fs::u8path(utf8_arg("--out").empty() ? need(a, "out") : utf8_arg("--out"));
+    sfx::ExportReport rep = sfx::export_skill_set(run.set, out, export_one);
+    emit({{"ok", true}, {"skill_namespace", run.set.skill_namespace}, {"effect_namespace", run.set.effect_namespace},
+          {"skills", rep.skills}, {"models", rep.models}, {"failed", rep.failed}, {"pairs", run.pairs.size()},
+          {"unlinked", run.set.unlinked.size()}, {"notes", rep.notes}});
 }
 
 void cmd_character(const Args& a) {
@@ -3323,6 +3444,8 @@ int main(int argc, char** argv) {
         else if (cmd == "encode-texture") cmd_encode_texture(a);
         else if (cmd == "cntc-dump") cmd_cntc_dump(a);
         else if (cmd == "cgraph") cmd_cgraph(a);
+        else if (cmd == "evtc-pairs") cmd_evtc_pairs(a);
+        else if (cmd == "skillfx-export") cmd_skillfx_export(a);
         else if (cmd == "palette") cmd_palette(a);
         else if (cmd == "users") cmd_users(a);
         else if (cmd == "npc-list") cmd_npc_list(a);
