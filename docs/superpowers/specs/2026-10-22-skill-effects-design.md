@@ -178,9 +178,10 @@ per emitter`. Needs only built-in Unity modules (works in GW2Porting too).
 
 ## Open research (not blocking)
 
-- How the 51 unlinked Firebrand effects are triggered. The likely route is the skills'
-  animations (`ModelAnimationData.triggerTokens` / `properties`); the human-male banks
-  hold no direct file or GUID reference to them. Until that's known, chapters export
-  with whatever effects they link to (often none) and the rest sit under `unlinked/`.
+- **Settled (static RE, see the research note):** the 51 unlinked effects are played by
+  an id the client receives at runtime (server messages in `EfCliMsg.cpp`, and the
+  animation-trigger map in `AnmlAnimTriggers.cpp`). Their skill pairing is not in
+  client files, so chapters export with the effects they link to, and the rest sit
+  under `unlinked/` for pairing by eye.
 - The meaning of the type-183 `kind` numbers.
 - Skill effects that live outside MODL clouds (decals, streaks, lightning, ribbons).

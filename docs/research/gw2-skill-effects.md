@@ -64,10 +64,39 @@ range 1764294–1764500; 16 copies of 1764358) are referenced by **nothing found
   animation banks, Gw2-64.exe);
 - their uid and codename occur nowhere else; rootIndex is 0xFFFFFFFF for every effect.
 
-So either the client reaches them by a mechanism not yet seen (most likely through the
-chapter/charge skills' animations: `ModelAnimationData` has `triggerTokens`,
-`properties{id,time,val,strVal filename}`), or they are retired content (the 2022 mantra
-rework). Chapter skills having no effects while showing fire in game points to the first.
+The exe explains why (next section): the client also plays effects by a u32 id that it
+receives at runtime.
+
+## How the client reaches effects (Ghidra, 2026-10-22)
+
+Static read of `Gw2-64.exe` (project `~/gw2re`, scripts in `tools/ghidra/`). The client
+code lives in `Gw2\Game\Effect\Cli\`: `EfCliContext`, `EfCliEffect`, and one class per
+effect type (`EfCliEffectCompound`, `...Model`, `...Audio`, `...Decal`, `...Material`,
+`...PostProc`, `...ShakeSpring`). These likely match the `kind` numbers, but the mapping
+is not proven.
+
+Every place the client fetches an effect by id calls the content store's lookup with
+**type 0xB7 (183) and a u32 id** (27 sites, 23 functions). The ones that matter:
+
+- **`EfCliMsg.cpp`: two server-message handlers.** The message holds a count byte (+2) and
+  an array of u32 effect ids (+3). Each id is looked up as type 183 and handed to the
+  effect context (vtable +0x58 in one handler, +0x80 in the other). **The server names
+  effects by id**, so a skill-to-effect link that only the server knows never appears
+  in client data.
+- **`AnmlAnimTriggers.cpp`: the animation-trigger listener** (assert text `effectDef`).
+  It looks up an effect id in a runtime hash map at listener+0x58 (12-byte entries
+  `{key, effectId, valid}`), keyed by a u32 from its owner (vtable +0x218), then plays
+  the effect. No function with an AnmlAnimTriggers assert fills that map, so it is
+  populated elsewhere at runtime.
+- Also: `AvCharEffect.cpp`, `AvGadgetContainer.cpp`, `MslCliMissile.cpp` (missiles),
+  `EvtCliEvent.cpp`, `CnUtil.h`.
+
+Conclusion: the 51 unreferenced Firebrand effects are almost certainly played by id,
+through server messages and/or the animation-trigger map. That id appears nowhere in
+client content (the uid search found only the object itself), so **the skill-to-effect
+pairing for them is not recoverable from client files**. Recovering it would take
+watching live traffic, which this project does not do (static analysis only). For the
+port: pair them with skills by eye, or offer them unpaired.
 
 The content map (`cmap::users_of`) can't see type-183 users: it keys objects by
 (type, dataId) and effect dataIds repeat. Use `cgraph --files`.
