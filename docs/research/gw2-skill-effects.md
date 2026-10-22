@@ -98,5 +98,23 @@ pairing for them is not recoverable from client files**. Recovering it would tak
 watching live traffic, which this project does not do (static analysis only). For the
 port: pair them with skills by eye, or offer them unpaired.
 
+## Names from Elite Insights (no game needed)
+
+Elite Insights' `GW2EIEvtcParser/ParserHelpers/GUIDs/EffectGUIDs.cs` names effects by
+**the same 16 raw GUID bytes as an effect object's +0** (`FirebrandTomeOfJusticeOpen` =
+`D573910F…` = `Bmt2N.a7wVK`, model 1764329). The community built that table from arcdps
+combat logs, which record each effect a client plays together with its GUID. Matched
+2026-10-22: **21 of the 68 Firebrand effects**, 14 of them orphans:
+
+- every mantra's **Cone** (its own model each: Flame 1764377, Liberation 1764382, Lore
+  1764387, Potence 1764394, Truth 1764404; Solace's cone uses 1764358 and its *Symbol*
+  1764399) and **Symbol** (mostly 1764358);
+- tome chapters: ScorchedAftermath2 1764457, ShiningRiver1 1764474, StalwartStand2
+  1764441, ValiantBulwark 1764345;
+- the three tome openings, and Symbol of Vengeance (normal + Writ of Persistence).
+
+The other 37 (Tome of Justice's chapters among them) aren't in EI: it only lists effects
+it uses for its own mechanics.
+
 The content map (`cmap::users_of`) can't see type-183 users: it keys objects by
 (type, dataId) and effect dataIds repeat. Use `cgraph --files`.
