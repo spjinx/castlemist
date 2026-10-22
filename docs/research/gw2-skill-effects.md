@@ -148,9 +148,16 @@ references):
 
 Mantras (each charge plays one cone + one ground symbol): Solace cone 1764358 + symbol
 1764399; Potence 1764394 + 1764358; Truth 1764404 + 1764358; Lore 1764387 + 1764358;
-Liberation 1764382 + 1764358. Mantra of Flame wasn't recorded.
+Liberation 1764382 + 1764358; Flame 1764377 + 1764358 (fourth log).
 
-Still unseen orphan models: 1764377 (EI: Mantra of Flame cone), 1764341, 1764452,
+Core Guardian skills in the fourth log play core-namespace effects: Spirit Weapons (Sword
+of Justice, Hammer of Wisdom) → 7qs8v.l5vNO / 1762377, played by the spirit-weapon agent;
+sword Strike and Binding Blade → 57319/57323 + 57187/57188; Symbol of Resolution → a kind-8
+effect with no model. Most axe and greatsword swings log no effect event at all. Their
+visuals come from the skill's own content links (e.g. Core Cleave → 1764343) and from
+missiles (statechanges 57–59, 78, not read yet).
+
+Still unseen orphan models: 1764341, 1764452,
 1764454, 1764462, 1764464, 1764477, 1764479, 1764494, 1764500, and the core-range
 57435, 54214, 55354. These are probably Mantra of Flame and Firebrand traits.
 
