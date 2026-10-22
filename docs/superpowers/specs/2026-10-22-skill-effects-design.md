@@ -148,6 +148,28 @@ per emitter`. Needs only built-in Unity modules (works in GW2Porting too).
 - **Test project:** new minimal Unity 2022.3.22f1 project with the VRChat Avatars SDK,
   VRCFury and Poiyomi; test avatar = a castlemist-exported GW2 character.
 
+### 4. Pairing from arcdps logs (part of stage 1)
+
+The user records arcdps `.evtc` logs while casting each Firebrand skill on a training golem.
+Claude only parses the files offline. It never launches, attaches to or hooks the client.
+
+- **Reader** (`skillfx/evtc.{h,cpp}`): the public EVTC layout (header, agents, skills,
+  then 64-byte combat items, zip-wrapped when `.zevtc`). It reads three kinds of event:
+  - skill activations (cast start/end, with the skill id);
+  - effect events (statechange 45, or 51 on newer builds: effect content id, source
+    agent, time, duration, tracking id);
+  - id-to-GUID events, which map each effect content id to its 16-byte GUID. That GUID
+    is the effect object's +0.
+- **Pairing:** each effect event whose source is the recording player is assigned to that
+  player's most recent cast that started before it and within 3 s. Pairs seen in at least
+  two casts are kept, with their counts. Effects seen under several skills (shared
+  visuals) keep every skill.
+- **Use:** `skillfx-export --pairings FILE` adds paired effects to each skill's entry with
+  `"source": "arcdps"` (direct links stay `"source": "content"`). Whatever stays unpaired
+  remains in `unlinked/`. Elite Insights' `EffectGUIDs.cs` names (MIT) are recorded too,
+  as a cross-check.
+- **CLI:** `gw2dat_cli evtc-pairs --log FILE... --out pairs.json`.
+
 ## Dependencies
 
 - `GW2 Particle.shader` and `GW2 Distort.shader` (über-shader work) are uncommitted on
@@ -172,7 +194,8 @@ per emitter`. Needs only built-in Unity modules (works in GW2Porting too).
 
 ## Stages (one plan each)
 
-1. castlemist: reader move, skillfx layer, `skillfx-export`, tests.
+1. castlemist: reader move, skillfx layer, `skillfx-export`, the evtc reader and
+   `evtc-pairs`, tests.
 2. Unity prefab importer (after the shader dependency lands).
 3. VRCFury menu generator + avatar test project.
 
@@ -181,7 +204,6 @@ per emitter`. Needs only built-in Unity modules (works in GW2Porting too).
 - **Settled (static RE, see the research note):** the 51 unlinked effects are played by
   an id the client receives at runtime (server messages in `EfCliMsg.cpp`, and the
   animation-trigger map in `AnmlAnimTriggers.cpp`). Their skill pairing is not in
-  client files, so chapters export with the effects they link to, and the rest sit
-  under `unlinked/` for pairing by eye.
+  client files. They are paired from arcdps logs (section 4).
 - The meaning of the type-183 `kind` numbers.
 - Skill effects that live outside MODL clouds (decals, streaks, lightning, ribbons).
