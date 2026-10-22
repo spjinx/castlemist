@@ -1,7 +1,7 @@
 # Skill Effects for VRChat Avatars — Design
 
 Date: 2026-10-22
-Status: draft for review
+Status: draft for review (revised 2026-10-22 after mantra research)
 
 ## Goal
 
@@ -48,8 +48,21 @@ because it is the most particle-heavy profession; the pipeline is profession-agn
 | Blazing Edge 45402 | 1764496 (+ 57192) | not measured |
 
 - Model 57192 (1 cloud, 1 emitter) is shared by several weapon skills.
-- **Mantras** (e.g. Mantra of Solace 41714) have no type-183 object one ref away; how
-  they reach their effects is open research (see below).
+- Full measurements: docs/research/gw2-skill-effects.md. The parts the design relies on:
+  - **Effects form trees.** A kind-1 effect is a group whose refs (+112, +120) are child
+    effects.
+  - **Mantras** have no effect of their own. Their charge skills do: +736 = first
+    charge (visuals come only from the boons it applies), +744 = final charge (shared
+    effect 1764310), plus a group skill carrying shared effect 1764482.
+  - **Tomes** are bundle items (type 35) whose type-65 bar lists the chapter skills; the
+    tome skill does not point at its chapters. The tome's effect model (1764329)
+    contains the floating book mesh.
+  - **The public API misses skills** (all tome chapters, some charge skills), so the
+    skill set comes from the dat: every type-64 object in the spec's codename namespace
+    (`Bp5rI.` for Firebrand: 137 objects).
+  - **51 of Firebrand's 68 effect objects are referenced by nothing found** (no
+    pointer, tracked reference, GUID, uid or codename anywhere in content, the human
+    animation banks or the exe). The chapters' fire is probably among them.
 
 ## Architecture
 
@@ -59,15 +72,26 @@ because it is the most particle-heavy profession; the pipeline is profession-agn
   `src/npc/decompress.h`) moves here unchanged in behaviour, still layer-internal.
   The npc layer and the new skillfx layer both use it.
 - **New `skillfx` layer** (`include/castlemist/skillfx/`, `src/skillfx/`):
-  - `find_effects(PackSet, skill_id) -> SkillEffects`: breadth-first walk from the
-    skill object, depth ≤ 3. Every type-183 object reached is an effect
-    `{field, kind, codename, model fileId, sound fileId}`. The walk does **not**
-    descend into other type-64 skills (listed as `related_skills`) or type-65
-    profession/specialization objects.
+  - `spec_skills(PackSet, api_skill_ids) -> SkillSet`: the skill namespace is the
+    codename prefix most of the spec's API skills share. Every type-64 object in it is
+    an entry, plus each bundle item (type 35) in it with its bar's slots, which gives
+    the tome chapters and their order.
+  - `find_effects(PackSet, skill) -> SkillEffects`: the type-183 objects the skill
+    points at directly, expanded through kind-1 groups. Each effect is recorded as
+    `{field, kind, codename, model fileId, sound fileId}`. Other type-64 refs are
+    listed as `related_skills`. Refs to boon/condition skills (ids < 2000 seen) are
+    listed as `applies`, not followed: their visuals are generic (e.g. the Aegis
+    bubble), not Firebrand's.
+  - **Unlinked effects:** the effect namespace is the codename prefix most of the
+    reached effects share (`Bmt2N.`). Every effect in it that no skill reached is
+    exported under `unlinked/`, flagged as such, so they can still be used by hand.
   - `export_skill(dat, effects, out_dir)`: writes the skill folder (below), exporting
     each effect model through the existing glTF exporter, which already writes the
     `_particles.json` sidecar. Mesh-particle emitters' referenced meshes are exported
     too. Models used by more than one skill go to `shared/` once.
+  - **Names:** the API name where it has one. Otherwise a structural label: chapters
+    from their bar (`Tome of Justice, slot 1`), charges from their mantra
+    (`Mantra of Solace, final charge`), else the codename. No guessed names.
 - **CLI:** `gw2dat_cli skillfx-export (--spec N | --skill N) --out DIR` and the
   research command `gw2dat_cli cgraph` (content-graph walk; already written).
 - Skill names come from the public API, as the npc catalogue does.
@@ -81,6 +105,7 @@ DIR/
     skill.json              id, name, effects[], related_skills[]
     1764329.glb, 1764329_particles.json
   shared/57192.glb, 57192_particles.json
+  unlinked/1764300.glb, 1764300_particles.json, unlinked.json   codename, kind per effect
 ```
 
 `skill.json` effects entries: `{field, kind, codename, model, sound, glb}`. Sounds are
@@ -153,6 +178,9 @@ per emitter`. Needs only built-in Unity modules (works in GW2Porting too).
 
 ## Open research (not blocking)
 
-- How mantras (and other skills with no type-183 object one ref away) reach their effects.
+- How the 51 unlinked Firebrand effects are triggered. The likely route is the skills'
+  animations (`ModelAnimationData.triggerTokens` / `properties`); the human-male banks
+  hold no direct file or GUID reference to them. Until that's known, chapters export
+  with whatever effects they link to (often none) and the rest sit under `unlinked/`.
 - The meaning of the type-183 `kind` numbers.
 - Skill effects that live outside MODL clouds (decals, streaks, lightning, ribbons).

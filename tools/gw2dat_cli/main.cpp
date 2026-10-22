@@ -71,7 +71,6 @@
 #include <map>
 #include <mutex>
 #include <optional>
-#include <set>
 #include <stdexcept>
 #include <span>
 #include <iostream>
@@ -79,6 +78,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -2344,15 +2344,15 @@ void cmd_cntc_dump(const Args& a) {
 // Research aid: the content graph around one object. From --content-type T --content-id N
 // (dataId) it follows every local/external pointer breadth-first to --depth D (default 3),
 // printing each object reached with its string slots and its file slots (fileId + container).
-// --reverse also lists the objects that point AT the root.
+// --reverse also lists the objects that point AT the root; --prefix P lists a codename namespace instead.
 void cmd_cgraph(const Args& a) {
     namespace nd = castlemist::npc::detail;
     open_index(a);
     if (!castlemist::db::is_open()) fail("no index DB (build it in castlemist, or pass --index)");
     Gw2Dat dat;
     load_dat_file(dat, need(a, "dat"));
-    const uint32_t root_type = static_cast<uint32_t>(to_u64(need(a, "content-type")));
-    const uint32_t root_id = static_cast<uint32_t>(to_u64(need(a, "content-id")));
+    const uint32_t root_type = has(a, "prefix") || has(a, "files") || has(a, "find") || has(a, "hex-of") ? 0 : static_cast<uint32_t>(to_u64(need(a, "content-type")));
+    const uint32_t root_id = has(a, "prefix") || has(a, "files") || has(a, "find") || has(a, "hex-of") ? 0 : static_cast<uint32_t>(to_u64(need(a, "content-id")));
     const int max_depth = has(a, "depth") ? static_cast<int>(to_u64(a.at("depth"))) : 3;
     const size_t max_nodes = has(a, "max") ? to_u64(a.at("max")) : 300;
 
@@ -2394,6 +2394,122 @@ void cmd_cgraph(const Args& a) {
                     {"files", files}, {"strings", strings}};
     };
     auto pack_index = [&](const nd::Pack* p) { return static_cast<size_t>(p - set.packs.data()); };
+
+    // --find HEX: every object whose bytes contain that byte string (e.g. an object's
+    // uid or GUID, little-endian hex), with the field offset of each hit.
+    // --hex-of CODENAME: the first 64 bytes of the object carrying that string.
+    if (has(a, "hex-of")) {
+        const std::string want = a.at("hex-of");
+        json found = json::array();
+        for (size_t pi = 0; pi < set.packs.size(); ++pi)
+            for (const nd::Object& o : set.packs[pi].objects)
+                for (const auto& [field, s] : o.strings)
+                    if (s == want) {
+                        std::string hex;
+                        char b[4];
+                        for (uint32_t i = o.begin; i < o.end && i < o.begin + 64; ++i) {
+                            std::snprintf(b, sizeof b, "%02x", set.packs[pi].content[i]);
+                            hex += b;
+                        }
+                        json j = node_json(pi, o);
+                        j["hex"] = hex;
+                        found.push_back(std::move(j));
+                        break;
+                    }
+        emit({{"ok", true}, {"objects", found}});
+        return;
+    }
+    if (has(a, "find")) {
+        const std::string h = a.at("find");
+        std::vector<uint8_t> needle;
+        for (size_t i = 0; i + 1 < h.size(); i += 2) needle.push_back(static_cast<uint8_t>(std::stoul(h.substr(i, 2), nullptr, 16)));
+        if (needle.empty()) fail("--find needs hex bytes");
+        json found = json::array();
+        for (size_t pi = 0; pi < set.packs.size(); ++pi) {
+            const std::vector<uint8_t>& c = set.packs[pi].content;
+            for (auto it = std::search(c.begin(), c.end(), needle.begin(), needle.end()); it != c.end();
+                 it = std::search(it + 1, c.end(), needle.begin(), needle.end())) {
+                const uint32_t at = static_cast<uint32_t>(it - c.begin());
+                const auto& objs = set.packs[pi].objects;
+                auto o = std::upper_bound(objs.begin(), objs.end(), at,
+                                          [](uint32_t v, const nd::Object& x) { return v < x.begin; });
+                if (o == objs.begin()) continue;
+                --o;
+                json j = node_json(pi, *o);
+                j["hitField"] = at - o->begin;
+                j.erase("files");
+                found.push_back(std::move(j));
+                if (found.size() >= 200) break;
+            }
+        }
+        emit({{"ok", true}, {"hits", found}});
+        return;
+    }
+
+    // --files A,B,...: every object with one of those fileIds in a file slot. Unlike
+    // `users` (the content map, keyed by type+dataId) this also sees type-183 effect
+    // objects, whose dataIds repeat.
+    if (has(a, "files")) {
+        std::set<uint32_t> want;
+        std::stringstream ss(a.at("files"));
+        for (std::string t; std::getline(ss, t, ',');)
+            if (!t.empty()) want.insert(static_cast<uint32_t>(to_u64(t)));
+        json found = json::array();
+        for (size_t pi = 0; pi < set.packs.size(); ++pi)
+            for (const nd::Object& o : set.packs[pi].objects)
+                for (const auto& [field, idx] : o.files)
+                    if (idx < refs.size() && want.count(refs[idx])) {
+                        found.push_back(node_json(pi, o));
+                        break;
+                    }
+        emit({{"ok", true}, {"objects", found}});
+        return;
+    }
+
+    // --prefix P: every object with a string slot starting with P (a codename
+    // namespace, e.g. "Bp5rI."), each with the objects its refs land on directly.
+    if (has(a, "prefix")) {
+        const std::string prefix = a.at("prefix");
+        // target -> {pack, source, field}, built once for --reverse.
+        std::unordered_map<const nd::Object*, std::vector<std::tuple<size_t, const nd::Object*, uint32_t>>> pointed_at;
+        if (has(a, "reverse"))
+            for (size_t qi = 0; qi < set.packs.size(); ++qi)
+                for (const nd::Object& q : set.packs[qi].objects)
+                    for (const nd::Ref& r : q.refs)
+                        if (const nd::Object* to = set.resolve(qi, r).second) pointed_at[to].emplace_back(qi, &q, r.field);
+        json found = json::array();
+        for (size_t pi = 0; pi < set.packs.size(); ++pi)
+            for (const nd::Object& o : set.packs[pi].objects) {
+                bool match = false;
+                for (const auto& [field, s] : o.strings) match = match || s.rfind(prefix, 0) == 0;
+                if (!match) continue;
+                json j = node_json(pi, o);
+                json out_refs = json::array();
+                for (const nd::Ref& r : o.refs) {
+                    auto [tp, to] = set.resolve(pi, r);
+                    if (!tp || !to) continue;
+                    json t = node_json(pack_index(tp), *to);
+                    t["field"] = r.field;
+                    out_refs.push_back(std::move(t));
+                }
+                j["refs"] = out_refs;
+                if (has(a, "reverse")) {  // objects pointing at this one
+                    json users = json::array();
+                    auto it = pointed_at.find(&o);
+                    if (it != pointed_at.end())
+                        for (const auto& [qi, q, field] : it->second) {
+                            json u = node_json(qi, *q);
+                            u["field"] = field;
+                            u.erase("files");
+                            users.push_back(std::move(u));
+                        }
+                    j["users"] = users;
+                }
+                found.push_back(std::move(j));
+            }
+        emit({{"ok", true}, {"packs", set.packs.size()}, {"objects", found}});
+        return;
+    }
 
     // Root: first object of the type with that dataId.
     size_t root_pack = SIZE_MAX;
