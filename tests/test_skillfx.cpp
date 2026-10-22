@@ -5,11 +5,18 @@
 
 #include "castlemist/format/cntc_pack.h"
 #include "castlemist/skillfx/effects.h"
+#include "castlemist/skillfx/evtc.h"
 #include "castlemist/skillfx/skill_set.h"
 
 #include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
+#include <iterator>
+#include <optional>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -192,6 +199,88 @@ const cntc::Object& obj(const cntc::PackSet& s, size_t index) {
     return *s.packs[0].object_at(static_cast<uint32_t>(index * kObjSize));
 }
 
+// ---- synthetic arcdps logs (EVTC revision 1)
+
+struct LogBuilder {
+    std::vector<uint8_t> d;
+    void u8(uint8_t v) { d.push_back(v); }
+    void u16(uint16_t v) { for (int i = 0; i < 2; ++i) d.push_back(static_cast<uint8_t>(v >> (8 * i))); }
+    void u32(uint32_t v) { for (int i = 0; i < 4; ++i) d.push_back(static_cast<uint8_t>(v >> (8 * i))); }
+    void u64(uint64_t v) { for (int i = 0; i < 8; ++i) d.push_back(static_cast<uint8_t>(v >> (8 * i))); }
+    void fixed(const std::string& s, size_t n) {
+        for (size_t i = 0; i < n; ++i) d.push_back(i < s.size() ? static_cast<uint8_t>(s[i]) : 0);
+    }
+    struct Ev { uint64_t time, src, dst; uint32_t skill; uint8_t statechange; };
+    /// Header, agents {addr, elite, name}, skills {id, name}, then events.
+    LogBuilder(const std::vector<std::tuple<uint64_t, uint32_t, std::string>>& agents,
+               const std::vector<std::pair<int32_t, std::string>>& skills, const std::vector<Ev>& events) {
+        fixed("EVTC", 4);
+        fixed("20261021", 8);
+        u8(1);
+        u16(16199);
+        u8(0);
+        u32(static_cast<uint32_t>(agents.size()));
+        for (auto& [addr, elite, name] : agents) {
+            u64(addr);
+            u32(1);
+            u32(elite);
+            fixed("", 12);
+            fixed(name, 64);
+            fixed("", 4);
+        }
+        u32(static_cast<uint32_t>(skills.size()));
+        for (auto& [id, name] : skills) {
+            u32(static_cast<uint32_t>(id));
+            fixed(name, 64);
+        }
+        for (const Ev& e : events) {
+            u64(e.time);
+            u64(e.src);
+            u64(e.dst);
+            u32(0);  // value
+            u32(0);  // buff_dmg
+            u32(0);  // overstack
+            u32(e.skill);
+            for (int i = 0; i < 4; ++i) u16(0);  // instids
+            fixed("", 8);                       // iff .. is_moving
+            u8(e.statechange);
+            fixed("", 7);                       // is_flanking .. pad
+        }
+    }
+};
+
+constexpr uint64_t kPlayer = 0x7d0;
+
+/// The Task 4 log: IDTOGUID 9001, a Searing Spell cast at 1000, its effect at 1400.
+std::vector<uint8_t> searing_spell_log() {
+    LogBuilder b({{kPlayer, 62, "Musa"}}, {{41258, "Chapter 1: Searing Spell"}},
+                 {{0, 0x0011223344556677ull, 0x8899aabbccddeeffull, 9001, evtc::kIdToGuid},
+                  {1000, kPlayer, 0, 41258, evtc::kAnimationStart},
+                  {1400, kPlayer, 0, 9001, evtc::kEffectAgent}});
+    for (int i = 0; i < 10; ++i) b.u8(0xAB);  // a cut-off trailing event
+    return b.d;
+}
+
+/// Wraps `data` as the first entry of a zip, stored (method 0).
+std::vector<uint8_t> stored_zip(const std::vector<uint8_t>& data) {
+    LogBuilder z({}, {}, {});
+    z.d.clear();
+    z.u32(0x04034b50);
+    z.u16(20);
+    z.u16(0);
+    z.u16(0);  // method: stored
+    z.u16(0);
+    z.u16(0);
+    z.u32(0);  // crc (not checked)
+    z.u32(static_cast<uint32_t>(data.size()));
+    z.u32(static_cast<uint32_t>(data.size()));
+    z.u16(1);
+    z.u16(0);
+    z.u8('x');
+    z.d.insert(z.d.end(), data.begin(), data.end());
+    return z.d;
+}
+
 }  // namespace
 
 CM_TEST(skillfx, codename_skips_fact_labels) {
@@ -277,4 +366,48 @@ CM_TEST(skillfx, effect_index_by_guid) {
     auto b = idx.find(test_guid(2));
     CHECK(a != idx.end() && a->second.second == &obj(s, 1));
     CHECK(b != idx.end() && b->second.second == &obj(s, 2));
+}
+
+namespace {
+void check_searing_spell_log(const std::optional<EvtcLog>& log) {
+    CHECK(log.has_value());
+    if (!log) return;
+    CHECK_EQ(log->build, std::string("20261021"));
+    CHECK_EQ(log->revision, uint8_t{1});
+    CHECK_EQ(log->events.size(), size_t{3});
+    CHECK_EQ(log->agents.size(), size_t{1});
+    if (!log->agents.empty()) {
+        CHECK_EQ(log->agents[0].elite, 62u);
+        CHECK_EQ(log->agents[0].name, std::string("Musa"));
+    }
+    CHECK_EQ(log->skills.at(41258), std::string("Chapter 1: Searing Spell"));
+    const Guid want{0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88};
+    auto g = effect_guids(*log);
+    CHECK(g.count(9001) && g.at(9001) == want);
+}
+}  // namespace
+
+CM_TEST(skillfx, evtc_reads_plain_log) {
+    check_searing_spell_log(read_evtc(searing_spell_log()));
+}
+
+CM_TEST(skillfx, evtc_reads_stored_zip) {
+    check_searing_spell_log(read_evtc(stored_zip(searing_spell_log())));
+}
+
+// One of the user's real (deflated) golem logs, when present.
+CM_TEST(skillfx, evtc_reads_real_zevtc) {
+    const std::filesystem::path p =
+        "C:/Users/vital/Documents/Guild Wars 2/addons/arcdps/arcdps.cbtlogs/Standard Kitty Golem (16199)/20261022-065900.zevtc";
+    if (!std::filesystem::exists(p)) SKIP("no arcdps log on this machine");
+    std::ifstream f(p, std::ios::binary);
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    std::optional<EvtcLog> log = read_evtc(bytes);
+    CHECK(log.has_value());
+    if (!log) return;
+    CHECK_EQ(log->build, std::string("20261021"));
+    bool firebrand = false;
+    for (const EvtcAgent& a : log->agents) firebrand = firebrand || a.elite == 62;
+    CHECK(firebrand);
+    CHECK(effect_guids(*log).size() >= 200);
 }
