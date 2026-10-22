@@ -27,10 +27,13 @@ struct Pairing {
 };
 
 /// @brief Markers are the player's ANIMATIONSTART (its skill) and its BUFFAPPLY whose skill is
-/// in `marker_buffs` (instant skills show no cast). Each effect the player creates (statechange
-/// 60/62, or 45/51 in older logs) goes to the latest marker at or before it within `window_ms`.
-/// A marker counts once per effect GUID. Pairings seen fewer than `min_count` times are
-/// dropped. Sorted by skill id, then count (most first).
+/// in `marker_buffs` (instant skills show no cast). Each use of an effect by the player
+/// (statechange 60/62, or 45/51 in older logs; repeats closer than 500 ms are one use) has as
+/// candidates the markers within `window_ms` before it. It goes to the candidate skill that is a
+/// candidate for that effect most often across all logs; a tie goes to a cast, then to the
+/// latest marker. (A chapter's effect lands at the same millisecond as a buff it applies, and a
+/// mantra charge's during the axe auto chain: only consistency over many uses tells them apart.)
+/// Pairings seen fewer than `min_count` times are dropped. Sorted by skill id, then count.
 /// @param elite_spec The recording player's specialization id (62 = Firebrand).
 std::vector<Pairing> pair_effects(const std::vector<EvtcLog>& logs, uint32_t elite_spec,
                                   const std::set<uint32_t>& marker_buffs, uint32_t window_ms = 3000,

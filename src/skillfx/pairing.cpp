@@ -9,6 +9,8 @@ namespace castlemist::skillfx {
 
 namespace {
 
+constexpr uint64_t kRepeatMs = 500;
+
 bool is_effect_event(uint8_t sc) {
     return sc == evtc::kEffectGround || sc == evtc::kEffectAgent || sc == evtc::kEffectOld1 || sc == evtc::kEffectOld2;
 }
@@ -17,7 +19,16 @@ bool is_effect_event(uint8_t sc) {
 
 std::vector<Pairing> pair_effects(const std::vector<EvtcLog>& logs, uint32_t elite_spec,
                                   const std::set<uint32_t>& marker_buffs, uint32_t window_ms, uint32_t min_count) {
-    std::map<std::pair<uint32_t, Guid>, uint32_t> counts;
+    struct Marker {
+        uint64_t time;
+        uint32_t skill;
+        bool cast;  // ANIMATIONSTART (else a buff application)
+    };
+    struct Occurrence {
+        Guid effect;
+        std::vector<Marker> candidates;  // markers within the window before it
+    };
+    std::vector<Occurrence> occ;
     std::map<uint32_t, std::string> names;
     for (const EvtcLog& log : logs) {
         std::set<uint64_t> player;
@@ -27,29 +38,49 @@ std::vector<Pairing> pair_effects(const std::vector<EvtcLog>& logs, uint32_t eli
         for (const auto& [id, name] : log.skills)
             if (!name.empty()) names.emplace(static_cast<uint32_t>(id), name);
 
-        std::vector<std::pair<uint64_t, uint32_t>> markers;  // {time, skill}
+        std::vector<Marker> markers;
         for (const EvtcEvent& e : log.events) {
             if (!player.count(e.src)) continue;
-            if (e.statechange == evtc::kAnimationStart ||
-                (e.statechange == evtc::kBuffApply && marker_buffs.count(e.skill_id)))
-                markers.push_back({e.time, e.skill_id});
+            if (e.statechange == evtc::kAnimationStart) markers.push_back({e.time, e.skill_id, true});
+            else if (e.statechange == evtc::kBuffApply && marker_buffs.count(e.skill_id))
+                markers.push_back({e.time, e.skill_id, false});
         }
-        std::stable_sort(markers.begin(), markers.end(),
-                         [](const auto& a, const auto& b) { return a.first < b.first; });
+        std::stable_sort(markers.begin(), markers.end(), [](const Marker& a, const Marker& b) { return a.time < b.time; });
 
-        std::set<std::pair<size_t, Guid>> seen;  // {marker index, effect}: a marker counts once per effect
+        std::map<Guid, uint64_t> last;  // repeats of one effect closer than kRepeatMs are one use
         for (const EvtcEvent& e : log.events) {
             if (!is_effect_event(e.statechange) || !player.count(e.src)) continue;
             auto g = guids.find(e.skill_id);
             if (g == guids.end()) continue;
-            auto m = std::upper_bound(markers.begin(), markers.end(), e.time,
-                                      [](uint64_t t, const auto& mk) { return t < mk.first; });
-            if (m == markers.begin()) continue;
-            --m;
-            if (e.time - m->first > window_ms) continue;
-            if (seen.insert({static_cast<size_t>(m - markers.begin()), g->second}).second)
-                ++counts[{m->second, g->second}];
+            auto l = last.find(g->second);
+            if (l != last.end() && e.time - l->second < kRepeatMs) continue;
+            last[g->second] = e.time;
+            Occurrence o{g->second, {}};
+            for (const Marker& m : markers)
+                if (m.time <= e.time && e.time - m.time <= window_ms) o.candidates.push_back(m);
+            if (!o.candidates.empty()) occ.push_back(std::move(o));
         }
+    }
+    // A skill's score for an effect: the occurrences it is a candidate for. Each occurrence goes to
+    // its best-scoring candidate; ties go to a cast, then to the latest marker.
+    std::map<std::pair<uint32_t, Guid>, uint32_t> score;
+    for (const Occurrence& o : occ) {
+        std::set<uint32_t> skills;
+        for (const Marker& m : o.candidates) skills.insert(m.skill);
+        for (uint32_t s : skills) ++score[{s, o.effect}];
+    }
+    std::map<std::pair<uint32_t, Guid>, uint32_t> counts;
+    for (const Occurrence& o : occ) {
+        const Marker* best = nullptr;
+        for (const Marker& m : o.candidates) {
+            if (!best) {
+                best = &m;
+                continue;
+            }
+            const auto key = [&](const Marker& x) { return std::make_tuple(score[{x.skill, o.effect}], x.cast, x.time); };
+            if (key(m) > key(*best)) best = &m;
+        }
+        ++counts[{best->skill, o.effect}];
     }
     std::vector<Pairing> out;
     for (const auto& [key, n] : counts) {

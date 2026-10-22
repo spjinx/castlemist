@@ -2581,13 +2581,14 @@ void cmd_cgraph(const Args& a) {
 // ---- skill effects (skillfx): a codename namespace's skills and their effects, paired from
 // arcdps logs the user recorded (castlemist only reads the files). Shared by evtc-pairs and
 // skillfx-export: --dat --index --seed A,B (skill ids of the namespace) [--logs DIR]
-// [--ei EffectGUIDs.cs] [--elite 62].
+// [--ei EffectGUIDs.cs] [--elite 62] [--template gw2_packfile.json].
 struct SkillFxRun {
     Gw2Dat dat;
     castlemist::cntc::PackSet packs;
     castlemist::skillfx::SkillSet set;
     std::vector<castlemist::skillfx::Pairing> pairs;
     std::map<castlemist::skillfx::Guid, std::string> ei;
+    std::map<uint32_t, std::string> log_names;  // the logs' skill tables (they name the tome chapters)
     std::function<std::string(uint32_t)> container;
 };
 
@@ -2595,6 +2596,10 @@ void skillfx_prepare(const Args& a, SkillFxRun& run) {
     namespace sfx = castlemist::skillfx;
     open_index(a);
     if (!castlemist::db::is_open()) fail("no index DB (build it in castlemist, or pass --index)");
+    if (has(a, "template")) {  // models need it; without --template the usual locations are tried
+        std::string err;
+        if (!castlemist::tpl::load_from_file(utf8_arg("--template"), err)) fail("template: " + err);
+    }
     load_dat_file(run.dat, need(a, "dat"));
     run.packs = load_cntc_packs(run.dat);
     run.container = [&dat = run.dat](uint32_t fid) {
@@ -2618,6 +2623,10 @@ void skillfx_prepare(const Args& a, SkillFxRun& run) {
             if (auto log = sfx::read_evtc(bytes)) logs.push_back(std::move(*log));
             else std::fprintf(stderr, "skipped (not an arcdps log): %s\n", f.path().string().c_str());
         }
+    for (const sfx::EvtcLog& log : logs)
+        for (const auto& [id, name] : log.skills)
+            if (!name.empty() && name.find_first_not_of("0123456789") != std::string::npos)
+                run.log_names.emplace(static_cast<uint32_t>(id), name);
     std::set<uint32_t> markers;
     for (const sfx::SkillEntry& e : run.set.skills) markers.insert(e.id);
     const uint32_t elite = has(a, "elite") ? static_cast<uint32_t>(to_u64(a.at("elite"))) : 62;
@@ -2656,11 +2665,12 @@ void cmd_skillfx_export(const Args& a) {
     skillfx_prepare(a, run);
     std::vector<uint32_t> ids;
     for (const sfx::SkillEntry& e : run.set.skills) ids.push_back(e.id);
-    std::map<uint32_t, std::string> api_names;
+    std::map<uint32_t, std::string> api_names = run.log_names;  // API names, where it has them, win
     try {
         castlemist::character::WinHttpClient http;
         castlemist::character::Gw2Api api(http, "");
-        api_names = api.names("skills", ids);
+        for (auto& [id, name] : api.names("skills", ids))
+            if (!name.empty()) api_names[id] = name;
     } catch (const std::exception& ex) {
         std::fprintf(stderr, "no API names (%s); labels come from the logs and codenames\n", ex.what());
     }
@@ -2671,7 +2681,9 @@ void cmd_skillfx_export(const Args& a) {
         std::shared_ptr<ModelPreview> m = load_model_by_fileid(run.dat, model);
         if (!m) return "model did not load";
         fs::create_directories(glb.parent_path());
-        auto r = castlemist::exportgltf::export_model_gltf(*m, glb.string());
+        castlemist::exportgltf::GltfExportOptions o;
+        o.allowEffectsOnly = true;  // many effect models are particles only
+        auto r = castlemist::exportgltf::export_model_gltf(*m, glb.string(), o);
         if (!r.ok) return r.error.empty() ? std::string("export failed") : r.error;
         for (const auto& em : m->emitters) {
             if (!em.hasMesh || !em.meshFileId) continue;

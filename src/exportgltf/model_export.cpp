@@ -60,7 +60,7 @@ GltfExportResult export_model_gltf(const ModelPreview& model, const std::string&
     GltfExportResult result;
     result.glbPath = glbPath;
 
-    if (model.meshes.empty()) {
+    if (model.meshes.empty() && !(opts.allowEffectsOnly && model.hasEffects())) {
         result.error = "This model has no drawable meshes to export.";
         return result;
     }

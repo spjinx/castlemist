@@ -450,14 +450,40 @@ CM_TEST(skillfx, pairs_cast_then_effect) {
 }
 
 CM_TEST(skillfx, instant_skill_via_buff_marker) {
-    // The effect event is written before the buff at the same millisecond: time decides, not file order.
-    auto p = pair_effects({firebrand_log({cast(4000, 44602), fx(4470, 2), buff(4470, 45447), cast(8000, 44602),
+    // A mantra charge (buff 45447) during the axe auto chain, whose casts differ each time: the
+    // buff accompanies the effect every time, each axe skill only once. The effect event is written
+    // before the buff at the same millisecond: time decides, not file order.
+    auto p = pair_effects({firebrand_log({cast(4000, 44602), fx(4470, 2), buff(4470, 45447), cast(8000, 45047),
                                           buff(8470, 45447), fx(8470, 2)})},
                           62, {45447});
     CHECK_EQ(p.size(), size_t{1});
     if (p.size() == 1) {
         CHECK_EQ(p[0].skill_id, 45447u);
         CHECK(p[0].effect == G(2));
+        CHECK_EQ(p[0].count, 2u);
+    }
+}
+
+// Igniting Burst (40635): its effect lands at the same millisecond as a buff it applies (43354),
+// in every cast. Cast and buff tie, and the cast wins.
+CM_TEST(skillfx, cast_beats_coinciding_buff) {
+    auto p = pair_effects({firebrand_log({cast(15600, 40635), fx(16240, 1), buff(16240, 43354), cast(26300, 40635),
+                                          fx(26750, 1), buff(26750, 43354)})},
+                          62, {43354});
+    CHECK_EQ(p.size(), size_t{1});
+    if (p.size() == 1) {
+        CHECK_EQ(p[0].skill_id, 40635u);
+        CHECK_EQ(p[0].count, 2u);
+    }
+}
+
+// Mantra of Flame: one buff marker, then two charges ~1.9 s apart, each playing the cone: two
+// occurrences (only repeats closer than 500 ms collapse).
+CM_TEST(skillfx, separate_uses_after_one_marker_count) {
+    auto p = pair_effects({firebrand_log({buff(11730, 42348), fx(11740, 3), fx(13600, 3)})}, 62, {42348});
+    CHECK_EQ(p.size(), size_t{1});
+    if (p.size() == 1) {
+        CHECK_EQ(p[0].skill_id, 42348u);
         CHECK_EQ(p[0].count, 2u);
     }
 }

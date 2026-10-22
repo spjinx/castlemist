@@ -1574,6 +1574,30 @@ CM_TEST(vrchat, empty_model_is_refused_before_writing) {
     CHECK_FALSE(fs::exists(dir));
 }
 
+// Skill effect models are often particles only (e.g. Firebrand's Scorched Aftermath, 1764457):
+// with allowEffectsOnly they still export materials, textures and the particle sidecar.
+CM_TEST(vrchat, gltf_effects_only_model) {
+    ModelPreview model = glow_quad();
+    model.meshes.clear();
+    ParticleCloudCPU c;
+    c.materialIndex = 0;
+    model.clouds.push_back(c);
+    fs::path dir = fresh_dir("effects_only");
+    fs::create_directories(dir);
+    CHECK_FALSE(export_model_gltf(model, (dir / "refused.glb").string()).ok);
+    GltfExportOptions o;
+    o.allowEffectsOnly = true;
+    GltfExportResult r = export_model_gltf(model, (dir / "fx.glb").string(), o);
+    CHECK(r.ok);
+    CHECK(fs::exists(dir / "fx_particles.json"));
+    json g = glb_json(dir / "fx.glb");
+    CHECK_EQ(g["materials"].size(), size_t{1});
+    CHECK_FALSE(g.contains("meshes") && !g["meshes"].empty());
+
+    model.clouds.clear();  // nothing at all to export: still refused
+    CHECK_FALSE(export_model_gltf(model, (dir / "none.glb").string(), o).ok);
+}
+
 CM_TEST(vrchat, gltf_alpha_mode_from_profile) {
     ModelPreview model = glow_quad();
     model.textures[static_cast<size_t>(model.materials[0].diffuseTex)].hasCutout = true;

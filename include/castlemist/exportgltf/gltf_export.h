@@ -88,6 +88,12 @@ private:
 
 /// @brief Tunables for one export call.
 struct GltfExportOptions {
+    /// @brief Export a model with no meshes when it carries effects (particle clouds or
+    ///        effect lights): materials, textures and the `_particles.json` sidecar, no
+    ///        mesh nodes. Skill effect models are often particles only. Off by default, so
+    ///        world/character exports still report such models as empty.
+    bool allowEffectsOnly = false;
+
     /// @brief Fixed sample rate used to bake every animation clip's keyframes.
     ///
     /// GW2's Granny curves come in a dozen native formats (constant, spline,
