@@ -5,6 +5,7 @@
 
 #include "castlemist/format/cntc_pack.h"
 #include "castlemist/skillfx/effects.h"
+#include "castlemist/skillfx/skill_set.h"
 
 #include <cstdint>
 #include <initializer_list>
@@ -230,4 +231,50 @@ CM_TEST(skillfx, find_effects_direct_group_boon_related) {
     }
     CHECK(l.applies == std::vector<uint32_t>{737});
     CHECK(l.related_skills == std::vector<uint32_t>{68647});
+}
+
+CM_TEST(skillfx, set_from_namespace_with_bundle) {
+    // 0 seed skill AAAAA.aaaaa -> effect 6; 1 skill AAAAA.bbbbb; 2 skill CCCCC.ccccc (other namespace);
+    // 3 item AAAAA.item0 +264 -> bar 4; bar +192 -> 1, +304 -> 0; 5 effect EEEEE.22222 (unlinked);
+    // 6 effect EEEEE.11111
+    cntc::PackSet s = make_set({
+        {kSkillType, 5001, {{500, "AAAAA.aaaaa"}}, {}, {{184, 6}}},
+        {kSkillType, 5002, {{500, "AAAAA.bbbbb"}}, {}, {}},
+        {kSkillType, 5003, {{500, "CCCCC.ccccc"}}, {}, {}},
+        {kItemType, 83470, {{500, "AAAAA.item0"}}, {}, {{264, 4}}},
+        {kBarType, 5887, {}, {}, {{192, 1}, {304, 0}}},
+        {kEffectType, 6, {{100, "EEEEE.22222"}}, {{48, 1000022}}, {}},
+        {kEffectType, 6, {{100, "EEEEE.11111"}}, {{48, 1000011}}, {}},
+    });
+    SkillSet set = build_skill_set(s, {5001}, test_container);
+    CHECK_EQ(set.skill_namespace, std::string("AAAAA."));
+    CHECK_EQ(set.effect_namespace, std::string("EEEEE."));
+    CHECK_EQ(set.skills.size(), size_t{2});
+    if (set.skills.size() == 2) {
+        CHECK_EQ(set.skills[0].id, 5001u);
+        CHECK_EQ(set.skills[0].bundle_item, 83470u);
+        CHECK_EQ(set.skills[0].bundle_slot, 1);
+        CHECK_EQ(set.skills[0].links.effects.size(), size_t{1});
+        CHECK_EQ(set.skills[1].id, 5002u);
+        CHECK_EQ(set.skills[1].bundle_slot, 0);
+    }
+    CHECK_EQ(set.unlinked.size(), size_t{1});
+    if (!set.unlinked.empty()) {
+        CHECK_EQ(set.unlinked[0].codename, std::string("EEEEE.22222"));
+        CHECK_EQ(set.unlinked[0].model, 1000022u);
+    }
+}
+
+CM_TEST(skillfx, effect_index_by_guid) {
+    cntc::PackSet s = make_set({
+        {kSkillType, 5001, {}, {}, {}},
+        {kEffectType, 6, {}, {}, {}},
+        {kEffectType, 6, {}, {}, {}},
+    });
+    auto idx = effect_index(s);
+    CHECK_EQ(idx.size(), size_t{2});
+    auto a = idx.find(test_guid(1));
+    auto b = idx.find(test_guid(2));
+    CHECK(a != idx.end() && a->second.second == &obj(s, 1));
+    CHECK(b != idx.end() && b->second.second == &obj(s, 2));
 }
