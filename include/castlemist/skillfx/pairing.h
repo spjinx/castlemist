@@ -34,6 +34,8 @@ struct Pairing {
 /// latest marker. (A chapter's effect lands at the same millisecond as a buff it applies, and a
 /// mantra charge's during the axe auto chain: only consistency over many uses tells them apart.)
 /// Pairings seen fewer than `min_count` times are dropped. Sorted by skill id, then count.
+/// Limit: when two skills that share an effect are used within `window_ms` of each other, the
+/// one used more often can take the other's uses. Record skills spaced further apart.
 /// @param elite_spec The recording player's specialization id (62 = Firebrand).
 std::vector<Pairing> pair_effects(const std::vector<EvtcLog>& logs, uint32_t elite_spec,
                                   const std::set<uint32_t>& marker_buffs, uint32_t window_ms = 3000,
