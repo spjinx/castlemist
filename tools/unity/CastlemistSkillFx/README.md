@@ -27,6 +27,16 @@ skill's effect models and their particle systems. Spec:
 `ParticleEffects` reads the stored emitter ranges as `{min, max}`, which the client's loader
 confirms (GrCloud.cpp; `docs/research/gw2-particle-system.md`, corrected 2026-10-22).
 
+## First import (2026-10-22, GW2Porting, Unity 2022.3.22)
+
+Tome of Justice and its five pages imported: 6 skill prefabs, 9 materials, 95 particle systems,
+0 errors. `44364-tome-of-justice` plays its 19 emitters: the open book (about 0.9 m wide,
+1.7 m above the prefab's origin), the rising rune glyphs, the flying pages, blue sparks, and the
+light column and beams. Compared with castlemist's preview, two things are off. Both are in
+`ParticleEffects`, so they show on world particles too:
+- the `LightBms` streaks (Stretch mode) come out as broad, near-solid beige pillars, not thin rays;
+- the `PaperA01` and `PaperB01` sprites are dark, where the game shows light pages.
+
 ## UNPROVEN / not yet
 
 - Effects play continuously (looping). GW2 starts and stops them with the skill. Triggering them is

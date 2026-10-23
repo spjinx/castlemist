@@ -66,11 +66,18 @@ namespace Castlemist.SkillFx
             EnsureFolder(outRoot + "/Skills");
 
             var effects = new Dictionary<long, GameObject>();   // model -> Effects/<id>.prefab
+            int notCopied = 0;
             foreach (SkillRef sr in set.Skills)
             {
                 if (onlySkills != null && !onlySkills.Contains(sr.Id)) continue;
                 string skillPath = root + "/" + sr.Folder + "/skill.json";
-                if (!File.Exists(skillPath)) { sum.errors.Add(skillPath + ": missing"); continue; }
+                if (!File.Exists(skillPath))
+                {
+                    // A subset copy (README step 2) is normal; a skill asked for by id is not.
+                    if (onlySkills != null) sum.errors.Add(skillPath + ": missing");
+                    else ++notCopied;
+                    continue;
+                }
                 SkillFile skill = SkillFxFiles.ReadSkill(File.ReadAllText(skillPath));
 
                 var go = new GameObject(sr.Id + " " + skill.Label);
@@ -101,6 +108,8 @@ namespace Castlemist.SkillFx
                 }
                 finally { Object.DestroyImmediate(go); }
             }
+            if (notCopied > 0)
+                sum.warnings.Add(notCopied + " skill(s) in skill_set.json have no folder here (a subset copy): skipped");
             AssetDatabase.SaveAssets();
             return sum;
         }
