@@ -267,7 +267,8 @@ struct AnimInfo {
 //    (engine helper sub_140E12DE0: r.x + rand()*r.y), NOT {min,max}.
 //  * velocity[4]/acceleration[4] = (dirX, dirY, dirZ, magnitude) each {base,span};
 //    direction is normalized then scaled by magnitude.
-//  * colorBegin[0]/colorEnd[0] = base RGBA, [1] = random span added per-particle.
+//  * colorBegin/colorEnd = {min RGBA, max RGBA} (GrCloud.cpp loads them as base = min, span = max - min);
+//    the single-colour layout (V<=66) is min = max.
 //  * spawnShape: 0 cylinder, 1 disc, 2 line, 3 box, 4/5 mesh-surface, 6 point.
 struct ParticleFlipbook {
     bool present = false;
@@ -286,7 +287,7 @@ struct ParticleEmitter {
     float acceleration[4][2] = {};      // dirX, dirY, dirZ, magnitude
     float drag = 0;
     // color
-    float colorBegin[2][4] = {};        // [0] base rgba, [1] span rgba (span=0 on old float4 layout)
+    float colorBegin[2][4] = {};        // {min rgba, max rgba}; min = max on the old float4 layout
     float colorEnd[2][4] = {};
     float colorPeriod = 0;
     float colorFalloff[2] = {0, 0};
@@ -4431,14 +4432,15 @@ private:
             for (int r = 0; r < 4; ++r) { em.velocity[r][0]=rdf(o+8*r); em.velocity[r][1]=rdf(o+8*r+4); }
         if (fOff(t, "acceleration", e, o, fj))
             for (int r = 0; r < 4; ++r) { em.acceleration[r][0]=rdf(o+8*r); em.acceleration[r][1]=rdf(o+8*r+4); }
-        // colorBegin/colorEnd. Two layouts: V>=70 = array[2] float4 ({base,span});
+        // colorBegin/colorEnd. Two layouts: V>=70 = array[2] float4 ({min, max}: the client loads
+        // base = min, span = max - min, GrCloud.cpp FUN_140ac8c40);
         // V<=66 = a single float4 begin/end color (no random span).
         auto readColor = [&](const char* name, float dst[2][4]) {
             size_t co; json cf;
             if (!fOff(t, name, e, co, cf)) return;
             bool isArr = cf.value("kind", std::string()) == "array";
             if (isArr) for (int r = 0; r < 2; ++r) for (int c = 0; c < 4; ++c) dst[r][c] = rdf(co + 16*r + 4*c);
-            else { for (int c = 0; c < 4; ++c) { dst[0][c] = rdf(co + 4*c); dst[1][c] = 0; } }
+            else { for (int c = 0; c < 4; ++c) dst[0][c] = dst[1][c] = rdf(co + 4*c); }   // one colour: min = max
         };
         readColor("colorBegin", em.colorBegin);
         readColor("colorEnd", em.colorEnd);

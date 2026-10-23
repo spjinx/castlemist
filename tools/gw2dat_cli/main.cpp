@@ -667,6 +667,8 @@ void cmd_amat(const Args& a) {
     };
     dump(set.vsIndex, "vs");
     dump(set.psIndex, "ps");
+    if (has(a, "dump-all"))
+        for (int i = 0; i < (int)set.shaders.size(); ++i) dump(i, "all");
 
     int vsN = 0, psN = 0;
     for (const auto& s : set.shaders) (s.isPixel ? psN : vsN)++;

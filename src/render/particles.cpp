@@ -144,7 +144,11 @@ void fxSpawnOne(int emIdx) {
 
     p.life = std::max(0.05f, fxSample(e.lifetime));
     p.age = 0;
-    for (int k = 0; k < 4; ++k) { p.c0[k] = e.colorBegin[0][k] + fxRand01()*e.colorBegin[1][k]; p.c1[k] = e.colorEnd[0][k] + fxRand01()*e.colorEnd[1][k]; }
+    // {min, max} colours: min + rand x (max - min), as GrCloud.cpp samples them
+    for (int k = 0; k < 4; ++k) {
+        p.c0[k] = e.colorBegin[0][k] + fxRand01() * (e.colorBegin[1][k] - e.colorBegin[0][k]);
+        p.c1[k] = e.colorEnd[0][k] + fxRand01() * (e.colorEnd[1][k] - e.colorEnd[0][k]);
+    }
     p.sx = fxSample(e.scaleInitial[0]); p.sy = fxSample(e.scaleInitial[1]);
     if (p.sx <= 0) p.sx = 0.05f; if (p.sy <= 0) p.sy = p.sx;
     p.rot = fxSample(e.rotationInitial); p.rotVel = fxSample(e.rotationChange);

@@ -408,8 +408,8 @@ struct ParticleEmitterCPU {
     float velocity[4][2] = {};          ///< Initial velocity per axis `{base, span}`.
     float acceleration[4][2] = {};      ///< Acceleration per axis `{base, span}`.
     float drag = 0;                     ///< Velocity damping.
-    float colorBegin[2][4] = {};        ///< Start colour range.
-    float colorEnd[2][4] = {};          ///< End colour range.
+    float colorBegin[2][4] = {};        ///< Start colour {min, max} (min = max on the one-colour layout).
+    float colorEnd[2][4] = {};          ///< End colour {min, max}.
     float colorPeriod = 0;              ///< Colour cycle period.
     float colorFalloff[2] = {0, 0};     ///< Colour falloff `{base, span}`.
     float spawnWindEmit[2] = {0, 0};    ///< Wind-driven emission `{base, span}`.
