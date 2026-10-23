@@ -782,6 +782,10 @@ void open_chat_link_decoder(HWND owner);
 
 // ---- npc_dialog.cpp -- the NPC catalogue window (Tools menu)
 void open_npc_catalogue(HWND owner);
+/// Debug (GW2_NPCTEST): shows NPC @p npcId's body (its model file, or its race
+/// body dressed from its first look) in the viewer, from the cached catalogue.
+/// False when it has none or the cache is missing.
+bool open_npc_body(uint32_t npcId);
 
 // ---- content_map_service.cpp -- the shared cntc content-map build
 enum class CmapEnsure { Ready, Building, Started, NeedDat, NeedIndex, InUse };

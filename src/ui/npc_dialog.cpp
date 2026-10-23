@@ -363,6 +363,20 @@ LRESULT CALLBACK NpcWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
 
 }  // namespace
 
+bool open_npc_body(uint32_t npcId) {
+    if (!g_app->dat_loaded) return false;
+    std::optional<npc::Catalogue> cat = npc::load(cache_file());
+    const npc::NpcRecord* n = cat ? cat->find(npcId) : nullptr;
+    if (!n) return false;
+    npc::NpcModel m = npc::npc_model(g_app->data_gw2, *n);
+    if (!m.model) return false;
+    ExtractedEntry e;
+    e.kind = PreviewKind::Model;
+    e.model = std::move(m.model);
+    apply_extracted_entry(UINT32_MAX, std::move(e));
+    return true;
+}
+
 void open_npc_catalogue(HWND owner) {
     if (g_wnd) { SetForegroundWindow(g_wnd); return; }
     static bool registered = false;
