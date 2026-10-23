@@ -433,17 +433,19 @@ CM_TEST(native_materials, env_water_absent_is_empty) {
     CHECK(Extractor(bytes, t).parseMapEnvWater().empty());
 }
 
-// presetIndex is the lighting[] entry parseMapEnv used: the brightest on auto,
-// the requested one when valid, and -1 when nothing was read.
+// presetIndex is the lighting[] entry parseMapEnv used: on auto slot 0 (the
+// client's daytime slot) when it has a lit light, else the brightest; the
+// requested one when valid; -1 when nothing was read.
 CM_TEST(native_materials, env_light_preset_index) {
     const auto bytes = envFile(true);
     const json t = envTemplate("ptr_array_ptr");
     const auto autoPick = Extractor(bytes, t).parseMapEnv();
     CHECK(autoPick.present);
-    CHECK_EQ(autoPick.presetIndex, 1);
-    CHECK_NEAR(autoPick.sunIntensity, 2.0, 1e-6);
-    CHECK_EQ(Extractor(bytes, t).parseMapEnv(0).presetIndex, 0);
-    CHECK_EQ(Extractor(bytes, t).parseMapEnv(7).presetIndex, 1);   // out of range -> auto
+    CHECK_EQ(autoPick.presetIndex, 0);                 // slot 0 is lit (0.25), though slot 1 is brighter
+    CHECK_NEAR(autoPick.sunIntensity, 0.25, 1e-6);
+    CHECK_EQ(Extractor(bytes, t).parseMapEnv(1).presetIndex, 1);
+    CHECK_NEAR(Extractor(bytes, t).parseMapEnv(1).sunIntensity, 2.0, 1e-6);
+    CHECK_EQ(Extractor(bytes, t).parseMapEnv(7).presetIndex, 0);   // out of range -> auto
 
     const auto none = make_packfile("mapc", "parm", 1, std::vector<uint8_t>(16, 0));
     json empty; empty["types"] = json::object();

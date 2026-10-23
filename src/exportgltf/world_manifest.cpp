@@ -434,7 +434,8 @@ template <class T> const T* slot_or_first(const std::vector<T>& v, int p) {
 
 } // namespace
 
-json world_environment_json(const castlemist::model::Extractor::MapSky& sky, int presetIndex, const json& clut) {
+json world_environment_json(const castlemist::model::Extractor::MapSky& sky, int presetIndex, const json& clut,
+                            const json& fieldTextures) {
     using E = castlemist::model::Extractor::MapEnvEffect;
     if (!sky.present) return nullptr;
     const int p = presetIndex >= 0 ? presetIndex : 0;
@@ -464,9 +465,9 @@ json world_environment_json(const castlemist::model::Extractor::MapSky& sky, int
     env["backlight"] = backlight;
 
     // Haze and effect come from the day slot (0): the client takes slot 0 at t = 1 and slot 2
-    // only on an env flag (docs/research/gw2-sky.md A.2), while light.presetIndex is the
-    // brightest preset, which can be slot 2 (the Mists vault: its slot-2 haze is all zero and
-    // its CLUT sits in slots 0 and 1). Slot p when the map has no slot 0.
+    // only on an env flag (docs/research/gw2-sky.md A.2); light.presetIndex is slot 0 too unless
+    // slot 0 has no lit light (then the brightest; the Mists vault's slot 2 has an all-zero haze
+    // and its CLUT sits in slots 0 and 1). Slot p when the map has no slot 0.
     const int daySlot = 0;
     env["hazeEffectPreset"] = daySlot;
     const auto* h = slot_or_first(sky.haze, daySlot);
@@ -522,6 +523,35 @@ json world_environment_json(const castlemist::model::Extractor::MapSky& sky, int
         zones.push_back({{"name", z.name}, {"haze", haze_json(*zh)}, {"boundsUnity", vec(b, 4)}});
     }
     env["zones"] = zones;
+
+    // Ambient particle fields (dataGlobal; docs/research/gw2-particle-fields.md): raw values,
+    // pairs {min, max}; the direction also in the Unity frame; the texture as @p fieldTextures
+    // wrote it ({fileId: path}), else null.
+    json fields = json::array();
+    for (const auto& f : sky.particleFields) {
+        float uf[3];
+        cw::map_to_unity(f.fieldDirection, uf);
+        const std::string key = std::to_string(f.texFile);
+        const bool tex = f.texFile && fieldTextures.is_object() && fieldTextures.contains(key);
+        fields.push_back({{"name", f.name}, {"type", f.type}, {"flags", f.flags},
+                          {"particleCount", f.particleCount}, {"extent", f.extent}, {"seed", f.seed},
+                          {"altitude", f.altitude}, {"depth", f.depth}, {"fade", f.fade},
+                          {"clusterCount", f.clusterCount}, {"clustering", vec(f.clustering, 2)},
+                          {"deviation", f.deviation}, {"deviationSpeed", vec(f.deviationSpeed, 2)},
+                          {"speed", vec(f.speed, 2)}, {"fieldDirection", vec(f.fieldDirection, 3)},
+                          {"fieldDirectionUnity", vec(uf, 3)}, {"lifetime", vec(f.lifetime, 2)},
+                          {"period", vec(f.period, 2)}, {"opacity", vec(f.opacity, 2)},
+                          {"angle", vec(f.angle, 2)}, {"rotation", vec(f.rotation, 2)},
+                          {"scaleX", vec(f.scaleX, 2)}, {"scaleY", vec(f.scaleY, 2)},
+                          {"texColRow", {f.texColRow[0], f.texColRow[1]}}, {"texFPS", f.texFPS},
+                          {"texFileId", f.texFile ? json(f.texFile) : json(nullptr)},
+                          {"texture", tex ? fieldTextures[key] : json(nullptr)}});
+    }
+    env["particleFields"] = fields;
+    json cutouts = json::array();
+    for (const auto& c : sky.particleFieldCutouts)
+        cutouts.push_back({{"name", c.name}, {"x", vec(c.x, 4)}, {"y", vec(c.y, 4)}, {"z", vec(c.z, 4)}});
+    env["particleFieldCutouts"] = cutouts;
     return env;
 }
 
@@ -728,7 +758,8 @@ json world_manifest_json(const WorldManifestInput& in) {
     man["light"] = finite_or_null(in.light.is_object() ? in.light : world_light_json(s.environment.light), "light", notes);
     // environment (lights, haze, effect): the slot of light.presetIndex, else 0.
     man["environment"] = finite_or_null(
-        world_environment_json(s.environment.sky, s.environment.light.presetIndex, in.environmentClut), "environment",
+        world_environment_json(s.environment.sky, s.environment.light.presetIndex, in.environmentClut,
+                               in.particleFieldTextures), "environment",
         notes);
 
     // spawn: only map (three finite numbers) and unity = map_to_unity(map), always recomputed.

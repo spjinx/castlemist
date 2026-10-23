@@ -198,6 +198,7 @@ namespace Castlemist
             if (sum.terrainCheckLine != null) Debug.Log(sum.terrainCheckLine);
             if (sum.envLine != null) Debug.Log(sum.envLine);
             if (sum.particleSystems > 0) Debug.Log("CASTLEMIST particleSystems=" + sum.particleSystems);
+            if (sum.particleFields > 0) Debug.Log("CASTLEMIST particleFields=" + sum.particleFields);
             Debug.Log(sum.PlanLine());
         }
 
@@ -522,9 +523,11 @@ namespace Castlemist
                             try
                             {
                                 MaterialsFile mf = MaterialsFile.Parse(File.ReadAllText(P(e.Materials)), P(e.Materials));
-                                EnsureFolder(root + "/Materials/Particles");
+                                // Per model: material names repeat across models for different textures.
+                                string pmat = root + "/Materials/Particles/" + e.FileId;
+                                EnsureFolder(pmat);
                                 sum.particleSystems += ParticleEffects.AddTo(inst, sidecar, mf, modelFolder, ctx,
-                                                                             root + "/Materials/Particles", sum.warnings);
+                                                                             pmat, sum.warnings);
                             }
                             catch (ManifestException ex) { sum.errors.Add(ex.Message); }
                         }
@@ -634,6 +637,12 @@ namespace Castlemist
                             an.runtimeAnimatorController = ac;
                             foreach (Transform t in go.GetComponentsInChildren<Transform>(true))
                                 GameObjectUtility.SetStaticEditorFlags(t.gameObject, 0);
+                        }
+                        // 2026-10-22: its particle systems timed to its clip, at its scale (ParticleEffects.Fit).
+                        if (e.Materials != null)
+                        {
+                            string sidecar = ParticleEffects.SidecarFor(Path.GetDirectoryName(P(e.Materials)).Replace('\\', '/'), e.FileId);
+                            if (sidecar != null) ParticleEffects.Fit(go, sidecar, i.Clip, unityScale);
                         }
                         sum.instances++;
                     }
@@ -800,6 +809,18 @@ namespace Castlemist
             public void Environment(float unityScale)
             {
                 SceneSetup.Apply(new SceneSetup.Context { Root = root, M = m, Sum = sum, Opts = opts, UnityScale = unityScale, MapRoot = mapRoot });
+                // 2026-10-23: the ambient particle fields (ParticleFields), from the raw manifest.
+                try
+                {
+                    var doc = MiniJson.Parse(File.ReadAllText(root + "/manifest.json")) as Dictionary<string, object>;
+                    object env, fields;
+                    if (doc != null && doc.TryGetValue("environment", out env) && env is Dictionary<string, object> e &&
+                        e.TryGetValue("particleFields", out fields) && fields is List<object> list && list.Count > 0)
+                        sum.particleFields = ParticleFields.Build(mapRoot, list,
+                            f => f.TryGetValue("texture", out object t) && t is string s ? P(s) : null,
+                            root + "/Materials/ParticleFields", unityScale, sum.warnings);
+                }
+                catch (Exception ex) { sum.warnings.Add("particle fields: " + ex.Message); }
             }
 
             // Step 9.

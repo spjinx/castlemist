@@ -292,7 +292,65 @@ namespace Castlemist
                 voxels += (long)(Math.Ceiling(b.size.x * DetailVoxelsPerUnit) * Math.Ceiling(b.size.y * DetailVoxelsPerUnit) * Math.Ceiling(b.size.z * DetailVoxelsPerUnit));
             }
             Register(group);
+            SortVolumes();
             return boxes.Count + " detail volume(s) over walkable floors (~" + voxels + " voxels)";
+        }
+
+        /// The manager's volumes ordered by weight (then resolution), the package's own explicit sort.
+        /// The shader takes the first volume that holds a point, and the package never reorders on its
+        /// own: without this the coarse cell volumes, registered first, win everywhere and the detail
+        /// volumes only blend at their edges (the Wizard Vault's hub disc lit from ~9 m voxels,
+        /// 2026-10-23).
+        public static bool SortVolumes()
+        {
+            try
+            {
+                Type backend = SceneSetup.FindType("VRCLightVolumes.LightVolumeManagerEditorBackend");
+                Type mgrType = SceneSetup.FindType("VRCLightVolumes.LightVolumeManager");
+                MethodInfo sort = backend != null ? backend.GetMethod("SortLightVolumesByVoxelsPerUnit", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static) : null;
+                if (sort == null || mgrType == null) { Debug.LogWarning("CASTLEMIST Light Volumes: no SortLightVolumesByVoxelsPerUnit in this package version"); return false; }
+                foreach (Object m in Object.FindObjectsByType(mgrType, FindObjectsInactive.Include, FindObjectsSortMode.None)) sort.Invoke(null, new object[] { m });
+                return true;
+            }
+            catch (Exception e) { Debug.LogWarning("CASTLEMIST Light Volumes sort: " + (e.InnerException ?? e).Message); return false; }
+        }
+
+        /// One Light Volume over @p area (a world box) at @p voxelsPerUnit and @p weight, under
+        /// LightVolumes/Detail, registered and sorted in: for a surface no detail volume boundary may
+        /// cross (a box edge through a floor shows as a straight light seam). Replaces one of the same
+        /// @p name. Bake afterwards.
+        public static string AddFocusVolume(string name, Bounds area, float voxelsPerUnit, float weight)
+        {
+            Type lv = VolumeType();
+            if (lv == null) return "no Light Volumes package";
+            GameObject envRoot = UnityEngine.SceneManagement.SceneManager.GetActiveScene().GetRootGameObjects()
+                                     .FirstOrDefault(g => g.name.EndsWith("_Environment"));
+            if (envRoot == null) return "no *_Environment root";
+            Transform parent = envRoot.transform.Find("LightVolumes");
+            Transform detail = parent != null ? parent.Find("Detail") : null;
+            if (detail == null) return "no LightVolumes/Detail group (run Setup Immersive Lighting first)";
+            Transform old = detail.Find(name);
+            if (old != null) Undo.DestroyObjectImmediate(old.gameObject);
+            var go = new GameObject(name);
+            Undo.RegisterCreatedObjectUndo(go, "Focus Light Volume");
+            go.transform.SetParent(detail, false);
+            go.transform.position = area.center;
+            go.transform.localScale = area.size;
+            Component comp = SceneSetup.AddUdonAware(go, lv);
+            SceneSetup.SetField(comp, "AdaptiveResolution", true);
+            SceneSetup.SetField(comp, "VoxelsPerUnit", voxelsPerUnit);
+            SceneSetup.SetField(comp, "Bake", true);
+            SceneSetup.SetField(comp, "IsDynamic", false);
+            SceneSetup.SetField(comp, "SmoothBlending", 0.5f);
+            MethodInfo w = comp.GetType().GetMethod("SetWeight", new[] { typeof(float) });
+            if (w != null) w.Invoke(comp, new object[] { weight });
+            else SceneSetup.SetField(comp, "RegistryWeight", weight);
+            Recalculate(comp);
+            SceneSetup.CopyProxyToUdon(comp);
+            Register(go);
+            bool sorted = SortVolumes();
+            return name + ": " + area.size.ToString("0") + " at " + voxelsPerUnit + " voxels/unit, weight " + weight +
+                   (sorted ? ", sorted" : ", NOT sorted") + " (bake to fill it)";
         }
 
         /// The package's onboarding: registers new volumes with the scene's LightVolumeManager.

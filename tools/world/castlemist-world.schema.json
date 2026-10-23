@@ -325,6 +325,59 @@
               "boundsUnity": { "$ref": "#/$defs/vec4" }
             }
           }
+        },
+        "particleFields": {
+          "description": "dataGlobal->particleFields: the ambient particle tiles GW2 wraps around the camera (docs/research/gw2-particle-fields.md). Raw values, pairs {min, max}; texture is the written PNG (relative to the folder) or null.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "type", "flags", "particleCount", "extent", "texture"],
+            "properties": {
+              "name": { "type": "string" },
+              "type": { "type": "integer", "minimum": 0 },
+              "flags": { "type": "integer", "minimum": 0 },
+              "particleCount": { "type": "integer", "minimum": 0 },
+              "extent": { "type": "integer", "minimum": 0 },
+              "seed": { "type": "integer", "minimum": 0 },
+              "altitude": { "type": "number" },
+              "depth": { "type": "number" },
+              "fade": { "type": "number" },
+              "clusterCount": { "type": "integer", "minimum": 0 },
+              "clustering": { "$ref": "#/$defs/vec2" },
+              "deviation": { "type": "number" },
+              "deviationSpeed": { "$ref": "#/$defs/vec2" },
+              "speed": { "$ref": "#/$defs/vec2" },
+              "fieldDirection": { "$ref": "#/$defs/vec3" },
+              "fieldDirectionUnity": { "$ref": "#/$defs/vec3" },
+              "lifetime": { "$ref": "#/$defs/vec2" },
+              "period": { "$ref": "#/$defs/vec2" },
+              "opacity": { "$ref": "#/$defs/vec2" },
+              "angle": { "$ref": "#/$defs/vec2" },
+              "rotation": { "$ref": "#/$defs/vec2" },
+              "scaleX": { "$ref": "#/$defs/vec2" },
+              "scaleY": { "$ref": "#/$defs/vec2" },
+              "texColRow": { "type": "array", "items": { "type": "integer", "minimum": 0 }, "minItems": 2, "maxItems": 2 },
+              "texFPS": { "type": "number" },
+              "texFileId": { "type": ["integer", "null"], "minimum": 1 },
+              "texture": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "particleFieldCutouts": {
+          "description": "dataGlobal->particleFieldCutouts: box transforms (rows x, y, z) inside which field particles hide.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "x", "y", "z"],
+            "properties": {
+              "name": { "type": "string" },
+              "x": { "$ref": "#/$defs/vec4" },
+              "y": { "$ref": "#/$defs/vec4" },
+              "z": { "$ref": "#/$defs/vec4" }
+            }
+          }
         }
       }
     },
