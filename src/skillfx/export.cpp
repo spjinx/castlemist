@@ -88,16 +88,12 @@ void apply_pairings(SkillSet& set, const std::vector<Pairing>& pairs,
 
 ExportReport export_skill_set(const SkillSet& set, const fs::path& out, const ModelExporter& exporter) {
     ExportReport rep;
-    // How many skills use each model decides where its .glb goes.
-    std::map<uint32_t, std::set<uint32_t>> users;
-    for (const SkillEntry& e : set.skills)
-        for (const Effect& f : e.links.effects)
-            if (f.model) users[f.model].insert(e.id);
-
-    std::map<uint32_t, std::pair<std::string, std::string>> done;  // model -> {relative glb, error}
-    auto export_model = [&](uint32_t model, const std::string& rel) {
+    // Each model once, in a world-model folder models/<id>/ ({folder, error}).
+    std::map<uint32_t, std::pair<std::string, std::string>> done;
+    auto export_model = [&](uint32_t model) {
         auto it = done.find(model);
         if (it != done.end()) return it->second;
+        const std::string rel = "models/" + std::to_string(model);
         std::string err = exporter(model, out / fs::path(rel));
         if (err.empty()) ++rep.models;
         else {
@@ -106,13 +102,14 @@ ExportReport export_skill_set(const SkillSet& set, const fs::path& out, const Mo
         }
         return done[model] = {err.empty() ? rel : std::string(), err};
     };
-    auto effect_json = [&](const Effect& f, const std::string& rel) {
+    auto effect_json = [&](const Effect& f) {
         json j{{"field", f.field}, {"kind", f.kind},   {"codename", f.codename}, {"model", f.model},
                {"sound", f.sound}, {"guid", hex(f.guid)}, {"source", f.source},     {"ei_name", f.ei_name},
-               {"count", f.count}, {"glb", ""}};
+               {"count", f.count}, {"folder", ""},     {"glb", ""}};
         if (f.model) {
-            auto [glb, err] = export_model(f.model, rel);
-            j["glb"] = glb;
+            auto [folder, err] = export_model(f.model);
+            j["folder"] = folder;
+            if (!folder.empty()) j["glb"] = folder + "/" + std::to_string(f.model) + ".glb";
             if (!err.empty()) j["error"] = err;
         }
         return j;
@@ -123,10 +120,7 @@ ExportReport export_skill_set(const SkillSet& set, const fs::path& out, const Mo
     for (const SkillEntry& e : set.skills) {
         const std::string folder = "skills/" + std::to_string(e.id) + "-" + slug(e.label.empty() ? e.codename : e.label);
         json fx = json::array();
-        for (const Effect& f : e.links.effects) {
-            const bool shared = users[f.model].size() > 1;
-            fx.push_back(effect_json(f, (shared ? std::string("shared") : folder) + "/" + std::to_string(f.model) + ".glb"));
-        }
+        for (const Effect& f : e.links.effects) fx.push_back(effect_json(f));
         json sj{{"id", e.id},           {"label", e.label},         {"codename", e.codename},
                 {"bundle_item", e.bundle_item}, {"bundle_slot", e.bundle_slot}, {"effects", fx},
                 {"related_skills", e.links.related_skills}, {"applies", e.links.applies}};
@@ -135,7 +129,7 @@ ExportReport export_skill_set(const SkillSet& set, const fs::path& out, const Mo
         ++rep.skills;
     }
     json ul = json::array();
-    for (const Effect& f : set.unlinked) ul.push_back(effect_json(f, "unlinked/" + std::to_string(f.model) + ".glb"));
+    for (const Effect& f : set.unlinked) ul.push_back(effect_json(f));
     write_json(out / "unlinked" / "unlinked.json", json{{"effects", ul}});
     write_json(out / "skill_set.json", index);
     return rep;

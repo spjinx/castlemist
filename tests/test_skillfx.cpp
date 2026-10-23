@@ -664,25 +664,28 @@ CM_TEST(skillfx, export_layout_shared_and_failure) {
     const std::filesystem::path out = std::filesystem::temp_directory_path() / "cm_test_skillfx_export";
     std::filesystem::remove_all(out);
     std::map<uint32_t, int> calls;
-    ExportReport rep = export_skill_set(set, out, [&](uint32_t model, const std::filesystem::path& glb) {
+    // The exporter writes a world-model folder: <folder>/<model>.glb (+ materials.json, sidecar).
+    ExportReport rep = export_skill_set(set, out, [&](uint32_t model, const std::filesystem::path& folder) {
         ++calls[model];
         if (model == 200) return std::string("bad model");
-        std::filesystem::create_directories(glb.parent_path());
-        std::ofstream(glb) << "glb";
+        std::filesystem::create_directories(folder);
+        std::ofstream(folder / (std::to_string(model) + ".glb")) << "glb";
         return std::string();
     });
     CHECK_EQ(calls[100], 1);
-    CHECK(std::filesystem::exists(out / "shared" / "100.glb"));
-    CHECK(std::filesystem::exists(out / "unlinked" / "300.glb"));
+    CHECK(std::filesystem::exists(out / "models" / "100" / "100.glb"));
+    CHECK(std::filesystem::exists(out / "models" / "300" / "300.glb"));
     CHECK(std::filesystem::exists(out / "skill_set.json"));
     CHECK_EQ(rep.failed, size_t{1});
     CHECK_EQ(rep.skills, size_t{2});
     nlohmann::json sb = read_json(out / "skills" / "2-chapter-1-searing-spell" / "skill.json");
     CHECK_EQ(sb["effects"].size(), size_t{2});
-    CHECK_EQ(sb["effects"][0]["glb"].get<std::string>(), std::string("shared/100.glb"));
+    CHECK_EQ(sb["effects"][0]["folder"].get<std::string>(), std::string("models/100"));
+    CHECK_EQ(sb["effects"][0]["glb"].get<std::string>(), std::string("models/100/100.glb"));
     CHECK_EQ(sb["effects"][1]["error"].get<std::string>(), std::string("bad model"));
+    CHECK_EQ(sb["effects"][1]["folder"].get<std::string>(), std::string(""));
     nlohmann::json ul = read_json(out / "unlinked" / "unlinked.json");
-    CHECK_EQ(ul["effects"][0]["glb"].get<std::string>(), std::string("unlinked/300.glb"));
+    CHECK_EQ(ul["effects"][0]["folder"].get<std::string>(), std::string("models/300"));
     std::filesystem::remove_all(out);
 }
 

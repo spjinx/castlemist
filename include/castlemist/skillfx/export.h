@@ -4,10 +4,10 @@
 /// Layout (docs/superpowers/specs/2026-10-22-skill-effects-design.md):
 ///   skill_set.json                     namespaces, skills {id, label, folder}
 ///   skills/<id>-<slug>/skill.json      one skill: effects, related skills, applied boons
-///   skills/<id>-<slug>/<model>.glb     models only this skill uses
-///   shared/<model>.glb                 models several skills use
-///   unlinked/unlinked.json, <model>.glb  effects no skill reached
-/// Each .glb comes with the exporter's `<model>_particles.json` sidecar.
+///   models/<model>/                    each effect model once, laid out as a world export's model:
+///                                      <model>.glb, materials.json, <model>_particles.json (+ .fbx)
+///   unlinked/unlinked.json             effects no skill reached
+/// skill.json effects name their model folder ("folder", "" when it failed) and .glb.
 
 #pragma once
 
@@ -30,8 +30,9 @@ void apply_pairings(SkillSet& set, const std::vector<Pairing>& pairs,
                     const ContainerOf& container, const std::map<uint32_t, std::string>& api_names,
                     const std::map<Guid, std::string>& ei);
 
-/// @brief Exports one model to `glb`: "" on success, else the error text (it lands in skill.json).
-using ModelExporter = std::function<std::string(uint32_t model, const std::filesystem::path& glb)>;
+/// @brief Writes one model's folder (`folder/<model>.glb`, materials.json, sidecar): "" on success,
+/// else the error text (it lands in skill.json).
+using ModelExporter = std::function<std::string(uint32_t model, const std::filesystem::path& folder)>;
 
 struct ExportReport {
     size_t skills = 0, models = 0, failed = 0;

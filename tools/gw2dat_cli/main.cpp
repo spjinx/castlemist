@@ -2592,7 +2592,7 @@ void cmd_cgraph(const Args& a) {
 // ---- skill effects (skillfx): a codename namespace's skills and their effects, paired from
 // arcdps logs the user recorded (castlemist only reads the files). Shared by evtc-pairs and
 // skillfx-export: --dat --index --seed A,B (skill ids of the namespace) [--logs DIR]
-// [--ei EffectGUIDs.cs] [--elite 62] [--template gw2_packfile.json].
+// [--ei EffectGUIDs.cs] [--elite 62] [--template gw2_packfile.json]; skillfx-export also [--fbx [--blender exe]].
 struct SkillFxRun {
     Gw2Dat dat;
     castlemist::cntc::PackSet packs;
@@ -2688,15 +2688,25 @@ void cmd_skillfx_export(const Args& a) {
     sfx::apply_pairings(run.set, run.pairs, sfx::effect_index(run.packs), run.packs, run.container, api_names, run.ei);
 
     // One model -> .glb (+ particle sidecar), and every mesh-particle emitter's mesh beside it.
-    auto export_one = [&](uint32_t model, const fs::path& glb) -> std::string {
+    // One model as a world export writes it (exportgltf world_folder.cpp's export_one_model):
+    // models/<id>/<id>.glb + materials.json + <id>_particles.json in the world's frame, so the
+    // Unity world importer's ParticleEffects and materials read it unchanged. Mesh-particle
+    // emitters' meshes go beside it as <meshFileId>.glb.
+    auto export_one = [&](uint32_t model, const fs::path& folder) -> std::string {
         std::shared_ptr<ModelPreview> m = load_model_by_fileid(run.dat, model);
         if (!m) return "model did not load";
-        fs::create_directories(glb.parent_path());
-        auto r = castlemist::exportgltf::export_model_gltf(*m, glb.string());  // particle-only models export too
+        castlemist::exportgltf::VrchatFolderOptions vo;
+        vo.gltf.rootMatrix = castlemist::exportgltf::map_to_gltf_root(1.0);
+        vo.gltf.uv1CopyToUv4 = true;
+        vo.gltf.vertexColors = true;
+        vo.gltf.exportLods = true;
+        const std::string id = std::to_string(model);
+        const std::u8string dir = folder.u8string();
+        auto r = castlemist::exportgltf::write_vrchat_folder(*m, std::string(dir.begin(), dir.end()), id, model, vo);
         if (!r.ok) return r.error.empty() ? std::string("export failed") : r.error;
         for (const auto& em : m->emitters) {
             if (!em.hasMesh || !em.meshFileId) continue;
-            const fs::path mesh = glb.parent_path() / (std::to_string(em.meshFileId) + ".glb");
+            const fs::path mesh = folder / (std::to_string(em.meshFileId) + ".glb");
             if (fs::exists(mesh)) continue;
             if (auto mm = load_model_by_fileid(run.dat, em.meshFileId)) castlemist::exportgltf::export_model_gltf(*mm, mesh.string());
         }
@@ -2704,9 +2714,18 @@ void cmd_skillfx_export(const Args& a) {
     };
     const fs::path out = fs::u8path(utf8_arg("--out").empty() ? need(a, "out") : utf8_arg("--out"));
     sfx::ExportReport rep = sfx::export_skill_set(run.set, out, export_one);
+    // --fbx: every .glb to an .fbx beside it with Blender (castlemist_world.py --to-fbx), as world-fbx.
+    json fbx = nullptr;
+    if (has(a, "fbx")) {
+        std::string log;
+        const std::u8string dir = out.u8string();
+        const bool ok = castlemist::ripper::convert_folder_to_fbx(std::string(dir.begin(), dir.end()), log,
+                                                              has(a, "blender") ? a.at("blender") : std::string());
+        fbx = {{"ok", ok}, {"log_tail", log.size() > 400 ? log.substr(log.size() - 400) : log}};
+    }
     emit({{"ok", true}, {"skill_namespace", run.set.skill_namespace}, {"effect_namespace", run.set.effect_namespace},
           {"skills", rep.skills}, {"models", rep.models}, {"failed", rep.failed}, {"pairs", run.pairs.size()},
-          {"unlinked", run.set.unlinked.size()}, {"notes", rep.notes}});
+          {"unlinked", run.set.unlinked.size()}, {"notes", rep.notes}, {"fbx", fbx}});
 }
 
 void cmd_character(const Args& a) {

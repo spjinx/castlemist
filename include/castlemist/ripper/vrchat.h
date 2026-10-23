@@ -92,6 +92,12 @@ bool blender_folder_newer(const std::string& a, const std::string& b);
 bool convert_world_to_fbx(const std::string& exportDirUtf8, std::string& log, const std::string& blenderExe = {},
                           size_t* fbxSet = nullptr, const std::atomic<bool>* cancel = nullptr);
 
+/// As convert_world_to_fbx for any folder of .glb files (skill effects): every .glb under
+/// @p dirUtf8 to an .fbx beside it, no manifest needed or written. Blender's output in
+/// `<dir>/blender.log`.
+bool convert_folder_to_fbx(const std::string& dirUtf8, std::string& log, const std::string& blenderExe = {},
+                           const std::atomic<bool>* cancel = nullptr);
+
 /// What to do when a world export has no .fbx files (review I3). Both commands
 /// convert every .glb and record the .fbx files in manifest.json, which is the
 /// only place the Unity importer looks.

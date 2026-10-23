@@ -431,6 +431,21 @@ CM_TEST(export, unstartable_blender_log_says_why) {
     fs::remove_all(parent);
 }
 
+// Skill effects: a folder of .glb files with no world manifest still goes to Blender (the
+// stand-in exits 2, so the call fails, but past the manifest check and with Blender's reason).
+CM_TEST(export, folder_to_fbx_needs_no_manifest) {
+    const fs::path dir = fs::temp_directory_path() / "cm_folder_fbx_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir / "models" / "1");
+    std::ofstream(dir / "models" / "1" / "1.glb") << "glb";
+    std::string log;
+    const bool ok = castlemist::ripper::convert_folder_to_fbx(dir.string(), log, "C:\\Windows\\System32\\where.exe");
+    CHECK_FALSE(ok);
+    CHECK(log.find("manifest") == std::string::npos);
+    CHECK(log.find("exited with 2") != std::string::npos);
+    fs::remove_all(dir);
+}
+
 // Review M4: find_blender picks the numerically newest "Blender <v>" folder.
 CM_TEST(export, blender_folder_order_is_numeric) {
     using castlemist::ripper::blender_folder_newer;

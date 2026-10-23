@@ -602,6 +602,29 @@ bool convert_world_to_fbx(const std::string& exportDirUtf8, std::string& log, co
     return true;
 }
 
+bool convert_folder_to_fbx(const std::string& dirUtf8, std::string& log, const std::string& blenderExe,
+                           const std::atomic<bool>* cancel) {
+    const std::string blender = blenderExe.empty() ? find_blender() : blenderExe;
+    if (blender.empty()) {
+        log = "Blender not found";
+        return false;
+    }
+    std::error_code ec;
+    const std::string script = default_script("castlemist_world.py");
+    if (!fs::exists(from_utf8(script), ec)) {
+        log = "conversion script missing: " + script;
+        return false;
+    }
+    const std::string logPath = to_utf8(from_utf8(dirUtf8) / "blender.log");
+    std::string why;
+    if (!run_blender(blender, script, {"--to-fbx", dirUtf8}, why, logPath, 60ul * 60 * 1000, cancel)) {
+        log = why + " (log: " + logPath + ")";
+        return false;
+    }
+    log = "Blender " + blender + " (log: " + logPath + ")";
+    return true;
+}
+
 VrchatReport export_vrchat(const character::CharacterManifest& manifest, const std::string& dat_path,
                            const std::string& out_dir, AssemblyOptions options, const VrchatOptions& vrc) {
     VrchatReport r;
