@@ -127,10 +127,14 @@ namespace Castlemist
                 case "BaseColor": return Role.BaseColor;
                 case "EmissionMap": case "Emission": case "Decal": case "Projector": return Role.Colour;
                 default:
-                    if (!role.StartsWith("x-", StringComparison.Ordinal)) return Role.Unknown;
-                    switch (role.Substring(2))
+                    // An extra layer: "x-<role>" in a world export, "<role>" bare in a VRChat-folder
+                    // export (skillfx-export: "Mat - diffuse", "- mask", "- flow"). Data unless a colour.
+                    if (role.StartsWith("x-", StringComparison.Ordinal)) role = role.Substring(2);
+                    switch (role)
                     {
-                        case "parallax": case "mod": case "glow": case "decal": case "projector": case "interior": return Role.Colour;
+                        case "parallax": case "mod": case "glow": case "decal": case "projector": case "interior":
+                        case "opacitytile":
+                            return Role.Colour;
                         default: return Role.Data;
                     }
             }

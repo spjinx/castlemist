@@ -7,7 +7,7 @@
 //                     CastlemistPostprocessor's settings and the WorldImporter remap name rule,
 //                     then ParticleEffects.AddTo for <id>_particles.json
 // What it writes, under <folder>/Unity/:
-//   Materials/<id>/<FileName>.mat, Materials/Particles/*.mat
+//   Materials/<id>/<FileName>.mat, Materials/Particles/<id>/*.mat (Castlemist/GW2 Particle)
 //   Effects/<id>.prefab       the model (or an empty root) + its particle systems, GW2 units
 //   Skills/<id>-<slug>.prefab one per skill: localScale = UnityScale (GW2 inches -> metres,
 //                             WorldImporter's default, UNPROVEN), one instance per effect
@@ -62,6 +62,15 @@ namespace Castlemist.SkillFx
             sum.shaderLine = ctx.Line;
             string outRoot = root + "/Unity";
             EnsureFolder(outRoot + "/Materials/Particles");
+            // ParticleEffects reuses a particle .mat already on its shader: mark the existing ones
+            // stale (another shader), so each is rebuilt in place once, with the current mapping
+            // (same asset, same GUID; deleting them mid-import left the prefabs' references null).
+            Shader stale = Shader.Find("Hidden/InternalErrorShader");
+            foreach (string g in AssetDatabase.FindAssets("t:Material", new[] { outRoot + "/Materials/Particles" }))
+            {
+                var m = AssetDatabase.LoadAssetAtPath<Material>(AssetDatabase.GUIDToAssetPath(g));
+                if (m != null && stale != null && m.shader == ctx.ParticleShader) m.shader = stale;
+            }
             EnsureFolder(outRoot + "/Effects");
             EnsureFolder(outRoot + "/Skills");
 
@@ -110,6 +119,11 @@ namespace Castlemist.SkillFx
             }
             if (notCopied > 0)
                 sum.warnings.Add(notCopied + " skill(s) in skill_set.json have no folder here (a subset copy): skipped");
+            // Particle .mats an earlier import left directly in Materials/Particles (before the
+            // per-model folders): nothing references them once every effect is rebuilt.
+            if (onlySkills == null)
+                foreach (string f in Directory.GetFiles(outRoot + "/Materials/Particles", "*.mat"))
+                    AssetDatabase.DeleteAsset(f.Replace('\\', '/'));
             AssetDatabase.SaveAssets();
             return sum;
         }
@@ -166,8 +180,18 @@ namespace Castlemist.SkillFx
             {
                 inst.name = id.ToString();
                 string sidecar = ParticleEffects.SidecarFor(folder, id);
+                // One particle folder per model: materials.json names repeat across models for
+                // different textures (Mat_19092 is four textures in five Firebrand models), and
+                // ParticleEffects keys the .mat by that name.
+                string ptcFolder = outRoot + "/Materials/Particles/" + id;
+                EnsureFolder(ptcFolder);
                 if (sidecar != null)
-                    sum.particleSystems += ParticleEffects.AddTo(inst, sidecar, mf, folder, ctx, outRoot + "/Materials/Particles", sum.warnings);
+                    sum.particleSystems += ParticleEffects.AddTo(inst, sidecar, mf, folder, ctx, ptcFolder, sum.warnings);
+                // Castlemist/GW2 Particle reads the renderer's custom vertex streams (frame blend,
+                // per-particle randoms); ParticleEffects does not set them yet.
+                foreach (ParticleSystemRenderer r in inst.GetComponentsInChildren<ParticleSystemRenderer>(true))
+                    if (r.sharedMaterial != null && r.sharedMaterial.shader == ctx.ParticleShader)
+                        CastlemistMaterials.ApplyParticleStreams(r);
                 string path = outRoot + "/Effects/" + id + ".prefab";
                 bool ok;
                 GameObject saved = PrefabUtility.SaveAsPrefabAsset(inst, path, out ok);

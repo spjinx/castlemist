@@ -16,7 +16,8 @@ since D3D11 allows only 16 samplers per pixel shader.
 |---|---|
 | `GW2.shader` | `Castlemist/GW2`: every GW2 world material but particles. ForwardBase, ForwardAdd, ShadowCaster, Meta |
 | `GW2Core.cginc` | its passes and blocks (the block list and the GW2 formulas are in its header) |
-| `GW2 Particle.shader` | `Castlemist/GW2 Particle`: particle systems, unlit, any blend |
+| `GW2 Particle.shader` | `Castlemist/GW2 Particle`: every GW2 particle system, unlit; the families of GW2's particle pixel shaders (`_PtcShader`), plus a second pass for 1601524's add layer |
+| `GW2Particle.cginc` | its passes, built on `GW2Core.cginc` (`CM_PASS_PARTICLE`; the family formulas are in its header) |
 | `GW2 Distort.shader` | `Castlemist/GW2 Distort`: GW2's screen distortion (a GrabPass, which a material float cannot switch off) |
 | `CastlemistLightVolumes.cginc` | includes VRC Light Volumes, or stubs (see below) |
 
@@ -45,9 +46,8 @@ Lit, ForwardBase:
 - Reflection probes still give the indirect specular (Unity's `UnityGI_IndirectSpecular`,
   box projection and blending), scaled by the reflection mask and the reflection tint.
 
-Particle: `_LightVolumeTint` > 0 multiplies the colour by
-`lerp(1, LightVolumeSH_L0(worldPos, 0), _LightVolumeTint)`, per vertex. The pass is tagged
-`ForwardBase` so Unity sets the renderer's light probe SH (the fallback when there are no volumes).
+Particles are unlit, as GW2's particle shaders that castlemist ports are (the lit ones, e.g.
+339180 and 48318, are drawn unlit with a warning).
 
 ## materials.json -> `Castlemist/GW2`
 
@@ -85,16 +85,36 @@ the shadow pass clips only with `_AlphaTest`.
 
 ## `Castlemist/GW2 Particle`
 
-| Property | What |
-|---|---|
-| `_MainTex` | texture (x vertex colour x `_TintColor` x `_Intensity`) |
-| `_TintColor` (HDR), `_Intensity` | colour, brightness |
-| `_UVScroll` | xy UV per second |
-| `_SrcBlend`, `_DstBlend`, `_BlendOp` | default SrcAlpha One (additive); Fade = SrcAlpha OneMinusSrcAlpha |
-| `_AlphaPremultiply` | rgb x alpha (for One One) |
-| `_InvFade` | soft particles (needs the camera depth texture; `SOFTPARTICLES_ON` from Quality settings) |
-| `_LightVolumeTint` | 0..1, see above |
-| `_ZWrite`, `_ZTest`, `_Cull`, `_AdditiveFog` | render state; fog to black by default |
+The one shader for every ripped GW2 particle (2026-10-22). GW2 draws particles with a small set
+of particle pixel shaders, read here from the AMATs' DXBC (`gw2dat_cli amat --dump-all`;
+`AMATDBG=1` lists every technique, pass and effect with its blend). Each is a `_PtcShader`
+family, written with GW2's own formulas (`GW2Particle.cginc`'s header): 0 basic (a stand-in),
+1 soft additive, 2 premultiplied, 3 step dissolve, 4 alpha-test fade (+ add layer), 5 flow,
+6 fire (GW2Core's fire block), 7 flow layer. `CastlemistMaterials.BuildParticleMaterial`
+picks the family (`FamilyOf`: the material's constants and profile) and warns for an AMAT not
+yet read from the game. Screen-distortion particles (709206, 959502) get `Castlemist/GW2 Distort`.
+
+| materials.json | Property | Notes |
+|---|---|---|
+| `blend` (raw factors, always) | `_SrcBlend`, `_DstBlend`, ... | the AMAT's blend: the families' colour maths assumes it |
+| `maps.baseColor` | `_MainTex` | the cloud's texCoordRect as its tiling / offset (ParticleEffects) |
+| `gw2.depfade` / `depdist` / `depdis` (else 17) | `_DepDist` (x unity scale), `_SoftFade` | the literal 17 is GW2's default in the shaders; 0 = no fade |
+| `gw2.step`, `gw2.diffade` | `_StepMin`, `_AlphaScale` | step family; without `diffade` the fade is the vertex red (48767) |
+| extra `add`, `gw2.addcolr`, `gw2.stepmin` | `_AddTex`, `_AddColor`, `_AddStepMin`, `_UseAddLayer` 1 | 1601524's pass 1 (SrcAlpha / One), the "Always" pass |
+| extra `flow`, `gw2.flow` / `startcl` / `endcl` / `stepcol` | `_FlowTex`, `_Flow`, `_FlowStart`, `_FlowEnd`, `_FlowStep` | flow family (882183) |
+| extras `opacitytile`, `flow`, `gw2.uvscrol` / `flowuv` | `_LayerTex`, `_FlowTex`, `_LayerScroll`, `_LayerFlowUV` | flow layer (1764372) |
+| fx-fire | as `Castlemist/GW2`'s fire block | modes 2 / 3 (977200, 1171331) |
+| `texTransforms[]` UV0 | `_UVAnim0` | |
+
+The renderer needs the custom vertex streams Position, Color, UV, UV2, AnimBlend,
+StableRandomXYZ (`CastlemistMaterials.ApplyParticleStreams`): UV2 and AnimBlend blend flipbook
+frames as GW2's flipbook variants do (uv1 = the next frame, uv2.x the blend), and the stable
+randoms stand in for GW2's per-particle uv1-uv3 phases in the fire and flow shaders (UNPROVEN:
+GrCloud's vertex fill is not read). Colour space: GW2 shades in gamma; the families multiply
+colours in the project's space, use `unity_ColorSpaceDouble` for GW2's x 2, raise a coverage
+folded into a colour to 2.2 in linear projects, and take the vertex colour back to gamma where
+GW2 reads it as parameters (flow thresholds, step fades). Data maps (noise, mask, flow, add)
+must import linear (`CastlemistPostprocessor.RoleOf`).
 
 Unity's particle-system GPU instancing (`UnityStandardParticleInstancing.cginc`) is not set up;
 `multi_compile_instancing` covers FX meshes on MeshRenderers.
@@ -171,10 +191,14 @@ All GW2 -> Unity mappings below are **UNPROVEN readings** of raw data (`Environm
   1676989's reveal, whose `color.w` is 0 at rest), GW2's own fresnel reflection on the lit props,
   1676989's luminance step term, and the AlphaRef discard of 2591650 (the engine's AlphaRef is not
   in the export).
-- The soft depth fades (`depfade`, `dfadevl`, `depdist`) are set but off (`_SoftFade` 0): they need
-  the camera depth texture.
-- Particle-only ports (977200, 1171331, 709206) wait for a particle import; 965703's `fadedif` and 27304's
-  `stepmin` are 0 as stored (runtime-driven, UNPROVEN), so those are invisible until animated.
+- The soft depth fades (`depfade`, `dfadevl`, `depdist`) are set but off on meshes (`_SoftFade` 0);
+  particles have them on. Either fades only when a camera depth texture is bound (`CM_SoftFade`).
+- Particle families read so far: the AMATs of the Firebrand tomes (2026-10-22). The Tome's rune
+  shaders (1764349, 1764348, 1764443, 1764445, 1764347) and the lit particle shaders (339180,
+  48318) are not transcribed: they draw as the family their constants suggest, with a warning.
+  1764372's flow map (fileId 1764337) does not decode (not ATEX; probably a plain DDS) and is
+  missing from the export. 965703's `fadedif` and 27304's `stepmin` are 0 as stored
+  (runtime-driven, UNPROVEN), so those are invisible until animated.
 - 630598 (armour glass) has no diffuse in the MODL (a runtime character composite): grey stands in.
 - Still unsupported: armor-silk (2507831, 3252849) and jade-interior (2472137), character shaders.
 - fx-flow (2591650, 2759298), 709501 and 2434562 are ported from the DXBC but not seen drawn: on

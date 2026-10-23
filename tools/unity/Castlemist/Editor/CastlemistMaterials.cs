@@ -9,9 +9,10 @@
 //                            MODL texTransform as its UV set's animation; the preset's render
 //                            state from PoiyomiMaterials.PresetFor, raw bgfx factors where exact
 //                            is false
-//   Castlemist/GW2 Particle  Additive, Soft Additive and the two Multiplicative presets (not a
-//                            parallax layer): the base colour with the preset's blend, unlit, fog
-//                            to black for the additive ones
+//   Castlemist/GW2 Particle  particle systems (BuildParticleMaterial): the GW2 particle shader
+//                            family of the material (FamilyOf; the families are GW2's particle
+//                            pixel shaders read from their DXBC, GW2Particle.cginc), its maps and
+//                            constants, the AMAT's own blend, unlit
 // Every block float is written on every build (ResetBlocks), so a re-import never keeps a block
 // a material had before. Blended materials have their ShadowCaster pass off. Existing .mat assets
 // are updated in place (stable GUIDs).
@@ -717,7 +718,8 @@ namespace Castlemist
         /// fire block): unlit, premultiplied (One / InvSrcAlpha), the colour and alpha computed by the
         /// shader. The shader is told apart by its uniforms (an AMAT with the same code gets the same
         /// mode), else by the AMAT. GW2 constants go in raw (SetVec: no sRGB conversion).
-        static void Fire(MaterialContext ctx, Material mat, string tag, string folder, MaterialsFile.MaterialEntry e)
+        static void Fire(MaterialContext ctx, Material mat, string tag, string folder, MaterialsFile.MaterialEntry e,
+                         bool particle = false)
         {
             int mode = e.Gw2Vectors.ContainsKey("firesfl") || e.Gw2Vectors.ContainsKey("flowbuv") ? 0
                      : e.Gw2Vectors.ContainsKey("rampstp") ? 1
@@ -802,7 +804,8 @@ namespace Castlemist
                 SetVec(mat, "_FireParams2", new Vector4(X("scale", 1.0), X("scaleb", 1.0), 0f, 0f));
                 // 1171331's dye palette is a runtime composite (fileId 0): white stands in (UNPROVEN).
                 SetVec(mat, "_FireDye", Vector4.one);
-                ctx.Warnings.Add(tag + ": fx-fire " + e.Amat + " is a GW2 particle shader: it needs the particle's UV1-3 and colour streams");
+                if (!particle)
+                    ctx.Warnings.Add(tag + ": fx-fire " + e.Amat + " is a GW2 particle shader: it needs the particle's UV1-3 and colour streams");
             }
             if (missing.Count > 0)
                 ctx.Warnings.Add(tag + ": fx-fire without its " + string.Join(", ", missing) + " layer(s): the flame is incomplete");
@@ -938,32 +941,167 @@ namespace Castlemist
             mat.shaderKeywords = new string[0];
         }
 
-        /// A material on Castlemist/GW2 Particle, for GW2 particle systems (not placed by the world
-        /// import yet: its mesh effects are Castlemist/GW2, unlit).
+        /// Castlemist/GW2 Particle's _PtcShader values: GW2's particle pixel-shader families
+        /// (GW2Particle.cginc has the formulas and the AMATs each was read from).
+        public enum ParticleFamily { Basic = 0, Soft = 1, Premultiplied = 2, Step = 3, Fade = 4, Flow = 5, Fire = 6, FlowLayer = 7 }
+
+        /// The AMATs whose particle shaders were read from the game's DXBC (2026-10-22); any other
+        /// AMAT gets its family from its profile and constants, with a warning.
+        static readonly HashSet<long> ReadParticleAmats = new HashSet<long>
+        {
+            19092, 54360, 25489, 43029,   // soft
+            20760, 53260,                 // premultiplied
+            19116, 14196, 48767,          // step
+            1601524, 19255,               // fade (+ the add layer)
+            882183, 1710790,              // flow
+            977200, 1171331,              // fire
+            1764372,                      // flow layer
+        };
+
+        /// The GW2 particle shader family of @p e: by its constants (the uniforms its shaders
+        /// declare) and profile, then its blend.
+        public static ParticleFamily FamilyOf(MaterialsFile.MaterialEntry e)
+        {
+            if (e.Profile == "fx-fire") return ParticleFamily.Fire;
+            if (e.Gw2.ContainsKey("flowuv") && e.Gw2.ContainsKey("uvscrol")) return ParticleFamily.FlowLayer;
+            if (e.Gw2.ContainsKey("startcl") && e.Gw2.ContainsKey("flow")) return ParticleFamily.Flow;
+            if (e.Gw2.ContainsKey("addcolr") || e.Profile == "fx-alpha") return ParticleFamily.Fade;
+            if (e.Gw2.ContainsKey("step")) return ParticleFamily.Step;
+            if (e.Profile == "fx-premultiplied") return ParticleFamily.Premultiplied;
+            // One / InvSrcColor (bgfx 2 / 4): the soft-additive shaders
+            if (e.Profile == "fx-soft-additive" || e.Blend != null && e.Blend.SrcRgb == 2 && e.Blend.DstRgb == 4)
+                return ParticleFamily.Soft;
+            return ParticleFamily.Basic;
+        }
+
+        /// The particle renderer's vertex streams Castlemist/GW2 Particle reads (GW2Particle.cginc):
+        /// TEXCOORD0 = UV, UV2; TEXCOORD1 = AnimBlend, StableRandom.xyz.
+        public static readonly List<ParticleSystemVertexStream> ParticleStreams = new List<ParticleSystemVertexStream>
+        {
+            ParticleSystemVertexStream.Position, ParticleSystemVertexStream.Color,
+            ParticleSystemVertexStream.UV, ParticleSystemVertexStream.UV2,
+            ParticleSystemVertexStream.AnimBlend, ParticleSystemVertexStream.StableRandomXYZ,
+        };
+
+        /// Sets @p r up for a Castlemist/GW2 Particle material (the vertex streams above).
+        public static void ApplyParticleStreams(ParticleSystemRenderer r)
+        {
+            r.SetActiveVertexStreams(ParticleStreams);
+        }
+
+        /// A material on Castlemist/GW2 Particle, for GW2 particle systems: the GW2 particle shader
+        /// family of the material (FamilyOf), its maps and constants, the AMAT's blend (raw factors
+        /// whenever materials.json has them: the shaders' colour maths assumes that blend).
         public static Material BuildParticleMaterial(MaterialContext ctx, MaterialsFile.MaterialEntry e, string modelFolder,
                                       bool darkDecal, WorldManifest.UvScroll scroll, string assetPath)
         {
+            // Screen distortion (heat haze; 709206, 959502): Castlemist/GW2 Distort, which reads the
+            // vertex colour as the particle shaders do.
+            if (ctx.DistortShader != null && (IsDistort(e) || e.ExtraOf("distort") != null && e.Map("baseColor") == null))
+                return BuildDistort(ctx, e, modelFolder, assetPath);
             string tag = Path.GetFileName(modelFolder) + "/" + e.Name;
             int mode = darkDecal ? PoiyomiMaterials.Fade : e.Mode;
             Material mat = PoiyomiMaterials.GetOrCreate(ctx.ParticleShader, assetPath);
+            ResetBlocks(mat);
             ApplyPreset(mat, mode);
-            if (!darkDecal && !e.Exact && e.Blend != null) ApplyRawBlend(mat, e.Blend);
+            if (!darkDecal && e.Blend != null) ApplyRawBlend(mat, e.Blend);
+            mat.SetShaderPassEnabled("ShadowCaster", false);
+            SetF(mat, "_ZWrite", 0f);
             SetF(mat, "_Cull", e.Cull == "Off" ? (float)CullMode.Off : (float)CullMode.Back);
             mat.renderQueue = ctx.QueueFor(mode) + e.RenderQueueOffset;
+            int src = (int)mat.GetFloat("_SrcBlend"), dst = (int)mat.GetFloat("_DstBlend");
+            // GW2's fog takes additive and premultiplied colours toward black (x (1 - fog))
+            SetF(mat, "_AdditiveFog", src == (int)BlendMode.One || dst == (int)BlendMode.One ? 1f : 0f);
+            SetF(mat, "_UnityScale", ctx.UnityScale);
+            SetF(mat, "_Cutoff", 1f / 255f);   // AlphaRef: an engine value (as the world import's)
+            SetF(mat, "_FrameBlend", 1f);
+            SetF(mat, "_PtcTexAlphaRgb", 1f);
+            SetF(mat, "_PtcVcColour", 1f);
+            SetF(mat, "_PtcFadeVcR", 0f);
+            SetF(mat, "_UseAddLayer", 0f);
+            foreach (string t in new[] { "_AddTex", "_LayerTex" }) if (mat.HasProperty(t)) mat.SetTexture(t, null);
+
+            ParticleFamily fam = FamilyOf(e);
+            SetF(mat, "_PtcShader", (float)fam);
+            if (!ReadParticleAmats.Contains(e.Amat))
+                ctx.Warnings.Add(tag + ": particle AMAT " + e.Amat + " (" + e.Profile + ") not read from the game: drawn as the " +
+                                 fam + " family by its profile and constants (UNPROVEN)");
+            if (e.Gw2.ContainsKey("ambint") || e.Gw2.ContainsKey("deppow"))
+                ctx.Warnings.Add(tag + ": a lit GW2 particle shader (sun, ambient): drawn unlit");
+
+            // soft depth fade: depfade / depdist / depdis, else the shaders' literal 17; 0 is none
+            double d = e.Const("depfade", 0, e.Const("depdist", 0, e.Const("depdis", 0, 17.0)));
+            SetF(mat, "_SoftFade", d > 0 ? 1f : 0f);
+            SetF(mat, "_DepDist", (float)(System.Math.Max(d, 0) * ctx.UnityScale));
+
             MaterialsFile.MapRef bc = e.Map("baseColor");
-            if (bc != null) PoiyomiMaterials.SetTex(ctx, mat, "_MainTex", modelFolder, bc, tag);
-            if (bc != null && bc.Uv != 0)
-                ctx.Warnings.Add(tag + ": baseColor UV" + bc.Uv + " not mapped (the particle shader reads UV0)");
-            SetColor(mat, "_TintColor", Color.white);
-            SetF(mat, "_Intensity", 1f);
-            SetF(mat, "_AlphaPremultiply", mode == PoiyomiMaterials.Transparent ? 1f : 0f);
-            SetF(mat, "_AdditiveFog", AddsLight(mode) ? 1f : 0f);
-            Vector4 sv = Vector4.zero;
+            Vector4 V(string n, Vector4 fb)
+            {
+                return new Vector4((float)e.Const(n, 0, fb.x), (float)e.Const(n, 1, fb.y), (float)e.Const(n, 2, fb.z), (float)e.Const(n, 3, fb.w));
+            }
+            Color C(string n) { Vector4 v = V(n, Vector4.one); return new Color(v.x, v.y, v.z, v.w); }   // gamma, as GW2's
+            MaterialsFile.Extra Ex(string role) { return e.ExtraOf(role); }
+            switch (fam)
+            {
+                case ParticleFamily.Fire:
+                    Fire(ctx, mat, tag, modelFolder, e, true);
+                    break;
+                case ParticleFamily.Flow:
+                    Layer(ctx, mat, tag, modelFolder, bc, "_MainTex", null);
+                    Layer(ctx, mat, tag, modelFolder, Ex("flow") != null ? Ex("flow").Map : null, "_FlowTex", null);
+                    if (Ex("flow") == null) ctx.Warnings.Add(tag + ": flow particle without its flow layer: undistorted");
+                    SetVec(mat, "_Flow", V("flow", new Vector4(1, 1, 1, 0)));
+                    SetColor(mat, "_FlowStart", C("startcl"));
+                    SetColor(mat, "_FlowEnd", C("endcl"));
+                    SetVec(mat, "_FlowStep", V("stepcol", new Vector4(0, 1, 0, 0)));
+                    break;
+                case ParticleFamily.FlowLayer:
+                    Layer(ctx, mat, tag, modelFolder, bc, "_MainTex", null);
+                    MaterialsFile.Extra lay = Ex("opacitytile");
+                    Layer(ctx, mat, tag, modelFolder, lay != null ? lay.Map : null, "_LayerTex", null);
+                    Layer(ctx, mat, tag, modelFolder, Ex("flow") != null ? Ex("flow").Map : null, "_FlowTex", null);
+                    if (lay == null) ctx.Warnings.Add(tag + ": flow-layer particle without its opacitytile layer");
+                    if (Ex("flow") == null) ctx.Warnings.Add(tag + ": flow-layer particle without its flow layer (not exported): the layer scrolls undistorted");
+                    SetVec(mat, "_LayerScroll", V("uvscrol", new Vector4(1, 1, 0, 0)));
+                    SetVec(mat, "_LayerFlowUV", V("flowuv", Vector4.zero));
+                    break;
+                case ParticleFamily.Fade:
+                    Layer(ctx, mat, tag, modelFolder, bc, "_MainTex", null);
+                    SetF(mat, "_PtcVcColour", e.Profile == "fx-alpha" ? 1f : 0f);   // 19255 x 2 vc; 1601524 the texture alone
+                    MaterialsFile.Extra add = Ex("add");
+                    bool addLayer = add != null && e.Gw2.ContainsKey("addcolr");
+                    if (addLayer)
+                    {
+                        Layer(ctx, mat, tag, modelFolder, add.Map, "_AddTex", null);
+                        SetColor(mat, "_AddColor", C("addcolr"));
+                        SetF(mat, "_AddStepMin", (float)e.Const("stepmin", 0, 0.75));
+                    }
+                    SetF(mat, "_UseAddLayer", addLayer ? 1f : 0f);
+                    break;
+                case ParticleFamily.Step:
+                    Layer(ctx, mat, tag, modelFolder, bc, "_MainTex", null);
+                    SetF(mat, "_StepMin", (float)e.Const("step", 0, 0.75));
+                    bool difFade = e.Gw2.ContainsKey("diffade");   // 48767 has none: its fade is the vertex red
+                    SetF(mat, "_AlphaScale", (float)e.Const("diffade", 0, 1.0));
+                    SetF(mat, "_PtcFadeVcR", difFade ? 0f : 1f);
+                    SetF(mat, "_PtcVcColour", difFade ? 1f : 0f);
+                    break;
+                default:
+                    Layer(ctx, mat, tag, modelFolder, bc, "_MainTex", null);
+                    SetF(mat, "_PtcTexAlphaRgb", e.Amat == 43029 ? 0f : 1f);
+                    SetF(mat, "_AlphaPremultiply", fam == ParticleFamily.Basic && src == (int)BlendMode.One ? 1f : 0f);
+                    break;
+            }
+            if (bc != null && bc.Uv != 0 && fam != ParticleFamily.Fire)
+                ctx.Warnings.Add(tag + ": baseColor UV" + bc.Uv + " read as the particle's UV0");
+            mat.SetShaderPassEnabled("Always", On(mat, "_UseAddLayer"));
+
+            Vector4 anim = Vector4.zero;
             foreach (MaterialsFile.TexTransform t in e.TexTransforms)
-                if (bc != null && t.Uv == bc.Uv) sv = new Vector4((float)t.Scroll[0], (float)-t.Scroll[1], 0f, 0f);
-            if (e.TexTransforms.Count == 0 && scroll != null && bc != null && bc.Uv == scroll.UvIndex)
-                sv = new Vector4((float)scroll.U, (float)-scroll.V, 0f, 0f);
-            SetVec(mat, "_UVScroll", sv);
+                if (t.Uv == 0) anim = new Vector4((float)t.Scroll[0], (float)-t.Scroll[1], (float)-t.Rotate, 0f);
+            if (e.TexTransforms.Count == 0 && scroll != null && scroll.UvIndex == 0)
+                anim = new Vector4((float)scroll.U, (float)-scroll.V, 0f, 0f);
+            SetVec(mat, "_UVAnim0", anim);
             mat.enableInstancing = true;
             EditorUtility.SetDirty(mat);
             ctx.Built++;

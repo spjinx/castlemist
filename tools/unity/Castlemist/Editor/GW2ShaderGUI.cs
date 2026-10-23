@@ -8,8 +8,8 @@
 // Blocks are material floats (no keywords): assigning a normal, packed, detail, emission or
 // parallax map turns its block on, clearing it turns it off. "Custom" keeps the blend factors
 // as they are and shows them for editing.
-// GW2 Particle: a Blend popup (Additive, Soft Additive, Alpha, Premultiplied, Multiply,
-// Custom), the texture, tint, scroll, soft particles, Light Volumes tint, render state.
+// GW2 Particle: the GW2 particle shader family, a Blend popup (Additive, Soft Additive, Alpha,
+// Premultiplied, Multiply, Custom), then the family's own maps and constants, soft fade, render state.
 
 using System;
 using UnityEditor;
@@ -386,27 +386,76 @@ namespace Castlemist
             var mat = (Material)editor.target;
 
             EditorGUILayout.LabelField("castlemist GW2 Particle", EditorStyles.boldLabel);
-            Note("Unlit: texture x vertex colour x tint x intensity. For GW2 effects, glows and particle systems.");
+            Note("Unlit. One of GW2's particle shaders (read from the game), chosen by the importer. " +
+                 "The particle renderer needs the custom vertex streams UV, UV2, AnimBlend, StableRandomXYZ.");
+            Prop("_PtcShader", "GW2 particle shader");
             Blend(mat);
+            int fam = (int)(P("_PtcShader") != null ? P("_PtcShader").floatValue : 0f);
 
             if (Section("Colour"))
             {
-                Tex("_MainTex", "Texture", "RGB colour, A alpha", "_TintColor");
+                Tex("_MainTex", "Texture", "RGB colour, A alpha");
                 editor.TextureScaleOffsetProperty(P("_MainTex"));
-                Prop("_Intensity", "Intensity");
-                MaterialProperty sc = P("_UVScroll");
-                if (sc != null)
+                Prop("_FrameBlend", "Blend flipbook frames");
+                if (fam == 1) Prop("_PtcTexAlphaRgb", "Colour x texture alpha");
+                if (fam == 3 || fam == 4) Prop("_PtcVcColour", "Colour x 2 x vertex colour");
+                if (fam == 0) Prop("_AlphaPremultiply", "Colour x alpha");
+                Prop("_UVAnim0", "UV animation (scroll xy, rotate z)");
+                EndSection();
+            }
+            if (fam == 3 && Section("Step dissolve"))
+            {
+                Prop("_StepMin", "step");
+                Prop("_PtcFadeVcR", "Fade by vertex red");
+                Prop("_AlphaScale", "diffade");
+                EndSection();
+            }
+            if (fam == 4 && Section("Add layer (second pass)"))
+            {
+                EditorGUI.BeginChangeCheck();
+                Prop("_UseAddLayer", "Add layer");
+                if (EditorGUI.EndChangeCheck())
+                    foreach (UnityEngine.Object o in editor.targets)
+                        ((Material)o).SetShaderPassEnabled("Always", ((Material)o).GetFloat("_UseAddLayer") > 0.5f);
+                Tex("_AddTex", "add", "R step, A coverage");
+                Prop("_AddColor", "addcolr");
+                Prop("_AddStepMin", "stepmin");
+                EndSection();
+            }
+            if ((fam == 5 || fam == 7) && Section("Flow"))
+            {
+                Tex("_FlowTex", "Flow", "RG offset, linear");
+                if (fam == 5)
                 {
-                    EditorGUI.BeginChangeCheck();
-                    Vector2 v = EditorGUILayout.Vector2Field(new GUIContent("UV scroll (per second)"), sc.vectorValue);
-                    if (EditorGUI.EndChangeCheck()) sc.vectorValue = new Vector4(v.x, v.y, 0f, 0f);
+                    Prop("_Flow", "flow (uv scale, strength, power, scroll)");
+                    Prop("_FlowStart", "startcl");
+                    Prop("_FlowEnd", "endcl");
+                    Prop("_FlowStep", "stepcol");
+                }
+                else
+                {
+                    Tex("_LayerTex", "Layer", "opacitytile");
+                    Prop("_LayerScroll", "uvscrol");
+                    Prop("_LayerFlowUV", "flowuv");
                 }
                 EndSection();
             }
-            if (Section("Soft particles and lighting", false))
+            if (fam == 6 && Section("Fire", false))
             {
-                Prop("_InvFade", "Soft particles factor", "Needs Soft Particles in Quality settings and a depth texture");
-                Prop("_LightVolumeTint", "Light Volumes tint", "0: unlit; 1: tinted by the VRC Light Volumes / light probe ambient");
+                Prop("_FireMode", "Fire shader");
+                Tex("_MaskTex", "mask", "fire noise mask");
+                Tex("_FlowTex", "flow", "RG offset, linear");
+                Prop("_FireParams", "perturb, scalep, speedp, speed");
+                Prop("_FireParams2", "scale, scaleb");
+                Prop("_FireColorL", "colorl");
+                Prop("_FireColorH", "colorh");
+                EndSection();
+            }
+            if (Section("Soft fade", false))
+            {
+                Prop("_SoftFade", "Soft depth fade", "Needs a depth texture");
+                Prop("_DepDist", "Distance (Unity units)");
+                Prop("_Cutoff", "AlphaRef");
                 EndSection();
             }
             if (Section("Advanced", false))

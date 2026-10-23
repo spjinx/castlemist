@@ -3,7 +3,8 @@
 // Every GW2 feature is a block switched by a material float (uniform branching), never by a
 // keyword: one variant per Unity pass setup, no keyword budget (project choice 2026-10-22; a
 // per-family bake can constant-fold them later). The including pass defines one of
-// CM_PASS_FORWARDBASE, CM_PASS_FORWARDADD, CM_PASS_SHADOWCASTER or CM_PASS_META first.
+// CM_PASS_FORWARDBASE, CM_PASS_FORWARDADD, CM_PASS_SHADOWCASTER or CM_PASS_META first, or
+// CM_PASS_PARTICLE (Castlemist/GW2 Particle: GW2Particle.cginc builds on these blocks).
 //
 // UV sets. uv0..uv3 are GW2's TEXCOORD0-3 (uv1 from TEXCOORD4 with _UV1FromUV4: the export's
 // copy, so a baked lightmap may own UV1), each animated by _UVAnim<n> = the MODL texTransform
@@ -373,10 +374,14 @@ half CM_Alpha(half a, float4 uv01, float4 uv23, float ndv)
 }
 
 // Soft depth fade: 0 where the surface meets scene geometry, 1 from _DepDist (Unity units) on.
+// Only with a camera depth texture bound (its size known): without one the default texture
+// reads as geometry at the near plane and would fade everything out (a VRChat avatar cannot
+// count on one).
+float4 _CameraDepthTexture_TexelSize;
 half CM_SoftFade(float4 screenPos)
 {
     half f = 1;
-    if (_SoftFade > 0.5)
+    if (_SoftFade > 0.5 && _CameraDepthTexture_TexelSize.z > 16)
     {
         float scene = LinearEyeDepth(SAMPLE_DEPTH_TEXTURE_PROJ(_CameraDepthTexture, UNITY_PROJ_COORD(screenPos)));
         f = CM_Smooth01(saturate((scene - screenPos.z) / max(_DepDist, 1e-4)));
@@ -424,6 +429,96 @@ half3 CM_Emission(float4 uv01, float4 uv23)
         r = e * dot(m, sel) * _EmissionColor.rgb * _EmissionStrength;
     }
     return r + CM_Burn(uv01, uv23);
+}
+
+// A Unity UV in GW2's convention (v down; the glTF import flipped it) and back for the sample.
+float2 CM_FireG(float2 uv) { return float2(uv.x, 1.0 - uv.y); }
+#define CM_FIRE_TEX(tex, g) CM_TEX(tex, float2((g).x, 1.0 - (g).y))
+
+// GW2's animated UV of the fire shaders: scaled by a triangle wave between p.z and p.w (p.y
+// cycles per second), scrolled in v by frac(t p.x).
+float2 CM_FireUV(float2 g, float4 p, float t)
+{
+    float s = abs(frac(t * p.y) * 2.0 - 1.0) * (p.w - p.z) + p.z;
+    return float2(g.x * s, g.y * s + frac(t * p.x));
+}
+
+// smoothstep01(saturate((x - lo) / (hi - lo))), a zero range kept finite.
+half CM_FireStep(half x, float lo, float hi)
+{
+    float d = hi - lo;
+    d = abs(d) < 1e-5 ? 1e-5 : d;
+    return CM_Smooth01(saturate((x - lo) / d));
+}
+
+// GW2 does the fire in gamma space: its colour to the project's space (coverage stays linear).
+half3 CM_FireColour(half3 c) { return IsGammaSpace() ? c : pow(max(c, 0), 2.2); }
+
+// The fire (see the header): premultiplied rgb and the blend alpha (not yet saturated), from the
+// four UV sets, the vertex colour as GW2 has it (gamma) and the unflipped world normal n (GW2's
+// view-space normal fades back faces out). Every pass that draws fire calls this.
+half4 CM_FireCore(float4 uv01, float4 uv23, half4 vc, float3 n)
+{
+    float t = _Time.y;
+    float2 g0 = CM_FireG(uv01.xy), g1 = CM_FireG(uv01.zw);
+    half4 o;
+    if (_FireMode < 1.5)
+    {
+        // GW2 view space is left-handed (+z forward): its normal z = -(Unity view-space z).
+        float nz = dot(UNITY_MATRIX_V[2].xyz, n);
+        half edge = _FireNoEdge > 0.5 ? 1.0 : max(0.0, 1.0 - 1.5 * (1.0 - nz) * (1.0 - nz));
+        float2 flow = CM_FIRE_TEX(_FlowTex, CM_FireUV(g1, _FireUV1, t)).xy * 2.0 - 1.0;
+        float2 base = CM_FireUV(g1, _FireUV0, t);
+        if (_FireMode < 0.5)
+        {
+            // 740364. _FireParams = (flowspd, firedfl, firesfl, opacity), _FireParams2.xy = ramprmp.
+            flow += CM_FIRE_TEX(_FireFlowB, CM_FireUV(g1, _FireUV2, t)).xy * 2.0 - 1.0;
+            float p0 = frac(_FireParams.x * t), p1 = frac(_FireParams.x * t - 0.5);
+            half w = abs(p0 * 2.0 - 1.0);
+            float2 d = flow * _FireParams.y;
+            half fire = lerp(CM_FIRE_TEX(_FireDetail, base + d * p0).g, CM_FIRE_TEX(_FireDetail, base + d * p1).g, w);
+            half k = CM_Smooth01(saturate((fire + 0.05) * 2.03593));
+            float2 ds = flow * lerp(_FireParams2.x, _FireParams2.y, CM_FIRE_TEX(_RampTex, g0).r) * _FireParams.z;
+            half shape = lerp(CM_FIRE_TEX(_MainTex, g0 + ds * p0).g, CM_FIRE_TEX(_MainTex, g0 + ds * p1).g, w);
+            half cover = k * shape * edge * _FireParams.w;
+            o = half4(CM_FireColour(lerp(_FireColorL.rgb, _FireColorH.rgb, fire) * 3.24) * cover, 1.8 * cover);
+        }
+        else
+        {
+            // 965703. _FireParams = (rampflw.x, rampflw.y, detailf, fadedif), _FireParams2 = rampstp,
+            // _FireParams3 = (stepcol.x, stepcol.y, premult, 0).
+            flow += CM_FIRE_TEX(_FlowTex, CM_FireUV(g1, _FireUV1 * 0.4, t)).xy * 2.0 - 1.0;
+            half r = CM_FIRE_TEX(_RampTex, g0).g;
+            float k = lerp(_FireParams.x, _FireParams.y, r);
+            float2 stp = lerp(_FireParams2.xy, _FireParams2.zw, r);
+            half shape = CM_FIRE_TEX(_MainTex, g0 + flow * k).g;
+            half fire = CM_FIRE_TEX(_FireDetail, base + flow * k * _FireParams.z).g;
+            half4 col = lerp(_FireColorL, _FireColorH, CM_FireStep(fire, _FireParams3.x, _FireParams3.y));
+            half cover = CM_FireStep(fire, stp.x, stp.y) * col.a * shape * edge * _FireParams.w;
+            o = half4(CM_FireColour(col.rgb) * cover, cover * _FireParams3.z);
+        }
+    }
+    else
+    {
+        // 977200 / 1171331 (GW2 vs 0: v0 = (uv0, uv3), v1 = (uv2, uv1), v3 = the vertex colour).
+        // _FireParams = (perturb, scalep, speedp, speed), _FireParams2.xy = (scale, scaleb).
+        float2 g2 = CM_FireG(uv23.xy), g3 = CM_FireG(uv23.zw);
+        float pt = _FireParams.z * t;
+        float2 q = (g0 + g3) * _FireParams.y;
+        float2 a = CM_FIRE_TEX(_FlowTex, float2(q.x, q.y + 2.0 * pt) * 2.0).xy * 2.0 - 1.0;
+        float2 b = CM_FIRE_TEX(_FlowTex, float2(q.x, q.y + pt)).xy * 2.0 - 1.0;
+        float2 up = g0 + (a + b) * _FireParams.x;
+        float2 uk = up * (g2.x + 0.5);
+        float sv = t * _FireParams.w;
+        half4 p = CM_FIRE_TEX(_MaskTex, up)
+                * CM_FIRE_TEX(_MainTex, float2(uk.x * _FireParams2.x, uk.y * _FireParams2.x + g1.x + sv))
+                * CM_FIRE_TEX(_MainTex, float2(uk.x * _FireParams2.y, uk.y * _FireParams2.y + g1.y + sv)) * 4.0;
+        half3 col;
+        if (_FireMode < 2.5) col = saturate(1.0 - p.rgb) * _FireColorL.rgb + _FireColorH.rgb * p.rgb;
+        else col = lerp(_FireColorL.rgb, _FireColorH.rgb, p.r) * normalize(max(_FireDye.rgb, 0.001));
+        o = half4(CM_FireColour(p.rgb * col * vc.rgb * 2.0) * vc.a, p.a * vc.a);
+    }
+    return o;
 }
 
 #if defined(CM_PASS_FORWARDBASE) || defined(CM_PASS_FORWARDADD)
@@ -488,94 +583,8 @@ v2f vert(appdata v)
     return o;
 }
 
-// A Unity UV in GW2's convention (v down; the glTF import flipped it) and back for the sample.
-float2 CM_FireG(float2 uv) { return float2(uv.x, 1.0 - uv.y); }
-#define CM_FIRE_TEX(tex, g) CM_TEX(tex, float2((g).x, 1.0 - (g).y))
-
-// GW2's animated UV of the fire shaders: scaled by a triangle wave between p.z and p.w (p.y
-// cycles per second), scrolled in v by frac(t p.x).
-float2 CM_FireUV(float2 g, float4 p, float t)
-{
-    float s = abs(frac(t * p.y) * 2.0 - 1.0) * (p.w - p.z) + p.z;
-    return float2(g.x * s, g.y * s + frac(t * p.x));
-}
-
-// smoothstep01(saturate((x - lo) / (hi - lo))), a zero range kept finite.
-half CM_FireStep(half x, float lo, float hi)
-{
-    float d = hi - lo;
-    d = abs(d) < 1e-5 ? 1e-5 : d;
-    return CM_Smooth01(saturate((x - lo) / d));
-}
-
-// GW2 does the fire in gamma space: its colour to the project's space (coverage stays linear).
-half3 CM_FireColour(half3 c) { return IsGammaSpace() ? c : pow(max(c, 0), 2.2); }
-
-// The fire (see the header): premultiplied rgb and the blend alpha (not yet saturated).
-// n: the unflipped world normal (GW2's view-space normal fades back faces out).
-half4 CM_Fire(v2f i, float3 n)
-{
-    float t = _Time.y;
-    float2 g0 = CM_FireG(i.uv01.xy), g1 = CM_FireG(i.uv01.zw);
-    half4 o;
-    if (_FireMode < 1.5)
-    {
-        // GW2 view space is left-handed (+z forward): its normal z = -(Unity view-space z).
-        float nz = dot(UNITY_MATRIX_V[2].xyz, n);
-        half edge = _FireNoEdge > 0.5 ? 1.0 : max(0.0, 1.0 - 1.5 * (1.0 - nz) * (1.0 - nz));
-        float2 flow = CM_FIRE_TEX(_FlowTex, CM_FireUV(g1, _FireUV1, t)).xy * 2.0 - 1.0;
-        float2 base = CM_FireUV(g1, _FireUV0, t);
-        if (_FireMode < 0.5)
-        {
-            // 740364. _FireParams = (flowspd, firedfl, firesfl, opacity), _FireParams2.xy = ramprmp.
-            flow += CM_FIRE_TEX(_FireFlowB, CM_FireUV(g1, _FireUV2, t)).xy * 2.0 - 1.0;
-            float p0 = frac(_FireParams.x * t), p1 = frac(_FireParams.x * t - 0.5);
-            half w = abs(p0 * 2.0 - 1.0);
-            float2 d = flow * _FireParams.y;
-            half fire = lerp(CM_FIRE_TEX(_FireDetail, base + d * p0).g, CM_FIRE_TEX(_FireDetail, base + d * p1).g, w);
-            half k = CM_Smooth01(saturate((fire + 0.05) * 2.03593));
-            float2 ds = flow * lerp(_FireParams2.x, _FireParams2.y, CM_FIRE_TEX(_RampTex, g0).r) * _FireParams.z;
-            half shape = lerp(CM_FIRE_TEX(_MainTex, g0 + ds * p0).g, CM_FIRE_TEX(_MainTex, g0 + ds * p1).g, w);
-            half cover = k * shape * edge * _FireParams.w;
-            o = half4(CM_FireColour(lerp(_FireColorL.rgb, _FireColorH.rgb, fire) * 3.24) * cover, 1.8 * cover);
-        }
-        else
-        {
-            // 965703. _FireParams = (rampflw.x, rampflw.y, detailf, fadedif), _FireParams2 = rampstp,
-            // _FireParams3 = (stepcol.x, stepcol.y, premult, 0).
-            flow += CM_FIRE_TEX(_FlowTex, CM_FireUV(g1, _FireUV1 * 0.4, t)).xy * 2.0 - 1.0;
-            half r = CM_FIRE_TEX(_RampTex, g0).g;
-            float k = lerp(_FireParams.x, _FireParams.y, r);
-            float2 stp = lerp(_FireParams2.xy, _FireParams2.zw, r);
-            half shape = CM_FIRE_TEX(_MainTex, g0 + flow * k).g;
-            half fire = CM_FIRE_TEX(_FireDetail, base + flow * k * _FireParams.z).g;
-            half4 col = lerp(_FireColorL, _FireColorH, CM_FireStep(fire, _FireParams3.x, _FireParams3.y));
-            half cover = CM_FireStep(fire, stp.x, stp.y) * col.a * shape * edge * _FireParams.w;
-            o = half4(CM_FireColour(col.rgb) * cover, cover * _FireParams3.z);
-        }
-    }
-    else
-    {
-        // 977200 / 1171331 (GW2 vs 0: v0 = (uv0, uv3), v1 = (uv2, uv1), v3 = the vertex colour).
-        // _FireParams = (perturb, scalep, speedp, speed), _FireParams2.xy = (scale, scaleb).
-        float2 g2 = CM_FireG(i.uv23.xy), g3 = CM_FireG(i.uv23.zw);
-        float pt = _FireParams.z * t;
-        float2 q = (g0 + g3) * _FireParams.y;
-        float2 a = CM_FIRE_TEX(_FlowTex, float2(q.x, q.y + 2.0 * pt) * 2.0).xy * 2.0 - 1.0;
-        float2 b = CM_FIRE_TEX(_FlowTex, float2(q.x, q.y + pt)).xy * 2.0 - 1.0;
-        float2 up = g0 + (a + b) * _FireParams.x;
-        float2 uk = up * (g2.x + 0.5);
-        float sv = t * _FireParams.w;
-        half4 p = CM_FIRE_TEX(_MaskTex, up)
-                * CM_FIRE_TEX(_MainTex, float2(uk.x * _FireParams2.x, uk.y * _FireParams2.x + g1.x + sv))
-                * CM_FIRE_TEX(_MainTex, float2(uk.x * _FireParams2.y, uk.y * _FireParams2.y + g1.y + sv)) * 4.0;
-        half3 col;
-        if (_FireMode < 2.5) col = saturate(1.0 - p.rgb) * _FireColorL.rgb + _FireColorH.rgb * p.rgb;
-        else col = lerp(_FireColorL.rgb, _FireColorH.rgb, p.r) * normalize(max(_FireDye.rgb, 0.001));
-        o = half4(CM_FireColour(p.rgb * col * i.color.rgb * 2.0) * i.color.a, p.a * i.color.a);
-    }
-    return o;
-}
+// The fire of a mesh (CM_FireCore with its UV sets and vertex colour).
+half4 CM_Fire(v2f i, float3 n) { return CM_FireCore(i.uv01, i.uv23, i.color, n); }
 
 CMSurface CM_Surface(v2f i, float facing, float3 viewDir)
 {

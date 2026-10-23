@@ -1,25 +1,77 @@
-// castlemist: GW2 particles and FX meshes for VRChat (built-in pipeline). Unlit:
-// texture x vertex colour x tint x intensity, any blend the importer sets
-// (default additive: SrcAlpha One), optional soft particles, optional tint by
-// the VRC Light Volumes / light probe ambient at the vertex (L0 only).
-// README.md has the property list.
+// castlemist: the one shader for GW2 particles in VRChat (built-in pipeline). Every GW2 particle
+// pixel-shader family the importer knows is a value of _PtcShader, transcribed from the game's
+// DXBC; the fire block and the maps are GW2Core.cginc's (GW2Particle.cginc has the formulas,
+// README.md the property list). Unlit; the blend is the AMAT's. Needs the particle renderer's
+// custom vertex streams (CastlemistMaterials.ParticleStreams): UV, UV2, AnimBlend, StableRandomXYZ.
 
 Shader "Castlemist/GW2 Particle"
 {
     Properties
     {
-        _MainTex ("Texture", 2D) = "white" {}
-        [HDR] _TintColor ("Tint", Color) = (1, 1, 1, 1)
-        _Intensity ("Intensity", Float) = 1
-        _UVScroll ("Scroll (xy, UV per second)", Vector) = (0, 0, 0, 0)
-        [ToggleUI] _AlphaPremultiply ("Multiply colour by alpha (One One blends)", Float) = 0
-        _InvFade ("Soft particles factor", Range(0.01, 3)) = 1
-        _LightVolumeTint ("Light Volumes tint", Range(0, 1)) = 0
+        [Enum(Basic, 0, Soft additive, 1, Premultiplied, 2, Step dissolve, 3, Alpha test fade, 4, Flow, 5, Fire, 6, Flow layer, 7)] _PtcShader ("GW2 particle shader", Float) = 0
+        _MainTex ("Colour (RGB), alpha (A)", 2D) = "white" {}
+        [HideInInspector] _Color ("Colour", Color) = (1, 1, 1, 1)
+        [ToggleUI] _FrameBlend ("Blend flipbook frames (UV2, AnimBlend)", Float) = 1
+        [ToggleUI] _PtcTexAlphaRgb ("Soft: colour x the texture's alpha", Float) = 1
+        [ToggleUI] _PtcVcColour ("Colour x 2 x vertex colour", Float) = 1
+        [ToggleUI] _PtcFadeVcR ("Step: fade by the vertex red (else Alpha scale)", Float) = 0
+        [ToggleUI] _AlphaPremultiply ("Basic: colour x alpha (One-source blends)", Float) = 0
+        _Cutoff ("AlphaRef (discard below)", Range(0, 1)) = 0.0039216
+
+        [Header(Alpha shaping)]
+        _StepMin ("step / stepmin", Range(0, 0.999)) = 0.75
+        _AlphaScale ("diffade (alpha scale)", Float) = 1
+        [ToggleUI] _SoftFade ("Soft depth fade (needs a depth texture)", Float) = 1
+        _DepDist ("depfade / depdist (Unity units)", Float) = 0.4318
+
+        [Header(Flow (vertex colour holds the parameters))]
+        [NoScaleOffset] _FlowTex ("Flow (RG, linear)", 2D) = "grey" {}
+        _Flow ("flow (uv scale, strength, power, scroll)", Vector) = (1, 1, 1, 0)
+        _FlowStart ("startcl", Color) = (1, 1, 1, 1)
+        _FlowEnd ("endcl", Color) = (1, 1, 1, 1)
+        _FlowStep ("stepcol (min, max)", Vector) = (0, 1, 0, 0)
+
+        [Header(Flow layer (1764372))]
+        [NoScaleOffset] _LayerTex ("Layer (opacitytile)", 2D) = "white" {}
+        _LayerScroll ("uvscrol (uv scale xy, scroll per second zw)", Vector) = (1, 1, 0, 0)
+        _LayerFlowUV ("flowuv (scale xy, scroll per second zw)", Vector) = (0, 0, 0, 0)
+
+        [Header(Add layer (second pass, 1601524))]
+        [ToggleUI] _UseAddLayer ("Add layer", Float) = 0
+        [NoScaleOffset] _AddTex ("add (R step, A coverage)", 2D) = "black" {}
+        _AddColor ("addcolr", Color) = (1, 1, 1, 1)
+        _AddStepMin ("stepmin", Range(0, 0.999)) = 0.75
+
+        [Header(Fire (GW2 fx fire 977200 1171331))]
+        [HideInInspector] _UseFire ("Fire", Float) = 0
+        [Enum(Flow flame 740364, 0, Stepped flame 965703, 1, Noise particle 977200, 2, Dyed noise particle 1171331, 3)] _FireMode ("Fire shader", Float) = 2
+        [HideInInspector] _FireNoEdge ("No silhouette fade", Float) = 1
+        [NoScaleOffset] _MaskTex ("mask", 2D) = "white" {}
+        [NoScaleOffset] _FireDetail ("firedetail (G, linear)", 2D) = "black" {}
+        [NoScaleOffset] _FireFlowB ("flowb (RG, linear)", 2D) = "grey" {}
+        [NoScaleOffset] _RampTex ("ramp", 2D) = "white" {}
+        _FireUV0 ("fireduv", Vector) = (0, 0, 1, 1)
+        _FireUV1 ("flowuv", Vector) = (0, 0, 1, 1)
+        _FireUV2 ("flowbuv", Vector) = (0, 0, 1, 1)
+        _FireParams ("Fire params (perturb, scalep, speedp, speed)", Vector) = (0, 1, 0, 0)
+        _FireParams2 ("Fire params 2 (scale, scaleb)", Vector) = (1, 1, 0, 0)
+        _FireParams3 ("Fire params 3", Vector) = (0, 1, 1, 0)
+        _FireColorL ("colorl (raw GW2 value)", Vector) = (1, 1, 1, 1)
+        _FireColorH ("colorh (raw GW2 value)", Vector) = (1, 1, 1, 1)
+        _FireDye ("Dye palette colour (1171331)", Vector) = (1, 1, 1, 1)
+
+        [Header(UV)]
+        _UVAnim0 ("UV0 animation (scroll xy, rotate z)", Vector) = (0, 0, 0, 0)
+        _UnityScale ("Unity units per GW2 unit", Float) = 0.0254
 
         [Header(Render state)]
-        [Enum(UnityEngine.Rendering.BlendMode)] _SrcBlend ("Src blend", Float) = 5
-        [Enum(UnityEngine.Rendering.BlendMode)] _DstBlend ("Dst blend", Float) = 1
+        [HideInInspector] _Mode ("castlemist preset (_Mode, as Poiyomi's)", Float) = 5
+        [Enum(UnityEngine.Rendering.BlendMode)] _SrcBlend ("Src blend", Float) = 1
+        [Enum(UnityEngine.Rendering.BlendMode)] _DstBlend ("Dst blend", Float) = 6
         [Enum(UnityEngine.Rendering.BlendOp)] _BlendOp ("Blend op", Float) = 0
+        [Enum(UnityEngine.Rendering.BlendMode)] _SrcBlendAlpha ("Src blend alpha", Float) = 1
+        [Enum(UnityEngine.Rendering.BlendMode)] _DstBlendAlpha ("Dst blend alpha", Float) = 6
+        [Enum(UnityEngine.Rendering.BlendOp)] _BlendOpAlpha ("Blend op alpha", Float) = 0
         [Enum(Off, 0, On, 1)] _ZWrite ("ZWrite", Float) = 0
         [Enum(UnityEngine.Rendering.CompareFunction)] _ZTest ("ZTest", Float) = 4
         [Enum(UnityEngine.Rendering.CullMode)] _Cull ("Cull", Float) = 0
@@ -32,10 +84,10 @@ Shader "Castlemist/GW2 Particle"
 
         Pass
         {
-            // ForwardBase so Unity sets the renderer's light probe SH (the Light Volumes fallback).
+            Name "FORWARD"
             Tags { "LightMode" = "ForwardBase" }
-            Blend [_SrcBlend] [_DstBlend]
-            BlendOp [_BlendOp]
+            Blend [_SrcBlend] [_DstBlend], [_SrcBlendAlpha] [_DstBlendAlpha]
+            BlendOp [_BlendOp], [_BlendOpAlpha]
             ZWrite [_ZWrite]
             ZTest [_ZTest]
             Cull [_Cull]
@@ -43,84 +95,35 @@ Shader "Castlemist/GW2 Particle"
 
             CGPROGRAM
             #pragma target 3.5
-            #pragma vertex vert
-            #pragma fragment frag
-            #pragma multi_compile_particles
+            #pragma vertex vertParticle
+            #pragma fragment fragParticle
             #pragma multi_compile_fog
             #pragma multi_compile_instancing
+            #define CM_PASS_PARTICLE
+            #include "GW2Particle.cginc"
+            ENDCG
+        }
 
-            #include "UnityCG.cginc"
-            #include "CastlemistLightVolumes.cginc"
+        // GW2 1601524's pass 1 (SrcAlpha / One, from its AMAT): off unless _UseAddLayer (the importer
+        // also disables the "Always" pass of a material without one).
+        Pass
+        {
+            Name "ADDLAYER"
+            Tags { "LightMode" = "Always" }
+            Blend SrcAlpha One
+            ZWrite Off
+            ZTest [_ZTest]
+            Cull [_Cull]
+            ColorMask RGB
 
-            sampler2D _MainTex;
-            float4 _MainTex_ST;
-            half4 _TintColor;
-            half _Intensity;
-            float4 _UVScroll;
-            half _AlphaPremultiply;
-            float _InvFade;
-            half _LightVolumeTint;
-            half _AdditiveFog;
-            UNITY_DECLARE_DEPTH_TEXTURE(_CameraDepthTexture);
-
-            struct appdata
-            {
-                float4 vertex : POSITION;
-                fixed4 color : COLOR;
-                float2 uv : TEXCOORD0;
-                UNITY_VERTEX_INPUT_INSTANCE_ID
-            };
-
-            struct v2f
-            {
-                float4 pos : SV_POSITION;
-                fixed4 color : COLOR;
-                float2 uv : TEXCOORD0;
-                half3 ambient : TEXCOORD1;
-                UNITY_FOG_COORDS(2)
-                #if defined(SOFTPARTICLES_ON)
-                    float4 projPos : TEXCOORD3;
-                #endif
-                UNITY_VERTEX_OUTPUT_STEREO
-            };
-
-            v2f vert(appdata v)
-            {
-                v2f o;
-                UNITY_INITIALIZE_OUTPUT(v2f, o);
-                UNITY_SETUP_INSTANCE_ID(v);
-                UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
-                o.pos = UnityObjectToClipPos(v.vertex);
-                o.color = v.color;
-                o.uv = TRANSFORM_TEX(v.uv, _MainTex) + _UVScroll.xy * _Time.y;
-                o.ambient = 1;
-                if (_LightVolumeTint > 0)
-                {
-                    float3 worldPos = mul(unity_ObjectToWorld, v.vertex).xyz;
-                    o.ambient = lerp(half3(1, 1, 1), max(0, LightVolumeSH_L0(worldPos, float3(0, 0, 0))), _LightVolumeTint);
-                }
-                #if defined(SOFTPARTICLES_ON)
-                    o.projPos = ComputeScreenPos(o.pos);
-                    COMPUTE_EYEDEPTH(o.projPos.z);
-                #endif
-                UNITY_TRANSFER_FOG(o, o.pos);
-                return o;
-            }
-
-            half4 frag(v2f i) : SV_Target
-            {
-                UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(i);
-                half4 c = tex2D(_MainTex, i.uv) * i.color * _TintColor;
-                c.rgb *= _Intensity * i.ambient;
-                #if defined(SOFTPARTICLES_ON)
-                    float sceneZ = LinearEyeDepth(SAMPLE_DEPTH_TEXTURE_PROJ(_CameraDepthTexture, UNITY_PROJ_COORD(i.projPos)));
-                    c.a *= saturate(_InvFade * (sceneZ - i.projPos.z));
-                #endif
-                if (_AlphaPremultiply > 0.5) c.rgb *= c.a;
-                fixed4 fogColor = _AdditiveFog > 0.5 ? fixed4(0, 0, 0, 0) : unity_FogColor;
-                UNITY_APPLY_FOG_COLOR(i.fogCoord, c, fogColor);
-                return c;
-            }
+            CGPROGRAM
+            #pragma target 3.5
+            #pragma vertex vertParticle
+            #pragma fragment fragAddLayer
+            #pragma multi_compile_fog
+            #pragma multi_compile_instancing
+            #define CM_PASS_PARTICLE
+            #include "GW2Particle.cginc"
             ENDCG
         }
     }

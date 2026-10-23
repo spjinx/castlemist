@@ -20,7 +20,7 @@ skill's effect models and their particle systems. Spec:
 | Asset | From |
 |---|---|
 | `Materials/<id>/<FileName>.mat` | `CastlemistMaterials.BuildModelMaterial`, per mesh material of `models/<id>/materials.json` |
-| `Materials/Particles/*.mat` | `ParticleEffects` (`Castlemist/GW2 Particle`, one per atlas rect) |
+| `Materials/Particles/<id>/*.mat` | `ParticleEffects` (`Castlemist/GW2 Particle`, one per atlas rect; a folder per model, as material names repeat across models for different textures) |
 | `Effects/<id>.prefab` | the model's `.fbx` (world settings, materials remapped by the world importer's name rule), or an empty root for a particle-only model, plus `ParticleEffects.AddTo` |
 | `Skills/<id>-<slug>.prefab` | a root scaled by 0.0254 (GW2 inches → metres, the world importer's default, UNPROVEN) holding one instance of each effect prefab the skill's `skill.json` lists |
 
@@ -32,10 +32,18 @@ confirms (GrCloud.cpp; `docs/research/gw2-particle-system.md`, corrected 2026-10
 Tome of Justice and its five pages imported: 6 skill prefabs, 9 materials, 95 particle systems,
 0 errors. `44364-tome-of-justice` plays its 19 emitters: the open book (about 0.9 m wide,
 1.7 m above the prefab's origin), the rising rune glyphs, the flying pages, blue sparks, and the
-light column and beams. Compared with castlemist's preview, two things are off. Both are in
-`ParticleEffects`, so they show on world particles too:
-- the `LightBms` streaks (Stretch mode) come out as broad, near-solid beige pillars, not thin rays;
-- the `PaperA01` and `PaperB01` sprites are dark, where the game shows light pages.
+light column and beams.
+
+Same day, with `Castlemist/GW2 Particle` rebuilt from the game's own particle shaders: a blue
+flame, glowing rune circle, cone light rays and pages burning at the edge (1601524's second
+pass). What it took, besides the shader:
+- particle materials in a folder per model (`Mat_19092` is four different textures across five
+  models);
+- colours of the one-colour emitter layout exported as `{c, c}` (were `{c, 0}`, halved as
+  `{min, max}`);
+- data maps (`diffuse`, `mask`, `flow`, `add`) imported linear;
+- `texCoordRect`'s v measured from the image bottom (in `ParticleEffects.MaterialFor`, the world
+  session's file; verified on preview copies, fix handed over).
 
 ## UNPROVEN / not yet
 
