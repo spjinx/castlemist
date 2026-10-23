@@ -120,7 +120,7 @@ per emitter`. Needs only built-in Unity modules (works in GW2Porting too).
 |---|---|
 | spawnPeriod × spawnProbability × spawnGroupSize | emission rate; bursts when the period is long |
 | spawnShape 0 cylinder / 1 disc / 2 line / 3 box / 4–5 mesh surface / 6 point | shape: cone(0°) / circle / edge / box / mesh / sphere r=0 |
-| velocity / acceleration (dir+speed, `{base, span}` each); cloud acceleration, velocity, drag | start speed `[base, base+span]`; force over lifetime; drag |
+| velocity / acceleration (dir+speed, `{min, max}` each); cloud acceleration, velocity, drag | start speed range; force over lifetime; drag |
 | colorBegin / colorEnd, opacityCurve, scaleCurve | start colour range; colour over lifetime; size over lifetime |
 | texCoordRect, flipbook | material tiling/offset; texture-sheet animation within the rect |
 | rotationInitial / rotationChange, alignmentType | start rotation; rotation over lifetime; billboard / stretched / local |
@@ -129,7 +129,8 @@ per emitter`. Needs only built-in Unity modules (works in GW2Porting too).
 | distortion emitter (`isDistortion`) | GW2 Distort shader (GrabPass, PC only) |
 | effect light | additive glow sprite (no real light) |
 
-- `{base, span}` means `base + U[0,1)·span`, never `{min, max}`.
+- Stored emitter float pairs are `{min, max}`: the client's loader turns them into its runtime
+  `{base, span}` (verified in the exe 2026-10-22, docs/research/gw2-particle-system.md).
 - Positions and directions use the same GW2 (Z-up, inches) → Unity (Y-up, metres)
   conversion as the .glb export.
 - Materials use the planned `GW2 Particle` shader; each records its simple blend

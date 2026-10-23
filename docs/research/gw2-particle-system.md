@@ -20,7 +20,11 @@ GW2 bakes visual effects (fire/spark/smoke/infusion shimmer, glow lights, streak
 
 **Emitter SIM semantics — RE'd from `GrCloud.cpp` (IDA, Gw2-64):**
 - Spawn loop `sub_140AC5A40` (asserts @0x141c6e/f, "index < m_cloudData->emitterCapacity"): accumulator `+= dt`; while `acc >= spawnPeriod`: if `rand01 <= spawnProbability` spawn a group of `round(sample(spawnGroupSize))`; `acc -= spawnPeriod`.
-- **Range helper `sub_140E12DE0(float2 r, rng) = r.x + rand01()*r.y`** → EVERY emitter float2 is **{base, span}** (base + U[0,1)*span), NOT {min,max}. `sub_140E123C0`=U[0,1), `sub_140E12270`≈U[-1,1).
+- **Range helper `sub_140E12DE0(float2 r, rng) = r.x + rand01()*r.y`** → the RUNTIME emitter float2 is **{base, span}** (base + U[0,1)*span).
+  **CORRECTED 2026-10-22: the FILE stores {min, max}.** The loader (GrCloud.cpp, `FUN_140ac8c40` in the 2026-09 build) copies each
+  stored pair as `base = file[i]`, `span = file[i+1] - file[i]`. Data agrees: equal pairs (a constant) are the commonest form
+  (914/1692 scaleInitial, 734/846 spawnGroupSize in the Firebrand export). So read the sidecar/template values as {min, max};
+  a reversed pair (spawnRadius [3, 1]) is just a negative span. The rest of this note's {base,span} wording is the runtime form. `sub_140E123C0`=U[0,1), `sub_140E12270`≈U[-1,1).
 - Particle init `sub_140ACA4B0`: `spawnShape` switch (**0 cylinder, 1 disc, 2 line, 3 box, 4/5 mesh-surface, 6 point**) sets pos from `spawnRadius{base,span}`; **`velocity[4]` = (dirX,dirY,dirZ,speed) each {base,span}** → normalize(dir)*speed; `acceleration[4]` same layout (dir+magnitude); then transformed by emitter `transform` (4×3) + bone world pos; `+= cloud.acceleration`(gravity). `colorBegin[0]`=base RGBA, `colorBegin[1]`=random span (color = base + rand*span per channel).
 - Pixel-exact match needs runtime globals (same limit as the deferred-lighting work) — the sim is faithful, not bit-exact.
 
