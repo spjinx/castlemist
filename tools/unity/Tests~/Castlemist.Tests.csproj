@@ -21,5 +21,6 @@
     <Compile Include="../Castlemist/Editor/FoliagePlan.cs" />
     <Compile Include="../Castlemist/Editor/ModelLods.cs" />
     <Compile Include="../Castlemist/Editor/PoiyomiShaders.cs" />
+    <Compile Include="../CastlemistSkillFx/Editor/SkillFxFiles.cs" />
   </ItemGroup>
 </Project>

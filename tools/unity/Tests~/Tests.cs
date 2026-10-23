@@ -376,6 +376,43 @@ namespace Castlemist.Tests
                 Check(PoiyomiShaders.ParsePresets("x--{on_value_actions:[{value:1,actions:[{type:SET_PROPERTY,data:_Cutoff=.5}]}]}").Count == 0, "no queue");
             });
 
+            // ---- skill effects (tools/unity/CastlemistSkillFx): skillfx-export's skill_set.json / skill.json
+            Run("skillfx.skill_set", () =>
+            {
+                SkillFx.SkillSetFile s = SkillFx.SkillFxFiles.ReadSkillSet(
+                    @"{""skill_namespace"":""Bp5rI."",""effect_namespace"":""Bmt2N."",""skills"":[
+                        {""id"":44364,""label"":""Tome of Justice"",""folder"":""skills/44364-tome-of-justice""}]}");
+                Check(s.SkillNamespace == "Bp5rI." && s.EffectNamespace == "Bmt2N.", "namespaces");
+                Check(s.Skills.Count == 1 && s.Skills[0].Id == 44364 && s.Skills[0].Label == "Tome of Justice", "skill");
+                Check(s.Skills[0].Folder == "skills/44364-tome-of-justice", "folder");
+            });
+            Run("skillfx.skill", () =>
+            {
+                SkillFx.SkillFile f = SkillFx.SkillFxFiles.ReadSkill(
+                    @"{""id"":44364,""label"":""Tome of Justice"",""codename"":""Bp5rI.Bw99b"",""bundle_item"":0,""bundle_slot"":-1,
+                       ""effects"":[{""field"":184,""kind"":6,""codename"":""Bmt2N.a7wVK"",""model"":1764329,""sound"":1764333,
+                                     ""guid"":""d573910fdb59434abf6e7433061995bd"",""source"":""content"",""ei_name"":""FirebrandTomeOfJusticeOpen"",
+                                     ""count"":0,""folder"":""models/1764329"",""glb"":""models/1764329/1764329.glb""},
+                                    {""field"":0,""kind"":6,""codename"":""Bmt2N.xxxxx"",""model"":200,""sound"":0,""guid"":"""",
+                                     ""source"":""arcdps"",""ei_name"":"""",""count"":2,""folder"":"""",""glb"":"""",""error"":""bad model""}],
+                       ""related_skills"":[68647],""applies"":[737]}");
+                Check(f.Id == 44364 && f.Label == "Tome of Justice" && f.Codename == "Bp5rI.Bw99b", "skill");
+                Check(f.Effects.Count == 2, "effects");
+                SkillFx.EffectRef e = f.Effects[0];
+                Check(e.Model == 1764329 && e.Folder == "models/1764329" && e.Source == "content" && e.EiName == "FirebrandTomeOfJusticeOpen", "effect 0");
+                Check(f.Effects[1].Error == "bad model" && f.Effects[1].Folder == "" && f.Effects[1].Count == 2, "failed effect");
+            });
+            Run("skillfx.slug", () =>
+            {
+                Check(SkillFx.SkillFxFiles.Slug("Chapter 1: Searing Spell") == "chapter-1-searing-spell", "slug");
+                Check(SkillFx.SkillFxFiles.Slug("!!") == "skill", "empty slug");
+            });
+            Run("skillfx.bad_file", () =>
+            {
+                Throws<ManifestException>(() => SkillFx.SkillFxFiles.ReadSkillSet(@"{""skill_namespace"":""Bp5rI.""}"), "skills");
+                Throws<ManifestException>(() => SkillFx.SkillFxFiles.ReadSkill("[]"), "object");
+            });
+
             if (args.Length > 0)
             {
                 string dir = args[0];
