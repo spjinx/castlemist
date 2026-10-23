@@ -57,3 +57,68 @@ Ported as `Castlemist/GW2 Particle` (tools/unity/Castlemist/Shaders/GW2Particle.
 **texCoordRect's v runs from the image BOTTOM** (2026-10-22): on atlas 1653632 (the Tome book's `Mat_19092_2`), SpawnFlare's rect v 0.37-0.5 is the star-flare strip only when measured from the bottom; Flash (2x2 flipbook) lands on the 2x2 sparkle tile, Glow on the round glow, LightBms on the cone beam. Measured from the top they hit quarter discs and the cone's edge. The Unity import's offset is therefore `(u0, v0)`, not `(u0, 1 - v1)` (the Balthazar rect above is symmetric in v and could not tell).
 
 **Not yet done:** mesh-particle emitters (spawnShape 4/5 with `meshEmitterSettings.filename` — currently rendered as billboards, not the referenced mesh); per-cloud blend modes (alpha vs additive from `cloud.flags`); streaks/lightning; infusion COMPOSITING (overlay another item's cloudData onto a character); dye/skin color-palette recoloring. Alignment types (velocity-aligned/axis) approximated as camera-facing.
+
+## Amendment 2026-10-22: the client's emitter semantics (Ghidra, GrCloud.cpp, 2026-09 build)
+
+Read in Gw2-64.exe with the `~/gw2re` Ghidra project (functions created in memory; the region
+0x140ac4000-0x140ace000 had none). The Unity side (tools/unity/Castlemist/Editor/ParticleEffects.cs)
+follows this.
+
+- **File record** `ModelParticleEmitterV70` is 0x132 bytes; the loader `FUN_140ceb0b0` copies it into a
+  definition, and `FUN_140ac8c40` builds the runtime emitter with `base = a, span = b - a` for every
+  pair: **stored pairs are {min, max}**; `FUN_140e1f0c0` samples `base + rand * span`.
+  spawnProbability x 0.01 (a percent); rotations x pi/180 (degrees); windInfluence x 100/255.
+- **spawnShape** (file value, through the table at 0x141ee8e00): 0 disc (radius min..max), 1 line
+  (along X, max long, min thick), 2 mesh surface, 3 flat rectangle (half-sizes max x min), 4 sphere
+  (radius min..max), 5 cylinder (ring at min, up to max high), 6 mesh. `FUN_140ace900`.
+- **Velocity / acceleration**: normalize(direction sample) x magnitude sample; no velocity at all
+  when every direction range is 0. velocityDistRange / accelerationDistRange add a radial term.
+- **Sizes** are half-sizes (bounds = position +- size); scaleInitial[0] X, [1] Y; Y = X when the
+  runtime flag 0x800 is set, which is **file `flags` bit 0x10** (`FUN_140d52160` permutes the file
+  bits: file 0x4 -> 0x10, 0x10 -> 0x800, 0x1000 -> 0x20). scaleChange adds per second.
+- **File `flags` 0x4**: no transform at spawn, positions drawn through the cloud matrix, and sizes
+  *not* multiplied by its scale; without it spawn position / velocity go to world space and every
+  size is multiplied by |transform row|. 0x1000: random sign on the spin.
+- **emitterFlags** (file -> runtime, `FUN_140d51e90`): 0x8 burst: one group each time the emitter's
+  bone turns visible (`FUN_140acc370`), nothing else; 0x4 / 0x2: the rate scales with the wind,
+  remapped from spawnWindSpeed to spawnWindEmit (`FUN_140acf2e0`); 0x40 / 0x80: kept only below /
+  above a height; 0x100 / 0x200 / 0x20: the near / mid / far distance tiers it emits in.
+- **Active** = the bone's visibility bit (model instance `FUN_140cd7240`). Each clip's
+  `visTrackData` holds, per bone, the times it toggles at (seconds, frame-aligned at 30 fps);
+  castlemist reads them as visible at the clip's start, each key toggling: fire 1727682's `on04`
+  has no keys and `off04` keys 0 alone; the comet 3560854's `Straight` keys 0, 0.33, 4.33 (a 4 s
+  flight in a 66.7 s clip; `StraightB` 53.7..57.7); `zeropose` keys 0 on nearly every effect bone.
+  The track holds only the bone and the times, no start state. Exported per clip in the
+  sidecar's `clips`.
+- **Curves** are baked to 32 bytes, values clamped 0..1 (`FUN_140acbe30`); the opacity / scale curve
+  *presets* are stored raw and evaluated on the GPU: not transcribed.
+- Capacity is max life / period x max group x probability: no budget cap in the client.
+
+## Amendment 2026-10-23: colour period, offset
+
+Read from Gw2-64.exe.
+- **The emitter struct in memory** follows the schema's (alphabetical) field order:
+  `FUN_140ceb0b0` copies V70's dwords in that order.
+- **Runtime block:** `colorFalloff` lands at `+0x10`, `colorPeriod` at `+0x18` and `offset` at
+  `+0x20` of the emitter's second block (`plVar8[1]`, filled by `FUN_140ac8c40`).
+- **Colour** (`FUN_140ad3a30`, called by the vertex builder `FUN_140ad11b0`). The age `t` is the
+  life fraction `1 - remaining / total`, not seconds. With `m = t mod period` and
+  `n = floor(t / period)`:
+  - `x = m / period` on even `n`, else `1 - m / period` (a ping-pong; `x = 0` with period 0);
+  - `w = clamp((x - falloff.x) / (falloff.y - falloff.x))` (`FUN_140acf2e0`);
+  - colour = `begin * (1 - w) + end * w` on all four bytes, alpha included, then alpha times
+    the opacity curve.
+
+  So `colorPeriod` 1 with falloff (0, 1) is one sweep over the life, 0.167 bounces about six
+  times (the embers' flicker), and 2 only gets halfway. The sidecar key is now `colorPeriod`; it
+  was `colorPeriodSec`.
+- **Offset** (`FUN_140ad11b0`): the quad centre is `position + offset * normalize(position - camera)`
+  in world units, unscaled. A negative value pulls the sprite toward the camera, a depth bias.
+  ParticleEffects maps it to the renderer's pivot z (in particle sizes; positive is toward the
+  camera, measured).
+- **Particle vertices are built on the CPU.** The AMAT vertex shader only transforms them and
+  passes COLOR through.
+- **Velocity without file flag 0x4:** spawn (`FUN_140ace900`) multiplies position and velocity by
+  the emitter's full 3x3 world matrix, scale included, with no normalisation. A prop placed at
+  x64 (the orrery 3124726) throws its sparks 64 times as far.
+

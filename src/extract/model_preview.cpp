@@ -70,6 +70,9 @@ void append_decoded_clips(const std::vector<castlemist::model::AnimClip>& clips,
         out.animClips.push_back(std::move(clip));
         out.animClipBank.push_back(c.bankFileId);
         out.animClipTokens.push_back(c.token);
+        std::vector<std::pair<uint64_t, std::vector<float>>> vis;
+        for (const auto& t : c.visTracks) vis.emplace_back(t.bone, t.keys);
+        out.animClipVis.push_back(std::move(vis));
     }
 }
 
@@ -514,6 +517,7 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
             for (int r=0;r<4;++r){ copy2(e.velocity[r],em.velocity[r]); copy2(e.acceleration[r],em.acceleration[r]); }
             for (int r=0;r<2;++r) for (int c=0;c<4;++c){ em.colorBegin[r][c]=e.colorBegin[r][c]; em.colorEnd[r][c]=e.colorEnd[r][c]; }
             em.colorPeriod = e.colorPeriod; copy2(e.colorFalloff, em.colorFalloff);
+            em.offset = e.offset;
             copy2(e.spawnWindEmit, em.spawnWindEmit); copy2(e.spawnWindSpeed, em.spawnWindSpeed); em.windInfluence = e.windInfluence;
             em.opacityCurve = e.opacityCurve; em.scaleCurve = e.scaleCurve;
             em.opacityCurvePreset = e.opacityCurvePreset; em.scaleCurvePreset = e.scaleCurvePreset;

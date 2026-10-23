@@ -66,7 +66,7 @@ struct EnvSources {
 void build_environment(const EnvSources& in, WorldScene& out);
 
 /// @brief Fill `out.environment`: the sky (parseMapSky) and the day light rig
-///        (parseMapEnv with the auto preset, the brightest), with the
+///        (parseMapEnv with the auto preset: slot 0 when lit, else the brightest), with the
 ///        warnings of build_environment. Never throws for bad data.
 void attach_environment(castlemist::model::Extractor& ex, WorldScene& out);
 

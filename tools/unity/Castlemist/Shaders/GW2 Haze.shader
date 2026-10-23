@@ -21,7 +21,7 @@ Shader "Castlemist/GW2 Haze"
 {
     Properties
     {
-        [Header(GW2 haze (PackMapEnvDataHaze))]
+        [Header(GW2 haze PackMapEnvDataHaze)]
         _HazeNear ("nearColor (rgb, a)", Color) = (0.6, 0.65, 0.7, 1)
         _HazeFar ("farColor (rgb, a)", Color) = (0.6, 0.65, 0.7, 1)
         _HazeHeight ("heightColor (rgb, a = max amount)", Color) = (0.6, 0.65, 0.7, 0)
@@ -166,4 +166,5 @@ Shader "Castlemist/GW2 Haze"
             ENDCG
         }
     }
+    CustomEditor "Castlemist.GW2HazeGUI"
 }

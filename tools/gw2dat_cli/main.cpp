@@ -116,6 +116,7 @@
 #include "castlemist/exportgltf/world_dat_source.h"
 #include "castlemist/exportgltf/world_folder.h"
 #include "castlemist/exportgltf/world_lods.h"
+#include "castlemist/exportgltf/world_manifest.h"
 #include "castlemist/format/struct_template.h"
 #include "castlemist/ripper/assemble.h"
 #include "castlemist/ripper/look.h"
@@ -3210,6 +3211,32 @@ void cmd_world(const Args& a) {
                             {"m", std::vector<float>(p.world, p.world + 16)}, {"clip", clip}});
         }
         j["placements"] = list;
+    }
+    // --env-presets: every lighting preset of dataGlobal (slot 0 day, 1 night, 2 alternate) as the
+    // manifest's environment.lights / shadowInfluence / backlight would be for it.
+    if (has(a, "env-presets")) {
+        json presets = json::array();
+        for (int k = 0; k < static_cast<int>(scene.environment.sky.lighting.size()); ++k) {
+            const json env = castlemist::exportgltf::world_environment_json(scene.environment.sky, k, nullptr);
+            presets.push_back({{"slot", k}, {"lights", env.value("lights", json::array())},
+                               {"shadowInfluence", env.value("shadowInfluence", json(nullptr))},
+                               {"backlight", env.value("backlight", json(nullptr))}});
+        }
+        j["envPresets"] = presets;
+        j["envPresetUsed"] = scene.environment.light.presetIndex;
+        j["light"] = castlemist::exportgltf::world_light_json(scene.environment.light);   // the manifest's
+        const json used = castlemist::exportgltf::world_environment_json(scene.environment.sky,
+                                                                         scene.environment.light.presetIndex, nullptr);
+        j["environmentLights"] = {{"preset", used.value("preset", 0)}, {"lights", used.value("lights", json::array())},
+                                  {"shadowInfluence", used.value("shadowInfluence", json(nullptr))},
+                                  {"backlight", used.value("backlight", json(nullptr))}};
+    }
+    // --particle-fields: the environment's ambient particle fields and cutouts, as the world
+    // export's manifest writes them (environment.particleFields; textures via `texture`).
+    if (has(a, "particle-fields")) {
+        const json env = castlemist::exportgltf::world_environment_json(scene.environment.sky, 0, nullptr);
+        j["particleFields"] = env.is_object() ? env.value("particleFields", json::array()) : json::array();
+        j["particleFieldCutouts"] = env.is_object() ? env.value("particleFieldCutouts", json::array()) : json::array();
     }
     j["ok"] = true;
     if (has(a, "out")) {

@@ -410,7 +410,8 @@ struct ParticleEmitterCPU {
     float drag = 0;                     ///< Velocity damping.
     float colorBegin[2][4] = {};        ///< Start colour {min, max} (min = max on the one-colour layout).
     float colorEnd[2][4] = {};          ///< End colour {min, max}.
-    float colorPeriod = 0;              ///< Colour cycle period.
+    float colorPeriod = 0;              ///< Colour ping-pong period, in fractions of the particle's life.
+    float offset = 0;                   ///< Sprite offset along the camera ray, world units (< 0: toward it).
     float colorFalloff[2] = {0, 0};     ///< Colour falloff `{base, span}`.
     float spawnWindEmit[2] = {0, 0};    ///< Wind-driven emission `{base, span}`.
     float spawnWindSpeed[2] = {0, 0};   ///< Wind-driven speed `{base, span}`.
@@ -550,6 +551,9 @@ struct ModelPreview {
     std::vector<uint32_t> animClipBank;
     /// @brief Parallel to @ref animClips: the token64 of each decoded clip (animationTokens lists every clip).
     std::vector<uint64_t> animClipTokens;
+    /// @brief Parallel to @ref animClips: each clip's bone visibility tracks (bone token64, the
+    ///        clip times in seconds the bone's visibility toggles at; gw2model AnimClip::visTracks).
+    std::vector<std::vector<std::pair<uint64_t, std::vector<float>>>> animClipVis;
     /// @brief fileIds of the external animation banks this model imports.
     ///
     /// Populated whether or not the load succeeded, so a UI can show an

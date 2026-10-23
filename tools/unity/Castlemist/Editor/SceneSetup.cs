@@ -38,7 +38,8 @@
 //                    (EnvironmentMath.BloomFromEffect), ColorGrading LDR (saturation,
 //                    colour filter, and effect.clut as the LDR lookup strip when it is
 //                    width = height^2; imported linear, uncompressed, no mips, clamp),
-//                    AmbientOcclusion MSVO (ssaoAmount); no depth of field (VR). A
+//                    AmbientOcclusion MSVO (ssaoAmount) left off and Bloom fast (VR cost);
+//                    no depth of field (VR). A
 //                    PostProcessLayer goes on the reference camera: the VRC scene
 //                    descriptor's ReferenceCamera (VRChat SDK3; one is made and linked
 //                    when the descriptor has none), else Camera.main, else a new
@@ -668,6 +669,7 @@ namespace Castlemist
             EnvironmentMath.Bloom bl = EnvironmentMath.BloomFromEffect(fx);
             Bloom bloom = Effect<Bloom>(profile);
             bloom.enabled.Override(bl != null);
+            bloom.fastMode.Override(true);   // VR: the 4-tap filter, half the bloom passes' cost
             if (bl != null)
             {
                 bloom.intensity.Override((float)bl.Intensity);
@@ -689,13 +691,15 @@ namespace Castlemist
             cg.ldrLutContribution.Override(1f);
             parts.Add("grading:sat" + F(sat) + (lut != null ? "+lut" : ""));
 
-            // Ambient occlusion, MSVO (UNPROVEN: ssaoAmount as the intensity).
+            // Ambient occlusion, MSVO (UNPROVEN: ssaoAmount as the intensity), left off: full-resolution
+            // MSVO per eye cost the Wizard Vault most of its VR frame (2026-10-23). The intensity is
+            // kept for a desktop world to turn on.
             double ao = EnvironmentMath.AoIntensity(fx != null ? fx.SsaoAmount : null);
             AmbientOcclusion aoS = Effect<AmbientOcclusion>(profile);
-            aoS.enabled.Override(ao > 0);
+            aoS.enabled.Override(false);
             aoS.mode.Override(AmbientOcclusionMode.MultiScaleVolumetricObscurance);
             aoS.intensity.Override((float)ao);
-            if (ao > 0) parts.Add("ao:" + F(ao));
+            if (ao > 0) parts.Add("ao:" + F(ao) + " off (VR)");
 
             // No depth of field in VR (an earlier profile's is turned off).
             DepthOfField dof;
@@ -812,6 +816,18 @@ namespace Castlemist
             Debug.Log("CASTLEMIST " + msg);
         }
 
+        /// The fog shader's sample count (its KeywordEnum _Samples: 0 = 8, 1 = 16, 2 = 24 ...). Every box
+        /// the view crosses marches this many samples per pixel; the boxes span hundreds of metres and
+        /// overlap, so 8 (jittered, as the shader animates) keeps it affordable in VR (2026-10-23).
+        static void SetFogSamples(Material m, int index)
+        {
+            if (!m.HasProperty("_Samples")) return;
+            string[] keys = { "_SAMPLES__8", "_SAMPLES__16", "_SAMPLES__24", "_SAMPLES__32", "_SAMPLES__48", "_SAMPLES__64", "_SAMPLES__128" };
+            m.SetFloat("_Samples", index);
+            for (int i = 0; i < keys.Length; ++i)
+                if (i == index) m.EnableKeyword(keys[i]); else m.DisableKeyword(keys[i]);
+        }
+
         public static string AddLightVolumeFog()
         {
             GameObject prefab = AssetDatabase.FindAssets("VolumetricFog t:Prefab")
@@ -863,6 +879,7 @@ namespace Castlemist
                     fogMat = new Material(srcRenderer.sharedMaterial);
                     if (fogMat.HasProperty("_LightIntensity")) fogMat.SetFloat("_LightIntensity", 0.3f);
                     if (fogMat.HasProperty("_LightThreshold")) fogMat.SetFloat("_LightThreshold", 0f);
+                    SetFogSamples(fogMat, 0);
                     AssetDatabase.CreateAsset(fogMat, matPath);
                 }
             }

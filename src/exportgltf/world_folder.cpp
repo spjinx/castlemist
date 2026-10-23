@@ -840,6 +840,28 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
         }
     }
 
+    // 7c. The ambient particle fields' textures (environment/pfield_<fileId>.png, rows as stored).
+    json fieldTextures = json::object();
+    for (const auto& f : scene.environment.sky.particleFields) {
+        const std::string key = std::to_string(f.texFile);
+        if (!f.texFile || f.particleCount == 0 || fieldTextures.contains(key)) continue;
+        const auto tex = src.texture(f.texFile, 4096);
+        const int w = tex ? tex->width : 0, h = tex ? tex->height : 0;
+        if (!tex || tex->mips.empty() || w <= 0 || h <= 0 || tex->mips[0].size() < size_t(w) * h * 4) {
+            warnings.push_back("environment: particle field texture " + key + " did not decode; texture: null");
+            continue;
+        }
+        const std::string name = "pfield_" + key + ".png";
+        std::error_code ec;
+        make_dirs(dir / "environment", ec);
+        const std::vector<uint8_t> png = encode_png_pixels(w, h, 4, tex->mips[0]);
+        if (ec || png.empty() || !write_bytes(dir / "environment" / name, png)) {
+            rep.error = "cannot write " + utf8(dir / "environment" / name);
+            return rep;
+        }
+        fieldTextures[key] = "environment/" + name;
+    }
+
     // 8. The manifest, last (not once cancelled).
     if (fatal.stopped()) { rep.error = fatal.error; return rep; }
     size_t animated = 0, resolved = 0, failedDecode = 0;
@@ -870,6 +892,7 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
     in.sky = skyJson;
     in.spawn = spawn;
     in.environmentClut = clut;
+    in.particleFieldTextures = fieldTextures;
     in.counts = {{"chunksUnbaked", unbaked}, {"animated", animated}, {"animatedResolved", resolved},
                  {"clipsFailedDecode", failedDecode},
                  {"foliage", {{"scatter", folScatter}, {"density", folDensity}, {"skipped", folSkipped},

@@ -25,6 +25,8 @@
 #include "internal.h"
 #include "long_path.h"
 
+#include "castlemist/native/gw2model.hpp"
+
 #include <filesystem>
 #include <fstream>
 
@@ -86,7 +88,10 @@ json emitter_json(const ParticleEmitterCPU& e, const ModelPreview& model) {
                         json::array({e.colorBegin[1][0], e.colorBegin[1][1], e.colorBegin[1][2], e.colorBegin[1][3]})};
     j["colorEnd"] = {json::array({e.colorEnd[0][0], e.colorEnd[0][1], e.colorEnd[0][2], e.colorEnd[0][3]}),
                       json::array({e.colorEnd[1][0], e.colorEnd[1][1], e.colorEnd[1][2], e.colorEnd[1][3]})};
-    j["colorPeriodSec"] = e.colorPeriod;
+    // colorPeriod: in fractions of the life (0x140ad3a30), not seconds; offset: world units along
+    // the camera ray (0x140ad11b0). docs/research/gw2-particle-system.md, 2026-10-23.
+    j["colorPeriod"] = e.colorPeriod;
+    j["offset"] = e.offset;
     j["colorFalloff"] = {e.colorFalloff[0], e.colorFalloff[1]};
     j["isDistortion"] = is_distortion_emitter(e);
     j["texCoordRect"] = {e.texCoordRect[0], e.texCoordRect[1], e.texCoordRect[2], e.texCoordRect[3]};
@@ -141,6 +146,28 @@ std::string write_particle_sidecar(const ModelPreview& model, const std::vector<
         for (uint32_t ei : c.emitterIndices)
             if (ei < model.emitters.size()) cj["emitters"].push_back(emitter_json(model.emitters[ei], model));
         doc["clouds"].push_back(std::move(cj));
+    }
+
+    // Per clip, the visibility keys of the bones the clouds and emitters sit on
+    // (gw2model AnimClip::visTracks): GW2 spawns from an emitter while its bone is
+    // visible and fires a burst emitter on each hidden -> visible change.
+    std::set<std::string> fxBones;
+    for (const auto& c : model.clouds) fxBones.insert(bone_name(model, c.boneJoint));
+    for (const auto& e : model.emitters) fxBones.insert(bone_name(model, e.boneJoint));
+    fxBones.erase(std::string());
+    std::map<uint64_t, std::string> byToken;
+    for (const std::string& b : fxBones) byToken[castlemist::model::tokenizeBoneName(b)] = b;
+    doc["clips"] = json::array();
+    for (size_t i = 0; i < model.animClips.size(); ++i) {
+        json cj{{"name", model.animClips[i].name}, {"duration", model.animClips[i].duration}};
+        json vis = json::object();
+        if (i < model.animClipVis.size())
+            for (const auto& [tok, keys] : model.animClipVis[i]) {
+                const auto it = byToken.find(tok);
+                if (it != byToken.end()) vis[it->second] = keys;
+            }
+        cj["vis"] = vis;
+        doc["clips"].push_back(std::move(cj));
     }
 
     doc["effectLights"] = json::array();

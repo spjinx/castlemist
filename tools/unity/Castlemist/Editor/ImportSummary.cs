@@ -57,6 +57,8 @@ namespace Castlemist
         /// Particle systems built in model prefabs (ParticleEffects); not in the PLAN line, which
         /// the dry run must match and which cannot count them without the sidecars.
         public int particleSystems;
+        /// Ambient particle fields built (ParticleFields); not in the PLAN line.
+        public int particleFields;
         /// Foliage records not placed (not in the PLAN line): skipped because their
         /// model failed or has no prefab or mesh.
         public int foliageSkipped;

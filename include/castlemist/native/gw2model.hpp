@@ -223,6 +223,14 @@ struct AnimClip {
     size_t grannyFileOffset = 0;      // absolute offset of rawGranny[0] within the packfile
     int ptrSize = 4;                  // blob pointer width (4=32-bit packfile, 8=64-bit)
     uint32_t bankFileId = 0;          // 0 = this file's own bank; else the imported file it came from
+    // ModelAnimationData.visTrackData: per bone, the clip times (seconds) its
+    // visibility toggles at. GW2 switches a bone's particle clouds with it
+    // (GrCloud: an emitter spawns while its bone is visible; a burst emitter
+    // fires on each hidden -> visible change). castlemist's reading of the keys,
+    // from the data (an "on" clip keys nothing, an "off" clip keys 0 alone):
+    // visible at the start, each key toggles.
+    struct VisTrack { uint64_t bone = 0; std::vector<float> keys; };
+    std::vector<VisTrack> visTracks;
 };
 
 // One entry of ModelFileAnimationBank.imports -- the geometry<->animation link.
@@ -289,8 +297,9 @@ struct ParticleEmitter {
     // color
     float colorBegin[2][4] = {};        // {min rgba, max rgba}; min = max on the old float4 layout
     float colorEnd[2][4] = {};
-    float colorPeriod = 0;
+    float colorPeriod = 0;              // in life fractions (0x140ad3a30: colour ping-pongs every period)
     float colorFalloff[2] = {0, 0};
+    float offset = 0;                   // sprite moved along the camera ray, world units (0x140ad11b0)
     // wind: sand/dust/leaves blown by the environment wind. windInfluence (byte)
     // scales how strongly the global wind pushes the particle; spawnWindSpeed
     // {base,span} is an initial wind-aligned kick, spawnWindEmit a spawn bias.
@@ -1492,9 +1501,9 @@ public:
         float backlightIntensity = 0;
     };
 
-    // preset: a specific time-of-day index (0..2), or -1 (default) to AUTO-select
-    // the brightest preset -- i.e. the one whose dominant light is strongest, which
-    // is the daytime rig (night/off presets have near-zero or all-zero intensities).
+    // preset: a specific time-of-day index (0..2), or -1 (default) to AUTO-select:
+    // slot 0 (the client's daytime slot) when it has a lit light, else the brightest
+    // preset (the one whose dominant light is strongest).
     MapEnvLight parseMapEnv(int preset = -1) {
         MapEnvLight out;
         std::string root; uint16_t ver = 0;
@@ -1553,19 +1562,32 @@ public:
             usedPi = (uint32_t)preset;
             readPreset(usedPi, lights);
         } else {
-            // Auto: pick the brightest preset (daytime).
-            float best = -1; uint32_t bestPi = 0; std::vector<L> tmp;
-            for (uint32_t pi = 0; pi < nPresets; ++pi) {
-                float mx = readPreset(pi, tmp);
-                if (mx > best) { best = mx; bestPi = pi; }
+            // Auto: slot 0, the one the client takes by day (0x140c60340: slot 0 at t = 1, slot 2
+            // only on an env flag; docs/research/gw2-sky.md A.2), when it has a lit light; else the
+            // brightest preset. (Until 2026-10-23 always the brightest: the Wizard Vault's slot 2, a
+            // warm 1.3 sun, where the game shows slot 0's dim blue night rig.)
+            std::vector<L> tmp;
+            if (readPreset(0, tmp) > 0) usedPi = 0;
+            else {
+                float best = -1; uint32_t bestPi = 0;
+                for (uint32_t pi = 0; pi < nPresets; ++pi) {
+                    float mx = readPreset(pi, tmp);
+                    if (mx > best) { best = mx; bestPi = pi; }
+                }
+                usedPi = bestPi;
             }
-            usedPi = bestPi;
-            readPreset(bestPi, lights);
+            readPreset(usedPi, lights);
         }
 
-        int bestIdx = -1; float bestI = -1;
-        for (int i = 0; i < (int)lights.size(); ++i)
-            if (lights[i].inten > bestI) { bestI = lights[i].inten; bestIdx = i; }
+        // The sun: the first lit light, as stored (the key; the rest are fills, which is how the
+        // Unity scene setup reads environment.lights too). Until 2026-10-23 the strongest, which in
+        // the Wizard Vault's slot 0 is a blue fill shining up from the void: the key went unused.
+        int bestIdx = -1;
+        for (int i = 0; i < (int)lights.size() && bestIdx < 0; ++i)
+            if (lights[i].inten > 0) bestIdx = i;
+        if (bestIdx < 0)
+            for (int i = 0; i < (int)lights.size(); ++i)
+                if (bestIdx < 0 || lights[i].inten > lights[bestIdx].inten) bestIdx = i;
         if (bestIdx < 0) return out;
 
         for (const L& l : lights) {
@@ -1689,6 +1711,24 @@ public:
         uint32_t flags = 0;
         uint32_t clutFile = 0;                   // clutTexturePath fileId, 0 if null
     };
+    // dataGlobal->particleFields[i] (PackMapEnvDataPField*): one tile of ambient particles the
+    // shader wraps around the camera (docs/research/gw2-particle-fields.md). Pairs are {min, max}.
+    struct MapParticleField {
+        std::string name;
+        float altitude = 0, depth = 0, deviation = 0, fade = 0, texFPS = 0;
+        float angle[2] = {0, 0}, clustering[2] = {0, 0}, deviationSpeed[2] = {0, 0}, lifetime[2] = {0, 0},
+              opacity[2] = {0, 0}, period[2] = {0, 0}, rotation[2] = {0, 0}, scaleX[2] = {0, 0},
+              scaleY[2] = {0, 0}, speed[2] = {0, 0};
+        float fieldDirection[3] = {0, 0, 0};
+        uint32_t clusterCount = 0, extent = 0, flags = 0, particleCount = 0, seed = 0, type = 0;
+        uint32_t texColRow[2] = {1, 1};
+        uint32_t texFile = 0;                    // texPath fileId, 0 if null
+    };
+    // dataGlobal->particleFieldCutouts[i]: the rows x, y, z of a box transform; particles inside hide.
+    struct MapParticleFieldCutout {
+        std::string name;
+        float x[4] = {0, 0, 0, 0}, y[4] = {0, 0, 0, 0}, z[4] = {0, 0, 0, 0};
+    };
     // One per-zone env block (dataLocalArray[i]): its haze and the shapes
     // (2D polygons) it covers. An empty `haze` means the zone has none of its
     // own; the client then takes its parent's (EnvEnvironment 0x140c60340).
@@ -1717,6 +1757,9 @@ public:
         std::vector<MapHaze> haze;
         // dataGlobal->effect[] (same slots as haze, as stored).
         std::vector<MapEnvEffect> effect;
+        // dataGlobal->particleFields[] and particleFieldCutouts[].
+        std::vector<MapParticleField> particleFields;
+        std::vector<MapParticleFieldCutout> particleFieldCutouts;
         // dataLocalArray[]: per-zone blocks (haze and shapes only).
         std::vector<MapEnvZone> zones;
         // parm.rect (x0, y0, x1, y1), the map's extent; all 0 without a parm chunk.
@@ -1992,6 +2035,59 @@ public:
                 out.effect.push_back(x);
             }
         } catch (const std::exception&) { out.effect.clear(); }
+        // Particle fields: a ptr_array_ptr of PackMapEnvDataPField*, like effect.
+        try {
+            size_t o; json fj;
+            const std::string pt = fieldOffset(gt, "particleFields", o, fj) ? subType(fj, "element") : std::string();
+            uint32_t n = 0;
+            const size_t base = pt.empty() ? 0 : arrayAt(g + o, n);
+            for (uint32_t i = 0; base && n <= 256 && i < n; ++i) {
+                const size_t e = follow(base + (size_t)i * ptr_);
+                if (!e) continue;
+                MapParticleField x;
+                auto word = [&](const char* name, uint32_t& v) {
+                    size_t a; json cf;
+                    if (fOff(pt, name, e, a, cf)) v = cf.value("kind", std::string()) == "word" ? rd16(a) : rd32(a);
+                };
+                x.name = nameAt(pt, "name", e);
+                x.altitude = rdFloat1(pt, "altitude", e);
+                x.depth = rdFloat1(pt, "depth", e);
+                x.deviation = rdFloat1(pt, "deviation", e);
+                x.fade = rdFloat1(pt, "fade", e);
+                x.texFPS = rdFloat1(pt, "texFPS", e);
+                rdFloat2(pt, "angle", e, x.angle);
+                rdFloat2(pt, "clustering", e, x.clustering);
+                rdFloat2(pt, "deviationSpeed", e, x.deviationSpeed);
+                rdFloat2(pt, "lifetime", e, x.lifetime);
+                rdFloat2(pt, "opacity", e, x.opacity);
+                rdFloat2(pt, "period", e, x.period);
+                rdFloat2(pt, "rotation", e, x.rotation);
+                rdFloat2(pt, "scaleX", e, x.scaleX);
+                rdFloat2(pt, "scaleY", e, x.scaleY);
+                rdFloat2(pt, "speed", e, x.speed);
+                size_t a; json cf;
+                if (fOff(pt, "fieldDirection", e, a, cf)) for (int k = 0; k < 3; ++k) x.fieldDirection[k] = rdf(a + 4 * k);
+                if (fOff(pt, "texColRow", e, a, cf)) { x.texColRow[0] = rd32(a); x.texColRow[1] = rd32(a + 4); }
+                if (fOff(pt, "type", e, a, cf)) x.type = rd8(a);
+                word("clusterCount", x.clusterCount);
+                word("extent", x.extent);
+                word("flags", x.flags);
+                word("particleCount", x.particleCount);
+                word("seed", x.seed);
+                x.texFile = fileAt(pt, "texPath", e);
+                out.particleFields.push_back(x);
+            }
+            Arr cut = arrayField(gt, "particleFieldCutouts", g);
+            for (uint32_t i = 0; i < cut.n; ++i) {
+                const size_t e = cut.base + (size_t)i * cut.size;
+                MapParticleFieldCutout c;
+                c.name = nameAt(cut.type, "name", e);
+                rdFloat4(cut.type, "x", e, c.x);
+                rdFloat4(cut.type, "y", e, c.y);
+                rdFloat4(cut.type, "z", e, c.z);
+                out.particleFieldCutouts.push_back(c);
+            }
+        } catch (const std::exception&) { out.particleFields.clear(); out.particleFieldCutouts.clear(); }
         try {
             size_t lo; json lfj;
             if (fieldOffset(root, "dataLocalArray", lo, lfj)) {
@@ -4421,6 +4517,7 @@ private:
         rdFloat2(t, "lifetime", e, em.lifetime);
         rdFloat2(t, "colorFalloff", e, em.colorFalloff);
         em.colorPeriod = rdFloat1(t, "colorPeriod", e);
+        em.offset = rdFloat1(t, "offset", e);
         em.emitterFlags = rdDword(t, "emitterFlags", e);
         em.flags = rdDword(t, "flags", e);
         em.drag = rdFloat1(t, "drag", e);
@@ -4434,7 +4531,7 @@ private:
             for (int r = 0; r < 4; ++r) { em.acceleration[r][0]=rdf(o+8*r); em.acceleration[r][1]=rdf(o+8*r+4); }
         // colorBegin/colorEnd. Two layouts: V>=70 = array[2] float4 ({min, max}: the client loads
         // base = min, span = max - min, GrCloud.cpp FUN_140ac8c40);
-        // V<=66 = a single float4 begin/end color (no random span).
+        // V<=66 = a single float4 begin/end color (no random span: min = max).
         auto readColor = [&](const char* name, float dst[2][4]) {
             size_t co; json cf;
             if (!fOff(t, name, e, co, cf)) return;
@@ -4703,6 +4800,23 @@ private:
             if (!clipType.empty()) {
                 if (fieldOffset(clipType, "token", o, f)) c.token = rd64(clip + o);
                 if (fieldOffset(clipType, "moveSpeed", o, f)) c.moveSpeed = rdf(clip + o);
+                if (fieldOffset(clipType, "visTrackData", o, f)) {
+                    const std::string vt = f.contains("element") ? f["element"].value("struct", std::string()) : std::string();
+                    const int vs = vt.empty() ? 0 : typeSize(vt);
+                    uint32_t vn = 0; size_t vb = arrayAt(clip + o, vn);
+                    size_t bo, ko; json bf, kf;
+                    const bool tok = fieldOffset(vt, "boneToken", bo, bf) || fieldOffset(vt, "token", bo, bf);
+                    for (uint32_t k = 0; vb && vs > 0 && tok && k < vn && k < 1024; ++k) {
+                        const size_t e = vb + (size_t)k * vs;
+                        AnimClip::VisTrack t;
+                        t.bone = rd64(e + bo);
+                        if (fieldOffset(vt, "keys", ko, kf)) {
+                            uint32_t kn = 0; size_t kb = arrayAt(e + ko, kn);
+                            for (uint32_t q = 0; kb && q < kn && q < 256 && kb + 4u * q + 4 <= n_; ++q) t.keys.push_back(rdf(kb + 4u * q));
+                        }
+                        c.visTracks.push_back(std::move(t));
+                    }
+                }
                 // data (PackGrannyAnimationType*) -> raw granny blob + fixup table
                 if (fieldOffset(clipType, "data", o, f)) {
                     std::string gt = f.value("type", std::string());
