@@ -99,6 +99,69 @@ the shadow pass clips only with `_AlphaTest`.
 Unity's particle-system GPU instancing (`UnityStandardParticleInstancing.cginc`) is not set up;
 `multi_compile_instancing` covers FX meshes on MeshRenderers.
 
+## Scene look: fog, ambient, post-processing, probes (2026-10-22)
+
+`Editor/SceneSetup.cs` runs after the import's sky and sun and reads `manifest.environment`
+(the map's env chunk; the C++ export's contract). Each part has an `ImportOptions` toggle (the
+window's "Scene look" block; batch `-castlemistNoEnv fog,ambient,post,lightvolumes,reflectionprobes,occlusion|all`),
+all on by default; the Quest preset turns post-processing off (VRChat runs none on Android).
+Everything it places sits under the unscaled `GW2_<fileId>_Environment`; the import logs an `ENV` line.
+All GW2 -> Unity mappings below are **UNPROVEN readings** of raw data (`EnvironmentMath` in
+`WorldManifest.cs`, unit-tested in `Tests~`), not measurements against the client.
+
+- **Haze volume** (the default fog path; toggle "Haze volume (GW2 height fog)", batch name
+  `haze`; off in the Quest preset): `GW2 Haze`, a Unity cube under the map root, 2x the map's
+  largest side + 200 units, no collider, shadows or probes, with `Castlemist/GW2 Haze`
+  (`GW2 Haze.shader`, after Silent's SkyProbe Fog, MIT; GW2's distance + height formula in its
+  header) in `GW2_<fileId>_Haze.mat`. The material gets the haze raw: `_HazeNear/_HazeFar/_HazeHeight`
+  (RGBA), `_DistRange` in GW2 units (the shader divides by `_UnityScale`), `_HeightRange` as
+  stored (map z, up = -Z; from `heightRangeUnity` as (-hi, -lo) when the raw pair is missing,
+  UNPROVEN), `_DepthCue`, `_UnityScale`, `_MapOriginY`, `_ApplySkybox` 1. Unity's fog is turned
+  off (the volume fogs everything drawn before it, avatars too). It needs the camera depth
+  texture (in VRChat the sun's shadows give it); transparents drawn after queue
+  Transparent-216 are not fogged by it (accepted for now). The reference camera's far clip
+  covers the cube.
+- **Fog** (the fallback: haze volume off, `haze` null or the shader missing; `UNITY_APPLY_FOG` in these shaders, Poiyomi's own fog): Linear, because the haze is a
+  distance range (`distRange`) and Exponential has no start. The haze amount is read as a line
+  through (`distRange[0]`, `near.a`) and (`distRange[1]`, `far.a`); Unity's start / end are its
+  0 and 1 crossings, x unityScale. Unity fog has one colour: near and far blended by their
+  alphas. **Not supported**: height haze (`haze.height`, `heightRange`: built-in fog has no
+  height term), per-zone haze (`zones`), `depthCue`, the sky (Skybox/Panoramic is not fogged).
+- **Ambient**: Trilight from the fills `lights[1..]`, each a Lambert light along `unityForward`
+  (sky = max(0, L.y), ground = max(0, -L.y), equator = the ring mean sqrt(1 - L.y^2) / pi).
+  Trilight rather than a hand-set SH probe: Unity recomputes `ambientProbe` from the mode on
+  every environment update and bake, so only the mode's colours survive a bake. No fills: the
+  Flat `light.ambient` as before (it is the same fill, so it is not added). The sun stays
+  `light.sun`; it turns Mixed (Baked Indirect) when light volumes are on.
+- **Post-processing** (Post Processing Stack v2, `com.unity.postprocessing`; the code compiles
+  only with `UNITY_POST_PROCESSING_STACK_V2` and the asmdef's `CASTLEMIST_PPV2`): a global
+  volume on the `PostProcessing` layer (made in the first free layer 22-31), profile
+  `GW2_<fileId>_PostProcess.asset`. Bloom: intensity `glowAmplify`, threshold max(`glowLevel.rgb`),
+  tint `glow.rgb`. Colour grading in LDR mode (GW2's LUT is a LDR strip): saturation
+  (`saturation` - 1) x 100, colour filter white -> `tintColor` by `tintAmount`, and `effect.clut`
+  as the LDR lookup strip when it is width = height^2 (`environment/clut_*.png` imports linear,
+  uncompressed, no mips, clamp: `CastlemistPostprocessor.ApplyLutSettings`; its slice order and
+  v direction against PPv2's are UNPROVEN). MSVO ambient occlusion at `ssaoAmount`. No depth of
+  field (VR). The `PostProcessLayer` goes on the VRC scene descriptor's Reference Camera (VRChat
+  SDK3: a disabled `ReferenceCamera` is made and linked; the bake menu links it to a descriptor
+  added later), else `Camera.main`, else a new `Main Camera` at the spawn.
+- **VRC Light Volumes** (`red.sim.lightvolumes` 3.x, by reflection): one `LightVolumeInstance`
+  per cell over its renderer bounds, adaptive resolution, at most `lightVolumeBudget` voxels a
+  cell (65 536; Quest 16 384) and 1 voxel per unit, registered with the scene's
+  `LightVolumeManager` by the package's own onboarding. 3.x's `LightVolumeSetup` / `LightVolume`
+  are migration-only legacy types and are not used. Unlit until baked.
+- **Reflection probes**: one baked, box-projected probe per cell (256 px, Quest 128), captured
+  2 units above the ground at the cell centre; the default reflection is the skybox.
+- **Occlusion and GI flags**: opaque renderers (every material's queue < 2450) Occluder +
+  Occludee, cutout and transparent Occludee only, ContributeGI on queue < 2500 with
+  `receiveGI = Light Probes` (GW2's UV1 is no lightmap UV: nothing is lightmapped), and
+  ReflectionProbeStatic. Animated props, foliage, particle and skinned renderers are left as the
+  importer set them. One `OcclusionArea` over the map; the scene's LightingSettings
+  `GW2_<fileId>_Lighting.lighting` (baked GI, no realtime GI, Progressive GPU, Baked Indirect).
+- **Bake**: **Castlemist > Bake Lighting and Occlusion (Unity / Bakery)** saves nothing itself: save the scene,
+  then it runs `Lightmapping.BakeAsync` (light probes, reflection probes, light volumes) and,
+  when that completes, `StaticOcclusionCulling.GenerateInBackground`.
+
 ## UNPROVEN / open
 
 - The uvScroll unit (per second) is the export's own UNPROVEN reading.

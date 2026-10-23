@@ -203,6 +203,81 @@ namespace Castlemist.Tests
                 Throws<ArgumentException>(() => new ImportOptions { density = -0.1f }.Validate(), "density");
                 Check(FoliagePlan.PatchCapacity(12) == 1820 && FoliagePlan.PatchCapacity(30000) == 1 && FoliagePlan.PatchCapacity(0) == 21845, "capacity");
             });
+            Run("options.environment", () =>
+            {
+                // 2026-10-22: SceneSetup's toggles; all on is the options line as before.
+                var o = new ImportOptions();
+                Check(o.fog && o.ambient && o.post && o.lightVolumes && o.reflectionProbes && o.occlusion && !o.ToString().Contains("noEnv"), "defaults");
+                ImportOptions q = ImportOptions.Quest();
+                Check(!q.post && q.fog && q.lightVolumes && q.reflectionResolution == 128 && q.lightVolumeBudget < o.lightVolumeBudget, "quest");
+                Check(!q.haze && q.ToString().EndsWith(" noEnv=post,haze"), "quest line " + q);
+                o.DisableEnv("Fog, lightvolumes");
+                Check(!o.fog && !o.lightVolumes && o.post && o.ToString().EndsWith(" noEnv=fog,lightvolumes"), "disable " + o);
+                ImportOptions c = o.Clone();
+                c.post = false;
+                Check(o.post && !c.post && !c.fog, "clone");
+                o.DisableEnv("all");
+                Check(!o.ambient && !o.occlusion && !o.reflectionProbes, "all");
+                Throws<ArgumentException>(() => new ImportOptions().DisableEnv("dof"), "environment option");
+            });
+            Run("manifest.environment", () =>
+            {
+                WorldManifest none = WorldManifest.Parse(Minimal);
+                Check(none.Environment == null, "absent");
+                Check(WorldManifest.Parse(Minimal.Replace("\"warnings\":[]", "\"environment\":null,\"warnings\":[]")).Environment == null, "null");
+                WorldManifest m = WorldManifest.Parse(Minimal.Replace("\"warnings\":[]",
+                    "\"environment\":{\"preset\":1,\"lights\":[{\"color\":[1,0.9,0.8],\"intensity\":1.3,\"unityForward\":[0.7071,-0.7071,0]}," +
+                    "{\"color\":[0.2,0.4,0.8],\"intensity\":0.5,\"unityForward\":[0,-1,0]}],\"shadowInfluence\":0.5,\"backlight\":null," +
+                    "\"haze\":{\"near\":[0.5,0.6,0.7,0],\"far\":[0.7,0.8,0.9,0.5],\"height\":[0,0,0,0],\"distRange\":[1000,21000]," +
+                    "\"heightRange\":[0,-500],\"heightRangeUnity\":[0,500],\"sunDirRange\":[0,1],\"depthCue\":0}," +
+                    "\"effect\":{\"glow\":[1,0.5,0.5,1],\"glowLevel\":[0.8,0.6,0.7,1],\"glowAmplify\":1.5,\"saturation\":1.2," +
+                    "\"tintColor\":[1,0.5,0,1],\"tintAmount\":0.5,\"ssaoAmount\":0.7,\"flags\":3,\"clutFileId\":null,\"clut\":null,\"clutLayout\":null}," +
+                    "\"zones\":[{\"name\":\"z\",\"haze\":null,\"boundsUnity\":[0,0,1,1]}]},\"warnings\":[]"));
+                WorldManifest.EnvironmentEntry e = m.Environment;
+                Check(e != null && e.Preset == 1 && e.Lights.Count == 2 && e.Lights[0].Intensity == 1.3 && e.Backlight == null, "lights");
+                Check(e.Haze.DistRange[1] == 21000 && e.Haze.Far[3] == 0.5 && e.Haze.HeightRangeUnity[1] == 500, "haze");
+                Check(e.Effect.GlowAmplify == 1.5 && e.Effect.Saturation == 1.2 && e.Effect.TintFocus == null && e.Effect.Flags == 3 &&
+                      e.Effect.ClutFileId == null && e.Effect.Clut == null && e.Effect.ClutLayout == null, "effect, absent fields null");
+                Check(e.Zones.Count == 1 && e.Zones[0].Haze == null && e.Zones[0].BoundsUnity[2] == 1, "zones");
+
+                // Fog: alphas 0 -> 0.5 over 1000..21000: the 0 crossing at 1000, the 1 crossing at 41000; colour 0 / 0.5 weighted: far.
+                EnvironmentMath.Fog fog = EnvironmentMath.FogFromHaze(e.Haze, 0.0254);
+                Check(Math.Abs(fog.Start - 1000 * 0.0254) < 1e-9 && Math.Abs(fog.End - 41000 * 0.0254) < 1e-9, "fog range " + fog.Start + ".." + fog.End);
+                Check(Math.Abs(fog.Color[0] - 0.7) < 1e-12 && Math.Abs(fog.Color[2] - 0.9) < 1e-12, "fog colour");
+                var flat = new WorldManifest.HazeEntry { Near = new double[] { 0, 0, 0, 1 }, Far = new double[] { 1, 1, 1, 1 }, DistRange = new double[] { 10, 20 } };
+                fog = EnvironmentMath.FogFromHaze(flat, 1);
+                Check(fog.Start == 10 && fog.End == 20 && Math.Abs(fog.Color[0] - 0.5) < 1e-12, "equal alphas: distRange itself, blended colour");
+                Check(EnvironmentMath.FogFromHaze(new WorldManifest.HazeEntry { DistRange = new double[] { 5, 5 } }, 1) == null &&
+                      EnvironmentMath.FogFromHaze(null, 1) == null, "no range");
+
+                // Trilight: the fill points straight down (L = up): sky = colour x intensity, equator and ground 0.
+                double[][] tri = EnvironmentMath.TrilightFromFills(e.Lights);
+                Check(Math.Abs(tri[0][2] - 0.4) < 1e-12 && Math.Abs(tri[1][2]) < 1e-12 && tri[2][2] == 0, "trilight down");
+                var side = new List<WorldManifest.EnvLight> { null, new WorldManifest.EnvLight { Color = new double[] { 1, 1, 1 }, Intensity = 1, UnityForward = new double[] { 2, 0, 0 } } };
+                tri = EnvironmentMath.TrilightFromFills(side);
+                Check(tri[0][0] == 0 && tri[2][0] == 0 && Math.Abs(tri[1][0] - 1 / Math.PI) < 1e-12, "trilight horizontal: ring mean 1/pi");
+                Check(EnvironmentMath.TrilightFromFills(e.Lights.GetRange(0, 1)) == null, "sun only: no trilight");
+
+                // The haze volume's heightRange: raw as stored, else from heightRangeUnity (lo, hi) as (-hi, -lo).
+                bool fromUnity;
+                double[] hr = EnvironmentMath.HazeHeightRange(e.Haze, out fromUnity);
+                Check(hr[0] == 0 && hr[1] == -500 && !fromUnity, "raw heightRange");
+                hr = EnvironmentMath.HazeHeightRange(new WorldManifest.HazeEntry { HeightRangeUnity = new double[] { 100, 900 } }, out fromUnity);
+                Check(hr[0] == -900 && hr[1] == -100 && fromUnity, "from heightRangeUnity");
+                Check(EnvironmentMath.HazeHeightRange(new WorldManifest.HazeEntry(), out fromUnity) == null, "none");
+
+                EnvironmentMath.Bloom b = EnvironmentMath.BloomFromEffect(e.Effect);
+                Check(b.Intensity == 1.5 && b.Threshold == 1 && b.Color[0] == 1 && b.Color[1] == 0.5, "bloom");
+                Check(EnvironmentMath.BloomFromEffect(new WorldManifest.EffectEntry { GlowAmplify = 0 }) == null, "no bloom");
+                Check(Math.Abs(EnvironmentMath.Saturation(1.2) - 20) < 1e-9 && EnvironmentMath.Saturation(1) == 0 && EnvironmentMath.Saturation(-5) == -100, "saturation");
+                double[] cf = EnvironmentMath.ColorFilter(e.Effect.TintColor, e.Effect.TintAmount);
+                Check(cf[0] == 1 && cf[1] == 0.75 && cf[2] == 0.5 && EnvironmentMath.ColorFilter(null, 1)[1] == 1, "colour filter");
+                Check(Math.Abs(EnvironmentMath.AoIntensity(2) - 0.3) < 1e-9 && EnvironmentMath.AoIntensity(9) == 0.6 && EnvironmentMath.AoIntensity(null) == 0, "ao");
+                Check(EnvironmentMath.IsLutStrip(null, 256, 16) && !EnvironmentMath.IsLutStrip(null, 256, 256) &&
+                      !EnvironmentMath.IsLutStrip(new WorldManifest.ClutLayout { Kind = "volume" }, 256, 16), "lut strip");
+                double v = EnvironmentMath.VoxelsPerUnit(100, 10, 100, 100000, 1);
+                Check(Math.Abs(v - 1) < 1e-12 && Math.Abs(EnvironmentMath.VoxelsPerUnit(300, 50, 300, 131072, 1) - Math.Pow(131072 / 4.5e6, 1 / 3.0)) < 1e-12, "voxels");
+            });
             Run("foliage.records", () =>
             {
                 var d = new byte[2 * FoliageRecords.RecordBytes];

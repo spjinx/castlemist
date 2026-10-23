@@ -354,6 +354,21 @@ void load_sky_textures(Gw2Dat& dat, const json& tpl, SkyInputs& in, bool approx)
             ok = false;
         }
         Image img{t.width, t.height, std::move(t.rgba)};
+        if (!ok) {
+            // Some flow-fire card textures are plain DDS files, not ATEX (e.g. 1733853).
+            try {
+                std::vector<uint8_t> bytes = file_bytes(dat, id);
+                uint32_t w = 0, h = 0;
+                img = {};
+                if (!bytes.empty() && castlemist::dds::decode_rgba8(bytes.data(), bytes.size(), w, h, img.rgba)) {
+                    img.width = static_cast<int>(w);
+                    img.height = static_cast<int>(h);
+                    ok = true;
+                }
+            } catch (const std::exception&) {
+                ok = false;
+            }
+        }
         if (ok && image_ok(img))
             in.textures.emplace(id, std::move(img));
         else
@@ -489,6 +504,15 @@ SkyExportReport write_skybox(const SkyInputs& in, const std::string& parentDir, 
         if (m.hasPanorama()) {
             ApproxInputs ai;
             if (opt.approximate) ai = approx_inputs(in, j);
+            if (opt.noHaze && ai.haveFog) {
+                ai.haveFog = false;
+                ai.labels.push_back({"haze", InputSource::Guess, "off", "--no-haze: the horizon haze left out by request"});
+            }
+            if (opt.cardOpacity != 1) {
+                ai.materialCardOpacity = opt.cardOpacity;
+                ai.labels.push_back({"materialCardOpacity", InputSource::Guess, std::to_string(opt.cardOpacity),
+                                     "--card-opacity: the flow-fire cards' opacity scaled by request"});
+            }
             BakeResult b = make_sky_sampler(s, j, in.textures, &in.stars, opt.approximate ? &ai : nullptr);
             if (opt.approximate) {
                 json labels = json::array();
@@ -523,8 +547,9 @@ SkyExportReport write_skybox(const SkyInputs& in, const std::string& parentDir, 
         if (baked) {
             mj["ground"] = {{"fill", ground_fill_name(opt.ground.fill)}, {"fadeDegrees", opt.ground.fadeDegrees}};
             if (opt.ground.fill != GroundFill::Skirt)
-                push_unique(warns, mname + ": below the horizon the game repeats the horizon row (gw2-sky.md §2); "
-                                           "baked fading to " + ground_fill_name(opt.ground.fill) + " instead");
+                push_unique(warns, mname + ": below the horizon the game repeats the horizon row (gw2-sky.md §2); " +
+                                           (opt.ground.fill == GroundFill::Mirror ? std::string("baked mirrored instead")
+                                            : "baked fading to " + std::string(ground_fill_name(opt.ground.fill)) + " instead"));
         }
         mj["layers"] = layers;
         mj["skybox"] = skybox;

@@ -1,7 +1,9 @@
 {
     "name": "Castlemist.Editor",
     "rootNamespace": "Castlemist",
-    "references": [],
+    "references": [
+        "Unity.Postprocessing.Runtime"
+    ],
     "includePlatforms": [
         "Editor"
     ],
@@ -11,6 +13,12 @@
     "precompiledReferences": [],
     "autoReferenced": true,
     "defineConstraints": [],
-    "versionDefines": [],
+    "versionDefines": [
+        {
+            "name": "com.unity.postprocessing",
+            "expression": "3.0.0",
+            "define": "CASTLEMIST_PPV2"
+        }
+    ],
     "noEngineReferences": false
 }

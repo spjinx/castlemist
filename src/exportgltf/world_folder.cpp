@@ -136,10 +136,11 @@ void export_one_model(const cw::WorldScene& scene, uint32_t mi, ModelSource& src
     std::shared_ptr<ModelPreview> m = src.load(mi, fileId);
     if (!m) { mm.error = "model did not load"; return; }
     append_cloth_meshes(*m);   // drawn in game as simulated cloth: exported in its rest shape
+    append_lightning_meshes(*m);   // chains and beams: a mesh-less effect model is not empty
     mm.meshes = static_cast<int>(m->meshes.size());
     mm.materialCount = static_cast<int>(m->materials.size());
     mm.wind = model_wind(*m);   // world-foliage spec D7: recorded, not acted on (D10)
-    if (m->meshes.empty()) {   // empty, not broken: counted apart (review M2)
+    if (m->meshes.empty() && !m->hasEffects()) {   // empty, not broken: counted apart (review M2)
         mm.error = "This model has no drawable meshes to export.";
         mm.empty = true;
         out.empty = true;
@@ -796,6 +797,49 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
         if (spawn.is_null()) warnings.push_back("spawn: no ground under the region centre; spawn: null");
     }
 
+    // 7b. The colour lookup texture of the environment's effect slot (the day slot 0, as
+    //     world_environment_json picks it; else none).
+    //     Every CLUT read (24 files, 2026-10-22) is a plain 2D DDS, 256 x 16 BGRA8:
+    //     16 slices of 16 x 16, red along x in a slice, green down the rows (row 0
+    //     green 0), blue the slice. The PNG is written bottom-up (green 0 on the
+    //     last row) so that Unity, which puts a PNG's first row at v = 1, sees
+    //     green rise with v as its LUT strips do. Whether the client samples it
+    //     that way is UNPROVEN (the effect import is not traced).
+    json clut = nullptr;
+    {
+        const auto& fx = scene.environment.sky.effect;
+        const auto* e = fx.empty() ? nullptr : &fx.front();
+        const uint32_t id = e ? e->clutFile : 0;
+        if (id) {
+            const auto tex = src.texture(id, 4096);
+            const int w = tex ? tex->width : 0, h = tex ? tex->height : 0;
+            if (!tex || tex->mips.empty() || w <= 0 || h <= 0 || tex->mips[0].size() < size_t(w) * h * 4) {
+                warnings.push_back("environment: clut " + std::to_string(id) + " did not decode; effect.clut: null");
+            } else {
+                std::vector<uint8_t> flipped(size_t(w) * h * 4);
+                for (int y = 0; y < h; ++y)
+                    std::copy_n(tex->mips[0].begin() + ptrdiff_t(size_t(h - 1 - y) * w * 4), size_t(w) * 4,
+                                flipped.begin() + ptrdiff_t(size_t(y) * w * 4));
+                const bool strip = w == h * h;
+                const std::string name = "clut_" + std::to_string(id) + ".png";
+                std::error_code ec;
+                make_dirs(dir / "environment", ec);
+                const std::vector<uint8_t> png = encode_png_pixels(w, h, 4, flipped);
+                if (ec || png.empty() || !write_bytes(dir / "environment" / name, png)) {
+                    rep.error = "cannot write " + utf8(dir / "environment" / name);
+                    return rep;
+                }
+                clut = {{"fileId", id},
+                        {"path", "environment/" + name},
+                        {"layout", {{"width", w}, {"height", h}, {"size", strip ? json(h) : json(nullptr)},
+                                    {"kind", strip ? "strip" : "2d"}, {"greenZero", "bottom"}}}};
+                if (!strip)
+                    warnings.push_back("environment: clut " + std::to_string(id) + " is " + std::to_string(w) + " x " +
+                                       std::to_string(h) + ", not a size^2 x size strip; written as is");
+            }
+        }
+    }
+
     // 8. The manifest, last (not once cancelled).
     if (fatal.stopped()) { rep.error = fatal.error; return rep; }
     size_t animated = 0, resolved = 0, failedDecode = 0;
@@ -825,6 +869,7 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
     in.cells = mcells;
     in.sky = skyJson;
     in.spawn = spawn;
+    in.environmentClut = clut;
     in.counts = {{"chunksUnbaked", unbaked}, {"animated", animated}, {"animatedResolved", resolved},
                  {"clipsFailedDecode", failedDecode},
                  {"foliage", {{"scatter", folScatter}, {"density", folDensity}, {"skipped", folSkipped},

@@ -17,6 +17,8 @@
 // World files (an ancestor folder holds a castlemist-world manifest.json):
 //   cells/<id>_albedo.png, cells/<id>_water.png    -> clamp (cell edges); water alphaIsTransparency
 //   sky/**/equirect.png                            -> no mips, clamp V (Skybox/Panoramic)
+//   environment/clut_<fileId>.png                  -> a PPv2 LUT: linear, uncompressed, no mips,
+//                                                     clamp (ApplyLutSettings; SceneSetup)
 // Every castlemist texture gets maxTextureSize >= its own size (read from the
 // PNG header), so Unity's 2048 default never shrinks an equirect or albedo.
 //
@@ -66,6 +68,8 @@ namespace Castlemist
                     ti.wrapMode = TextureWrapMode.Clamp;
                     if (name.EndsWith("_water", StringComparison.Ordinal)) ti.alphaIsTransparency = true;
                 }
+                else if (name.StartsWith("clut_", StringComparison.Ordinal))
+                    ApplyLutSettings(ti);   // environment/clut_<fileId>.png: a PPv2 lookup strip (SceneSetup)
                 else if (name == "equirect")
                 {
                     ti.mipmapEnabled = false;
@@ -139,6 +143,28 @@ namespace Castlemist
             for (int i = 0; i < 40; ++i)
                 if (!Uri.IsHexDigit(fileStem[i])) return Role.Unknown;
             return RoleOf("x - " + fileStem.Substring(41));
+        }
+
+        /// A colour lookup strip as Post Processing Stack v2 wants it (its ColorGradingEditor
+        /// check): linear, uncompressed, no mips, no aniso, clamp, bilinear, no NPOT scaling.
+        /// True when something changed.
+        public static bool ApplyLutSettings(TextureImporter ti)
+        {
+            bool ok = ti.textureType == TextureImporterType.Default && !ti.sRGBTexture && !ti.mipmapEnabled && ti.anisoLevel == 0 &&
+                      ti.textureCompression == TextureImporterCompression.Uncompressed && ti.wrapMode == TextureWrapMode.Clamp &&
+                      ti.npotScale == TextureImporterNPOTScale.None && ti.filterMode == FilterMode.Bilinear &&
+                      ti.alphaSource == TextureImporterAlphaSource.None;
+            if (ok) return false;
+            ti.textureType = TextureImporterType.Default;
+            ti.sRGBTexture = false;
+            ti.mipmapEnabled = false;
+            ti.anisoLevel = 0;
+            ti.textureCompression = TextureImporterCompression.Uncompressed;
+            ti.wrapMode = TextureWrapMode.Clamp;
+            ti.npotScale = TextureImporterNPOTScale.None;
+            ti.filterMode = FilterMode.Bilinear;
+            ti.alphaSource = TextureImporterAlphaSource.None;
+            return true;
         }
 
         static void ApplyRole(TextureImporter ti, Role r)

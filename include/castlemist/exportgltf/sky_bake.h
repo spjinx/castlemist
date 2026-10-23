@@ -70,6 +70,9 @@ struct ApproxInputs {
     float sh[3][4] = {};                   ///< shRed, shGreen, shBlue
     float cameraZ = 0;                     ///< GW2 z of the camera (up = -z), for the cloud planes
     float cardFade = 1, cloudFade = 1;     ///< EnvEnvironment card / cloud fades
+    /// Scales the flow-fire material cards' opacity (1 = as stored): their
+    /// reconstructed shader at Time 0 can read brighter than the game.
+    float materialCardOpacity = 1;
     float time = 0;                        ///< the `Time` uniform for material cards
     float alphaRef = 0;                    ///< the `AlphaRef` uniform for material cards
     std::vector<InputLabel> labels;        ///< one per input, copied into the bake's warnings
@@ -94,7 +97,9 @@ inline constexpr uint32_t kFlowFireMaterial = 1262294;
 /// What a bake shows below the horizon. The game draws a skirt there that
 /// repeats the horizon row downward (gw2-sky.md §2); terrain hides it in game,
 /// but a skybox shows it as vertical streaks.
-enum class GroundFill { Black, White, Skirt };
+/// Mirror (2026-10-22): below the horizon the sky reflected in it, for maps floating in space (the
+/// Mists vaults) where neither a ground colour nor the game's repeated horizon row (Skirt) fits.
+enum class GroundFill { Black, White, Skirt, Mirror };
 
 struct GroundOptions {
     GroundFill fill = GroundFill::Black;

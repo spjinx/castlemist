@@ -144,7 +144,19 @@ struct WorldManifestInput {
     /// model, material, slots, models, usedByMeshes}]}, written as sharedMaterials; null = left out.
     nlohmann::json sharedMaterials;
     std::function<std::string(uint32_t propIndex)> clipOf;   ///< "" = null
+    /// The decoded colour lookup texture: {fileId, path (relative to the folder),
+    /// layout} or null; environment.effect.clut is set only when fileId matches.
+    nlohmann::json environmentClut;
 };
+
+/// @brief The manifest's `environment` (null without an env chunk): slot
+///        @p presetIndex (else 0) of dataGlobal lighting (every light, unityForward
+///        = map_to_unity(normalised direction), as light.sun's), haze and effect
+///        (each falling back to slot 0), and the dataLocalArray zones that have
+///        haze and shapes. Raw GW2 values; colours R, G, B(, A) 0..1. @p clut is
+///        WorldManifestInput::environmentClut.
+nlohmann::json world_environment_json(const castlemist::model::Extractor::MapSky& sky, int presetIndex,
+                                      const nlohmann::json& clut);
 
 /// @brief The manifest's `light` (spec D5, amended in Task 13): MapEnvLight::sunDir
 ///        as parsed from the env chunk is the direction the light travels (map

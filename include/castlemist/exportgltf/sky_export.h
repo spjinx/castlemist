@@ -92,6 +92,11 @@ struct SkyExportOptions {
     /// Off by default: its haze, sun and cloud inputs are not all proven.
     bool approximate = false;
     GroundOptions ground;       ///< what the bakes show below the horizon
+    /// Approximate sky without the horizon haze (and the cards' haze fade):
+    /// for open-space skies (Mists vaults) whose haze reads as a band.
+    bool noHaze = false;
+    /// Approximate sky: scale on the flow-fire material cards' opacity.
+    float cardOpacity = 1;
 };
 
 struct SkyExportReport {

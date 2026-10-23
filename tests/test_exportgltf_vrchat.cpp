@@ -299,6 +299,7 @@ CM_TEST(vrchat, profile_by_amat_second_survey) {
     CHECK(profile_for(mat_with_file(48767), 0).name == "fx-premultiplied");
     CHECK(profile_for(mat_with_file(1171330), 0).name == "fx-premultiplied");
     CHECK(profile_for(mat_with_file(977200), 0).name == "fx-fire");
+    CHECK(profile_for(mat_with_file(2037995), 0).name == "fx-fire");
     CHECK(profile_for(mat_with_file(1171331), 0).supported);
     CHECK(profile_for(mat_with_file(740364), 0).unlit);
 }

@@ -54,6 +54,9 @@ namespace Castlemist
         public int foliagePatches, terrains, detailPrototypes, detailCells, treeInstances;
         /// Task 15b (in the PLAN line).
         public int lodPrefabs, lodTreePrefabs, lodOverrides;
+        /// Particle systems built in model prefabs (ParticleEffects); not in the PLAN line, which
+        /// the dry run must match and which cannot count them without the sidecars.
+        public int particleSystems;
         /// Foliage records not placed (not in the PLAN line): skipped because their
         /// model failed or has no prefab or mesh.
         public int foliageSkipped;
@@ -64,6 +67,9 @@ namespace Castlemist
         public List<string> errors = new List<string>();
         /// The SHADER line (Task 15c): the Poiyomi shader the materials use, or Standard; null before step 3.
         public string shaderLine;
+        /// The ENV line (SceneSetup, 2026-10-22): what fog, ambient, static flags, probes, light
+        /// volumes and post-processing were set up from manifest.environment; null before it ran.
+        public string envLine;
         /// The frame probe's PROBE line, or null when there was no probe.
         public string probeLine;
         public bool probeOk;

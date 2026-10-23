@@ -126,6 +126,7 @@ Shader "Castlemist/GW2"
         [Header(Fire (GW2 fx fire 740364 965703 977200 1171331))]
         [ToggleUI] _UseFire ("Fire (procedural flame; unlit, premultiplied)", Float) = 0
         [Enum(Flow flame 740364, 0, Stepped flame 965703, 1, Noise particle 977200, 2, Dyed noise particle 1171331, 3)] _FireMode ("Fire shader", Float) = 0
+        [ToggleUI] _FireNoEdge ("No silhouette fade (2037995)", Float) = 0
         [NoScaleOffset] _FireDetail ("firedetail (G, linear)", 2D) = "black" {}
         [NoScaleOffset] _FireFlowB ("flowb (RG, linear)", 2D) = "grey" {}
         _FireUV0 ("fireduv (v scroll, scale cycles, scale min, max)", Vector) = (0, 0, 1, 1)
@@ -137,6 +138,15 @@ Shader "Castlemist/GW2"
         _FireColorL ("colorl (raw GW2 value)", Vector) = (1, 1, 1, 1)
         _FireColorH ("colorh (raw GW2 value)", Vector) = (1, 1, 1, 1)
         _FireDye ("Dye palette colour, raw GW2 value (1171331 dyedot)", Vector) = (1, 1, 1, 1)
+
+        [Header(Wave (castlemist cloth wave))]
+        [ToggleUI] _UseWave ("Wave", Float) = 0
+        [Enum(GW2 cloth pins (vertex colour), 0, UV0 V, 1, UV0 V inverted, 2, Everywhere, 3)] _WaveMask ("Wave weight", Float) = 0
+        _WaveAmplitude ("Amplitude (Unity units)", Float) = 0.6
+        _WaveSpeed ("Speed", Float) = 2.2
+        _WaveFrequency ("Ripples along the cloth", Float) = 1.4
+        _WaveSway ("Sway with the wind", Float) = 0.35
+        _WaveDir ("Wind direction (world)", Vector) = (1, 0, 0.3, 0)
 
         [Header(Cutout and burn edge (GW2 opacity, burnoff, burncol))]
         [ToggleUI] _UseCutout ("Cutout", Float) = 0

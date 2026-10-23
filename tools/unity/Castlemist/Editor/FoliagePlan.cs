@@ -46,6 +46,70 @@ namespace Castlemist
         /// props the game hides by means the export does not decode (3132765 in the Mists vault: a
         /// shell of slabs over the walkway). Their prefabs are still built.
         public string skipModels = "";
+        /// 2026-10-22, SceneSetup (the map's look after the import), each on by default:
+        /// haze (the Castlemist/GW2 Haze volume: GW2's distance + height haze per pixel; Unity's
+        /// fog off), fog (Unity Linear fog from environment.haze: the fallback when haze is off,
+        /// the haze block is null or the shader is missing), ambient (Trilight from the fills),
+        /// post (Post Processing Stack v2 volume and layer; needs com.unity.postprocessing),
+        /// lightVolumes (VRC Light Volumes per cell; needs red.sim.lightvolumes),
+        /// reflectionProbes (a baked box-projected probe per cell), occlusion (static
+        /// occluder / occludee / GI flags and an OcclusionArea). The Quest preset turns
+        /// post off (VRChat runs no post-processing on Android) and the haze volume (it needs the
+        /// camera depth texture: a depth pass; Unity fog instead), and lowers the probe
+        /// resolution and the light volumes' voxel budget.
+        public bool haze = true, fog = true, ambient = true, post = true, lightVolumes = true, reflectionProbes = true, occlusion = true;
+        /// GW2 cloth materials on Castlemist/GW2 Tessellated (the wave subdivided; PC only).
+        public bool tessellateCloth = true;
+        /// Baked reflection probe resolution (128 or 256 make sense).
+        public int reflectionResolution = 256;
+        /// Light Volume voxels per cell at most (each volume also stays <= 1 voxel per unit).
+        public int lightVolumeBudget = 196608;   // ~58^3 voxels per cell volume (65536 baked black voxels: 2026-10-22)
+
+        /// The environment toggles by their batch names, in this order.
+        public static readonly string[] EnvNames = { "fog", "ambient", "post", "lightvolumes", "reflectionprobes", "occlusion", "haze" };
+
+        public bool Env(string name)
+        {
+            switch (name)
+            {
+                case "fog": return fog;
+                case "ambient": return ambient;
+                case "post": return post;
+                case "lightvolumes": return lightVolumes;
+                case "reflectionprobes": return reflectionProbes;
+                case "occlusion": return occlusion;
+                case "haze": return haze;
+            }
+            throw new ArgumentException("environment option must be one of " + string.Join(", ", EnvNames) + ", not '" + name + "'");
+        }
+
+        public void SetEnv(string name, bool on)
+        {
+            Env(name);   // throws for an unknown name
+            switch (name)
+            {
+                case "fog": fog = on; break;
+                case "ambient": ambient = on; break;
+                case "post": post = on; break;
+                case "lightvolumes": lightVolumes = on; break;
+                case "reflectionprobes": reflectionProbes = on; break;
+                case "haze": haze = on; break;
+                default: occlusion = on; break;
+            }
+        }
+
+        /// -castlemistNoEnv: a comma list of EnvNames to turn off, or "all".
+        public void DisableEnv(string list)
+        {
+            foreach (string s in (list ?? "").Split(new[] { ',', ' ', ';', '\t' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string n = s.ToLowerInvariant();
+                if (n == "all") { foreach (string e in EnvNames) SetEnv(e, false); continue; }
+                SetEnv(n, false);
+            }
+        }
+
+        public ImportOptions Clone() { return (ImportOptions)MemberwiseClone(); }
 
         /// skipModels as fileIds; throws ArgumentException for an entry that is not a number.
         public HashSet<long> SkipModelIds()
@@ -63,10 +127,13 @@ namespace Castlemist
 
         public const float MinDistance = 0.1f, MaxDistance = 2f;
 
-        /// The Quest preset (D9; the user's default): Terrain Mesh, Foliage Collider trees, Distance 0.5.
+        /// The Quest preset (D9; the user's default): Terrain Mesh, Foliage Collider trees, Distance 0.5;
+        /// no post-processing, Unity fog instead of the haze volume, 128 px reflection probes, a quarter of the light volume budget.
         public static ImportOptions Quest()
         {
-            return new ImportOptions { terrain = TerrainMode.Mesh, foliage = FoliageMode.ColliderTrees, density = 1f, distance = 0.5f };
+            return new ImportOptions { terrain = TerrainMode.Mesh, foliage = FoliageMode.ColliderTrees, density = 1f, distance = 0.5f,
+                                       post = false, haze = false, reflectionResolution = 128, lightVolumeBudget = 16384,
+                                       tessellateCloth = false };
         }
 
         /// Throws ArgumentException for a density outside 0..1 or a distance outside 0.1..2.
@@ -126,7 +193,8 @@ namespace Castlemist
             return "terrain=" + Name(terrain) + " foliage=" + Name(foliage) + " density=" +
                    density.ToString("R", CultureInfo.InvariantCulture) + " distance=" + distance.ToString("R", CultureInfo.InvariantCulture) +
                    (shader == ShaderMode.Poiyomi ? "" : " shader=" + Name(shader)) +   // Poiyomi: the line as before
-                   (SkipModelIds().Count == 0 ? "" : " skip=" + string.Join(",", SkipModelIds().OrderBy(x => x)));
+                   (SkipModelIds().Count == 0 ? "" : " skip=" + string.Join(",", SkipModelIds().OrderBy(x => x))) +
+                   (EnvNames.All(Env) ? "" : " noEnv=" + string.Join(",", EnvNames.Where(e => !Env(e))));   // all on: the line as before
         }
     }
 

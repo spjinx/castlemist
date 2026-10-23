@@ -64,6 +64,25 @@ bool mesh_is_lod_proxy(const ModelMeshCPU& m);
 ///        Returns the meshes added.
 int append_cloth_meshes(ModelPreview& m);
 
+/// @brief The cloth wave mask of a cloth mesh, in its vertex colour: R = 1 - w, w the vertex's
+///        distance across the cloth from the pinned prefix (the first @p lockCount vertices,
+///        ClothPieceCPU::lockCount) over the farthest, so 1 at the pins (still) and 0 at the
+///        free edge; G, B, A white. A mesh without colours reads white: it never moves. The
+///        castlemist shaders' wave block (Castlemist/GW2 _UseWave) displaces by w. False (no
+///        colours) without pins or with every vertex pinned.
+bool cloth_wave_weights(ModelMeshCPU& mesh, uint32_t lockCount);
+
+/// @brief Appends the model's lightning bolts (ModelPreview::lightning) as meshes named
+///        "lightning": per node-tree edge, two crossed strips from the parent node's joint to
+///        the child's (bind pose), skinned to both joints (weight along the strip), so they
+///        follow the model's animation. castlemist's own reading of a still bolt (variance
+///        and noise 0, as the chain bolts of 3442863 store): width = the thickness
+///        {min, max} midpoint (stored [5, 5] for a constant), U = distance / texScale +
+///        texOffset, V across texRange, vertex colour colorBegin[0] (ARGB) with the opacity
+///        midpoint. Jittering bolts are drawn straight.
+///        Edges with an unresolved joint are skipped. Returns the meshes added.
+int append_lightning_meshes(ModelPreview& m);
+
 /// @brief The glTF node name of model mesh @p i (model_export.cpp): "<meshName>_<i>",
 ///        or "<stem>_mesh<i>" when the file did not name the mesh.
 std::string mesh_node_name(const ModelPreview& m, size_t i, const std::string& stem);

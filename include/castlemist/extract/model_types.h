@@ -459,6 +459,19 @@ struct EffectLightCPU {
     int boneJoint = -1;           ///< Resolved joint index (-1 = model origin).
     float pos[3] = {0, 0, 0};     ///< Resolved bind-pose model-space position.
 };
+
+/// @brief One lightning bolt (MODL lightningData), its node tree resolved to joints.
+struct LightningBoltCPU {
+    uint32_t materialIndex = 0;   ///< The owning system's material.
+    /// Each node-tree edge as (parent joint, child joint); -1 = a node bone not in the skeleton.
+    std::vector<std::pair<int, int>> edges;
+    uint32_t colorBegin[3] = {0, 0, 0}, colorEnd[3] = {0, 0, 0};   ///< Packed colours, as stored.
+    float lifetime[2] = {0, 0}, opacity[2] = {1, 1};
+    float texOffset = 0, texRange[2] = {0, 1}, texScale = 0, texSpeed = 0;
+    float thicknessRange[2] = {0, 0}, variance = 0, noise = 0;
+    uint16_t numSegments = 0;
+    uint8_t type = 0;
+};
 /// @}
 
 /// @brief One distance constraint of an authored cloth proxy.
@@ -556,6 +569,7 @@ struct ModelPreview {
     std::vector<ParticleCloudCPU> clouds;        ///< Baked emitter groups (`cloudData`).
     std::vector<ParticleEmitterCPU> emitters;    ///< Baked emitters.
     std::vector<EffectLightCPU> effectLights;    ///< Baked effect lights (`lightData`).
+    std::vector<LightningBoltCPU> lightning;     ///< Lightning bolts (`lightningData`), per system bolt.
 
     /// @brief True when the model carries any baked particle or light effect.
     bool hasEffects() const { return !clouds.empty() || !effectLights.empty(); }
