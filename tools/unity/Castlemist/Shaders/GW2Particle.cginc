@@ -44,6 +44,10 @@
 //   7 flow layer   1764372 (One / InvSrcColor): L = _LayerTex at uv0 uvscrol.xy + frac(t uvscrol.zw)
 //                  + 0.3 (_FlowTex at flowuv.xy (ndc x distance + 1) / 2 + frac(t flowuv.zw), x 2 - 1),
 //                  distance from the camera in GW2 units; a = L.a T.a vc.a soft; rgb = 2 L T vc a
+//   8 nebula       728777 (SrcAlpha / InvSrcAlpha; the comets' star clouds): a = mask.r (_MaskTex at
+//                  uv0, the puff flipbook) vc.a soft, discard below AlphaRef; rgb = 2 vc.rgb x the
+//                  "background" (_LayerTex) in SCREEN space: at screen uv x zotile (_ScreenTile) +
+//                  (_PerturbTex at uv0 uvss.z + frac(t uvss.xy), x 2 - 1) x perturb (_BasePtrb)
 // The add layer (second pass, _UseAddLayer; 1601524 pass 1, SrcAlpha / One): w = smooth(sat((s add.r
 // + s vc.r - s) / (1 - s))), s = stepmin; a = add.a vc.a w soft addcolr.a, discard below AlphaRef;
 // rgb = addcolr (the burning edge of a page).
@@ -62,6 +66,8 @@ half4 _AddColor;
 float _AddStepMin;
 UNITY_DECLARE_TEX2D_NOSAMPLER(_LayerTex);
 float4 _LayerScroll, _LayerFlowUV;
+float4 _PtcUVSS;
+float _ScreenTile;
 
 struct appdataP
 {
@@ -189,6 +195,17 @@ half4 fragParticle(v2fP i) : SV_Target
         // a particle faces the camera: its normal is the view direction
         o = CM_FireCore(i.uv01, i.uv23, vcG, -UNITY_MATRIX_V[2].xyz) * soft;
         o.a = saturate(o.a);
+    }
+    else if (_PtcShader > 7.5)
+    {
+        float2 g0 = CM_FireG(i.uv01.xy);
+        half a = CM_FIRE_TEX(_MaskTex, g0).r * vc.a * soft;
+        clip(a - _Cutoff);
+        float2 f = CM_FIRE_TEX(_PerturbTex, g0 * _PtcUVSS.z + frac(t * _PtcUVSS.xy)).xy * 2.0 - 1.0;
+        float2 s = i.screenPos.xy / max(i.screenPos.w, 1e-6);
+        s.y = 1.0 - s.y;   // GW2's screen v runs down
+        half3 bg = CM_FIRE_TEX(_LayerTex, s * _ScreenTile + f * _BasePtrb).rgb;
+        o = half4(bg * vc.rgb * x2, a);
     }
     else
     {

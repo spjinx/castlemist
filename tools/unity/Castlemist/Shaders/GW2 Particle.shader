@@ -8,7 +8,7 @@ Shader "Castlemist/GW2 Particle"
 {
     Properties
     {
-        [Enum(Basic, 0, Soft additive, 1, Premultiplied, 2, Step dissolve, 3, Alpha test fade, 4, Flow, 5, Fire, 6, Flow layer, 7)] _PtcShader ("GW2 particle shader", Float) = 0
+        [Enum(Basic, 0, Soft additive, 1, Premultiplied, 2, Step dissolve, 3, Alpha test fade, 4, Flow, 5, Fire, 6, Flow layer, 7, Nebula, 8)] _PtcShader ("GW2 particle shader", Float) = 0
         _MainTex ("Colour (RGB), alpha (A)", 2D) = "white" {}
         [HideInInspector] _Color ("Colour", Color) = (1, 1, 1, 1)
         [ToggleUI] _FrameBlend ("Blend flipbook frames (UV2, AnimBlend)", Float) = 1
@@ -32,9 +32,15 @@ Shader "Castlemist/GW2 Particle"
         _FlowStep ("stepcol (min, max)", Vector) = (0, 1, 0, 0)
 
         [Header(Flow layer (1764372))]
-        [NoScaleOffset] _LayerTex ("Layer (opacitytile)", 2D) = "white" {}
+        [NoScaleOffset] _LayerTex ("Layer (opacitytile; nebula background)", 2D) = "white" {}
         _LayerScroll ("uvscrol (uv scale xy, scroll per second zw)", Vector) = (1, 1, 0, 0)
         _LayerFlowUV ("flowuv (scale xy, scroll per second zw)", Vector) = (0, 0, 0, 0)
+
+        [Header(Nebula (728777))]
+        [NoScaleOffset] _PerturbTex ("perturb (RG, linear)", 2D) = "grey" {}
+        _BasePtrb ("perturb (offset strength)", Float) = 0.1
+        _PtcUVSS ("uvss (perturb scroll xy per second, uv scale z)", Vector) = (0, 0, 1, 0)
+        _ScreenTile ("zotile (background tiles across the screen)", Float) = 5
 
         [Header(Add layer (second pass, 1601524))]
         [ToggleUI] _UseAddLayer ("Add layer", Float) = 0

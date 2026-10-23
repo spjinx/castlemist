@@ -133,7 +133,7 @@ namespace Castlemist
                     switch (role)
                     {
                         case "parallax": case "mod": case "glow": case "decal": case "projector": case "interior":
-                        case "opacitytile":
+                        case "opacitytile": case "background":
                             return Role.Colour;
                         default: return Role.Data;
                     }

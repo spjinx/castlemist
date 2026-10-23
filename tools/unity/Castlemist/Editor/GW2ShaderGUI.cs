@@ -440,6 +440,16 @@ namespace Castlemist
                 }
                 EndSection();
             }
+            if (fam == 8 && Section("Nebula"))
+            {
+                Tex("_MaskTex", "mask", "R: the puff's coverage (a flipbook)");
+                Tex("_LayerTex", "background", "colour, sampled in screen space");
+                Tex("_PerturbTex", "perturb", "RG offset, linear");
+                Prop("_ScreenTile", "zotile (tiles across the screen)");
+                Prop("_BasePtrb", "perturb strength");
+                Prop("_PtcUVSS", "uvss (scroll xy, uv scale z)");
+                EndSection();
+            }
             if (fam == 6 && Section("Fire", false))
             {
                 Prop("_FireMode", "Fire shader");

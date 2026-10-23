@@ -943,7 +943,7 @@ namespace Castlemist
 
         /// Castlemist/GW2 Particle's _PtcShader values: GW2's particle pixel-shader families
         /// (GW2Particle.cginc has the formulas and the AMATs each was read from).
-        public enum ParticleFamily { Basic = 0, Soft = 1, Premultiplied = 2, Step = 3, Fade = 4, Flow = 5, Fire = 6, FlowLayer = 7 }
+        public enum ParticleFamily { Basic = 0, Soft = 1, Premultiplied = 2, Step = 3, Fade = 4, Flow = 5, Fire = 6, FlowLayer = 7, Nebula = 8 }
 
         /// The AMATs whose particle shaders were read from the game's DXBC (2026-10-22); any other
         /// AMAT gets its family from its profile and constants, with a warning.
@@ -956,6 +956,7 @@ namespace Castlemist
             882183, 1710790,              // flow
             977200, 1171331,              // fire
             1764372,                      // flow layer
+            728777,                       // nebula
         };
 
         /// The GW2 particle shader family of @p e: by its constants (the uniforms its shaders
@@ -963,6 +964,7 @@ namespace Castlemist
         public static ParticleFamily FamilyOf(MaterialsFile.MaterialEntry e)
         {
             if (e.Profile == "fx-fire") return ParticleFamily.Fire;
+            if (e.Gw2.ContainsKey("uvss") && e.ExtraOf("background") != null) return ParticleFamily.Nebula;
             if (e.Gw2.ContainsKey("flowuv") && e.Gw2.ContainsKey("uvscrol")) return ParticleFamily.FlowLayer;
             if (e.Gw2.ContainsKey("startcl") && e.Gw2.ContainsKey("flow")) return ParticleFamily.Flow;
             if (e.Gw2.ContainsKey("addcolr") || e.Profile == "fx-alpha") return ParticleFamily.Fade;
@@ -1065,6 +1067,23 @@ namespace Castlemist
                     SetVec(mat, "_LayerScroll", V("uvscrol", new Vector4(1, 1, 0, 0)));
                     SetVec(mat, "_LayerFlowUV", V("flowuv", Vector4.zero));
                     break;
+                case ParticleFamily.Nebula:
+                {
+                    // 728777: the mask (a puff flipbook) is the shape, the "background" star field the
+                    // colour, in screen space; no baseColor. _MainTex holds the mask too (unused by the
+                    // family; it keeps the inspector and ParticleEffects' empty-_MainTex fallback quiet).
+                    MaterialsFile.Extra mask = Ex("mask"), bg = Ex("background"), pt = Ex("perturb");
+                    Layer(ctx, mat, tag, modelFolder, mask != null ? mask.Map : null, "_MaskTex", null);
+                    Layer(ctx, mat, tag, modelFolder, mask != null ? mask.Map : bc, "_MainTex", null);
+                    Layer(ctx, mat, tag, modelFolder, bg != null ? bg.Map : null, "_LayerTex", null);
+                    Layer(ctx, mat, tag, modelFolder, pt != null ? pt.Map : null, "_PerturbTex", null);
+                    if (mask == null) ctx.Warnings.Add(tag + ": nebula particle without its mask layer: drawn as full quads");
+                    SetF(mat, "_BasePtrb", (float)e.Const("perturb", 0, 0.0));
+                    SetVec(mat, "_PtcUVSS", V("uvss", new Vector4(0, 0, 1, 0)));
+                    // the PS names it zotile; materials.json has carried it as xotile
+                    SetF(mat, "_ScreenTile", (float)e.Const("zotile", 0, e.Const("xotile", 0, 1.0)));
+                    break;
+                }
                 case ParticleFamily.Fade:
                     Layer(ctx, mat, tag, modelFolder, bc, "_MainTex", null);
                     SetF(mat, "_PtcVcColour", e.Profile == "fx-alpha" ? 1f : 0f);   // 19255 x 2 vc; 1601524 the texture alone
