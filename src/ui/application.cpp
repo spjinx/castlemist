@@ -779,6 +779,50 @@ int run(HINSTANCE hInstance, int cmd_show) {
         }
     }
 
+    // Debug: GW2_NPCTEST=<npc id> shows a race-body NPC as the NPC window's
+    // "Open model" does (cached catalogue, GW2_DAT as GW2_AUTOLOAD); with
+    // GW2_MATTEST the Materials window then runs its self-test on it.
+    if (const char* nt = std::getenv("GW2_NPCTEST")) {
+        try {
+            if (!g_app->dat_loaded) {
+                const char* dat_env = std::getenv("GW2_DAT");
+                load_dat_file(g_app->data_gw2,
+                              dat_env && *dat_env
+                                  ? dat_env
+                                  : "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Guild Wars 2\\Gw2.dat");
+                g_app->dat_loaded = true;
+            }
+            // As in the viewer: the Materials window is already open when the body loads.
+            auto pump = [](int ms) {
+                const DWORD end = GetTickCount() + static_cast<DWORD>(ms);
+                while (GetTickCount() < end) {
+                    MSG msg;
+                    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                        TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                    Sleep(5);
+                }
+            };
+            if (std::getenv("GW2_MATTEST")) {
+                open_material_dialog(hwnd);
+                pump(1500);
+            }
+            const bool opened = open_npc_body(static_cast<uint32_t>(std::strtoul(nt, nullptr, 10)));
+            if (std::getenv("GW2_MATTEST")) pump(3000);
+            if (!opened) {
+                MessageBoxA(hwnd, "no body model for that NPC", "GW2_NPCTEST", MB_OK);
+            } else {
+                castlemist::render::on_resize(1000, 800);
+                castlemist::render::save_screenshot(dump_path("shot_npc.bmp").c_str());
+                if (const char* mt = std::getenv("GW2_MATTEST"))
+                    run_material_selftest(dump_dir(), static_cast<uint32_t>(std::strtoul(mt, nullptr, 10)));
+            }
+        } catch (const std::exception& ex) {
+            MessageBoxA(hwnd, ex.what(), "GW2_NPCTEST failed", MB_OK);
+        }
+    }
+
     // Debug: GW2_MAPWIN=<map fileId> loads the dat (GW2_DAT, as GW2_AUTOLOAD)
     // and opens the Map window on that map. The window itself waits until
     // every model is loaded or failed (at most 600 s), renders one 1280x720

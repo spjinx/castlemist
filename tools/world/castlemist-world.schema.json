@@ -245,6 +245,89 @@
         }
       }
     },
+    "environment": {
+      "description": "The map's GW2 environment, raw (contract: env_contract 2026-10-22): dataGlobal lighting of slot `preset` (light.presetIndex, else 0), haze / effect / CLUT of the day slot `hazeEffectPreset` (0, the client's daytime pick), and the per-zone haze. Colours R, G, B(, A) 0..1 (stored B, G, R, A). Null without an env chunk, or when a stored value is not finite (warned). Optional.",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["preset", "lights", "shadowInfluence", "backlight", "haze", "effect"],
+      "properties": {
+        "preset": { "type": "integer", "minimum": 0 },
+        "hazeEffectPreset": { "type": "integer", "minimum": 0 },
+        "lights": {
+          "description": "Every light of lighting[preset] in stored order (null pointers and NaN intensities skipped).",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["color", "intensity", "unityForward"],
+            "properties": {
+              "color": { "$ref": "#/$defs/rgb" },
+              "intensity": { "type": "number" },
+              "unityForward": { "description": "The direction the light travels, Unity axes: map_to_unity(normalised direction), as light.sun.unityForward.", "$ref": "#/$defs/vec3" }
+            }
+          }
+        },
+        "shadowInfluence": { "type": "number" },
+        "backlight": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["color", "intensity"],
+          "properties": { "color": { "$ref": "#/$defs/rgb" }, "intensity": { "type": "number" } }
+        },
+        "haze": { "$ref": "#/$defs/envHaze" },
+        "effect": {
+          "description": "PackMapEnvDataEffect*; fields the map's struct version lacks are left out.",
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "properties": {
+            "glow": { "$ref": "#/$defs/rgba" },
+            "glowLevel": { "$ref": "#/$defs/rgba" },
+            "glowAmplify": { "type": "number" },
+            "tintColor": { "$ref": "#/$defs/rgba" },
+            "tintTargetColor": { "$ref": "#/$defs/rgba" },
+            "tintAmount": { "type": "number" },
+            "tintFocus": { "type": "number" },
+            "saturation": { "type": "number" },
+            "focalDepth": { "type": "number" },
+            "focalRange": { "type": "number" },
+            "ssaoAmount": { "type": "number" },
+            "ssaoBrighten": { "type": "number" },
+            "ssaoContrast": { "type": "number" },
+            "ssaoSunScale": { "type": "number" },
+            "flags": { "type": "integer", "minimum": 0 },
+            "clutFileId": { "type": ["integer", "null"], "minimum": 1 },
+            "clut": { "description": "The colour lookup texture as PNG, relative to the folder; null when absent or undecodable.", "type": ["string", "null"] },
+            "clutLayout": {
+              "description": "kind strip: width = size * size, height = size; red along x in a slice, blue the slice, green rising with Unity's v (greenZero bottom: the PNG's last row is green 0).",
+              "type": ["object", "null"],
+              "additionalProperties": false,
+              "required": ["width", "height", "size", "kind"],
+              "properties": {
+                "width": { "type": "integer", "minimum": 1 },
+                "height": { "type": "integer", "minimum": 1 },
+                "size": { "type": ["integer", "null"], "minimum": 1 },
+                "kind": { "enum": ["strip", "2d"] },
+                "greenZero": { "enum": ["bottom"] }
+              }
+            }
+          }
+        },
+        "zones": {
+          "description": "dataLocalArray blocks with haze and shapes: their haze slot (else slot 0) and the Unity-frame box of their shapes, [minX, minZ, maxX, maxZ] in map units.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "haze", "boundsUnity"],
+            "properties": {
+              "name": { "type": "string" },
+              "haze": { "$ref": "#/$defs/envHaze" },
+              "boundsUnity": { "$ref": "#/$defs/vec4" }
+            }
+          }
+        }
+      }
+    },
     "light": {
       "description": "Null when a stored value is not finite (warned).",
       "type": ["object", "null"],
@@ -416,6 +499,24 @@
     "vec3": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
     "vec4": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 },
     "rgba": { "type": "array", "items": { "type": "number", "minimum": 0, "maximum": 1 }, "minItems": 4, "maxItems": 4 },
+    "rgb": { "type": "array", "items": { "type": "number", "minimum": 0, "maximum": 1 }, "minItems": 3, "maxItems": 3 },
+    "vec2": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+    "envHaze": {
+      "description": "PackMapEnvDataHaze*: distRange in map units; heightRange as stored (map z, up = -Z, unsorted); heightRangeUnity the same as Unity-frame height (-z), sorted. Null where a block has none (zones[].haze never is).",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["near", "far", "height", "distRange", "heightRange", "heightRangeUnity", "sunDirRange", "depthCue"],
+      "properties": {
+        "near": { "$ref": "#/$defs/rgba" },
+        "far": { "$ref": "#/$defs/rgba" },
+        "height": { "$ref": "#/$defs/rgba" },
+        "distRange": { "$ref": "#/$defs/vec2" },
+        "heightRange": { "$ref": "#/$defs/vec2" },
+        "heightRangeUnity": { "$ref": "#/$defs/vec2" },
+        "sunDirRange": { "$ref": "#/$defs/vec2" },
+        "depthCue": { "type": "number" }
+      }
+    },
     "int4": { "type": "array", "items": { "type": "integer" }, "minItems": 4, "maxItems": 4 },
     "mat3": { "type": "array", "items": { "$ref": "#/$defs/vec3" }, "minItems": 3, "maxItems": 3 },
     "mat4": { "type": "array", "items": { "type": "number" }, "minItems": 16, "maxItems": 16 },

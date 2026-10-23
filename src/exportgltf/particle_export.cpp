@@ -71,6 +71,17 @@ json emitter_json(const ParticleEmitterCPU& e, const ModelPreview& model) {
     j["spawnRadius"] = {e.spawnRadius[0], e.spawnRadius[1]};
     j["lifetimeSec"] = {e.lifetime[0], e.lifetime[1]};
     j["drag"] = e.drag;
+    // velocity / acceleration: (dirX, dirY, dirZ, magnitude), each {base, span} (gw2-particle-system:
+    // normalize(dir) * magnitude); transform: the emitter's 3x4 rows, emitter -> cloud bone.
+    for (const char* k : {"velocity", "acceleration"}) {
+        const float (*v)[2] = k[0] == 'v' ? e.velocity : e.acceleration;
+        j[k] = json::array();
+        for (int r = 0; r < 4; ++r) j[k].push_back({v[r][0], v[r][1]});
+    }
+    if (e.hasTransform) j["transform"] = std::vector<float>(e.transform, e.transform + 12);
+    j["emitterFlags"] = e.emitterFlags;
+    j["flags"] = e.flags;
+    j["rotationDrag"] = e.rotationDrag;
     j["colorBegin"] = {json::array({e.colorBegin[0][0], e.colorBegin[0][1], e.colorBegin[0][2], e.colorBegin[0][3]}),
                         json::array({e.colorBegin[1][0], e.colorBegin[1][1], e.colorBegin[1][2], e.colorBegin[1][3]})};
     j["colorEnd"] = {json::array({e.colorEnd[0][0], e.colorEnd[0][1], e.colorEnd[0][2], e.colorEnd[0][3]}),
@@ -118,6 +129,7 @@ std::string write_particle_sidecar(const ModelPreview& model, const std::vector<
     doc["clouds"] = json::array();
     for (const auto& c : model.clouds) {
         json cj;
+        cj["materialIndex"] = c.materialIndex;   // the model material: materials.json's entry at this index
         if (c.materialIndex < glMaterialIndices.size() && glMaterialIndices[c.materialIndex] >= 0)
             cj["gltfMaterial"] = glMaterialIndices[c.materialIndex];
         cj["velocity"] = {c.velocity[0], c.velocity[1], c.velocity[2]};

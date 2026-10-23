@@ -329,11 +329,39 @@ struct EffectLight {
     float color[3] = {1, 1, 1};         // 0..1
     float intensity = 1, nearDistance = 0, farDistance = 1;
 };
+// MODL lightningData (ModelLightningDataV*): a system draws its bolts with one
+// material; a bolt runs along a tree of nodes, each node at a bone.
+struct LightningNode {
+    uint64_t bone = 0;
+    std::vector<uint16_t> children;     // -> indices into CloudSystem.lightningNodes
+    uint32_t flags = 0;
+    uint8_t shape = 0;
+    float radius[2] = {0, 0};
+};
+struct LightningBolt {
+    uint64_t bone = 0;
+    std::vector<uint16_t> nodes;        // -> CloudSystem.lightningNodes; nodes[0] is the root
+    uint32_t colorBegin[3] = {0, 0, 0}, colorEnd[3] = {0, 0, 0};   // packed colours, as stored
+    uint32_t flags = 0;
+    float lifetime[2] = {0, 0}, opacity[2] = {1, 1};
+    float texOffset = 0, texRange[2] = {0, 1}, texScale = 0, texSpeed = 0;
+    float thicknessRange[2] = {0, 0}, variance = 0, noise = 0;
+    uint16_t numSegments = 0;
+    uint8_t type = 0;
+};
+struct LightningSystem {
+    uint64_t bone = 0;
+    std::vector<uint16_t> bolts;        // -> CloudSystem.lightningBolts
+    uint32_t flags = 0, materialIndex = 0;
+};
 struct CloudSystem {
     std::vector<ParticleCloud> clouds;
     std::vector<ParticleEmitter> emitters;
     std::vector<EffectLight> lights;
-    bool present() const { return !clouds.empty() || !lights.empty(); }
+    std::vector<LightningSystem> lightningSystems;
+    std::vector<LightningBolt> lightningBolts;
+    std::vector<LightningNode> lightningNodes;
+    bool present() const { return !clouds.empty() || !lights.empty() || !lightningSystems.empty(); }
 };
 
 // One authored cloth simulation piece (ModelFileData.clothData[i]). GW2 cloth is
@@ -1448,6 +1476,19 @@ public:
         float fillIntensity = 0.3f;
         int   lightCount = 0;
         int   presetIndex = -1;   // the lighting[] index the rig was read from; -1 unless present
+        // Every light of the preset in stored order (a null pointer or a NaN
+        // intensity is skipped, as above): colour R, G, B 0..1, direction as
+        // stored (map space, not normalised).
+        struct Light { float color[3] = {0, 0, 0}; float intensity = 0; float direction[3] = {0, 0, 0}; };
+        std::vector<Light> lights;
+        // PackMapEnvDataLighting* shadowInfluence / backlightColor (byte3, read
+        // B, G, R like the lights' colour; UNPROVEN for the backlight, not traced
+        // in the client) / backlightIntensity; hasBacklight false when the
+        // version lacks them.
+        float shadowInfluence = 0;
+        bool  hasBacklight = false;
+        float backlightColor[3] = {0, 0, 0};
+        float backlightIntensity = 0;
     };
 
     // preset: a specific time-of-day index (0..2), or -1 (default) to AUTO-select
@@ -1525,6 +1566,24 @@ public:
         for (int i = 0; i < (int)lights.size(); ++i)
             if (lights[i].inten > bestI) { bestI = lights[i].inten; bestIdx = i; }
         if (bestIdx < 0) return out;
+
+        for (const L& l : lights) {
+            MapEnvLight::Light o;
+            for (int k = 0; k < 3; ++k) { o.color[k] = l.c[k]; o.direction[k] = l.dir[k]; }
+            o.intensity = l.inten;
+            out.lights.push_back(o);
+        }
+        try {
+            const size_t elem = lbase + (size_t)usedPi * lightingSize;
+            out.shadowInfluence = rdFloat1(lightingType, "shadowInfluence", elem);
+            size_t bc, bi; json bcf, bif;
+            if (fOff(lightingType, "backlightColor", elem, bc, bcf) && fOff(lightingType, "backlightIntensity", elem, bi, bif)) {
+                out.backlightColor[0] = rd8(bc + 2) / 255.f; out.backlightColor[1] = rd8(bc + 1) / 255.f;
+                out.backlightColor[2] = rd8(bc) / 255.f;
+                out.backlightIntensity = rdf(bi);
+                out.hasBacklight = true;
+            }
+        } catch (const std::exception&) {}
 
         const L& sun = lights[bestIdx];
         for (int k = 0; k < 3; ++k) { out.sunColor[k] = sun.c[k]; out.sunDir[k] = sun.dir[k]; }
@@ -1607,6 +1666,28 @@ public:
         float distRange[2] = {0, 0}, heightRange[2] = {0, 0}, sunDirRange[2] = {0, 0};
         float depthCue = 0;
     };
+    // Post-processing (PackMapEnvDataEffect*, dataGlobal->effect[]), as stored.
+    // Colours are byte4 read B, G, R, A like the haze's (that the effect import
+    // swaps the same way is UNPROVEN: not traced in the client). Older versions
+    // have fewer fields (V29: glow, tintColor, saturation, tintAmount, glowLevel,
+    // glowAmplify; V50 adds tintTargetColor, tintFocus, focalDepth, focalRange;
+    // V76 the ssao*, flags and clutTexturePath): `has` names the ones this
+    // version stores, by the Field bits.
+    struct MapEnvEffect {
+        enum Field : uint32_t {
+            Glow = 1u << 0, TintColor = 1u << 1, TintTargetColor = 1u << 2, Saturation = 1u << 3,
+            TintAmount = 1u << 4, TintFocus = 1u << 5, GlowLevel = 1u << 6, GlowAmplify = 1u << 7,
+            FocalDepth = 1u << 8, FocalRange = 1u << 9, SsaoAmount = 1u << 10, SsaoBrighten = 1u << 11,
+            SsaoContrast = 1u << 12, SsaoSunScale = 1u << 13, Flags = 1u << 14, Clut = 1u << 15,
+        };
+        uint32_t has = 0;
+        float glow[4] = {0, 0, 0, 0}, tintColor[4] = {0, 0, 0, 0}, tintTargetColor[4] = {0, 0, 0, 0},
+              glowLevel[4] = {0, 0, 0, 0};
+        float saturation = 0, tintAmount = 0, tintFocus = 0, glowAmplify = 0, focalDepth = 0, focalRange = 0,
+              ssaoAmount = 0, ssaoBrighten = 0, ssaoContrast = 0, ssaoSunScale = 0;
+        uint32_t flags = 0;
+        uint32_t clutFile = 0;                   // clutTexturePath fileId, 0 if null
+    };
     // One per-zone env block (dataLocalArray[i]): its haze and the shapes
     // (2D polygons) it covers. An empty `haze` means the zone has none of its
     // own; the client then takes its parent's (EnvEnvironment 0x140c60340).
@@ -1633,6 +1714,8 @@ public:
         // dataGlobal->haze[] (slot 0 day, 1 night, 2 alternate: 0x140c60340
         // picks 0 at t = 1, 1 at t = 0, 2 when its flag is set).
         std::vector<MapHaze> haze;
+        // dataGlobal->effect[] (same slots as haze, as stored).
+        std::vector<MapEnvEffect> effect;
         // dataLocalArray[]: per-zone blocks (haze and shapes only).
         std::vector<MapEnvZone> zones;
         // parm.rect (x0, y0, x1, y1), the map's extent; all 0 without a parm chunk.
@@ -1865,6 +1948,49 @@ public:
             }
         };
         try { readHaze(gt, g, out.haze); } catch (const std::exception&) { out.haze.clear(); }
+        // Effect: a ptr_array_ptr of PackMapEnvDataEffect*, like haze.
+        try {
+            size_t o; json fj;
+            const std::string et = fieldOffset(gt, "effect", o, fj) ? subType(fj, "element") : std::string();
+            uint32_t n = 0;
+            const size_t base = et.empty() ? 0 : arrayAt(g + o, n);
+            for (uint32_t i = 0; base && n <= 16 && i < n; ++i) {
+                const size_t e = follow(base + (size_t)i * ptr_);
+                if (!e) continue;
+                MapEnvEffect x;
+                auto colour = [&](const char* name, uint32_t bit, float c[4]) {
+                    size_t a; json cf;
+                    if (!fOff(et, name, e, a, cf)) return;
+                    c[0] = rd8(a + 2) / 255.f; c[1] = rd8(a + 1) / 255.f; c[2] = rd8(a) / 255.f; c[3] = rd8(a + 3) / 255.f;
+                    x.has |= bit;
+                };
+                auto scalar = [&](const char* name, uint32_t bit, float& v) {
+                    size_t a; json cf;
+                    if (!fOff(et, name, e, a, cf)) return;
+                    v = rdf(a);
+                    x.has |= bit;
+                };
+                using F = MapEnvEffect;
+                colour("glow", F::Glow, x.glow);
+                colour("tintColor", F::TintColor, x.tintColor);
+                colour("tintTargetColor", F::TintTargetColor, x.tintTargetColor);
+                colour("glowLevel", F::GlowLevel, x.glowLevel);
+                scalar("saturation", F::Saturation, x.saturation);
+                scalar("tintAmount", F::TintAmount, x.tintAmount);
+                scalar("tintFocus", F::TintFocus, x.tintFocus);
+                scalar("glowAmplify", F::GlowAmplify, x.glowAmplify);
+                scalar("focalDepth", F::FocalDepth, x.focalDepth);
+                scalar("focalRange", F::FocalRange, x.focalRange);
+                scalar("ssaoAmount", F::SsaoAmount, x.ssaoAmount);
+                scalar("ssaoBrighten", F::SsaoBrighten, x.ssaoBrighten);
+                scalar("ssaoContrast", F::SsaoContrast, x.ssaoContrast);
+                scalar("ssaoSunScale", F::SsaoSunScale, x.ssaoSunScale);
+                size_t a; json cf;
+                if (fOff(et, "flags", e, a, cf)) { x.flags = rd32(a); x.has |= F::Flags; }
+                if (fOff(et, "clutTexturePath", e, a, cf)) { x.clutFile = decodeFilenameAt(a); x.has |= F::Clut; }
+                out.effect.push_back(x);
+            }
+        } catch (const std::exception&) { out.effect.clear(); }
         try {
             size_t lo; json lfj;
             if (fieldOffset(root, "dataLocalArray", lo, lfj)) {
@@ -4168,6 +4294,78 @@ private:
         if (!modl || root.empty()) return;
         parseCloudData(root, modl, out);
         parseLightData(root, modl, out);
+        parseLightningData(root, modl, out);
+    }
+
+    // an array_ptr<word> field (index lists) into @p o
+    void rdWords(const std::string& t, const char* name, size_t base, std::vector<uint16_t>& o) const {
+        size_t a; json fj;
+        if (!fOff(t, name, base, a, fj)) return;
+        uint32_t n = 0; size_t b = arrayAt(a, n);
+        for (uint32_t i = 0; b && i < n && i < 1024 && b + 2u * i + 2 <= n_; ++i)
+            o.push_back(static_cast<uint16_t>(d_[b + 2u * i] | (d_[b + 2u * i + 1] << 8)));
+    }
+    // the elements of the array_ptr field @p name of struct @p t at @p base
+    template <class F>
+    void eachElement(const std::string& t, const char* name, size_t base, uint32_t cap, F f) const {
+        size_t a; json fj;
+        if (!fOff(t, name, base, a, fj)) return;
+        std::string et = fj["element"].value("struct", std::string());
+        int es = typeSize(et);
+        uint32_t n = 0; size_t b = arrayAt(a, n);
+        for (uint32_t i = 0; b && es > 0 && i < n && i < cap; ++i) f(et, b + (size_t)i * es);
+    }
+
+    void parseLightningData(const std::string& root, size_t modl, Model& out) {
+        size_t a; json fj;
+        if (!fOff(root, "lightningData", modl, a, fj)) return;
+        size_t ld = follow(a);
+        if (!ld) return;
+        std::string t = ptrTargetStruct(fj);              // ModelLightningDataV*
+        if (t.empty()) return;
+        CloudSystem& fx = out.effects;
+        auto rdTok = [&](const std::string& st, size_t e) {
+            size_t o; json f2; return fOff(st, "bone", e, o, f2) ? rd64(o) : uint64_t(0);
+        };
+        eachElement(t, "systems", ld, 64, [&](const std::string& st, size_t e) {
+            LightningSystem s;
+            s.bone = rdTok(st, e);
+            rdWords(st, "boltIndices", e, s.bolts);
+            s.flags = rdDword(st, "flags", e);
+            s.materialIndex = rdDword(st, "materialIndex", e);
+            fx.lightningSystems.push_back(std::move(s));
+        });
+        eachElement(t, "bolts", ld, 256, [&](const std::string& st, size_t e) {
+            LightningBolt b;
+            b.bone = rdTok(st, e);
+            rdWords(st, "nodeIndices", e, b.nodes);
+            size_t o; json f2;
+            if (fOff(st, "colorBegin", e, o, f2)) for (int k = 0; k < 3; ++k) b.colorBegin[k] = rd32(o + 4u * k);
+            if (fOff(st, "colorEnd", e, o, f2)) for (int k = 0; k < 3; ++k) b.colorEnd[k] = rd32(o + 4u * k);
+            b.flags = rdDword(st, "flags", e);
+            rdFloat2(st, "lifetime", e, b.lifetime);
+            rdFloat2(st, "opacity", e, b.opacity);
+            b.texOffset = rdFloat1(st, "texOffset", e);
+            rdFloat2(st, "texRange", e, b.texRange);
+            b.texScale = rdFloat1(st, "texScale", e);
+            b.texSpeed = rdFloat1(st, "texSpeed", e);
+            rdFloat2(st, "thicknessRange", e, b.thicknessRange);
+            b.variance = rdFloat1(st, "variance", e);
+            b.noise = rdFloat1(st, "noise", e);
+            if (fOff(st, "numSegments", e, o, f2) && o + 2 <= n_) b.numSegments = static_cast<uint16_t>(d_[o] | (d_[o + 1] << 8));
+            if (fOff(st, "type", e, o, f2) && o < n_) b.type = d_[o];
+            fx.lightningBolts.push_back(std::move(b));
+        });
+        eachElement(t, "nodes", ld, 1024, [&](const std::string& st, size_t e) {
+            LightningNode nd;
+            nd.bone = rdTok(st, e);
+            rdWords(st, "childrenIndices", e, nd.children);
+            nd.flags = rdDword(st, "flags", e);
+            size_t o; json f2;
+            if (fOff(st, "shape", e, o, f2) && o < n_) nd.shape = d_[o];
+            rdFloat2(st, "radius", e, nd.radius);
+            fx.lightningNodes.push_back(std::move(nd));
+        });
     }
 
     void parseCloudData(const std::string& root, size_t modl, Model& out) {

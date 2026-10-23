@@ -113,6 +113,21 @@ std::vector<uint8_t> complete_dds_cube_mips(const std::vector<uint8_t>& dds) {
 
 namespace {
 
+/// The GW2 cloth that uses material @p i (ModelPreview::clothPieces), for the castlemist shaders'
+/// wave: {pieces, wind, gravity, drag, rigidness} of the windiest piece, or null without one.
+json cloth_json(const ModelPreview& model, size_t i) {
+    const ClothPieceCPU* best = nullptr;
+    int pieces = 0;
+    for (const ClothPieceCPU& cp : model.clothPieces) {
+        if (cp.materialIndex != i || cp.lockCount == 0) continue;
+        ++pieces;
+        if (!best || cp.wind > best->wind) best = &cp;
+    }
+    if (!best) return json();
+    return json{{"pieces", pieces}, {"wind", best->wind}, {"gravity", best->gravity},
+                {"drag", best->drag}, {"rigidness", best->rigidness}};
+}
+
 /// Writes one material's maps under `Textures/` and builds their JSON.
 class MapWriter {
 public:
@@ -251,7 +266,7 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
                                        const std::string& name, uint32_t modelFileId,
                                        const VrchatFolderOptions& opts) {
     VrchatFolderResult r;
-    if (model.meshes.empty()) {
+    if (model.meshes.empty() && !model.hasEffects()) {
         r.error = "This model has no drawable meshes to export.";
         return r;
     }
@@ -432,6 +447,7 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
             {"gw2", std::move(gw2)},
             {"gw2Vectors", std::move(gw2Vectors)},
             {"texTransforms", std::move(texTransforms)},
+            {"cloth", cloth_json(model, i)},
             {"warnings", warnings},
         };
         materials.push_back(std::move(m));

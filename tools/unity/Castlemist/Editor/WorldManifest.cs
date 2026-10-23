@@ -13,7 +13,11 @@
 //  - light, water, frameProbe, sky, spawn and map.bounds may be null;
 //  - foliage (the world-foliage block) and cells[].foliage are optional; the
 //    records themselves are read by FoliageRecords;
-//  - unityTerrain (world-foliage D7) is optional: Terrain mode needs it.
+//  - unityTerrain (world-foliage D7) is optional: Terrain mode needs it;
+//  - environment (2026-10-22, the env chunk: lights, haze, effect, zones) is
+//    optional and null for a map without one; inside it every block may be
+//    null and every effect field absent (the map's struct version). Read raw;
+//    EnvironmentMath (end of this file) turns it into Unity settings.
 // An unknown format or major version, or a missing required field, throws
 // ManifestException naming the field. No UnityEngine dependency (the
 // tools/unity/Tests~ harness compiles it with plain dotnet).
@@ -216,6 +220,7 @@ namespace Castlemist
         public LightEntry Light;   // null: not finite or absent
         public double[] SpawnUnity;  // null: no spawn hint
         public ProbeEntry FrameProbe;  // null: no probe
+        public EnvironmentEntry Environment;  // null: no environment block, or null in the export
         public FoliageBlock Foliage;   // null: no foliage block (world-foliage D7)
         public UnityTerrainBlock UnityTerrain;  // null: no unityTerrain block (world-foliage D7)
         /// sharedMaterials.entries (Task 15d); empty for an export before it.
@@ -424,6 +429,105 @@ namespace Castlemist
             public int PresetIndex;
             public double[] SunUnityForward, SunColor, Ambient, FillColor;
             public double SunIntensity, FillIntensity;
+        }
+
+        /// One light of environment.lights ([0] the sun, [1..] the fills) or the backlight.
+        public sealed class EnvLight
+        {
+            public double[] Color;          // 0..1 RGB
+            public double Intensity;
+            public double[] UnityForward;   // the direction the light travels, Unity frame; null for the backlight
+        }
+
+        public sealed class HazeEntry
+        {
+            public double[] Near, Far, Height;           // 0..1 RGBA; null when absent
+            public double[] DistRange;                   // [near, far], GW2 units; null when absent
+            public double[] HeightRange, HeightRangeUnity, SunDirRange;
+            public double DepthCue;
+        }
+
+        public sealed class ClutLayout
+        {
+            public int Width, Height, Size;
+            public string Kind;   // e.g. "strip"
+        }
+
+        /// environment.effect; a field absent from the map's struct version is null.
+        public sealed class EffectEntry
+        {
+            public double[] Glow, GlowLevel, TintColor, TintTargetColor;   // RGBA
+            public double? GlowAmplify, TintAmount, TintFocus, Saturation, FocalDepth, FocalRange,
+                           SsaoAmount, SsaoBrighten, SsaoContrast, SsaoSunScale;
+            public long? Flags, ClutFileId;
+            public string Clut;            // PNG path relative to the export folder, or null
+            public ClutLayout ClutLayout;  // null when absent
+        }
+
+        public sealed class EnvZone
+        {
+            public string Name;
+            public HazeEntry Haze;
+            public double[] BoundsUnity;   // [minX, minZ, maxX, maxZ], GW2 units, Unity frame
+        }
+
+        public sealed class EnvironmentEntry
+        {
+            public int Preset;
+            public readonly List<EnvLight> Lights = new List<EnvLight>();
+            public double ShadowInfluence;
+            public EnvLight Backlight;   // null
+            public HazeEntry Haze;       // null
+            public EffectEntry Effect;   // null
+            public readonly List<EnvZone> Zones = new List<EnvZone>();
+        }
+
+        static double? OptNumN(JObj o, string k) { return o.IsNull(k) ? (double?)null : o.Num(k); }
+
+        static HazeEntry ParseHaze(JObj h)
+        {
+            if (h == null) return null;
+            return new HazeEntry
+            {
+                Near = h.OptVec("near", 4), Far = h.OptVec("far", 4), Height = h.OptVec("height", 4),
+                DistRange = h.OptVec("distRange", 2), HeightRange = h.OptVec("heightRange", 2),
+                HeightRangeUnity = h.OptVec("heightRangeUnity", 2), SunDirRange = h.OptVec("sunDirRange", 2),
+                DepthCue = h.OptNum("depthCue", 0),
+            };
+        }
+
+        static EnvironmentEntry ParseEnvironment(JObj e)
+        {
+            var env = new EnvironmentEntry { Preset = (int)e.OptNum("preset", 0), ShadowInfluence = e.OptNum("shadowInfluence", 0) };
+            foreach (JObj l in e.Objs("lights"))
+                env.Lights.Add(new EnvLight { Color = l.Vec("color", 3), Intensity = l.OptNum("intensity", 0), UnityForward = l.OptVec("unityForward", 3) });
+            JObj bl = e.OptObj("backlight");
+            if (bl != null) env.Backlight = new EnvLight { Color = bl.Vec("color", 3), Intensity = bl.OptNum("intensity", 0) };
+            env.Haze = ParseHaze(e.OptObj("haze"));
+            JObj fx = e.OptObj("effect");
+            if (fx != null)
+            {
+                var f = new EffectEntry
+                {
+                    Glow = fx.OptVec("glow", 4), GlowLevel = fx.OptVec("glowLevel", 4),
+                    TintColor = fx.OptVec("tintColor", 4), TintTargetColor = fx.OptVec("tintTargetColor", 4),
+                    GlowAmplify = OptNumN(fx, "glowAmplify"), TintAmount = OptNumN(fx, "tintAmount"), TintFocus = OptNumN(fx, "tintFocus"),
+                    Saturation = OptNumN(fx, "saturation"), FocalDepth = OptNumN(fx, "focalDepth"), FocalRange = OptNumN(fx, "focalRange"),
+                    SsaoAmount = OptNumN(fx, "ssaoAmount"), SsaoBrighten = OptNumN(fx, "ssaoBrighten"),
+                    SsaoContrast = OptNumN(fx, "ssaoContrast"), SsaoSunScale = OptNumN(fx, "ssaoSunScale"),
+                    Flags = fx.IsNull("flags") ? (long?)null : fx.Long("flags"),
+                    ClutFileId = fx.IsNull("clutFileId") ? (long?)null : fx.Long("clutFileId"),
+                    Clut = fx.OptStr("clut"),
+                };
+                JObj cl = fx.OptObj("clutLayout");
+                if (cl != null)
+                    f.ClutLayout = new ClutLayout { Width = (int)cl.OptNum("width", 0), Height = (int)cl.OptNum("height", 0),
+                                                    Size = (int)cl.OptNum("size", 0), Kind = cl.OptStr("kind") };
+                env.Effect = f;
+            }
+            foreach (JObj z in e.Objs("zones"))
+                env.Zones.Add(new EnvZone { Name = z.OptStr("name"), Haze = ParseHaze(z.OptObj("haze")), BoundsUnity = z.OptVec("boundsUnity", 4) });
+            return env;
         }
 
         public sealed class ProbeEntry
@@ -660,6 +764,9 @@ namespace Castlemist
             JObj spawn = r.OptObj("spawn");
             if (spawn != null) m.SpawnUnity = spawn.Vec("unity", 3);
 
+            JObj env = r.OptObj("environment");
+            if (env != null) m.Environment = ParseEnvironment(env);
+
             JObj probe = r.OptObj("frameProbe");
             if (probe != null)
             {
@@ -730,6 +837,8 @@ namespace Castlemist
             public string Profile;
             /// The material's AMAT (GW2 shader) fileId; 0 when the export had none.
             public long Amat;
+            /// materials.json cloth: the GW2 cloth using this material (its windiest piece), or null.
+            public double? ClothWind, ClothRigidness;
             /// gw2: the named material constants (x); gw2Vectors: their whole float4 (empty in an older export).
             public readonly Dictionary<string, double> Gw2 = new Dictionary<string, double>(StringComparer.Ordinal);
             public readonly Dictionary<string, double[]> Gw2Vectors = new Dictionary<string, double[]>(StringComparer.Ordinal);
@@ -862,6 +971,12 @@ namespace Castlemist
                 }
                 e.Profile = m.OptStr("profile");
                 e.Amat = m.IsNull("amat") ? 0 : (long)m.OptNum("amat", 0);
+                JObj cloth = m.OptObj("cloth");
+                if (cloth != null)
+                {
+                    e.ClothWind = cloth.OptNum("wind", 0.5);
+                    e.ClothRigidness = cloth.OptNum("rigidness", 0);
+                }
                 JObj g = m.OptObj("gw2");
                 if (g != null)
                     foreach (KeyValuePair<string, object> kv in g.Raw)
@@ -884,6 +999,172 @@ namespace Castlemist
                 f.Materials.Add(e);
             }
             return f;
+        }
+    }
+    /// 2026-10-22: the scene setup's readings of manifest.environment as numbers
+    /// (SceneSetup applies them). Every mapping here is a reading of raw GW2 data,
+    /// not a measurement against the client: UNPROVEN unless stated. No UnityEngine
+    /// dependency (Tests~ checks the maths).
+    public static class EnvironmentMath
+    {
+        static double Clamp01(double v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
+        static bool Finite(double v) { return !double.IsNaN(v) && !double.IsInfinity(v); }
+
+        public sealed class Fog
+        {
+            public double Start, End;   // Unity units (Linear fog)
+            public double[] Color;      // RGB 0..1
+        }
+
+        /// Unity Linear fog from haze. UNPROVEN reading: the haze amount is a straight
+        /// line through (distRange[0], near.a) and (distRange[1], far.a); Unity's Linear
+        /// fog is 0 at fogStartDistance and 1 at fogEndDistance, so start and end are
+        /// that line's 0 and 1 crossings (start clamped at 0). When far.a is not above
+        /// near.a (the alphas are then not read as amounts) the haze runs 0 -> 1 over
+        /// distRange itself. Linear rather than Exponential: the data is a distance
+        /// range, and Exponential has no start distance to put distRange[0] in. The one
+        /// fog colour is near and far blended by their alphas (far alone when both are
+        /// 0): where fog is thick, the far colour dominates. Height haze is not mapped
+        /// (Unity's built-in fog has no height term). Null when there is no usable range.
+        public static Fog FogFromHaze(WorldManifest.HazeEntry h, double unityScale)
+        {
+            if (h == null || h.DistRange == null || !(unityScale > 0)) return null;
+            double n = h.DistRange[0], f = h.DistRange[1];
+            if (!Finite(n) || !Finite(f) || !(f > n) || f <= 0) return null;
+            double a0 = h.Near != null ? Clamp01(h.Near[3]) : 0, a1 = h.Far != null ? Clamp01(h.Far[3]) : 1;
+            double start = n, end = f;
+            if (a1 > a0 + 1e-3)
+            {
+                double slope = (a1 - a0) / (f - n);
+                start = n - a0 / slope;
+                end = n + (1 - a0) / slope;
+            }
+            if (start < 0) start = 0;
+            var fog = new Fog { Start = start * unityScale, End = end * unityScale };
+            double[] nc = h.Near ?? h.Far, fc = h.Far ?? h.Near;
+            if (fc == null) fog.Color = new[] { 0.5, 0.5, 0.5 };
+            else
+            {
+                double w = a0 + a1 > 1e-6 ? a1 / (a0 + a1) : 1;
+                fog.Color = new double[3];
+                for (int i = 0; i < 3; ++i) fog.Color[i] = Clamp01(nc[i] * (1 - w) + fc[i] * w);
+            }
+            return fog;
+        }
+
+        /// The Castlemist/GW2 Haze volume's _HeightRange (h0, h1): haze.heightRange as stored
+        /// (map z, up = -Z); without it, from heightRangeUnity (lo, hi) as (-hi, -lo) --
+        /// fromUnity true: UNPROVEN, the stored order is lost. Null when neither is there.
+        public static double[] HazeHeightRange(WorldManifest.HazeEntry h, out bool fromUnity)
+        {
+            fromUnity = false;
+            if (h == null) return null;
+            if (h.HeightRange != null) return new[] { h.HeightRange[0], h.HeightRange[1] };
+            if (h.HeightRangeUnity == null) return null;
+            fromUnity = true;
+            return new[] { -h.HeightRangeUnity[1], -h.HeightRangeUnity[0] };
+        }
+
+        /// Trilight sky / equator / ground (RGB each, may exceed 1) from the fills
+        /// (environment.lights[1..]): each fill is a directional light of colour x
+        /// intensity travelling along unityForward, evaluated with Lambert on an
+        /// unshadowed surface -- up: max(0, L.y), down: max(0, -L.y), horizontal: the
+        /// mean of max(0, n.L) over the horizontal ring, sqrt(1 - L.y^2) / pi -- with
+        /// L = -unityForward. UNPROVEN (GW2's fill shading is not measured; this is
+        /// what Unity's own diffuse would do with the fills as lights). Null when no
+        /// fill has a direction.
+        public static double[][] TrilightFromFills(IList<WorldManifest.EnvLight> lights)
+        {
+            if (lights == null) return null;
+            var sky = new double[3]; var eq = new double[3]; var ground = new double[3];
+            int used = 0;
+            for (int k = 1; k < lights.Count; ++k)
+            {
+                WorldManifest.EnvLight l = lights[k];
+                if (l == null || l.UnityForward == null || l.Color == null) continue;
+                double x = l.UnityForward[0], y = l.UnityForward[1], z = l.UnityForward[2];
+                double len = Math.Sqrt(x * x + y * y + z * z);
+                if (!(len > 1e-9) || !Finite(l.Intensity)) continue;
+                double ly = -y / len;
+                double up = Math.Max(0, ly), down = Math.Max(0, -ly), side = Math.Sqrt(Math.Max(0, 1 - ly * ly)) / Math.PI;
+                double k2 = Math.Max(0, l.Intensity);
+                for (int i = 0; i < 3; ++i)
+                {
+                    double c = Math.Max(0, l.Color[i]) * k2;
+                    sky[i] += c * up; eq[i] += c * side; ground[i] += c * down;
+                }
+                ++used;
+            }
+            return used == 0 ? null : new[] { sky, eq, ground };
+        }
+
+        public sealed class Bloom
+        {
+            public double Intensity, Threshold;
+            public double[] Color;   // RGB, max component 1
+        }
+
+        /// PPv2 Bloom from effect.glow / glowLevel / glowAmplify. UNPROVEN reading:
+        /// glowAmplify (glow.a when absent) is the intensity; the threshold is PPv2's 1 (glowLevel
+        /// read as the threshold, 0.07 on the Mists vault, bloomed every surface: 2026-10-22
+        /// render), glow's RGB the tint
+        /// (normalised to a max of 1; white when black). Null when the intensity is 0.
+        public static Bloom BloomFromEffect(WorldManifest.EffectEntry e)
+        {
+            if (e == null) return null;
+            double amp = e.GlowAmplify ?? (e.Glow != null ? e.Glow[3] : 0);
+            if (!Finite(amp) || amp <= 0) return null;
+            var b = new Bloom { Intensity = Math.Min(amp, 20), Threshold = 1, Color = new[] { 1.0, 1.0, 1.0 } };
+            if (e.Glow != null)
+            {
+                double mx = Math.Max(e.Glow[0], Math.Max(e.Glow[1], e.Glow[2]));
+                if (mx > 1e-6) for (int i = 0; i < 3; ++i) b.Color[i] = Clamp01(e.Glow[i] / mx);
+            }
+            return b;
+        }
+
+        /// PPv2 ColorGrading saturation (-100..100, 0 neutral) from GW2's (1 neutral):
+        /// (s - 1) x 100. UNPROVEN (assumes a linear lerp from grey, as PPv2's).
+        public static double Saturation(double gw2)
+        {
+            if (!Finite(gw2)) return 0;
+            return Math.Max(-100, Math.Min(100, (gw2 - 1) * 100));
+        }
+
+        /// PPv2 colour filter: white lerped to tintColor's RGB by tintAmount (0..1).
+        /// UNPROVEN (tintTargetColor and tintFocus are not mapped).
+        public static double[] ColorFilter(double[] tint, double? amount)
+        {
+            var c = new[] { 1.0, 1.0, 1.0 };
+            if (tint == null || amount == null || !Finite(amount.Value)) return c;
+            double a = Clamp01(amount.Value);
+            for (int i = 0; i < 3; ++i) c[i] = 1 + (Clamp01(tint[i]) - 1) * a;
+            return c;
+        }
+
+        /// PPv2 AmbientOcclusion (MSVO) intensity from ssaoAmount: 0.15 x ssaoAmount, at most 0.6.
+        /// UNPROVEN: taken 1:1 (the Mists vault's 3) MSVO crushed the scene to black (2026-10-22).
+        public static double AoIntensity(double? ssao)
+        {
+            if (ssao == null || !Finite(ssao.Value)) return 0;
+            return Math.Max(0, Math.Min(0.6, 0.15 * ssao.Value));
+        }
+
+        /// A usable PPv2 LDR lookup strip (ColorGrading.ldrLut): kind "strip" (or no
+        /// layout) and width = height^2, PPv2's own test.
+        public static bool IsLutStrip(WorldManifest.ClutLayout l, int width, int height)
+        {
+            if (l != null && l.Kind != null && l.Kind != "strip") return false;
+            return height > 1 && width == height * height;
+        }
+
+        /// VRC Light Volumes voxels per Unity unit for a box: as many as fit `budget`
+        /// voxels, at most `max` and at least 0.05. Castlemist's choice, not GW2 data.
+        public static double VoxelsPerUnit(double sx, double sy, double sz, double budget, double max)
+        {
+            double vol = Math.Max(1e-6, sx) * Math.Max(1e-6, sy) * Math.Max(1e-6, sz);
+            double v = Math.Pow(Math.Max(1, budget) / vol, 1.0 / 3.0);
+            return Math.Max(0.05, Math.Min(max, v));
         }
     }
 }

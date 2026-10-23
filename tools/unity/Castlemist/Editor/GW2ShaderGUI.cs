@@ -35,15 +35,22 @@ namespace Castlemist
             if (p != null) editor.ShaderProperty(p, new GUIContent(label ?? p.displayName, tip));
         }
 
-        /// A texture on one line, with an optional colour or float beside it; true when it changed.
+        /// A texture on one line, with an optional colour or float on its own line under it (inline
+        /// beside the texture, the UV set popup that follows covered the colour's hit area: the swatch
+        /// could not be clicked, 2026-10-22); true when either changed.
         protected bool Tex(string tex, string label, string tip, string extra = null)
         {
             MaterialProperty t = P(tex);
             if (t == null) return false;
             EditorGUI.BeginChangeCheck();
+            editor.TexturePropertySingleLine(new GUIContent(label, tip), t);
             MaterialProperty e = extra != null ? P(extra) : null;
-            if (e != null) editor.TexturePropertySingleLine(new GUIContent(label, tip), t, e);
-            else editor.TexturePropertySingleLine(new GUIContent(label, tip), t);
+            if (e != null)
+            {
+                EditorGUI.indentLevel++;
+                editor.ShaderProperty(e, new GUIContent(e.displayName, tip));
+                EditorGUI.indentLevel--;
+            }
             return EditorGUI.EndChangeCheck();
         }
 
@@ -247,6 +254,38 @@ namespace Castlemist
                 }
                 EndSection();
             }
+            if (Section("Wave (cloth, flags)", On("_UseWave")))
+            {
+                Note("castlemist's own: GW2 runs cloth physics on banners; this waves them in the vertex shader. " +
+                     "'GW2 cloth pins' uses the export's distance from the cloth's pinned edge (meshes without it stay still).");
+                Prop("_UseWave", "Wave");
+                if (On("_UseWave"))
+                {
+                    Prop("_WaveMask", "Wave weight");
+                    Prop("_WaveAmplitude", "Amplitude (Unity units)");
+                    Prop("_WaveSpeed", "Speed");
+                    Prop("_WaveFrequency", "Ripples along the cloth");
+                    Prop("_WaveSway", "Sway with the wind");
+                    Prop("_WaveDir", "Wind direction (world)");
+                    // The tessellated twin (same properties): the wave subdivided on the GPU. PC only.
+                    var cur = (Material)editor.target;
+                    bool tess = cur.shader != null && cur.shader.name == CastlemistMaterials.TessellatedShaderName;
+                    bool want = EditorGUILayout.Toggle(new GUIContent("Tessellate (PC)", "Castlemist/GW2 Tessellated: smoother waves, heavier; not on Quest"), tess);
+                    if (want != tess)
+                    {
+                        Shader s = Shader.Find(want ? CastlemistMaterials.TessellatedShaderName : "Castlemist/GW2");
+                        if (s != null)
+                            foreach (UnityEngine.Object o in editor.targets) { Undo.RecordObject(o, "Tessellate"); ((Material)o).shader = s; }
+                    }
+                    if (tess)
+                    {
+                        Prop("_TessEdgeLength", "Edge length (pixels)");
+                        Prop("_TessMaxFactor", "Max subdivision");
+                        Prop("_TessMaxDistance", "Fade out by (Unity units)");
+                    }
+                }
+                EndSection();
+            }
             if (Section("UV sets and animation", false))
             {
                 Prop("_UV1FromUV4", "GW2 UV1 from UV4", "On: GW2's UV1 maps read the export's UV4 copy, so lightmaps can own UV1");
@@ -413,6 +452,104 @@ namespace Castlemist
                 Prop("_AlphaPremultiply", "Multiply colour by alpha");
                 Prop("_AdditiveFog", "Fog to black");
                 EditorGUI.indentLevel--;
+            }
+        }
+    }
+
+    /// The inspector of Castlemist/GW2 Distort: GW2's screen distortion, lit armour glass and the
+    /// refracting glass / water, in the sections of its shader (2026-10-22).
+    public class GW2DistortGUI : GW2GUIBase
+    {
+        public override void OnGUI(MaterialEditor materialEditor, MaterialProperty[] properties)
+        {
+            editor = materialEditor;
+            props = properties;
+
+            EditorGUILayout.LabelField("castlemist GW2 Distort", EditorStyles.boldLabel);
+            Note("The scene behind (a grab pass), offset by the distortion map. GW2's screen distortion " +
+                 "(50159, 339341, 47396, 709206, 592660, 27304), lit armour glass (630598) and refracting " +
+                 "glass / water (49659, 63923, 57026). The importer sets these from materials.json.");
+
+            if (Section("Distortion"))
+            {
+                Tex("_DistortTex", "Distortion map", "RG x 2 - 1 offsets the grabbed scene");
+                Uv("_DistortUV");
+                Prop("_DistortIsNormal", "Map is a Unity normal map");
+                Prop("_Distort", "Strength (distort)");
+                Prop("_DistortBias", "Add strength as a bias (50159)");
+                Prop("_ViewReflect", "Offset x view reflection");
+                Prop("_MaskOffset", "Offset x mask R (339341)");
+                Prop("_DepthReject", "Keep the foreground out (depth test)");
+                Prop("_Tint", "Tint (modxcol x 2)");
+                Prop("_UseVertexColor", "x vertex colour (709206)");
+                Prop("_UseMap2", "Blend a second normal map");
+                if (On("_UseMap2"))
+                {
+                    Tex("_DistortTex2", "Second normal map", "47396's second map");
+                    Uv("_DistortUV2");
+                    Prop("_DistortTex2IsNormal", "Second map is a Unity normal map");
+                }
+                EndSection();
+            }
+            if (Section("Alpha", false))
+            {
+                Prop("_AlphaSource", "Alpha");
+                Tex("_MaskTex", "Mask", "Opacity mask (linear)");
+                Uv("_MaskUV");
+                Prop("_MaskChannel", "Mask channel");
+                Prop("_Cutoff", "AlphaRef");
+                Prop("_StepMin", "stepmin");
+                Prop("_StepCol", "stepcol");
+                Prop("_UseRamp", "View-angle ramp");
+                if (On("_UseRamp")) Tex("_RampTex", "Ramp", "R at |N.V|");
+                Prop("_SoftFade", "Soft depth fade (needs a depth texture)");
+                if (On("_SoftFade")) Prop("_DepDist", "depdist (Unity units)");
+                EndSection();
+            }
+            if (Section("Lit glass (630598)", On("_UseLit")))
+            {
+                Prop("_UseLit", "Lit glass");
+                if (On("_UseLit"))
+                {
+                    Tex("_MainTex", "Diffuse / decal", "RGB colour, A coverage and gloss");
+                    Uv("_MainUV");
+                    Prop("_UseMainTex", "Diffuse from the map");
+                    Prop("_LitDiffuse", "Diffuse without a map");
+                    Prop("_LitFadeDist", "Distortion fade distance");
+                    Prop("_SunScale", "Sun colour scale");
+                }
+                EndSection();
+            }
+            if (Section("Refracting glass and water", On("_Glass")))
+            {
+                Prop("_Glass", "Mode");
+                if (On("_Glass"))
+                {
+                    Prop("_GlassSpec", "Specular colour");
+                    Prop("_GlassSpecPower", "Specular power");
+                    Prop("_GlassSpecDouble", "Specular x2 (water)");
+                    Prop("_ReflectionStrength", "Reflection probe strength");
+                    Prop("_LightVolumes", "Use Light Volumes");
+                    Prop("_LightVolumesBias", "Light Volumes bias");
+                    Prop("_PointLightVolumesShading", "Point Light Volumes shading");
+                }
+                EndSection();
+            }
+            if (Section("UV animation", false))
+            {
+                Note("Per UV set: scroll (x, y in UV per second) and rotation (z, radians per second).");
+                for (int k = 0; k < 4; ++k) Prop("_UVAnim" + k, "UV" + k);
+                EndSection();
+            }
+            if (Section("Render state", false))
+            {
+                Prop("_SrcBlend", "Src blend");
+                Prop("_DstBlend", "Dst blend");
+                Prop("_ZWrite", "ZWrite");
+                Prop("_Cull", "Cull");
+                editor.RenderQueueField();
+                editor.EnableInstancingField();
+                EndSection();
             }
         }
     }

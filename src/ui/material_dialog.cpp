@@ -71,6 +71,8 @@ struct Host {
     uint32_t pickedTexture = 0;
     char modelInput[16] = "", textureInput[16] = "", amatInput[16] = "";
     std::wstring status;
+    bool inFrame = false;       // render_frame is running (a modal loop inside it must not start another)
+    int fileAction = 0;         // Save... (1) / Load... (2) pressed: its dialog opens after the frame
 };
 Host* g_host = nullptr;
 
@@ -217,7 +219,14 @@ void draw_slots(int& budget) {
     const float s = g_host->scale;
     if (!section("Mesh Renderer")) return;
     if (!m || m->gameMaterials.empty()) {
-        ImGui::TextDisabled(m ? "This model has no game-shader materials." : "Select a model in the viewer.");
+        if (!m) {
+            ImGui::TextDisabled("Select a model in the viewer.");
+        } else {
+            ImGui::TextDisabled("This model has no game-shader materials.");
+            if (!m->materials.empty())  // e.g. a race body the Character Ripper dressed: baked textures only
+                ImGui::TextDisabled("Its materials are baked by the viewer (a dressed character or race body),\n"
+                                    "not the game's own shaders, so there is nothing here to swap or tune.");
+        }
         return;
     }
     ImGui::TextDisabled("Materials");
@@ -696,28 +705,18 @@ void draw_toolbar() {
     ImGui::SameLine();
     if (me::session().model) ImGui::TextDisabled("model %u", me::session().model);
     const bool shader = g_app->model_mode == castlemist::render::RenderMode::GameShader && !g_app->bgfx_view_active;
-    if (!shader) {
+    const ModelPreview* m = me::model();
+    if (!shader && m && !m->gameMaterials.empty()) {
         ImGui::SameLine();
         if (ImGui::SmallButton("Show in Shader mode")) set_model_mode(castlemist::render::RenderMode::GameShader);
     }
     const float bw = 80 * s;
     ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - 3 * bw - 2 * ImGui::GetStyle().ItemSpacing.x);
-    if (ImGui::Button("Save...", {bw, 0})) {
-        const std::wstring p = file_dialog(true);
-        if (!p.empty()) {
-            const std::wstring err = me::save_edits(p);
-            set_status(err.empty() ? L"Saved." : err);
-        }
-    }
+    // The file dialogs run their own message loop: they open once the frame is done.
+    if (ImGui::Button("Save...", {bw, 0})) g_host->fileAction = 1;
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Save this model's edits as JSON");
     ImGui::SameLine();
-    if (ImGui::Button("Load...", {bw, 0})) {
-        const std::wstring p = file_dialog(false);
-        if (!p.empty()) {
-            const std::wstring err = me::load_edits(p);
-            set_status(!err.empty() ? err : L"Loaded.");
-        }
-    }
+    if (ImGui::Button("Load...", {bw, 0})) g_host->fileAction = 2;
     ImGui::SameLine();
     if (ImGui::Button("Reset all", {bw, 0})) me::reset_all();
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every material back to as authored");
@@ -765,8 +764,23 @@ void create_rtv() {
         g_host->dev->CreateRenderTargetView(back.Get(), nullptr, &g_host->rtv);
 }
 
+// Save... / Load..., outside the ImGui frame.
+void run_file_action() {
+    const int action = g_host->fileAction;
+    g_host->fileAction = 0;
+    if (!action) return;
+    const std::wstring p = file_dialog(action == 1);
+    if (p.empty() || !g_host) return;
+    const std::wstring err = action == 1 ? me::save_edits(p) : me::load_edits(p);
+    set_status(!err.empty() ? err : action == 1 ? L"Saved." : L"Loaded.");
+}
+
 void render_frame() {
-    if (!g_host || !g_host->imgui || !g_host->rtv) return;
+    // A modal loop inside a frame (a file dialog, an assert's message box)
+    // still dispatches WM_TIMER / WM_PAINT here: starting a second frame
+    // inside the first only fails ImGui's checks again, and again.
+    if (!g_host || !g_host->imgui || !g_host->rtv || g_host->inFrame) return;
+    g_host->inFrame = true;
     ImGui::SetCurrentContext(g_host->imgui);
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
@@ -780,6 +794,8 @@ void render_frame() {
     g_host->ctx->ClearRenderTargetView(rtv, clear);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     g_host->swap->Present(1, 0);
+    g_host->inFrame = false;
+    run_file_action();
 }
 
 void destroy_host() {
@@ -882,6 +898,8 @@ bool create_host(HWND owner) {
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    // A recoverable ImGui misuse shows as a tooltip in the window, not a modal assert box.
+    io.ConfigErrorRecoveryEnableAssert = false;
     const float px = 15.0f * g_host->scale;
     ImFont* regular = nullptr;
     if (GetFileAttributesW(L"C:\\Windows\\Fonts\\segoeui.ttf") != INVALID_FILE_ATTRIBUTES)
@@ -961,7 +979,9 @@ void open_material_dialog(HWND owner) {
     }
     if (!create_host(owner)) return;
     // These are the materials Shader mode draws with: show them.
-    if (me::model() && g_app->model_mode != castlemist::render::RenderMode::GameShader)
+    // A model without any (a dressed race body) would draw nothing there.
+    if (const ModelPreview* m = me::model();
+        m && !m->gameMaterials.empty() && g_app->model_mode != castlemist::render::RenderMode::GameShader)
         set_model_mode(castlemist::render::RenderMode::GameShader);
     ShowWindow(g_host->wnd, SW_SHOW);
 }
@@ -987,7 +1007,9 @@ void run_material_selftest(const std::string& dir, uint32_t donorModel) {
         for (const GameMaterial& g : m->gameMaterials)
             if (g.ok && !first) first = &g;
     if (!first) {
-        say("no model with a game-shader material");
+        say("no model with a game-shader material (model " + std::string(m ? "loaded" : "none") + ", " +
+            std::to_string(m ? m->gameMaterials.size() : 0) + " game materials, " +
+            std::to_string(m ? m->materials.size() : 0) + " materials)");
         if (log) std::fclose(log);
         return;
     }

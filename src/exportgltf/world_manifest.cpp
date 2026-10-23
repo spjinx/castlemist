@@ -410,6 +410,121 @@ json world_light_json(const castlemist::model::Extractor::MapEnvLight& l) {
             {"ambient", vec(ambient, 3)}};
 }
 
+namespace {
+
+json haze_json(const castlemist::model::Extractor::MapHaze& h) {
+    // Height in the Unity frame: map_to_unity(0, 0, z) has y = -z (up = -Z).
+    const float hu[2] = {std::min(-h.heightRange[0], -h.heightRange[1]) + 0.0f,   // + 0: no -0 in the JSON
+                         std::max(-h.heightRange[0], -h.heightRange[1]) + 0.0f};
+    return {{"near", vec(h.nearColor, 4)},
+            {"far", vec(h.farColor, 4)},
+            {"height", vec(h.heightColor, 4)},
+            {"distRange", vec(h.distRange, 2)},
+            {"heightRange", vec(h.heightRange, 2)},
+            {"heightRangeUnity", vec(hu, 2)},
+            {"sunDirRange", vec(h.sunDirRange, 2)},
+            {"depthCue", h.depthCue}};
+}
+
+/// Slot @p p of @p v, else slot 0, else null.
+template <class T> const T* slot_or_first(const std::vector<T>& v, int p) {
+    if (p >= 0 && size_t(p) < v.size()) return &v[size_t(p)];
+    return v.empty() ? nullptr : &v.front();
+}
+
+} // namespace
+
+json world_environment_json(const castlemist::model::Extractor::MapSky& sky, int presetIndex, const json& clut) {
+    using E = castlemist::model::Extractor::MapEnvEffect;
+    if (!sky.present) return nullptr;
+    const int p = presetIndex >= 0 ? presetIndex : 0;
+    json env = {{"preset", p}};
+
+    // lighting[p] (MapSky::lighting holds parseMapEnv(0..2); a slot past the
+    // map's preset count is the auto pick, so its presetIndex differs: no lights).
+    json lights = json::array();
+    json backlight = nullptr;
+    float shadow = 0;
+    if (size_t(p) < sky.lighting.size() && sky.lighting[size_t(p)].present && sky.lighting[size_t(p)].presetIndex == p) {
+        const auto& L = sky.lighting[size_t(p)];
+        for (const auto& l : L.lights) {
+            // The same conversion as light.sun.unityForward: the normalised
+            // travel direction through map_to_unity.
+            float d[3] = {l.direction[0], l.direction[1], l.direction[2]}, uf[3];
+            const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            if (len > 1e-6f) for (float& c : d) c /= len;
+            cw::map_to_unity(d, uf);
+            lights.push_back({{"color", vec(l.color, 3)}, {"intensity", l.intensity}, {"unityForward", vec(uf, 3)}});
+        }
+        shadow = L.shadowInfluence;
+        if (L.hasBacklight) backlight = {{"color", vec(L.backlightColor, 3)}, {"intensity", L.backlightIntensity}};
+    }
+    env["lights"] = lights;
+    env["shadowInfluence"] = shadow;
+    env["backlight"] = backlight;
+
+    // Haze and effect come from the day slot (0): the client takes slot 0 at t = 1 and slot 2
+    // only on an env flag (docs/research/gw2-sky.md A.2), while light.presetIndex is the
+    // brightest preset, which can be slot 2 (the Mists vault: its slot-2 haze is all zero and
+    // its CLUT sits in slots 0 and 1). Slot p when the map has no slot 0.
+    const int daySlot = 0;
+    env["hazeEffectPreset"] = daySlot;
+    const auto* h = slot_or_first(sky.haze, daySlot);
+    env["haze"] = h ? haze_json(*h) : json(nullptr);
+
+    json effect = nullptr;
+    if (const E* e = slot_or_first(sky.effect, daySlot)) {
+        effect = json::object();
+        auto put4 = [&](const char* k, uint32_t bit, const float* v) { if (e->has & bit) effect[k] = vec(v, 4); };
+        auto put1 = [&](const char* k, uint32_t bit, float v) { if (e->has & bit) effect[k] = v; };
+        put4("glow", E::Glow, e->glow);
+        put4("glowLevel", E::GlowLevel, e->glowLevel);
+        put1("glowAmplify", E::GlowAmplify, e->glowAmplify);
+        put4("tintColor", E::TintColor, e->tintColor);
+        put4("tintTargetColor", E::TintTargetColor, e->tintTargetColor);
+        put1("tintAmount", E::TintAmount, e->tintAmount);
+        put1("tintFocus", E::TintFocus, e->tintFocus);
+        put1("saturation", E::Saturation, e->saturation);
+        put1("focalDepth", E::FocalDepth, e->focalDepth);
+        put1("focalRange", E::FocalRange, e->focalRange);
+        put1("ssaoAmount", E::SsaoAmount, e->ssaoAmount);
+        put1("ssaoBrighten", E::SsaoBrighten, e->ssaoBrighten);
+        put1("ssaoContrast", E::SsaoContrast, e->ssaoContrast);
+        put1("ssaoSunScale", E::SsaoSunScale, e->ssaoSunScale);
+        if (e->has & E::Flags) effect["flags"] = e->flags;
+        if (e->has & E::Clut) {
+            const bool ok = e->clutFile && clut.is_object() && clut.value("fileId", 0u) == e->clutFile &&
+                            clut.contains("path") && clut["path"].is_string();
+            effect["clutFileId"] = e->clutFile ? json(e->clutFile) : json(nullptr);
+            effect["clut"] = ok ? clut["path"] : json(nullptr);
+            effect["clutLayout"] = ok && clut.contains("layout") ? clut["layout"] : json(nullptr);
+        }
+    }
+    env["effect"] = effect;
+
+    // Per-zone haze (dataLocalArray): the zone's own slot (else its slot 0) and
+    // the Unity-frame (x, z) box of its shapes; zones without haze or shapes are left out.
+    json zones = json::array();
+    for (const auto& z : sky.zones) {
+        const auto* zh = slot_or_first(z.haze, daySlot);
+        if (!zh) continue;
+        float b[4] = {0, 0, 0, 0};
+        bool any = false;
+        for (const auto& poly : z.shapes)
+            for (const auto& v : poly) {
+                if (!std::isfinite(v[0]) || !std::isfinite(v[1])) continue;
+                // map (x, y, z) -> Unity (x, -z, y): Unity x = map x, Unity z = map y.
+                if (!any) { b[0] = b[2] = v[0]; b[1] = b[3] = v[1]; any = true; }
+                b[0] = std::min(b[0], v[0]); b[1] = std::min(b[1], v[1]);
+                b[2] = std::max(b[2], v[0]); b[3] = std::max(b[3], v[1]);
+            }
+        if (!any) continue;
+        zones.push_back({{"name", z.name}, {"haze", haze_json(*zh)}, {"boundsUnity", vec(b, 4)}});
+    }
+    env["zones"] = zones;
+    return env;
+}
+
 json world_manifest_json(const WorldManifestInput& in) {
     static const cw::WorldScene kNoScene;
     static const WorldFolderOptions kDefaults;
@@ -611,6 +726,10 @@ json world_manifest_json(const WorldManifestInput& in) {
     // sharedMaterials (optional, Task 15d): as the writer built it.
     if (in.sharedMaterials.is_object()) man["sharedMaterials"] = in.sharedMaterials;
     man["light"] = finite_or_null(in.light.is_object() ? in.light : world_light_json(s.environment.light), "light", notes);
+    // environment (lights, haze, effect): the slot of light.presetIndex, else 0.
+    man["environment"] = finite_or_null(
+        world_environment_json(s.environment.sky, s.environment.light.presetIndex, in.environmentClut), "environment",
+        notes);
 
     // spawn: only map (three finite numbers) and unity = map_to_unity(map), always recomputed.
     json spawn = nullptr;

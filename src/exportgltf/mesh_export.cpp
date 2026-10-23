@@ -32,6 +32,10 @@ std::vector<MeshExportInfo> write_meshes(GltfWriter& w, const ModelPreview& mode
     for (size_t mi = 0; mi < model.meshes.size(); ++mi) {
         const ModelMeshCPU& mesh = model.meshes[mi];
         if (mesh.vertices.empty() || mesh.indices.size() < 3) continue;
+        // A mesh whose material index names no material is an editor helper the game never
+        // draws (3124756's "mounta" / "mountb" attach markers and "scaleref" box, 2026-10-22):
+        // exported, it came out with no material and Unity drew it with its Default-Material.
+        if (mesh.materialIndex >= model.materials.size()) continue;
 
         size_t n = mesh.vertices.size();
         std::vector<float> positions, normals, uvs, tangents, colors;

@@ -39,6 +39,10 @@
 //         Foliage/Patches/<fileId>_<k>  type 1-2 records combined (FoliagePatches)
 //       Sun           Directional Light (light.sun raw), ambient Flat
 //       Spawn         at spawn.unity (when present)
+//     GW2_<fileId>_Environment   SceneSetup (2026-10-22), unscaled: the post-processing
+//                    volume and camera, a light volume and a reflection probe per cell,
+//                    the OcclusionArea; fog / ambient in RenderSettings; the profile
+//                    GW2_<fileId>_PostProcess.asset and GW2_<fileId>_Lighting.lighting
 //       FrameProbe    probe.fbx at frameProbe.unity, checked by FrameProbe, then disabled
 //     GW2_<fileId>_Terrain   Unity Terrain mode only (TerrainBuilder): the tiles, with
 //                    the terrain frame check; the cells' mesh terrain and its
@@ -52,7 +56,8 @@
 // --to-fbx bakes every node transform), so their content is placed at
 // -origin inside the cell.
 // Static flags (BatchingStatic | OccluderStatic | OccludeeStatic) go on
-// terrain, colliders and the prop prefabs; an animated instance has them
+// terrain, colliders and the prop prefabs (with Occlusion on, per renderer:
+// SceneSetup.StaticFlagsFor); an animated instance has them
 // cleared (a moving object must not be static). Prop materials get
 // enableInstancing. Which of static batching and GPU instancing wins in
 // VRChat is UNPROVEN (spec D2): CHECKLIST.md reads the Frame Debugger.
@@ -108,7 +113,7 @@ namespace Castlemist
             sum.warnings.Add("unityScale = " + unityScale.ToString("R") + " (UNPROVEN: 'GW2 inches', spec D7)");
             CastlemistPostprocessor.ClearCache();
             // The mode in force: Terrain mode needs the export's unityTerrain block.
-            var eff = new ImportOptions { terrain = opts.terrain, foliage = opts.foliage, density = opts.density, distance = opts.distance, shader = opts.shader, skipModels = opts.skipModels };
+            ImportOptions eff = opts.Clone();
             if (eff.terrain == TerrainMode.UnityTerrain && m.UnityTerrain == null)
             {
                 sum.errors.Add("unityTerrain: missing: Terrain mode needs the export's unityTerrain block " +
@@ -130,6 +135,7 @@ namespace Castlemist
             b.Timed("terrain", () => b.UnityTerrain(unityScale));
             b.Timed("skyLight", b.SkyAndLight);
             b.Timed("probe", b.Probe);
+            b.Timed("environment", () => b.Environment(unityScale));
 
             string scenePath = root + "/GW2_" + m.MapFileId + ".unity";
             EditorSceneManager.SaveScene(EditorSceneManager.GetActiveScene(), scenePath);
@@ -190,6 +196,8 @@ namespace Castlemist
             if (sum.shaderLine != null) Debug.Log(sum.shaderLine);
             if (sum.probeLine != null) Debug.Log(sum.probeLine);
             if (sum.terrainCheckLine != null) Debug.Log(sum.terrainCheckLine);
+            if (sum.envLine != null) Debug.Log(sum.envLine);
+            if (sum.particleSystems > 0) Debug.Log("CASTLEMIST particleSystems=" + sum.particleSystems);
             Debug.Log(sum.PlanLine());
         }
 
@@ -306,6 +314,7 @@ namespace Castlemist
                 ctx = MaterialContext.Create(sum.warnings, opts.shader);
                 ctx.Uv1InUv4 = m.Uv1InUv4;
                 ctx.UnityScale = UnityScale;
+                ctx.TessellateCloth = opts.tessellateCloth;
                 sum.shaderLine = ctx.Line;
                 EnsureFolder(root + "/Materials/terrain");
                 EnsureFolder(root + "/Materials/water");
@@ -495,14 +504,30 @@ namespace Castlemist
                     try
                     {
                         inst.name = e.FileId.ToString();
+                        // 2026-10-22: per renderer (SceneSetup.StaticFlagsFor): occluder only when opaque,
+                        // ContributeGI with Light Probes GI, ReflectionProbeStatic; StaticFlags with Occlusion off.
                         foreach (Transform t in inst.GetComponentsInChildren<Transform>(true))
-                            GameObjectUtility.SetStaticEditorFlags(t.gameObject, StaticFlags);
+                            SceneSetup.ApplyStatic(t.gameObject, opts);
                         // Task 15b: LOD0..LODn from the model's LOD objects and its "lod" stand-ins
                         // (LodGroups, ModelLods); every model culls at ModelLods.PropCull.
                         int built = LodGroups.Build(inst, e.LodLevels, e.FarMeshes, e.LodDistances,
                                                     size => ModelLods.PropCull(opts.distance), sum.warnings, "model " + e.FileId,
                                                     e.HiddenMeshes);
                         if (built > 1) sum.lodPrefabs++;
+                        // 2026-10-22: the model's particle clouds as particle systems (ParticleEffects).
+                        string modelFolder = e.Materials != null ? Path.GetDirectoryName(P(e.Materials)).Replace('\\', '/') : null;
+                        string sidecar = modelFolder != null ? ParticleEffects.SidecarFor(modelFolder, e.FileId) : null;
+                        if (sidecar != null)
+                        {
+                            try
+                            {
+                                MaterialsFile mf = MaterialsFile.Parse(File.ReadAllText(P(e.Materials)), P(e.Materials));
+                                EnsureFolder(root + "/Materials/Particles");
+                                sum.particleSystems += ParticleEffects.AddTo(inst, sidecar, mf, modelFolder, ctx,
+                                                                             root + "/Materials/Particles", sum.warnings);
+                            }
+                            catch (ManifestException ex) { sum.errors.Add(ex.Message); }
+                        }
                         string path = root + "/Prefabs/" + e.FileId + ".prefab";
                         bool ok;
                         GameObject saved = PrefabUtility.SaveAsPrefabAsset(inst, path, out ok);
@@ -770,6 +795,13 @@ namespace Castlemist
                 else sum.warnings.Add("spawn: null in the manifest: no Spawn object");
             }
 
+            // 2026-10-22: fog, ambient, post-processing, light volumes, reflection probes and
+            // occlusion from manifest.environment (SceneSetup; each behind its ImportOptions toggle).
+            public void Environment(float unityScale)
+            {
+                SceneSetup.Apply(new SceneSetup.Context { Root = root, M = m, Sum = sum, Opts = opts, UnityScale = unityScale, MapRoot = mapRoot });
+            }
+
             // Step 9.
             public void Probe()
             {
@@ -803,7 +835,7 @@ namespace Castlemist
 
         public static void Open()
         {
-            GetWindow<ImportWorldWindow>(true, "Castlemist: Import World", true).minSize = new Vector2(420, 280);
+            GetWindow<ImportWorldWindow>(true, "Castlemist: Import World", true).minSize = new Vector2(420, 400);
         }
 
         // A window left open across a script reload can come back without its options
@@ -853,7 +885,25 @@ namespace Castlemist
                 "Poiyomi: Poiyomi Pro / Toon (Realistic lighting; Flat for particle-like materials). " +
                 "Castlemist GW2: castlemist's own Castlemist/GW2 (one shader, no keywords) and GW2 Particle (VRC Light Volumes; tools/unity/Castlemist/Shaders)."),
                 (int)opts.shader, new[] { "Poiyomi", "Castlemist GW2" });
-            if (GUILayout.Button(new GUIContent("Quest preset", "Terrain Mesh, Foliage Collider trees, Distance 0.5 (D9); keeps the Shader.")))
+            EditorGUILayout.LabelField("Scene look (manifest.environment; UNPROVEN readings)", EditorStyles.boldLabel);
+            opts.tessellateCloth = EditorGUILayout.Toggle(new GUIContent("Tessellate cloth (PC)",
+                "GW2 cloth (banners) on Castlemist/GW2 Tessellated: the wave subdivided on the GPU, smoother. Not on Quest."), opts.tessellateCloth);
+            opts.haze = EditorGUILayout.Toggle(new GUIContent("Haze volume (GW2 height fog)",
+                "The Castlemist/GW2 Haze cube: GW2's distance + height haze per pixel (needs the camera depth texture; Unity fog off). Not on Quest."), opts.haze);
+            opts.fog = EditorGUILayout.Toggle(new GUIContent("Fog (fallback)", "Unity Linear fog from environment.haze (distRange x Unity scale, one colour; no height fog), " +
+                "when the haze volume is off or cannot be made."), opts.fog);
+            opts.ambient = EditorGUILayout.Toggle(new GUIContent("Ambient", "Trilight sky / equator / ground from the fill lights environment.lights[1..]."), opts.ambient);
+            opts.post = EditorGUILayout.Toggle(new GUIContent("Post-processing",
+                "Post Processing Stack v2 (com.unity.postprocessing): global volume on the PostProcessing layer, Bloom, Color Grading " +
+                "(saturation, tint, the clut LUT), MSVO ambient occlusion; a PostProcessLayer on the reference camera. Not on Quest."), opts.post);
+            opts.lightVolumes = EditorGUILayout.Toggle(new GUIContent("Light Volumes",
+                "VRC Light Volumes (red.sim.lightvolumes): one volume per cell; needs Castlemist > Bake Lighting and Occlusion (Unity / Bakery)."), opts.lightVolumes);
+            opts.reflectionProbes = EditorGUILayout.Toggle(new GUIContent("Reflection probes",
+                "A baked box-projected reflection probe per cell (" + opts.reflectionResolution + " px); default reflection from the sky."), opts.reflectionProbes);
+            opts.occlusion = EditorGUILayout.Toggle(new GUIContent("Occlusion and GI flags",
+                "Occluder on opaque, occludee on everything static, ContributeGI with Light Probes GI on opaque and cutout; an OcclusionArea over the map."), opts.occlusion);
+            if (GUILayout.Button(new GUIContent("Quest preset", "Terrain Mesh, Foliage Collider trees, Distance 0.5 (D9); no post-processing, " +
+                                                                "128 px reflection probes, a smaller light volume budget; keeps the Shader.")))
             {
                 ShaderMode keep = opts.shader;
                 string skipKeep = opts.skipModels;
@@ -870,7 +920,7 @@ namespace Castlemist
                     {
                         ImportSummary s = WorldImporter.Import(path, unityScale, opts);
                         WorldImporter.Log(s);
-                        status = s.PlanLine() + "\n" + (s.probeLine ?? "no probe") + "\n" + (s.terrainCheckLine ?? "") + "\n" + s.warnings.Count + " warnings, " + s.errors.Count + " errors (see the Console)";
+                        status = s.PlanLine() + "\n" + (s.probeLine ?? "no probe") + "\n" + (s.terrainCheckLine ?? "") + "\n" + (s.envLine ?? "") + "\n" + s.warnings.Count + " warnings, " + s.errors.Count + " errors (see the Console)";
                     }
                     catch (Exception e)
                     {

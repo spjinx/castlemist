@@ -216,7 +216,9 @@ std::vector<Entry> build_table() {
         p.unlit = true;
         p.baseColorRole = "none";      // no such layer: BaseColor left out, the diffuse goes out as an extra
         p.diffuseUse = "fire-shape";
-        t.push_back({{740364, 965703, 977200, 1171331}, p});
+        // 2037995 (ps 2 / vs 5 read 2026-10-22; the Wizard Vault's flame 2270154): 740364's flame
+        // without the silhouette fade (its vertex shader passes no normal).
+        t.push_back({{740364, 965703, 977200, 1171331, 2037995}, p});
     }
     // Screen distortion (read 2026-10-22): the grabbed scene at the pixel + (map.xy x 2 - 1) x
     // distort x the view-space reflection's xy, foreground taps rejected; the importer's

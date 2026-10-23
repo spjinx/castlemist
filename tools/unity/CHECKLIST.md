@@ -154,6 +154,31 @@ the manifest changes.
 18. **No sway.** Foliage stands still; `foliage.models[].wind` stays in the
     manifest only (spec D10).
 
+### Scene look (2026-10-22: `manifest.environment`, `Editor/SceneSetup.cs`, Shaders/README "Scene look")
+
+19. **The ENV line.** An export with `environment` logs
+    `ENV haze=volume ambient=trilight static=<opaque>/<other>/<left> reflectionProbes=<cells> lightVolumes=<cells>:registered post=bloom:…`;
+    (`fog=linear:<start>..<end>` instead of `haze=volume` with the haze volume off or in the
+    Quest preset). `environment: null` gives a warning, no fog and the Flat ambient. `-castlemistNoEnv all`
+    gives `ENV off` and the scene as before 2026-10-22 (no `GW2_<fileId>_Environment`).
+20. **Fog and ambient against the game.** The haze volume needs the depth texture: with
+    the sun's shadows off it draws nothing useful. Check that avatars are hazed and that
+    transparent props after queue Transparent-216 are not (accepted). At the spawn, compare the haze distance and colour
+    and the shade of walls facing away from the sun with a game screenshot at the same time of
+    day (preset). Every mapping is UNPROVEN; record what differs.
+21. **Post-processing.** With com.unity.postprocessing in the project: a global volume on the
+    `PostProcessing` layer, the profile beside the scene, a `PostProcessLayer` on the reference
+    camera (VRChat: the descriptor's Reference Camera; run the bake menu once after adding the
+    descriptor to link it). The clut LUT imports linear / uncompressed / no mips / clamp (the
+    Color Grading inspector shows no "Invalid LUT import settings"). Without the package: a
+    warning, and the importer compiles.
+22. **Bake.** Save the scene, run **Castlemist ▸ Bake Lighting and Occlusion (Unity / Bakery)**: the light
+    volumes, reflection probes and light probes bake, then occlusion computes (Occlusion window,
+    Visualization). Record the bake time.
+23. **Static flags.** Animated props have no static flags; transparent props are Occludee only;
+    prop instances carry no StaticEditorFlags override (the flags are on the prefabs).
+24. **Quest preset.** No post-processing objects; 128 px probes.
+
 ## Results
 
 | date | editor | export | item | result |

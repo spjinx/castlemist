@@ -19,8 +19,8 @@
 //            pairs, raw bytes without encodeData), the cell's vertex x0 + 48 c and model
 //            slot (flag >> 1) & 7 (world foliage spec M2-M3); output changed 2026-10-16
 //   skybox   --dat <path> --file-id N --template <json> --out <dir> [--name NAME]
-//            [--size <face px>] [--equirect <width px>] [--approx]
-//            [--ground black|white|skirt] [--ground-fade <degrees, default 10>]
+//            [--size <face px>] [--equirect <width px>] [--approx [--no-haze] [--card-opacity <x, default 1>]]
+//            [--ground black|white|skirt|mirror] [--ground-fade <degrees, default 10>]
 //            -- a map's sky as Unity skybox images in <out>/<name> (default map_<fileId>)
 //   world-export --dat <path> --file-id N --template <json> (--out <file.glb> | --out-dir <dir>)
 //            [--foliage off|colliders|all] [--no-unity-terrain] [--region cx0,cy0,cx1,cy1] [--no-fbx] ...
@@ -115,11 +115,13 @@
 #include "castlemist/exportgltf/world_export.h"
 #include "castlemist/exportgltf/world_dat_source.h"
 #include "castlemist/exportgltf/world_folder.h"
+#include "castlemist/exportgltf/world_lods.h"
 #include "castlemist/format/struct_template.h"
 #include "castlemist/ripper/assemble.h"
 #include "castlemist/ripper/look.h"
 #include "castlemist/ripper/vrchat.h"
 #include "castlemist/ripper/character_export.h"
+#include "castlemist/world/anim.h"
 #include "castlemist/world/load_world.h"
 
 #ifndef NOMINMAX
@@ -898,13 +900,17 @@ void cmd_amatscan(const Args& a) {
 
 /// model-export --dat --file-id <model> --out-dir <dir>: one model's VRChat folder (glb +
 /// materials.json, textures beside it), as the world export writes it per model but self-
-/// contained: GW2 UV1 copied to UV4, vertex colours, DDS cubemaps. For checking shader ports.
+/// contained: GW2 UV1 copied to UV4, vertex colours, DDS cubemaps, and the world export's cloth
+/// and lightning meshes. For checking shader ports and adding one model to an imported map.
 void cmd_model_export(const Args& a) {
     Gw2Dat dat;
     load_dat_file(dat, need(a, "dat"));
     const uint32_t fileId = static_cast<uint32_t>(to_u64(need(a, "file-id")));
     std::shared_ptr<ModelPreview> m = load_model_by_fileid(dat, fileId, true);
     if (!m) fail("model " + std::to_string(fileId) + " has no usable geometry");
+    castlemist::exportgltf::append_cloth_meshes(*m);
+    castlemist::exportgltf::append_lightning_meshes(*m);
+    if (m->meshes.empty() && !m->hasEffects()) fail("model " + std::to_string(fileId) + " has no drawable meshes or effects");
     castlemist::exportgltf::VrchatFolderOptions vo;
     vo.gltf.uv1CopyToUv4 = true;
     vo.gltf.vertexColors = true;
@@ -1580,8 +1586,13 @@ void cmd_skybox(const Args& a) {
     if (opt.faceSize < 1 || opt.equirectWidth < 2) fail("--size and --equirect must be positive");
     // --approx: the approximate sky (gw2-sky.md amendment 2026-10-17), labelled in sky.json.
     opt.approximate = has(a, "approx");
+    opt.noHaze = has(a, "no-haze");
+    if (has(a, "card-opacity")) {
+        try { opt.cardOpacity = std::stof(a.at("card-opacity")); } catch (const std::exception&) { fail("--card-opacity must be a number"); }
+        if (!(opt.cardOpacity >= 0)) fail("--card-opacity must be >= 0");
+    }
     if (has(a, "ground") && !sky::parse_ground_fill(a.at("ground"), opt.ground.fill))
-        fail("--ground must be black, white or skirt");
+        fail("--ground must be black, white, skirt or mirror");
     if (has(a, "ground-fade")) {
         try { opt.ground.fadeDegrees = std::stof(a.at("ground-fade")); } catch (const std::exception&) { fail("--ground-fade must be a number"); }
         if (!(opt.ground.fadeDegrees >= 0 && opt.ground.fadeDegrees <= 90)) fail("--ground-fade must be 0..90 degrees");
@@ -2681,9 +2692,7 @@ void cmd_skillfx_export(const Args& a) {
         std::shared_ptr<ModelPreview> m = load_model_by_fileid(run.dat, model);
         if (!m) return "model did not load";
         fs::create_directories(glb.parent_path());
-        castlemist::exportgltf::GltfExportOptions o;
-        o.allowEffectsOnly = true;  // many effect models are particles only
-        auto r = castlemist::exportgltf::export_model_gltf(*m, glb.string(), o);
+        auto r = castlemist::exportgltf::export_model_gltf(*m, glb.string());  // particle-only models export too
         if (!r.ok) return r.error.empty() ? std::string("export failed") : r.error;
         for (const auto& em : m->emitters) {
             if (!em.hasMesh || !em.meshFileId) continue;
@@ -3153,7 +3162,34 @@ void cmd_world(const Args& a) {
     Gw2Dat dat;
     load_dat_file(dat, need(a, "dat"));
     const uint32_t fileId = static_cast<uint32_t>(to_u64(need(a, "file-id")));
-    json j = castlemist::world::world_summary(castlemist::world::load_world(dat, fileId, tpl));
+    const castlemist::world::WorldScene scene = castlemist::world::load_world(dat, fileId, tpl);
+    json j = castlemist::world::world_summary(scene);
+    // --props <fileId,...>: every placement of those models -- prop index (the world export's
+    // "<model>_<prop>" object names), map-space matrix and the clip it plays -- so a model the
+    // export skipped can be placed by hand.
+    if (has(a, "props")) {
+        std::set<uint32_t> want;
+        std::stringstream ss(a.at("props"));
+        for (std::string t; std::getline(ss, t, ',');)
+            if (!t.empty()) want.insert(static_cast<uint32_t>(to_u64(t)));
+        std::map<uint32_t, std::shared_ptr<ModelPreview>> loaded;
+        json list = json::array();
+        for (size_t pi = 0; pi < scene.props.size(); ++pi) {
+            const auto& p = scene.props[pi];
+            if (p.model >= scene.models.size() || !want.count(scene.models[p.model].fileId)) continue;
+            const uint32_t mid = scene.models[p.model].fileId;
+            if (!loaded.count(mid)) loaded[mid] = load_model_by_fileid(dat, mid, false);
+            const auto& m = loaded[mid];
+            json clip = nullptr;
+            if (m && p.animSequence) {
+                const int c = castlemist::world::resolve_prop_clip(m->animClipTokens, p.animSequence);
+                if (c >= 0 && static_cast<size_t>(c) < m->animClips.size()) clip = m->animClips[static_cast<size_t>(c)].name;
+            }
+            list.push_back({{"prop", pi}, {"fileId", mid}, {"group", p.group},
+                            {"m", std::vector<float>(p.world, p.world + 16)}, {"clip", clip}});
+        }
+        j["placements"] = list;
+    }
     j["ok"] = true;
     if (has(a, "out")) {
         std::ofstream of(a.at("out"), std::ios::binary);

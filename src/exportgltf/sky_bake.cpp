@@ -691,6 +691,7 @@ void add_approx(Composite& out, BakeResult& res, const Extractor::MapSky& sky, s
                 if (dst) std::copy(std::begin(c.value), std::end(c.value), dst);
             }
             for (int k = 0; k < 3; ++k) ff->fog[k] = fog[k];
+            ff->opacity[0] *= in.materialCardOpacity;
             // §9.4: the card draw sets skypara / skyparb itself (the tokens are
             // in the reserved table 0x1427f1550, so the material's own are not used).
             ff->skypara[0] = HB;
@@ -795,12 +796,13 @@ const char* ground_fill_name(GroundFill f) {
     switch (f) {
     case GroundFill::White: return "white";
     case GroundFill::Skirt: return "skirt";
+    case GroundFill::Mirror: return "mirror";
     default: return "black";
     }
 }
 
 bool parse_ground_fill(const std::string& name, GroundFill& out) {
-    for (GroundFill f : {GroundFill::Black, GroundFill::White, GroundFill::Skirt})
+    for (GroundFill f : {GroundFill::Black, GroundFill::White, GroundFill::Skirt, GroundFill::Mirror})
         if (name == ground_fill_name(f)) {
             out = f;
             return true;
@@ -817,13 +819,19 @@ float ground_weight(const float d[3], float fadeDegrees) {
 }
 
 Rgb apply_ground(const Rgb& c, float w, GroundFill fill) {
-    if (fill == GroundFill::Skirt || w <= 0) return c;
+    if (fill == GroundFill::Skirt || fill == GroundFill::Mirror || w <= 0) return c;
     const float g = fill == GroundFill::White ? 1.0f : 0.0f;
     return Rgb{c.r + (g - c.r) * w, c.g + (g - c.g) * w, c.b + (g - c.b) * w};
 }
 
 Radiance with_ground(Radiance r, const GroundOptions& g) {
     if (g.fill == GroundFill::Skirt) return r;
+    if (g.fill == GroundFill::Mirror)
+        return [r = std::move(r)](const float d[3]) {
+            if (d[1] >= 0) return r(d);
+            const float m[3] = {d[0], -d[1], d[2]};
+            return r(m);
+        };
     return [r = std::move(r), g](const float d[3]) { return apply_ground(r(d), ground_weight(d, g.fadeDegrees), g.fill); };
 }
 

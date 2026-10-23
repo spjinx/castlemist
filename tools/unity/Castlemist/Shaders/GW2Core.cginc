@@ -92,6 +92,14 @@
 //              colorh, p.r) normalize(_FireDye)); rgb = p col vc.rgb 2 vc.a, a = p.a vc.a.
 //              All x the soft depth fade; colour (not coverage) to linear with pow 2.2 in linear
 //              projects; alpha saturated (GW2's UNORM target clamps it)
+//   wave       _UseWave (castlemist's own, not a GW2 shader: GW2 runs cloth physics on these, castlemist
+//              animates them in the vertex shader instead): a travelling flap across the wind (the
+//              world axis cross(_WaveDir, up), the same for every vertex, so split vertices at seams
+//              move together: along each vertex's own normal tore 3135444's ribbons apart,
+//              2026-10-22) plus a sway along _WaveDir, x w^2 (w the wave weight: _WaveMask 0 = 1 - vertex
+//              colour R, the export's distance from the GW2 cloth pins (white = still); 1 = UV0 v;
+//              2 = 1 - UV0 v; 3 = everywhere), x _WaveAmplitude (Unity units) x a slow gust. Every
+//              pass but Meta moves the same way, so shadows follow
 //   premult    _PremultipliedBase: the base colour is already x its alpha (the export's
 //              fx-soft-additive); an unlit effect then scales it by the alpha shaping only
 // Shading formulas of the GW2 shaders these blocks come from are in the README's port table.
@@ -161,6 +169,9 @@ half _UseRim, _RimShineFade, _RimUseMask, _PremultipliedBase;
 half _UseScreenLayer, _RampRGBA, _PerturbNormal;
 half _UseWater, _UseWaterCubes;
 half _UseVertexColor, _UseFlow, _FlowPremul;
+half _UseWave;
+float _WaveMask, _WaveAmplitude, _WaveSpeed, _WaveFrequency, _WaveSway;
+float4 _WaveDir;
 half _UseEnvCube, _UseBumpShade, _UseBumpShadeTex, _BumpShadeOpacity, _UseFogNeutral, _FogNeutral;
 UNITY_DECLARE_TEXCUBE_NOSAMPLER(_EnvCube);
 UNITY_DECLARE_TEX2D_NOSAMPLER(_BumpShadeTex); float _BumpShadeUV;
@@ -169,7 +180,8 @@ half4 _FlowStart, _FlowEnd;
 // The flow block's UV offset for CM_Colour, set by CM_Surface (0 in the other passes).
 static float2 cm_FlowOffset = 0;
 half _UseFire;
-float _FireMode;                      // 0 = 740364, 1 = 965703, 2 = 977200, 3 = 1171331
+float _FireMode;
+half _FireNoEdge;                     // 1: no silhouette fade (2037995's vertex shader has no normal)                      // 0 = 740364, 1 = 965703, 2 = 977200, 3 = 1171331
 float4 _FireUV0, _FireUV1, _FireUV2;  // GW2 fireduv, flowuv, flowbuv: (v scroll /s, scale osc /s, scale min, scale max)
 float4 _FireParams, _FireParams2, _FireParams3;  // per mode, see CastlemistMaterials.Fire
 float4 _FireColorL, _FireColorH;      // GW2 colorl / colorh, raw (gamma) values
@@ -224,6 +236,33 @@ struct appdata
     half4 color : COLOR;
     UNITY_VERTEX_INPUT_INSTANCE_ID
 };
+
+// The wave weight of a vertex (see the header's wave block).
+float CM_WaveWeight(appdata v)
+{
+    if (_WaveMask < 0.5) return saturate(1.0 - v.color.r);
+    if (_WaveMask < 1.5) return saturate(v.uv0.y);
+    if (_WaveMask < 2.5) return saturate(1.0 - v.uv0.y);
+    return 1.0;
+}
+
+// The cloth wave: moves v.vertex in place (object space in, object space out).
+void CM_Wave(inout appdata v)
+{
+    if (_UseWave < 0.5) return;
+    float w = CM_WaveWeight(v);
+    if (w <= 0.0) return;
+    float3 wp = mul(unity_ObjectToWorld, v.vertex).xyz;
+    float3 dir = normalize(_WaveDir.xyz + float3(1e-5, 0, 0));
+    float3 side = cross(dir, float3(0, 1, 0));
+    side = dot(side, side) > 1e-6 ? normalize(side) : float3(1, 0, 0);   // wind straight up: any side
+    float t = _Time.y * _WaveSpeed;
+    float phase = w * _WaveFrequency * 6.2831853 + dot(wp, dir) * 0.35 - t;
+    float flap = sin(phase) + 0.35 * sin(phase * 2.3 + 1.7 + t * 0.6);
+    float gust = 0.75 + 0.25 * sin(t * 0.37 + dot(wp.xz, float2(0.05, 0.03)));
+    float3 offset = (side * flap + dir * _WaveSway * (0.6 + 0.4 * sin(phase * 0.5))) * (_WaveAmplitude * w * w * gust);
+    v.vertex.xyz = mul(unity_WorldToObject, float4(wp + offset, 1.0)).xyz;
+}
 
 // TexTransform: scroll (xy, UV per second) and rotation (z, radians per second) about the UV centre.
 float2 CM_Animate(float2 uv, float4 a)
@@ -422,6 +461,7 @@ v2f vert(appdata v)
     v2f o;
     UNITY_INITIALIZE_OUTPUT(v2f, o);
     UNITY_SETUP_INSTANCE_ID(v);
+    CM_Wave(v);
     UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
     o.pos = UnityObjectToClipPos(v.vertex);
     o.worldPos = mul(unity_ObjectToWorld, v.vertex).xyz;
@@ -482,7 +522,7 @@ half4 CM_Fire(v2f i, float3 n)
     {
         // GW2 view space is left-handed (+z forward): its normal z = -(Unity view-space z).
         float nz = dot(UNITY_MATRIX_V[2].xyz, n);
-        half edge = max(0.0, 1.0 - 1.5 * (1.0 - nz) * (1.0 - nz));
+        half edge = _FireNoEdge > 0.5 ? 1.0 : max(0.0, 1.0 - 1.5 * (1.0 - nz) * (1.0 - nz));
         float2 flow = CM_FIRE_TEX(_FlowTex, CM_FireUV(g1, _FireUV1, t)).xy * 2.0 - 1.0;
         float2 base = CM_FireUV(g1, _FireUV0, t);
         if (_FireMode < 0.5)
@@ -842,6 +882,7 @@ v2fShadow vertShadow(appdata v)
     v2fShadow o;
     UNITY_INITIALIZE_OUTPUT(v2fShadow, o);
     UNITY_SETUP_INSTANCE_ID(v);
+    CM_Wave(v);
     UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
     TRANSFER_SHADOW_CASTER_NORMALOFFSET(o)
     CM_AnimatedUVs(v, o.uv01, o.uv23);

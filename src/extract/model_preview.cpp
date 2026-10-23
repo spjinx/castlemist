@@ -528,7 +528,7 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
             em.flipbook.rows = e.flipbook.rows; em.flipbook.count = e.flipbook.count;
             em.flipbook.start = e.flipbook.start; em.flipbook.fps = e.flipbook.fps;
             em.hasMesh = e.hasMesh; em.meshFileId = e.meshFileId;
-            em.boneJoint = -1; // emitters attach via their owning cloud's bone; kept per-emitter if set
+            em.boneJoint = resolveBone(e.bone); // -1: the emitter attaches by its owning cloud's bone
             out->emitters.push_back(std::move(em));
         }
         for (const auto& L : fx.lights) {
@@ -540,6 +540,26 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
                 for (int k=0;k<3;++k) lc.pos[k] = out->joints[lc.boneJoint].pos[k];
             out->effectLights.push_back(std::move(lc));
         }
+        for (const auto& sys : fx.lightningSystems)
+            for (uint16_t bi : sys.bolts) {
+                if (bi >= fx.lightningBolts.size()) continue;
+                const auto& b = fx.lightningBolts[bi];
+                LightningBoltCPU lb;
+                lb.materialIndex = sys.materialIndex;
+                for (uint16_t ni : b.nodes) {
+                    if (ni >= fx.lightningNodes.size()) continue;
+                    for (uint16_t ci : fx.lightningNodes[ni].children)
+                        if (ci < fx.lightningNodes.size())
+                            lb.edges.emplace_back(resolveBone(fx.lightningNodes[ni].bone),
+                                                  resolveBone(fx.lightningNodes[ci].bone));
+                }
+                for (int k = 0; k < 3; ++k) { lb.colorBegin[k] = b.colorBegin[k]; lb.colorEnd[k] = b.colorEnd[k]; }
+                copy2(b.lifetime, lb.lifetime); copy2(b.opacity, lb.opacity); copy2(b.texRange, lb.texRange);
+                copy2(b.thicknessRange, lb.thicknessRange);
+                lb.texOffset = b.texOffset; lb.texScale = b.texScale; lb.texSpeed = b.texSpeed;
+                lb.variance = b.variance; lb.noise = b.noise; lb.numSegments = b.numSegments; lb.type = b.type;
+                out->lightning.push_back(std::move(lb));
+            }
     }
 
     for (int i = 0; i < 3; ++i) out->center[i] = (lo[i] + hi[i]) * 0.5f;

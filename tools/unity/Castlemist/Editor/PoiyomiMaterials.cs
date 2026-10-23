@@ -67,6 +67,8 @@ namespace Castlemist
         /// The export's settings.uv1InUv4, and the import's unityScale (set by the importer).
         public bool Uv1InUv4;
         public float UnityScale = 0.0254f;
+        /// GW2 cloth materials on Castlemist/GW2 Tessellated (ImportOptions.tessellateCloth).
+        public bool TessellateCloth;
         /// The Poiyomi shader's name and version (shader_master_label), null for Standard.
         public string ShaderName, Version;
         /// The chosen shader's _Mode presets (PoiyomiShaders.ParsePresets); empty: the importer's own table.

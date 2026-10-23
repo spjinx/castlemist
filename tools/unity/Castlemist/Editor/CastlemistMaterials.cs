@@ -241,6 +241,7 @@ namespace Castlemist
                 FxShaping(ctx, mat, tag, modelFolder, e, mode);
                 VertexColourFx(ctx, mat, tag, modelFolder, e);
                 MultiplyAndCubeFx(ctx, mat, tag, modelFolder, e);
+                ClothWave(ctx, mat, e);
                 if (e.Profile == "prop-interior") Interior(ctx, mat, tag, modelFolder, e);
                 else if (e.Profile == "prop-burn") Burn(ctx, mat, tag, modelFolder, e);
                 else if (e.Profile == "fx-ramp-glow" || e.Profile == "fx-perturb-mod-glow") RampGlow(ctx, mat, tag, modelFolder, e);
@@ -725,6 +726,7 @@ namespace Castlemist
                      : e.Amat == 965703 ? 1 : e.Amat == 977200 ? 2 : e.Amat == 1171331 ? 3 : 0;
             SetF(mat, "_UseFire", 1f);
             SetF(mat, "_FireMode", mode);
+            SetF(mat, "_FireNoEdge", e.Amat == 2037995 ? 1f : 0f);   // its vertex shader passes no normal
             SetF(mat, "_Unlit", 1f);
             SetF(mat, "_AlphaPremultiply", 0f);   // the shader's rgb is already x its coverage
             SetF(mat, "_PremultipliedBase", 0f);
@@ -766,7 +768,8 @@ namespace Castlemist
                 Layer(ctx, mat, tag, folder, detail != null ? detail.Map : null, "_FireDetail", null);
                 Layer(ctx, mat, tag, folder, ramp != null ? ramp.Map : null, "_RampTex", null);
                 if (detail == null) missing.Add("firedetail");
-                if (ramp == null) missing.Add("ramp");
+                // A ramp placeholder (2037995: white) is _RampTex's white default: not missing.
+                if (ramp == null && !e.LayerConstants.ContainsKey("ramp")) missing.Add("ramp");
                 var still = new Vector4(0, 0, 1, 1);   // no scroll, scale 1
                 SetVec(mat, "_FireUV0", V("fireduv", still));
                 SetVec(mat, "_FireUV1", V("flowuv", still));
@@ -803,6 +806,23 @@ namespace Castlemist
             }
             if (missing.Count > 0)
                 ctx.Warnings.Add(tag + ": fx-fire without its " + string.Join(", ", missing) + " layer(s): the flame is incomplete");
+        }
+
+        /// GW2 cloth (materials.json cloth): the wave block on, weighted by the export's distance from
+        /// the cloth pins (vertex colour R), its amplitude from the cloth's wind susceptibility and
+        /// stiffness: (0.4 + 0.8 wind)(1 - 0.5 rigidness) x 30 GW2 units. castlemist's own reading:
+        /// GW2 simulates this cloth, it has no wave shader.
+        public const string TessellatedShaderName = "Castlemist/GW2 Tessellated";
+
+        static void ClothWave(MaterialContext ctx, Material mat, MaterialsFile.MaterialEntry e)
+        {
+            if (e.ClothWind == null) return;
+            double wind = System.Math.Max(0, System.Math.Min(2, e.ClothWind.Value)), rigid = System.Math.Max(0, System.Math.Min(1, e.ClothRigidness ?? 0));
+            SetF(mat, "_UseWave", 1f);
+            SetF(mat, "_WaveMask", 0f);
+            SetF(mat, "_WaveAmplitude", (float)((0.4 + 0.8 * wind) * (1 - 0.5 * rigid) * 30.0 * ctx.UnityScale));
+            Shader tess = ctx.TessellateCloth ? Shader.Find(TessellatedShaderName) : null;
+            if (tess != null && mat.shader != tess) mat.shader = tess;   // same properties: values kept
         }
 
         /// The "mask" layer: its map, or its placeholder constant (layerConstants). False when neither.
@@ -899,7 +919,7 @@ namespace Castlemist
                                          "_PremultipliedBase", "_EmissionPtrb", "_UseScreenLayer", "_RampRGBA", "_PerturbNormal",
                                          "_UseWater", "_UseWaterCubes", "_UseVertexColor", "_UseFlow", "_FlowPremul",
                                          "_UseEnvCube", "_UseBumpShade", "_UseBumpShadeTex", "_UseFogNeutral",
-                                         "_UseFire", "_FireMode" })
+                                         "_UseFire", "_FireMode", "_FireNoEdge", "_UseWave" })
                 SetF(mat, f, 0f);
             foreach (string t in new[] { "_MainTex", "_DetailMod", "_BumpMap", "_PackedMap", "_EmissionMap", "_EmissionMask",
                                          "_ParallaxTex", "_OffsetTex", "_MaskTex", "_PerturbTex", "_RampTex", "_InteriorTex",

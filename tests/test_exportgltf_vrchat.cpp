@@ -299,6 +299,7 @@ CM_TEST(vrchat, profile_by_amat_second_survey) {
     CHECK(profile_for(mat_with_file(48767), 0).name == "fx-premultiplied");
     CHECK(profile_for(mat_with_file(1171330), 0).name == "fx-premultiplied");
     CHECK(profile_for(mat_with_file(977200), 0).name == "fx-fire");
+    CHECK(profile_for(mat_with_file(2037995), 0).name == "fx-fire");
     CHECK(profile_for(mat_with_file(1171331), 0).supported);
     CHECK(profile_for(mat_with_file(740364), 0).unlit);
 }
@@ -1575,7 +1576,7 @@ CM_TEST(vrchat, empty_model_is_refused_before_writing) {
 }
 
 // Skill effect models are often particles only (e.g. Firebrand's Scorched Aftermath, 1764457):
-// with allowEffectsOnly they still export materials, textures and the particle sidecar.
+// they still export materials, textures and the particle sidecar.
 CM_TEST(vrchat, gltf_effects_only_model) {
     ModelPreview model = glow_quad();
     model.meshes.clear();
@@ -1584,10 +1585,7 @@ CM_TEST(vrchat, gltf_effects_only_model) {
     model.clouds.push_back(c);
     fs::path dir = fresh_dir("effects_only");
     fs::create_directories(dir);
-    CHECK_FALSE(export_model_gltf(model, (dir / "refused.glb").string()).ok);
-    GltfExportOptions o;
-    o.allowEffectsOnly = true;
-    GltfExportResult r = export_model_gltf(model, (dir / "fx.glb").string(), o);
+    GltfExportResult r = export_model_gltf(model, (dir / "fx.glb").string());
     CHECK(r.ok);
     CHECK(fs::exists(dir / "fx_particles.json"));
     json g = glb_json(dir / "fx.glb");
@@ -1595,7 +1593,7 @@ CM_TEST(vrchat, gltf_effects_only_model) {
     CHECK_FALSE(g.contains("meshes") && !g["meshes"].empty());
 
     model.clouds.clear();  // nothing at all to export: still refused
-    CHECK_FALSE(export_model_gltf(model, (dir / "none.glb").string(), o).ok);
+    CHECK_FALSE(export_model_gltf(model, (dir / "none.glb").string()).ok);
 }
 
 CM_TEST(vrchat, gltf_alpha_mode_from_profile) {

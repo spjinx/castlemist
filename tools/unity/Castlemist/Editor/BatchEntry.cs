@@ -14,12 +14,14 @@
 //     [-castlemistFoliage off|colliders|trees|all] [-castlemistDensity f] [-castlemistShader poiyomi|castlemist]
 //     [-castlemistSkipModels <fileId,fileId,...>]
 //     [-castlemistDistance f] [-castlemistQuest]
+//     [-castlemistNoEnv haze,fog,ambient,post,lightvolumes,reflectionprobes,occlusion|all]
 //     [-castlemistExpectShader "<Poiyomi shader name>"|Standard] [-castlemistScreenshot <file.png>]
 //
 // ImportWorld runs WorldImporter.Import on the folder (scale: the manifest's
 // unityScale unless given; options: ImportOptions, -castlemistQuest the Quest
-// preset, then the other flags on top), logs the warnings, the PROBE line, the
-// TERRAIN_CHECK line (Terrain mode) and the PLAN line (validate_manifest.py
+// preset, then the other flags on top; -castlemistNoEnv turns SceneSetup's
+// parts off), logs the warnings, the PROBE line, the
+// TERRAIN_CHECK line (Terrain mode), the ENV line (SceneSetup) and the PLAN line (validate_manifest.py
 // --plan --mode --foliage --foliage-density --foliage-distance's format), then
 // CELL lines checking that each cell's terrain lies under its Cell_<id> origin,
 // INSTANCES checking the prop matrices, FOLIAGE_TREES the foliage tree
@@ -148,6 +150,7 @@ namespace Castlemist
             if ((a = Arg("-castlemistDistance")) != null) o.distance = float.Parse(a, CultureInfo.InvariantCulture);
             if ((a = Arg("-castlemistShader")) != null) o.shader = ImportOptions.ParseShader(a);
             if ((a = Arg("-castlemistSkipModels")) != null) o.skipModels = a;
+            if ((a = Arg("-castlemistNoEnv")) != null) o.DisableEnv(a);
             o.Validate();
             return o;
         }
@@ -213,7 +216,7 @@ namespace Castlemist
             bool instOk = maxErr < 1e-4;
             Debug.Log("INSTANCES checked=" + checkedInst + " maxRelErr=" + maxErr.ToString("E2", CultureInfo.InvariantCulture) +
                       " rootScale=" + scale.ToString("R", CultureInfo.InvariantCulture) + (instOk ? " OK" : " FAIL"));
-            if (m.UnityTerrain == null) opts = new ImportOptions { terrain = TerrainMode.Mesh, foliage = opts.foliage, density = opts.density, distance = opts.distance, shader = opts.shader, skipModels = opts.skipModels };
+            if (m.UnityTerrain == null) { opts = opts.Clone(); opts.terrain = TerrainMode.Mesh; }
             var errs = new List<string>();
             FoliagePlan plan = FoliagePlan.Build(m, c => FoliageRecords.Read(folder + "/" + c.FoliageFile), opts, errs);
             bool foliageOk = CheckFoliage(m, root, plan, folder, opts);

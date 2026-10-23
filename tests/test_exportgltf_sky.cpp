@@ -1680,6 +1680,7 @@ CM_TEST(skybake, ground_fill_fades_below_horizon) {
     CHECK(std::fabs(ground_weight(below5, 10) - 0.5f) < 1e-3f);   // smoothstep midpoint
     CHECK_EQ(ground_weight(below5, 0), 1.0f);                     // band 0: hard edge
 
+    GroundFill f{};
     Radiance grey = [](const float*) { return Rgb{0.5f, 0.5f, 0.5f}; };
     Radiance black = with_ground(grey, GroundOptions{GroundFill::Black, 10});
     Radiance white = with_ground(grey, GroundOptions{GroundFill::White, 10});
@@ -1688,8 +1689,12 @@ CM_TEST(skybake, ground_fill_fades_below_horizon) {
     CHECK_EQ(black(down).r, 0.0f);
     CHECK_EQ(white(down).g, 1.0f);
     CHECK_EQ(skirt(down).b, 0.5f);
+    // Mirror: below the horizon is the sky above it (y flipped).
+    Radiance updown = [](const float* d) { return Rgb{d[1], 0.0f, 0.0f}; };
+    Radiance mirror = with_ground(updown, GroundOptions{GroundFill::Mirror, 10});
+    CHECK(std::fabs(mirror(down).r + down[1]) < 1e-6f);
+    CHECK(parse_ground_fill("mirror", f) && f == GroundFill::Mirror);
 
-    GroundFill f{};
     CHECK(parse_ground_fill("white", f) && f == GroundFill::White);
     CHECK(parse_ground_fill(ground_fill_name(GroundFill::Skirt), f) && f == GroundFill::Skirt);
     CHECK(!parse_ground_fill("grey", f));

@@ -391,4 +391,5 @@ Shader "Castlemist/GW2 Distort"
         }
     }
     FallBack Off
+    CustomEditor "Castlemist.GW2DistortGUI"
 }

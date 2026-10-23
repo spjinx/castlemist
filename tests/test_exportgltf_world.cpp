@@ -1147,6 +1147,79 @@ CM_TEST(world_manifest, sun_shines_down) {
     }
 }
 
+// environment (env_contract 2026-10-22): every light of the slot, haze with its
+// Unity-frame height, the effect's fields of its version only, the CLUT when it matches.
+CM_TEST(world_manifest, environment_block) {
+    using X = castlemist::model::Extractor;
+    SyntheticManifest m;
+    make_synthetic(m);
+    CHECK(world_manifest_json(m.in)["environment"].is_null());   // no env chunk
+    X::MapSky& sky = m.scene.environment.sky;
+    sky.present = true;
+    sky.lighting.resize(3);
+    X::MapEnvLight& L = sky.lighting[1];
+    L.present = true;
+    L.presetIndex = 1;
+    L.lights.resize(2);
+    L.lights[0].color[0] = 1; L.lights[0].intensity = 1.3f;
+    L.lights[0].direction[0] = 2; L.lights[0].direction[2] = 2;   // not normalised as stored
+    L.lights[1].intensity = 0.2f; L.lights[1].direction[2] = -1;
+    L.shadowInfluence = -0.25f;
+    L.hasBacklight = true; L.backlightIntensity = 1;
+    m.scene.environment.light.presetIndex = 1;
+    X::MapHaze h;
+    h.distRange[0] = 100; h.distRange[1] = 9000;
+    h.heightRange[0] = 140; h.heightRange[1] = -35;               // map z, up = -Z, unsorted
+    h.nearColor[0] = 0.5f; h.nearColor[3] = 1;
+    sky.haze = {h};                                               // haze and effect: the day slot 0
+    X::MapEnvEffect e;                                            // a V29-shaped effect
+    e.has = X::MapEnvEffect::Glow | X::MapEnvEffect::Saturation | X::MapEnvEffect::Clut;
+    e.saturation = 0.9f; e.clutFile = 77;
+    sky.effect = {e, X::MapEnvEffect{}};
+    X::MapEnvZone z;
+    z.name = "zone";
+    z.haze = {h};
+    z.shapes = {{{10, 20}, {-5, 40}, {30, -1}}};
+    sky.zones = {z, X::MapEnvZone{}};                            // the second has no haze: left out
+    m.in.environmentClut = {{"fileId", 77}, {"path", "environment/clut_77.png"},
+                            {"layout", {{"width", 256}, {"height", 16}, {"size", 16}, {"kind", "strip"}}}};
+    const json man = world_manifest_json(m.in);
+    check_valid(man, "environment_block");
+    const json& env = man["environment"];
+    CHECK(env.is_object());
+    if (!env.is_object()) return;
+    CHECK_EQ(env["preset"].get<int>(), 1);
+    CHECK_EQ(env["hazeEffectPreset"].get<int>(), 0);
+    CHECK_EQ(env["lights"].size(), size_t(2));
+    // unityForward as light.sun's: map_to_unity of the normalised direction.
+    const float d[3] = {0.70710678f, 0, 0.70710678f};
+    float u[3];
+    cw::map_to_unity(d, u);
+    for (size_t k = 0; k < 3; ++k) CHECK(std::fabs(env["lights"][0]["unityForward"][k].get<float>() - u[k]) < 1e-6f);
+    CHECK(env["lights"][1]["unityForward"][1].get<float>() > 0.99f);   // map -Z travels up
+    CHECK_EQ(env["shadowInfluence"].get<float>(), -0.25f);
+    CHECK_EQ(env["backlight"]["intensity"].get<float>(), 1.0f);
+    CHECK_EQ(env["haze"]["heightRange"][0].get<float>(), 140.0f);
+    CHECK_EQ(env["haze"]["heightRangeUnity"][0].get<float>(), -140.0f);
+    CHECK_EQ(env["haze"]["heightRangeUnity"][1].get<float>(), 35.0f);
+    const json& fx = env["effect"];
+    CHECK_EQ(fx.size(), size_t(5));                               // glow, saturation, clutFileId, clut, clutLayout
+    CHECK(!fx.contains("tintFocus") && !fx.contains("flags"));
+    CHECK_EQ(fx["clutFileId"].get<int>(), 77);
+    CHECK(fx["clut"] == "environment/clut_77.png");
+    CHECK_EQ(fx["clutLayout"]["size"].get<int>(), 16);
+    CHECK_EQ(env["zones"].size(), size_t(1));
+    CHECK(env["zones"][0]["boundsUnity"] == json({-5.0f, -1.0f, 30.0f, 40.0f}));
+    // A CLUT of another file is not named.
+    m.in.environmentClut["fileId"] = 78;
+    const json man2 = world_manifest_json(m.in);
+    CHECK(man2["environment"]["effect"]["clut"].is_null());
+    CHECK(man2["environment"]["effect"]["clutLayout"].is_null());
+    // A slot past the map's presets (presetIndex differs): no lights.
+    sky.lighting[1].presetIndex = 0;
+    CHECK(world_manifest_json(m.in)["environment"]["lights"].empty());
+}
+
 CM_TEST(world_manifest, settings_labelled) {
     SyntheticManifest m;
     make_synthetic(m);
@@ -2590,6 +2663,66 @@ CM_TEST(world_lods, cloth_pieces_as_meshes) {
     CHECK(m.meshes[0].meshName == "cloth");
     CHECK_EQ(m.meshes[0].materialIndex, 2u);
     CHECK(m.meshes[0].vertices[0].nz > 0.0f);
+    CHECK_FALSE(m.meshes[0].hasColor);   // no pins: no wave mask
+}
+
+// The cloth wave mask: R = 1 at the pinned prefix, falling with the distance across the cloth.
+CM_TEST(world_lods, cloth_wave_weights_from_pins) {
+    ModelMeshCPU mesh;
+    GVertex v{};
+    // A strip 1 wide, 3 long: vertices 0, 1 pinned at y = 0; 2, 3 at y = 1; 4, 5 at y = 2.
+    for (int k = 0; k < 6; ++k) {
+        v.px = float(k % 2);
+        v.py = float(k / 2);
+        mesh.vertices.push_back(v);
+    }
+    mesh.indices = {0, 1, 2, 1, 3, 2, 2, 3, 4, 3, 5, 4};
+    CHECK(cloth_wave_weights(mesh, 2));
+    CHECK(mesh.hasColor);
+    CHECK_EQ(int(mesh.vertices[0].col[0]), 255);   // pinned: still
+    CHECK(mesh.vertices[2].col[0] < 200 && mesh.vertices[2].col[0] > 60);
+    CHECK(mesh.vertices[5].col[0] < 10);           // the free end: full wave
+    CHECK_EQ(int(mesh.vertices[5].col[1]), 255);
+    CHECK_FALSE(cloth_wave_weights(mesh, 0));       // no pins
+}
+
+// A lightning bolt becomes two crossed strips between its node joints, skinned along the edge.
+CM_TEST(world_lods, lightning_bolt_strips) {
+    ModelPreview m;
+    m.joints.resize(2);
+    m.joints[1].pos[0] = 10.0f;   // joint 0 at the origin, joint 1 ten units east
+    LightningBoltCPU b;
+    b.materialIndex = 3;
+    b.edges = {{0, 1}, {0, -1}};  // the second edge's child is not in the skeleton: skipped
+    b.numSegments = 4;
+    b.thicknessRange[0] = 1.0f;   // {min, max}: width 2, the midpoint
+    b.thicknessRange[1] = 3.0f;
+    b.texScale = 5.0f;            // two repeats along 10 units
+    b.texRange[0] = 0.5f;
+    b.texRange[1] = 1.0f;
+    b.colorBegin[0] = 0xFF336699u;
+    m.lightning.push_back(b);
+    CHECK_EQ(append_lightning_meshes(m), 1);
+    if (m.meshes.size() != 1u) { CHECK(false); return; }
+    const ModelMeshCPU& mesh = m.meshes[0];
+    CHECK(mesh.meshName == "lightning");
+    CHECK_EQ(mesh.materialIndex, 3u);
+    CHECK(mesh.hasSkin && mesh.hasColor);
+    CHECK_EQ(mesh.vertices.size(), size_t(2 * 2 * 5));   // 2 strips x 2 edges x 5 rows
+    CHECK_EQ(mesh.indices.size(), size_t(2 * 4 * 6));
+    const GVertex& first = mesh.vertices[0];
+    const GVertex& last = mesh.vertices[9];              // strip 1, row 4
+    CHECK(std::fabs(first.px) < 1e-5f && std::fabs(last.px - 10.0f) < 1e-5f);
+    CHECK(first.bwt[0] == 1.0f && first.bwt[1] == 0.0f && last.bwt[1] == 1.0f);
+    CHECK(first.bidx[0] == 0u && first.bidx[1] == 1u);
+    CHECK(std::fabs(last.u - 2.0f) < 1e-5f);             // U along the bolt: 10 / texScale
+    CHECK(first.v == 0.5f && mesh.vertices[1].v == 1.0f); // V across texRange
+    CHECK(int(first.col[0]) == 0x33 && int(first.col[2]) == 0x99 && int(first.col[3]) == 255);
+    // half the width either side of the edge
+    float w = std::hypot(mesh.vertices[1].py - first.py, mesh.vertices[1].pz - first.pz);
+    CHECK(std::fabs(w - 2.0f) < 1e-4f);
+    ModelPreview none;
+    CHECK_EQ(append_lightning_meshes(none), 0);
 }
 
 // The character, VRChat and model exports write LOD0 only, byte for byte as before:
