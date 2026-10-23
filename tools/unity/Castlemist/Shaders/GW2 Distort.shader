@@ -63,7 +63,7 @@ Shader "Castlemist/GW2 Distort"
         [ToggleUI] _SoftFade ("Soft depth fade", Float) = 0
         _DepDist ("depdist (Unity units)", Float) = 0.4
 
-        [Header(Lit glass (630598))]
+        [Header(Lit glass 630598)]
         [ToggleUI] _UseLit ("Lit glass (diffuse, sun, reflection probe)", Float) = 0
         [NoScaleOffset] _MainTex ("Diffuse or decal (RGB colour, A coverage and gloss)", 2D) = "white" {}
         [Enum(UV0, 0, UV1, 1, UV2, 2, UV3, 3)] _MainUV ("Diffuse UV", Float) = 0
@@ -72,7 +72,7 @@ Shader "Castlemist/GW2 Distort"
         _LitFadeDist ("Distortion fade distance (Unity units)", Float) = 77.9
         _SunScale ("Sun colour scale", Float) = 1
 
-        [Header(Glass and water (49659 63923 57026))]
+        [Header(Glass and water 49659 63923 57026)]
         [Enum(Off, 0, Glass, 1, Water, 2)] _Glass ("Refracting glass or water", Float) = 0
         _GlassSpec ("Specular colour (water: speccp)", Color) = (1, 1, 1, 1)
         _GlassSpecPower ("Specular power (256; water: speccp.w)", Float) = 256
@@ -82,7 +82,7 @@ Shader "Castlemist/GW2 Distort"
         _LightVolumesBias ("Light Volumes bias (along the normal)", Float) = 0
         _PointLightVolumesShading ("Point Light Volumes shading", Float) = 2
 
-        [Header(UV animation (scroll u v per second, rotate radians per second))]
+        [Header(UV animation scroll u v per second rotate radians per second)]
         _UVAnim0 ("UV0", Vector) = (0, 0, 0, 0)
         _UVAnim1 ("UV1", Vector) = (0, 0, 0, 0)
         _UVAnim2 ("UV2", Vector) = (0, 0, 0, 0)

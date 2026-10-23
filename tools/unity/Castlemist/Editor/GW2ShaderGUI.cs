@@ -367,8 +367,14 @@ namespace Castlemist
 
     public class GW2ParticleGUI : GW2GUIBase
     {
+        /// _PtcShader's values (CastlemistMaterials.ParticleFamily).
+        static readonly string[] Families =
+        {
+            "Basic", "Soft additive", "Premultiplied", "Step dissolve", "Alpha test fade", "Flow", "Fire", "Flow layer", "Nebula",
+        };
+
         // name, src, dst, premultiply, fog to black
-        static readonly string[] Names = { "Additive", "Soft Additive", "Alpha blend", "Premultiplied", "Multiply", "Custom" };
+        static readonly string[] Names ={ "Additive", "Soft Additive", "Alpha blend", "Premultiplied", "Multiply", "Custom" };
 
         static readonly BlendMode[,] Factors =
         {
@@ -388,9 +394,19 @@ namespace Castlemist
             EditorGUILayout.LabelField("castlemist GW2 Particle", EditorStyles.boldLabel);
             Note("Unlit. One of GW2's particle shaders (read from the game), chosen by the importer. " +
                  "The particle renderer needs the custom vertex streams UV, UV2, AnimBlend, StableRandomXYZ.");
-            Prop("_PtcShader", "GW2 particle shader");
+            // a popup of our own: Unity's [Enum] drawer takes at most 7 entries
+            MaterialProperty ptc = P("_PtcShader");
+            int fam = (int)(ptc != null ? ptc.floatValue : 0f);
+            if (ptc != null)
+            {
+                EditorGUI.showMixedValue = ptc.hasMixedValue;
+                EditorGUI.BeginChangeCheck();
+                int pick = EditorGUILayout.Popup(new GUIContent("GW2 particle shader", "The GW2 particle pixel shader this material ports (the importer picks it)"),
+                                                 Mathf.Clamp(fam, 0, Families.Length - 1), Families);
+                if (EditorGUI.EndChangeCheck()) { ptc.floatValue = pick; fam = pick; }
+                EditorGUI.showMixedValue = false;
+            }
             Blend(mat);
-            int fam = (int)(P("_PtcShader") != null ? P("_PtcShader").floatValue : 0f);
 
             if (Section("Colour"))
             {

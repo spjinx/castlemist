@@ -49,7 +49,7 @@ Shader "Castlemist/GW2"
         _EmissionStrength ("Emission strength", Float) = 1
         _EmissionPtrb ("gloptrb (emission perturb strength)", Float) = 0
 
-        [Header(Parallax layer (GW2 fx parallax))]
+        [Header(Parallax layer GW2 fx parallax)]
         [ToggleUI] _UseParallax ("Parallax layer", Float) = 0
         _ParallaxTex ("Parallax colour (RGB), alpha (A)", 2D) = "white" {}
         [Enum(UV0, 0, UV1, 1, UV2, 2, UV3, 3)] _ParallaxUV ("Parallax UV", Float) = 0
@@ -72,7 +72,7 @@ Shader "Castlemist/GW2"
         [ToggleUI] _PerturbAlphaOnly ("Perturb the colour's alpha only", Float) = 0
         _ModPtrb ("modptrb (mod perturb strength, x mask R)", Float) = 0
 
-        [Header(Interior layer (GW2 prop interior))]
+        [Header(Interior layer GW2 prop interior)]
         [ToggleUI] _UseInterior ("Interior layer", Float) = 0
         [NoScaleOffset] _InteriorTex ("Interior colour (RGB), shine (A)", 2D) = "black" {}
         [Enum(UV0, 0, UV1, 1, UV2, 2, UV3, 3)] _InteriorUV ("Interior UV", Float) = 1
@@ -81,14 +81,14 @@ Shader "Castlemist/GW2"
         [ToggleUI] _InteriorStep ("Step the mix (stepmin, decfade)", Float) = 0
         _InteriorStepOffset ("decfade (step offset)", Float) = 1
 
-        [Header(Screen layer (GW2 add))]
+        [Header(Screen layer GW2 add)]
         [ToggleUI] _UseScreenLayer ("Screen layer", Float) = 0
         [NoScaleOffset] _ScreenTex ("Screen layer (RGB)", 2D) = "black" {}
         [Enum(UV0, 0, UV1, 1, UV2, 2, UV3, 3)] _ScreenUV ("Screen layer UV", Float) = 1
         [ToggleUI] _RampRGBA ("Ramp tints the colour too (RGBA)", Float) = 0
         [ToggleUI] _PerturbNormal ("Perturb the normal map too", Float) = 0
 
-        [Header(Water (GW2 3121604))]
+        [Header(Water GW2 3121604)]
         [ToggleUI] _UseWater ("Water", Float) = 0
         [NoScaleOffset] _FlowTex ("Flow (RG, linear)", 2D) = "black" {}
         [ToggleUI] _UseWaterCubes ("GW2 cubemaps (else the reflection probe)", Float) = 0
@@ -103,7 +103,7 @@ Shader "Castlemist/GW2"
         _WaveColor ("waveclr (caustics colour)", Color) = (0.6, 1, 2, 0)
         _UnityScale ("Unity units per GW2 unit", Float) = 0.0254
 
-        [Header(Vertex colour and flow (GW2 fx flow))]
+        [Header(Vertex colour and flow GW2 fx flow)]
         [ToggleUI] _UseVertexColor ("Colour x vertex colour", Float) = 0
         [ToggleUI] _UseFlow ("Flow (vertex colour = parameters)", Float) = 0
         _Flow ("flow (uv scale, strength, power, scroll)", Vector) = (1, 1, 1, 0)
@@ -112,7 +112,7 @@ Shader "Castlemist/GW2"
         _FlowStep ("stepcol (min, max)", Vector) = (0, 1, 0, 0)
         [ToggleUI] _FlowPremul ("Flow colour x its alpha (premultiplied)", Float) = 0
 
-        [Header(Multiply decals and cubemap (GW2 fx multiply, fx cubemap))]
+        [Header(Multiply decals and cubemap GW2 fx multiply fx cubemap)]
         [ToggleUI] _UseEnvCube ("Cubemap by view (perturb = _PerturbTex)", Float) = 0
         [NoScaleOffset] _EnvCube ("Cubemap (GW2 space)", Cube) = "black" {}
         [ToggleUI] _UseBumpShade ("Bump shading (2x multiply)", Float) = 0
@@ -123,7 +123,7 @@ Shader "Castlemist/GW2"
         [ToggleUI] _UseFogNeutral ("Fog to grey (multiply)", Float) = 0
         _FogNeutral ("Fog grey", Float) = 1
 
-        [Header(Fire (GW2 fx fire 740364 965703 977200 1171331))]
+        [Header(Fire GW2 fx fire 740364 965703 977200 1171331)]
         [ToggleUI] _UseFire ("Fire (procedural flame; unlit, premultiplied)", Float) = 0
         [Enum(Flow flame 740364, 0, Stepped flame 965703, 1, Noise particle 977200, 2, Dyed noise particle 1171331, 3)] _FireMode ("Fire shader", Float) = 0
         [ToggleUI] _FireNoEdge ("No silhouette fade (2037995)", Float) = 0
@@ -139,7 +139,7 @@ Shader "Castlemist/GW2"
         _FireColorH ("colorh (raw GW2 value)", Vector) = (1, 1, 1, 1)
         _FireDye ("Dye palette colour, raw GW2 value (1171331 dyedot)", Vector) = (1, 1, 1, 1)
 
-        [Header(Wave (castlemist cloth wave))]
+        [Header(Wave castlemist cloth wave)]
         [ToggleUI] _UseWave ("Wave", Float) = 0
         [Enum(GW2 cloth pins (vertex colour), 0, UV0 V, 1, UV0 V inverted, 2, Everywhere, 3)] _WaveMask ("Wave weight", Float) = 0
         _WaveAmplitude ("Amplitude (Unity units)", Float) = 0.6
@@ -148,7 +148,7 @@ Shader "Castlemist/GW2"
         _WaveSway ("Sway with the wind", Float) = 0.35
         _WaveDir ("Wind direction (world)", Vector) = (1, 0, 0.3, 0)
 
-        [Header(Cutout and burn edge (GW2 opacity, burnoff, burncol))]
+        [Header(Cutout and burn edge GW2 opacity burnoff burncol)]
         [ToggleUI] _UseCutout ("Cutout", Float) = 0
         [NoScaleOffset] _CutoutTex ("Cutout (linear)", 2D) = "white" {}
         [Enum(UV0, 0, UV1, 1, UV2, 2, UV3, 3)] _CutoutUV ("Cutout UV", Float) = 1
@@ -168,7 +168,7 @@ Shader "Castlemist/GW2"
         [ToggleUI] _SoftFade ("Soft depth fade (needs a depth texture)", Float) = 0
         _DepDist ("depdist (Unity units)", Float) = 0.4
 
-        [Header(UV sets and animation (scroll u v per second, rotate radians per second))]
+        [Header(UV sets and animation scroll u v per second rotate radians per second)]
         [ToggleUI] _UV1FromUV4 ("GW2 UV1 from UV4 (UV1 left to lightmaps)", Float) = 0
         _UVAnim0 ("UV0", Vector) = (0, 0, 0, 0)
         _UVAnim1 ("UV1", Vector) = (0, 0, 0, 0)

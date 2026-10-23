@@ -8,7 +8,7 @@ Shader "Castlemist/GW2 Particle"
 {
     Properties
     {
-        [Enum(Basic, 0, Soft additive, 1, Premultiplied, 2, Step dissolve, 3, Alpha test fade, 4, Flow, 5, Fire, 6, Flow layer, 7, Nebula, 8)] _PtcShader ("GW2 particle shader", Float) = 0
+        _PtcShader ("GW2 particle shader", Float) = 0
         _MainTex ("Colour (RGB), alpha (A)", 2D) = "white" {}
         [HideInInspector] _Color ("Colour", Color) = (1, 1, 1, 1)
         [ToggleUI] _FrameBlend ("Blend flipbook frames (UV2, AnimBlend)", Float) = 1
@@ -24,31 +24,31 @@ Shader "Castlemist/GW2 Particle"
         [ToggleUI] _SoftFade ("Soft depth fade (needs a depth texture)", Float) = 1
         _DepDist ("depfade / depdist (Unity units)", Float) = 0.4318
 
-        [Header(Flow (vertex colour holds the parameters))]
+        [Header(Flow vertex colour holds the parameters)]
         [NoScaleOffset] _FlowTex ("Flow (RG, linear)", 2D) = "grey" {}
         _Flow ("flow (uv scale, strength, power, scroll)", Vector) = (1, 1, 1, 0)
         _FlowStart ("startcl", Color) = (1, 1, 1, 1)
         _FlowEnd ("endcl", Color) = (1, 1, 1, 1)
         _FlowStep ("stepcol (min, max)", Vector) = (0, 1, 0, 0)
 
-        [Header(Flow layer (1764372))]
+        [Header(Flow layer 1764372)]
         [NoScaleOffset] _LayerTex ("Layer (opacitytile; nebula background)", 2D) = "white" {}
         _LayerScroll ("uvscrol (uv scale xy, scroll per second zw)", Vector) = (1, 1, 0, 0)
         _LayerFlowUV ("flowuv (scale xy, scroll per second zw)", Vector) = (0, 0, 0, 0)
 
-        [Header(Nebula (728777))]
+        [Header(Nebula 728777)]
         [NoScaleOffset] _PerturbTex ("perturb (RG, linear)", 2D) = "grey" {}
         _BasePtrb ("perturb (offset strength)", Float) = 0.1
         _PtcUVSS ("uvss (perturb scroll xy per second, uv scale z)", Vector) = (0, 0, 1, 0)
         _ScreenTile ("zotile (background tiles across the screen)", Float) = 5
 
-        [Header(Add layer (second pass, 1601524))]
+        [Header(Add layer second pass 1601524)]
         [ToggleUI] _UseAddLayer ("Add layer", Float) = 0
         [NoScaleOffset] _AddTex ("add (R step, A coverage)", 2D) = "black" {}
         _AddColor ("addcolr", Color) = (1, 1, 1, 1)
         _AddStepMin ("stepmin", Range(0, 0.999)) = 0.75
 
-        [Header(Fire (GW2 fx fire 977200 1171331))]
+        [Header(Fire GW2 fx fire 977200 1171331)]
         [HideInInspector] _UseFire ("Fire", Float) = 0
         [Enum(Flow flame 740364, 0, Stepped flame 965703, 1, Noise particle 977200, 2, Dyed noise particle 1171331, 3)] _FireMode ("Fire shader", Float) = 2
         [HideInInspector] _FireNoEdge ("No silhouette fade", Float) = 1
