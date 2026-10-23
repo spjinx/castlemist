@@ -18,7 +18,7 @@ since D3D11 allows only 16 samplers per pixel shader.
 | `GW2Core.cginc` | its passes and blocks (the block list and the GW2 formulas are in its header) |
 | `GW2 Particle.shader` | `Castlemist/GW2 Particle`: every GW2 particle system, unlit; the families of GW2's particle pixel shaders (`_PtcShader`), plus a second pass for 1601524's add layer |
 | `GW2Particle.cginc` | its passes, built on `GW2Core.cginc` (`CM_PASS_PARTICLE`; the family formulas are in its header) |
-| `GW2 Distort.shader` | `Castlemist/GW2 Distort`: GW2's screen distortion (a GrabPass, which a material float cannot switch off) |
+| `GW2 Distort.shader` | `Castlemist/GW2 Distort`: GW2's screen distortion (a GrabPass, which a material float cannot switch off). Queue 2900 + offset: the one shared grab then holds the opaque scene and sky, and transparents draw over the distortion instead of being pasted over |
 | `CastlemistLightVolumes.cginc` | includes VRC Light Volumes, or stubs (see below) |
 
 Unity 2022.3, `#pragma target 3.5`, GPU instancing, single-pass stereo instanced

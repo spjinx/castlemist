@@ -81,7 +81,12 @@ namespace Castlemist
             SetF(mat, "_DstBlend", opaque ? (float)BlendMode.Zero : (float)BlendMode.OneMinusSrcAlpha);
             SetF(mat, "_ZWrite", opaque ? 1f : 0f);
             SetF(mat, "_Cull", e.Cull == "Off" ? (float)CullMode.Off : (float)CullMode.Back);
-            mat.renderQueue = 3000 + e.RenderQueueOffset;   // after the opaque scene: the grab sees it
+            // 2900: after the opaque scene and the sky (the grab sees them), before the transparents.
+            // The grab (_CastlemistGrab) is taken once, at the first distort draw: at 3000 a distort
+            // surface pasted that snapshot over every particle drawn after it (the Wizard Vault
+            // portal's distgeo sheets wiped the particles behind them). Trade-off: transparents behind
+            // a distort surface show through unrefracted.
+            mat.renderQueue = 2900 + e.RenderQueueOffset;
             mat.SetOverrideTag("RenderType", "Transparent");
 
             // The distortion map: "distort" (50159, 339341, 709206, 592660, 27304, 49659, 63923; 630598's
