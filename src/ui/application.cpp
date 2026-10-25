@@ -901,6 +901,11 @@ int run(HINSTANCE hInstance, int cmd_show) {
         }
     }
     request_data_status_refresh();
+    // GW2_GALLERY=ui-candidates opens the Texture Gallery on the window-art
+    // filter; GW2_GALLERY_SHOT=<png> captures it once the view settles
+    // (GW2_GALLERY_QUIT: then closes the app).
+    if (castlemist::core::env::is_set("GW2_GALLERY") && !mapwin_hook)
+        open_texture_gallery(hwnd, castlemist::core::env::text("GW2_GALLERY").c_str());
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

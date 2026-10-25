@@ -91,6 +91,7 @@ constexpr UINT_PTR ID_TOOLS_DECODE_TOKEN = 1015;   // token/filename-bytes decod
 constexpr UINT_PTR ID_TOOLS_NPC_CATALOGUE = 1023;  // NPC catalogue window
 constexpr UINT_PTR ID_TOOLS_DATA_STATUS = 1021;    // Data status window: is every export input current?
 constexpr UINT_PTR ID_TOOLS_MAP_WINDOW = 1022;     // Map Window: fly/walk one map (ui/map_window.cpp)
+constexpr UINT_PTR ID_VIEW_TEXTURE_GALLERY = 2240; // Texture Gallery: thumbnails of every image entry (ui/texture_gallery.cpp)
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL = 1016; // Export glTF... (single model, plain decoded textures)
 constexpr UINT_PTR ID_FILE_EXPORT_WORLD_MAP = 1017;  // Export World (Map)... (cell folder, manifest, per-cell glTF, FBX)
 constexpr UINT_PTR ID_FILE_EXPORT_GLTF_MODEL_ATLAS = 1018; // Export glTF... (single model, baked to a fresh UV atlas)
@@ -930,6 +931,13 @@ struct BakeSelectResult {
     std::set<uint32_t> selected;    ///< ModelMaterialCPU::index values to bake; the rest export plain.
 };
 BakeSelectResult show_bake_select_dialog(HWND owner, const ModelPreview& model);
+
+// ---- texture_gallery.cpp -- View > Texture Gallery
+/// Opens (or raises) the gallery; needs the index and the dat. @p preset
+/// "ui-candidates" starts on the window-art filter (GW2_GALLERY).
+void open_texture_gallery(HWND owner, const char* preset = nullptr);
+/// Not owned by the main window, so the main window closes it (WM_DESTROY).
+void close_texture_gallery();
 
 // ---- index_ui.cpp -- opening a gw2index SQLite and wiring its filters
 void finish_open_index(HWND hwnd, bool silent);

@@ -33,6 +33,12 @@ void load_meta_map(const std::function<void(uint32_t base_id, const char* type, 
 /// column without decompressing anything.
 void load_size_map(const std::function<void(uint32_t base_id, long long size_final)>& cb);
 
+/// Streams (base_id, magic, type) for every entry whose type is one of `types`,
+/// in base_id order -- the texture gallery's source list ("texture", "dds",
+/// "riff", "png"), read once without decoding anything.
+void load_magics(const std::vector<std::string>& types,
+                 const std::function<void(uint32_t base_id, const char* magic, const char* type)>& cb);
+
 /// @brief Narrows a query by what an entry actually *contains*, not just its type.
 ///
 /// The container fourcc is often too coarse to be useful. 198330 entries declare

@@ -139,6 +139,22 @@ void load_meta_map(const std::function<void(uint32_t, const char*, const char*)>
     sqlite3_finalize(st);
 }
 
+void load_magics(const std::vector<std::string>& types,
+                 const std::function<void(uint32_t, const char*, const char*)>& cb) {
+    if (!g_db || types.empty()) return;
+    std::string sql = "SELECT base_id,magic,type FROM entries WHERE type IN (";
+    for (size_t i = 0; i < types.size(); ++i) sql += (i ? ",?" : "?");
+    sql += ") ORDER BY base_id";
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(g_db, sql.c_str(), -1, &st, nullptr) == SQLITE_OK) {
+        for (size_t i = 0; i < types.size(); ++i)
+            sqlite3_bind_text(st, static_cast<int>(i) + 1, types[i].c_str(), -1, SQLITE_TRANSIENT);
+        while (sqlite3_step(st) == SQLITE_ROW)
+            cb(static_cast<uint32_t>(sqlite3_column_int64(st, 0)), col_text(st, 1), col_text(st, 2));
+    }
+    sqlite3_finalize(st);
+}
+
 void load_size_map(const std::function<void(uint32_t, long long)>& cb) {
     if (!g_db) return;
     char sql[96];

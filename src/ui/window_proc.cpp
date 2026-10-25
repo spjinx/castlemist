@@ -64,6 +64,8 @@ HMENU build_menu() {
     AppendMenuW(g_theme_menu, MF_STRING, ID_VIEW_THEME_ACCENT, L"Choose &Accent Colour...");
 
     HMENU view_menu = CreatePopupMenu();
+    AppendMenuW(view_menu, MF_STRING, ID_VIEW_TEXTURE_GALLERY, L"Texture &Gallery...");
+    AppendMenuW(view_menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(view_menu, MF_POPUP, reinterpret_cast<UINT_PTR>(g_theme_menu), L"&Theme");
 
     HMENU menu_bar = CreateMenu();
@@ -1186,6 +1188,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         case ID_TOOLS_MAP_WINDOW:
             prompt_map_window(hwnd);
             return 0;
+        case ID_VIEW_TEXTURE_GALLERY:
+            open_texture_gallery(hwnd);
+            return 0;
         case ID_DATA_BADGE:
             if (HIWORD(wparam) == STN_CLICKED) open_data_status_dialog(hwnd);
             return 0;
@@ -1638,6 +1643,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         // with it: close it first, so its worker generation is bumped (and its
         // threads start stopping) before the message loop exits.
         close_map_window();
+        close_texture_gallery();
         KillTimer(hwnd, TIMER_ANIM);
         KillTimer(hwnd, TIMER_AUDIO);
         KillTimer(hwnd, TIMER_VIDEO);
