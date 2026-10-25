@@ -93,6 +93,7 @@
 #include "castlemist/native/gw2model.hpp"
 #include "castlemist/native/granny_anim.hpp"
 #include "castlemist/format/chat_link.h"
+#include "castlemist/format/sdk_image.h"
 #include "castlemist/format/content_map.h"
 #include "castlemist/character/fetch.h"
 #include "castlemist/character/key_store.h"
@@ -497,6 +498,69 @@ void cmd_sniff(const Args& a) {
     emit(j);
 }
 
+// Many entries in one dat load (2026-10-25, the UI-art survey): --base-ids <file> lists base ids
+// (one per line). --mode headers (default) prints each texture's magic, format and size;
+// --mode png also writes <out>/<baseId>.png for each whose largest side is within
+// [--min-dim, --max-dim] (ATEX family through gw2_atex, RIFF/PNG/JPEG through sdk_image).
+void cmd_texbatch(const Args& a) {
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    std::ifstream in(need(a, "base-ids"));
+    if (!in) fail("cannot read --base-ids");
+    const bool png = has(a, "mode") && a.at("mode") == "png";
+    const std::string out = png ? need(a, "out") : std::string();
+    const int minDim = has(a, "min-dim") ? static_cast<int>(to_u64(a.at("min-dim"))) : 0;
+    const int maxDim = has(a, "max-dim") ? static_cast<int>(to_u64(a.at("max-dim"))) : 1 << 30;
+    if (png) std::filesystem::create_directories(std::filesystem::u8path(out));
+    json rows = json::array();
+    size_t written = 0, failed = 0;
+    for (std::string line; std::getline(in, line);) {
+        if (line.empty() || line[0] == '#') continue;
+        const uint64_t base = std::strtoull(line.c_str(), nullptr, 10);
+        if (base == 0 || base - 1 >= dat.mft_data_list.size()) continue;
+        json r{{"baseId", base}};
+        try {
+            const MftData& e = dat.mft_data_list[base - 1];
+            std::vector<uint8_t> d = decompress_entry(read_entry_bytes(dat.file_info.file_path, e), e.compression_flag);
+            if (d.size() >= 4 && d[0] == 'C') d[0] = 'A';   // CTEX family -> ATEX
+            int w = 0, h = 0;
+            std::vector<uint8_t> rgba;
+            if (is_texture_magic(d) && d.size() >= 12) {
+                r["magic"] = std::string(reinterpret_cast<char*>(d.data()), 4);
+                r["format"] = std::string(reinterpret_cast<char*>(d.data() + 4), 4);
+                w = d[8] | (d[9] << 8);
+                h = d[10] | (d[11] << 8);
+                if (png && std::max(w, h) >= minDim && std::max(w, h) <= maxDim) {
+                    castlemist::atex::Texture tex = castlemist::atex::parse(d.data(), d.size());
+                    castlemist::atex::Image img = castlemist::atex::decode(tex, 0);
+                    w = img.width; h = img.height;
+                    rgba = std::move(img.rgba);
+                }
+            } else if (castlemist::img::is_image(d.data(), d.size())) {
+                auto img = castlemist::img::decode(d.data(), d.size());
+                if (!img) throw std::runtime_error("image decode declined");
+                r["magic"] = img->format;
+                w = int(img->width); h = int(img->height);
+                if (png && std::max(w, h) >= minDim && std::max(w, h) <= maxDim) rgba = std::move(img->rgba);
+            } else {
+                r["magic"] = sniff_type(d);
+            }
+            r["width"] = w;
+            r["height"] = h;
+            if (!rgba.empty()) {
+                const std::string path = out + "/" + std::to_string(base) + ".png";
+                if (stbi_write_png(path.c_str(), w, h, 4, rgba.data(), w * 4)) { r["png"] = path; ++written; }
+            }
+        } catch (const std::exception& ex) {
+            r["error"] = ex.what();
+            ++failed;
+        }
+        rows.push_back(std::move(r));
+    }
+    json j{{"ok", true}, {"count", rows.size()}, {"pngs", written}, {"failed", failed}, {"entries", std::move(rows)}};
+    emit(j);
+}
+
 // Cheaply read an ATEX-family header (magic/fourcc/w/h) for a DAT entry without
 // a full BCn decode -- used to detect the half-res sibling at baseId-1. Returns
 // false if the entry isn't a decodable ATEX-family texture.
@@ -648,7 +712,10 @@ void cmd_amat(const Args& a) {
     if (has(a, "data")) data = read_file(a.at("data"));
     else { Gw2Dat dat; load_dat_file(dat, need(a, "dat")); uint32_t i = 0; data = extract_bytes(dat, a, i); }
 
-    castlemist::model::AmatSet set = castlemist::model::Extractor(data, tpl).extractAmat();
+    // --token: a MODL material's token (`model` prints it), the key that picks this
+    // material's effect; without it the engine's default token decides.
+    const uint64_t token = has(a, "token") ? to_u64(a.at("token")) : 0;
+    castlemist::model::AmatSet set = castlemist::model::Extractor(data, tpl).extractAmat(token);
     if (!set.error.empty()) fail(set.error);
 
     auto sampJson = [](const castlemist::model::AmatShader& s) {
@@ -996,14 +1063,19 @@ void cmd_model(const Args& a) {
         json consts = json::array();
         for (const auto& c : mt.constants)
             consts.push_back({{"name", c.name}, {"value", {c.value[0], c.value[1], c.value[2], c.value[3]}}});
+        json links = json::array();
+        for (const auto& l : mt.constLinks)
+            links.push_back({{"linkToken", l.linkToken}, {"constantToken", l.constantToken}});
         mats.push_back({{"index", mt.index},
                         {"materialId", mt.materialId},
+                        {"token", mt.token},
                         {"materialFile", mt.materialFile},
                         {"materialFlags", mt.materialFlags},
                         {"sortOrder", mt.sortOrder},
                         {"sortLayer", mt.sortLayer},
                         {"textureFileIds", mt.textureFileIds()},
                         {"textures", texs},
+                        {"constLinks", links},
                         {"constants", consts}});
     }
 
@@ -3516,6 +3588,7 @@ int main(int argc, char** argv) {
         else if (cmd == "lookup") cmd_lookup(a);
         else if (cmd == "extract") cmd_extract(a);
         else if (cmd == "texture") cmd_texture(a);
+        else if (cmd == "texbatch") cmd_texbatch(a);
         else if (cmd == "parse") cmd_parse(a);
         else if (cmd == "sniff") cmd_sniff(a);
         else if (cmd == "resolve") cmd_resolve(a);

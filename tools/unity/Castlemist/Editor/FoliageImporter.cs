@@ -170,8 +170,7 @@ namespace Castlemist
                 var go = (GameObject)PrefabUtility.InstantiatePrefab(prefab, trees);
                 go.name = TreeName(m.Models[(int)r.Model].FileId, r, treeIndex);
                 go.transform.localPosition = new Vector3(r.T[0], r.T[1], r.T[2]);
-                go.transform.localRotation = new Quaternion(r.R[0], r.R[1], r.R[2], r.R[3]);
-                go.transform.localScale = Vector3.one * r.S;
+                WorldImporter.Place(go, prefab, new Quaternion(r.R[0], r.R[1], r.R[2], r.R[3]), r.S);
                 sum.foliageTrees++;
             }
             if (cp.Patches.Count > 0)

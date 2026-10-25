@@ -122,6 +122,17 @@ struct ModelTexTransformCPU {
     float    rotate = 0, rotate2 = 0;
 };
 
+/// @brief One material constant a clip animates (ModelAnimationData.matConstAnim):
+///        GW2 drives effect constants this way (map 506592's vortex: texmult 0 -> 1.5
+///        over its "on" clip, then held; the portal's ghosts: diffade / fadedif loops).
+struct ModelMatConstAnimCPU {
+    uint32_t materialId = 0;          ///< As stored: a ModelMaterialCPU::materialId, not an index.
+    uint32_t constToken = 0;          ///< The constant's token32 name (MatConstant::name).
+    float initial[4] = {0, 0, 0, 0};  ///< Its value before the clip runs.
+    bool hasTrack = false;            ///< False: the constant holds `initial` through the clip.
+    castlemist::granny::Curve curve;  ///< The vector track (curve.dim floats), when hasTrack.
+};
+
 /// @brief A model material as the reconstruction renderer needs it.
 struct ModelMaterialCPU {
     std::vector<ModelTexTransformCPU> texTransforms; ///< Copied as stored.
@@ -163,6 +174,9 @@ struct ModelMaterialCPU {
     /// @brief Material::materialId (gw2model.hpp): the built-in shader selector
     ///        (0..57, 58 = custom). 0 together with materialFlags == 0 is one of
     ///        the traits of the legacy "untagged" shaders (shader_profiles.h).
+    ///        A clip's ModelMatConstAnim names its material by this value
+    ///        (ModelMatConstAnimCPU): on maps 506582 / 506583 it is a per-material
+    ///        id (7, 15, 23 ... 158), not a shader number.
     uint32_t materialId = 0;
     /// @brief Material::materialFlags (gw2model.hpp), verbatim.
     uint32_t materialFlags = 0;
@@ -354,6 +368,9 @@ struct ModelMeshCPU {
     ///        itself, not of the decoder). Empty when the file didn't name
     ///        this mesh, which is common.
     std::string meshName;
+    /// @brief ModelMeshDataV34+.visBone (token64, tokenizeBoneName packing): the bone whose clip
+    ///        visibility keys (animClipVis) show and hide this mesh; 0 when absent.
+    uint64_t visBone = 0;
     /// @brief Blend shapes (exported as glTF morph targets; Blender shape keys,
     ///        Unity blendshapes). Each delta has 3 floats per vertex.
     std::vector<MorphTargetCPU> morphs;
@@ -554,6 +571,9 @@ struct ModelPreview {
     /// @brief Parallel to @ref animClips: each clip's bone visibility tracks (bone token64, the
     ///        clip times in seconds the bone's visibility toggles at; gw2model AnimClip::visTracks).
     std::vector<std::vector<std::pair<uint64_t, std::vector<float>>>> animClipVis;
+    /// @brief Parallel to @ref animClips: the material constants each clip animates
+    ///        (gw2model AnimClip::matConstAnims, with their granny vector tracks).
+    std::vector<std::vector<ModelMatConstAnimCPU>> animClipConsts;
     /// @brief fileIds of the external animation banks this model imports.
     ///
     /// Populated whether or not the load succeeded, so a UI can show an
@@ -577,6 +597,11 @@ struct ModelPreview {
 
     /// @brief True when the model carries any baked particle or light effect.
     bool hasEffects() const { return !clouds.empty() || !effectLights.empty(); }
+    /// @brief True when some mesh names a visibility bone (ModelMeshCPU::visBone).
+    bool hasMeshVis() const {
+        for (const auto& m : meshes) if (m.visBone) return true;
+        return false;
+    }
 };
 
 /// @}

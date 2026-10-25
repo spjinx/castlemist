@@ -115,8 +115,10 @@ namespace Castlemist
         /// visible; zeropose, an edit pose, hides most effect bones) and its scale: an emitter spawns
         /// while its bone is visible in the clip, a burst fires at each hidden -> visible change, both repeating with
         /// the clip; sizes that ignore the transform's scale are divided by it. @p mapScale is the
-        /// import's unityScale (metres per GW2 unit). Returns the systems set.
-        public static int Fit(GameObject instance, string sidecar, string clip, float mapScale)
+        /// import's unityScale (metres per GW2 unit). @p onDemand (2026-10-25, GW2Demolishable): one
+        /// pass of the clip's timing that does not loop or play on awake, for a script to Play().
+        /// Returns the systems set.
+        public static int Fit(GameObject instance, string sidecar, string clip, float mapScale, bool onDemand = false)
         {
             var systems = new List<ParticleSystem>();
             foreach (ParticleSystem ps in instance.GetComponentsInChildren<ParticleSystem>(true))
@@ -170,6 +172,15 @@ namespace Castlemist
                     rend.pivot = Mathf.Abs(offset) > 1e-6f && size > 1e-6f ? new Vector3(0f, 0f, -offset * mapScale / size) : Vector3.zero;
                 }
                 Timing(ps, e, vis != null && bone != null && vis.ContainsKey(bone) ? List(vis, bone) : null, duration, loops);
+                if (onDemand)
+                {
+                    var main = ps.main;
+                    main.loop = false;
+                    main.prewarm = false;
+                    main.playOnAwake = false;
+                    if (loops) main.duration = duration;
+                    ps.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+                }
             }
             return systems.Count;
         }
@@ -204,7 +215,8 @@ namespace Castlemist
         {
             var go = new GameObject(name);
             // The emitter sits at the bone's position, in the model's axes (GW2 moves particles in
-            // model space), at the model's scale: sizes and speeds are model units.
+            // model space), at the model's scale times the bone's (flags 0x4: the model's alone):
+            // sizes and speeds are model units.
             Vector3 local = model.InverseTransformPoint(bone.position);
             Quaternion rot = Quaternion.identity;
             if (Has(e, "transform"))
@@ -218,6 +230,10 @@ namespace Castlemist
             go.transform.localRotation = rot;
             go.transform.localScale = Vector3.one;
             go.transform.SetParent(bone, true);
+            // Without file flags 0x4 GW2 multiplies every size (and the spawn shape and speeds) by the
+            // emitter transform's scale, the bone's included (2026-10-25: 84108's FallingDust bone is
+            // scaled x7.91 and its dust was 1/8 size): keep the bone's scale instead of cancelling it.
+            if (!Flag(e, "flags", 0x4)) go.transform.localScale = Vector3.one;
             GameObjectUtility.SetStaticEditorFlags(go, 0);
 
             var ps = go.AddComponent<ParticleSystem>();
@@ -255,6 +271,10 @@ namespace Castlemist
 
             var r = go.GetComponent<ParticleSystemRenderer>();
             r.sharedMaterial = mat;
+            // Castlemist/GW2 Particle reads the custom vertex streams (frame blend, per-particle
+            // randoms); without them the next-frame UV is one texel, blended over the whole quad.
+            if (mat != null && mat.shader != null && mat.shader.name == MaterialContext.ParticleShaderName)
+                CastlemistMaterials.ApplyParticleStreams(r);
             r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             r.receiveShadows = false;
             r.lightProbeUsage = UnityEngine.Rendering.LightProbeUsage.Off;

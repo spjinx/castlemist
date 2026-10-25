@@ -131,6 +131,29 @@ CM_TEST(anim, resolve_zero_token) {
     CHECK(resolve_prop_clip(t, 0) == -1);
 }
 
+// Map 506592's vortex 506583: "off" (0x18CF) and three suffixed "on" clips, 04 / 12 / 08 in the
+// token's top nibble (intro 0 -> 1.5, outro 1.5 -> 0, loop holding 1.5 of its texmult).
+CM_TEST(anim, resolve_sequence_exact_hit_is_one_clip) {
+    const std::vector<uint64_t> t = {192720390330ull, 463, 6351};
+    CHECK(resolve_prop_sequence(t, 463) == std::vector<int>{1});
+}
+
+CM_TEST(anim, resolve_sequence_suffixed_intro_then_loop) {
+    const std::vector<uint64_t> t = {0x18CFull, 0x40000000000001CFull, 0xC0000000000001CFull, 0x80000000000001CFull};
+    CHECK(resolve_prop_sequence(t, 0x1CF) == (std::vector<int>{1, 3}));
+}
+
+CM_TEST(anim, resolve_sequence_suffixed_loop_only) {
+    const std::vector<uint64_t> t = {0x18CFull, 0x80000000000001CFull};
+    CHECK(resolve_prop_sequence(t, 0x1CF) == std::vector<int>{1});
+}
+
+CM_TEST(anim, resolve_sequence_miss_and_zero) {
+    const std::vector<uint64_t> t = {0x18CFull, 0x40000000000001CFull};
+    CHECK(resolve_prop_sequence(t, 464399).empty());
+    CHECK(resolve_prop_sequence(t, 0).empty());
+}
+
 // ---- shared pure rules (surface_rules.h, collision.h, terrain.h) ----
 
 namespace {

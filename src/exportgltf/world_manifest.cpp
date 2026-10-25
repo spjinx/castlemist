@@ -267,7 +267,7 @@ std::vector<ManifestSetting> world_export_settings(const WorldFolderOptions& o, 
          "exportgltf/blend_mode.h; the map window's exact-factor table (sub-project 3 P7/P8) governs only the renderer"},
         {"collisionHullSelection", "animations[last]", kU, "docs/research/gw2-world-frame.md \xc2\xa7" "7.1"},
         {"unityScale", o.unityScale, kU, "gltf_export.h:57 'GW2 inches'; spec D7"},
-        {"clipPhase", "all at t = 0, looping", kU, "docs/research/gw2-world-materials.md \xc2\xa7" "5"},
+        {"clipPhase", "all at t = 0, looping; a sequence \"a+b\" (world/anim.h resolve_prop_sequence: the 04 intro, then the 08 loop) plays a once, then loops b", kU, "docs/research/gw2-world-materials.md \xc2\xa7" "5"},
         {"texelsPerChunk", o.texelsPerChunk, kC, "spec D3 (allowed 64, 128, 256, 512)"},
         {"waterTexelsPerChunk", o.waterTexelsPerChunk, kC, "spec D3"},
         {"maxTextureSize", o.maxTextureSize, kC, "the map window's texture cap (sub-project 3); spec Performance"},
@@ -435,7 +435,7 @@ template <class T> const T* slot_or_first(const std::vector<T>& v, int p) {
 } // namespace
 
 json world_environment_json(const castlemist::model::Extractor::MapSky& sky, int presetIndex, const json& clut,
-                            const json& fieldTextures) {
+                            const json& fieldTextures, const json& cloudTextures, const json& cardTextures) {
     using E = castlemist::model::Extractor::MapEnvEffect;
     if (!sky.present) return nullptr;
     const int p = presetIndex >= 0 ? presetIndex : 0;
@@ -472,6 +472,16 @@ json world_environment_json(const castlemist::model::Extractor::MapSky& sky, int
     env["hazeEffectPreset"] = daySlot;
     const auto* h = slot_or_first(sky.haze, daySlot);
     env["haze"] = h ? haze_json(*h) : json(nullptr);
+
+    // Wind: the day slot's raw bytes (the Unity vegetation wind reads them; how the client
+    // makes its Wind / WindGust uniforms from them is not traced).
+    json wind = nullptr;
+    if (const auto* w = slot_or_first(sky.wind, daySlot)) {
+        wind = {{"azimuth", w->azimuth}, {"elevation", w->elevation}, {"noise", w->noise}, {"speed", w->speed},
+                {"gust", w->gust}, {"gustFreq", w->gustFreq}};
+        wind["gustSpeed"] = w->hasGustSpeed ? json(w->gustSpeed) : json(nullptr);
+    }
+    env["wind"] = wind;
 
     json effect = nullptr;
     if (const E* e = slot_or_first(sky.effect, daySlot)) {
@@ -552,6 +562,56 @@ json world_environment_json(const castlemist::model::Extractor::MapSky& sky, int
     for (const auto& c : sky.particleFieldCutouts)
         cutouts.push_back({{"name", c.name}, {"x", vec(c.x, 4)}, {"y", vec(c.y, 4)}, {"z", vec(c.z, 4)}});
     env["particleFieldCutouts"] = cutouts;
+
+    // Cloud layers (dataGlobal; docs/research/gw2-sky.md §10): raw values, every attribute set
+    // (0 day, 1 night, 2 the camera.z > level set), the plane factor m = 0.5925 + 0.4075 extent
+    // (§10.2), fadeEnd / fadeWidth from the last set (the client's import keeps those, §10.1),
+    // the sky distance F0 the plane size scales with (§7.1); the texture as @p cloudTextures wrote it.
+    json clouds = json::array();
+    for (const auto& L : sky.clouds) {
+        const std::string key = std::to_string(L.texture);
+        const bool tex = L.texture && cloudTextures.is_object() && cloudTextures.contains(key);
+        json attrs = json::array();
+        for (const auto& A : L.attributes)
+            attrs.push_back({{"brightness", A.brightness}, {"density", A.density}, {"haze", A.haze},
+                             {"lightIntensity", A.lightIntensity}, {"velocity", vec(A.velocity, 2)},
+                             {"fadeEnd", A.fadeEnd}, {"fadeWidth", A.fadeWidth}});
+        const float fadeEnd = L.attributes.empty() ? 0.0f : L.attributes.back().fadeEnd;
+        const float fadeWidth = L.attributes.empty() ? 0.0f : L.attributes.back().fadeWidth;
+        clouds.push_back({{"name", L.name}, {"altitude", L.altitude}, {"cutOut", L.cutOut}, {"depth", L.depth},
+                          {"extent", L.extent}, {"scale", L.scale}, {"m", 0.5925f + 0.4075f * L.extent},
+                          {"fadeEnd", fadeEnd}, {"fadeWidth", fadeWidth}, {"attributes", attrs},
+                          {"texFileId", L.texture ? json(L.texture) : json(nullptr)},
+                          {"texture", tex ? cloudTextures[key] : json(nullptr)}});
+    }
+    env["skyDistance"] = sky.skyDistance;
+    env["skyLightIntensity"] = {sky.params.dayLightIntensity, sky.params.nightLightIntensity};   // sunClr.w factor (§10.3)
+    env["clouds"] = clouds;
+
+    // Sky cards (dataGlobal; gw2-sky.md §9): raw, day and night attribute sets (latitude as stored,
+    // 0..1 = horizon..zenith; azimuth radians; speed the spin, radians per second), flags and
+    // location as stored, the material's fileId (material cards have no texture); each texture as
+    // @p cardTextures wrote it. The sky params' haze terms the cards' haze reads (§9.4 skypara).
+    auto card_attr = [&](const castlemist::model::Extractor::MapSkyCardAttr& A) {
+        const std::string key = std::to_string(A.texture);
+        const bool tex = A.texture && cardTextures.is_object() && cardTextures.contains(key);
+        return json{{"texFileId", A.texture ? json(A.texture) : json(nullptr)},
+                    {"texture", tex ? cardTextures[key] : json(nullptr)},
+                    {"azimuth", A.azimuth}, {"latitude", A.latitude}, {"speed", A.speed},
+                    {"scale", vec(A.scale, 2)}, {"textureUV", vec(A.textureUV, 4)},
+                    {"brightness", A.brightness}, {"density", A.density}, {"hazeDensity", A.hazeDensity},
+                    {"minHaze", A.minHaze}, {"lightIntensity", A.lightIntensity}};
+    };
+    json cards = json::array();
+    for (const auto& k : sky.cards)
+        cards.push_back({{"name", k.name}, {"flags", k.flags}, {"location", vec(k.location, 3)},
+                         {"materialFileId", k.materialFile ? json(k.materialFile) : json(nullptr)},
+                         {"day", card_attr(k.day)}, {"night", card_attr(k.night)}});
+    env["skyCards"] = cards;
+    const auto& sp = sky.params;
+    env["skyHaze"] = {{"bottom", {sp.dayHazeBottom, sp.nightHazeBottom}},
+                      {"falloff", {sp.dayHazeFalloff, sp.nightHazeFalloff}},
+                      {"density", {sp.dayHazeDensity, sp.nightHazeDensity}}};
     return env;
 }
 
@@ -714,6 +774,7 @@ json world_manifest_json(const WorldManifestInput& in) {
              {"water", water},
              {"colliderParts", mc.colliderParts},
              {"colliderTriangles", mc.colliderTriangles},
+             {"propColliders", mc.propColliders},
              {"budget", {{"triangles", c.triangles}, {"textureMB", c.textureMB}, {"split", c.split},
                          {"overBudget", c.overBudget}}},
              {"instances", instances},
@@ -759,7 +820,7 @@ json world_manifest_json(const WorldManifestInput& in) {
     // environment (lights, haze, effect): the slot of light.presetIndex, else 0.
     man["environment"] = finite_or_null(
         world_environment_json(s.environment.sky, s.environment.light.presetIndex, in.environmentClut,
-                               in.particleFieldTextures), "environment",
+                               in.particleFieldTextures, in.cloudTextures, in.cardTextures), "environment",
         notes);
 
     // spawn: only map (three finite numbers) and unity = map_to_unity(map), always recomputed.

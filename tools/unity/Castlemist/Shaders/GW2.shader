@@ -14,6 +14,7 @@ Shader "Castlemist/GW2"
         [ToggleUI] _AlphaTest ("Alpha test", Float) = 0
         _Cutoff ("Alpha cutoff", Range(0, 1)) = 0.5
         [ToggleUI] _AlphaPremultiply ("Premultiply alpha", Float) = 0
+        [ToggleUI] _IgnoreBaseAlpha ("Alpha from the mask alone (the base colour's alpha ignored)", Float) = 0
 
         [Header(Detail mod)]
         [ToggleUI] _UseDetailMod ("Detail mod", Float) = 0
@@ -26,6 +27,7 @@ Shader "Castlemist/GW2"
         [Normal][NoScaleOffset] _BumpMap ("Normal map", 2D) = "bump" {}
         [Enum(UV0, 0, UV1, 1, UV2, 2, UV3, 3)] _BumpMapUV ("Normal UV", Float) = 0
         _BumpScale ("Normal strength", Float) = 1
+        [ToggleUI] _BumpMapRawRGB ("Normal map is GW2's raw RGB (x 2 - 1), not a Unity normal map", Float) = 0
 
         [Header(Packed map)]
         [ToggleUI] _UsePacked ("Packed map", Float) = 0
@@ -139,6 +141,35 @@ Shader "Castlemist/GW2"
         _FireColorH ("colorh (raw GW2 value)", Vector) = (1, 1, 1, 1)
         _FireDye ("Dye palette colour, raw GW2 value (1171331 dyedot)", Vector) = (1, 1, 1, 1)
 
+        [Header(Twirl GW2 55051)]
+        [ToggleUI] _UseTwirl ("Twirl (two-texture colour and alpha; unlit)", Float) = 0
+        [NoScaleOffset] _TwirlRamp ("ramp (RGB)", 2D) = "white" {}
+        [Enum(UV0, 0, UV1, 1, UV2, 2, UV3, 3)] _TwirlRampUV ("Ramp UV", Float) = 0
+        _TwirlTexMult ("texmult (x the ramp; animated by the clip)", Float) = 1
+        _TwirlColLow ("collow", Color) = (1, 1, 1, 1)
+        _TwirlColHi ("colhi", Color) = (0, 0, 0, 1)
+
+        [Header(Tar GW2 435467)]
+        [ToggleUI] _UseTar ("Tar (layered normals, perturbed diffuse, view ramp; lit)", Float) = 0
+        [NoScaleOffset] _TarAddNormal ("addnormal (RG, linear)", 2D) = "grey" {}
+        [Enum(UV0, 0, UV1, 1, UV2, 2, UV3, 3, UV4, 4)] _TarAddNormalUV ("Add-normal UV", Float) = 1
+        [NoScaleOffset] _TarRampNormal ("rampnormal (RG, linear)", 2D) = "grey" {}
+        [Enum(UV0, 0, UV1, 1, UV2, 2, UV3, 3, UV4, 4)] _TarRampNormalUV ("Ramp-normal UV", Float) = 3
+        [NoScaleOffset] _TarMask ("mask (G, linear)", 2D) = "black" {}
+        [Enum(UV0, 0, UV1, 1, UV2, 2, UV3, 3, UV4, 4)] _TarMaskUV ("Mask UV", Float) = 4
+        [NoScaleOffset] _TarRamp ("ramp (RGB; u = N.V, v = mask + voffset)", 2D) = "black" {}
+        _TarDifPtrb ("difptrb (diffuse perturb by the normal)", Float) = 0
+        _TarVOffset ("voffset (ramp v offset)", Float) = 0
+        _TarSpec ("speccp (rgb colour, w power)", Vector) = (0.5, 0.5, 0.5, 32)
+
+        [Header(GW2 vegetation wind VegPara Wind WindGust)]
+        [Enum(Off, 0, Grass 77876, 1, Tree 56795, 2)] _VegMode ("Vegetation wind", Float) = 0
+        _VegPara ("VegPara (grvegp: edge amp, branch amp, edge freq, branch freq)", Vector) = (0, 0, 0, 0)
+        _VegWind ("Wind (world xyz GW2 units, w speed; from the map wind bytes, UNPROVEN)", Vector) = (0, 0, 0, 0)
+        _VegWindGust ("WindGust (world xyz, w speed)", Vector) = (0, 0, 0, 0)
+        _VegUnityScale ("Unity units per GW2 unit", Float) = 0.0254
+        _VegNoiseAmount ("Grass jitter scale (1 = GW2's; the noise stands in for the engine texture)", Float) = 0.35
+
         [Header(Wave castlemist cloth wave)]
         [ToggleUI] _UseWave ("Wave", Float) = 0
         [Enum(GW2 cloth pins (vertex colour), 0, UV0 V, 1, UV0 V inverted, 2, Everywhere, 3)] _WaveMask ("Wave weight", Float) = 0
@@ -174,6 +205,7 @@ Shader "Castlemist/GW2"
         _UVAnim1 ("UV1", Vector) = (0, 0, 0, 0)
         _UVAnim2 ("UV2", Vector) = (0, 0, 0, 0)
         _UVAnim3 ("UV3", Vector) = (0, 0, 0, 0)
+        _UVAnim4 ("UV4", Vector) = (0, 0, 0, 0)
 
         [Header(Lighting)]
         [ToggleUI] _Unlit ("Unlit (GW2 effect shaders)", Float) = 0

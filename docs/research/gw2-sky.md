@@ -1118,6 +1118,25 @@ uniform register was not found (no direct reader of those offsets), so the
 last link rests on the order match: **derived, not fully proven**. No sky
 draw sets a fog value, which is why §11 found no writer there.
 
+`VSCalculateFog`'s HLSL source is plain text in Gw2-64.exe (file offset
+`0x2052093` in the 2026-10-22 build; read 2026-10-23). The falloff is base 2:
+
+```hlsl
+half dist = distance(worldPos, CameraPosition.xyz);
+half2 fogs = half2(dist, worldPos.z) * FogParam0.xz + FogParam0.yw;
+fogs = 1 - saturate(pow(2, -fogs));
+half4 fogColorDist = FogColorFar + FogColorNearMinusFar * (1-fogs.x);
+fogs.x = min(fogs.x, fogColorDist.a);
+fogs.y = min(fogs.y, FogColorHeight.a);
+fogs.y *= min(dist * FogDepthCue.x, 1.0);
+half4 distFogColor = half4(fogColorDist.rgb * fogs.x, fogs.x);
+half4 heightFogColor = half4(FogColorHeight.rgb * fogs.y, fogs.y);
+half4 fog = heightFogColor * (1 - distFogColor.a) + distFogColor;
+```
+
+With GrSetFog's FogParam0 that is `fogs.x = 1 − 2^−(dist − d0)/(d1 − d0)` and
+`fogs.y = 1 − 2^−(z − h0)/(h1 − h0)`, each 0 below its start.
+
 Labyrinth values: dataGlobal haze slots 0/1 are records shared with zone 3
 and zone 0 (`gw2dat_cli parse` prints a shared record once, so read them
 with the sign-extended pointers of A.4): farColor bytes `59 83 3B FF` →

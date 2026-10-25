@@ -78,6 +78,10 @@ struct Mesh {
     // in which case the caller falls back to a numeric identifier.
     std::string meshName;      // decoded from the token64, letters only (see detokenizeName64)
     std::string materialName;  // read directly, whatever the file stores
+    // ModelMeshDataV34+.visBone (token64, the tokenizeBoneName packing): the bone whose clip
+    // visibility keys (AnimClip::visTracks) show and hide this mesh, e.g. 84108's "good" /
+    // "demolish" sets (2026-10-25). 0 when absent.
+    uint64_t visBone = 0;
 };
 
 // GW2 bone-name -> token64 (reverse of engine sub_140E3B5E0, ModelBones.cpp).
@@ -154,6 +158,13 @@ struct MatConstant {
     uint32_t name = 0;      // token32 hash of the constant name
     float    value[4] = {0, 0, 0, 0};
 };
+// One `matConstLinks` entry (ModelMatConstLinkV*), as stored: the constant
+// `constantToken` (a MatConstant name) is linked to `linkToken`, which names what
+// drives it at runtime (map 506583's vortex links every constant it has).
+struct MatConstLink {
+    uint64_t linkToken = 0;
+    uint32_t constantToken = 0;
+};
 // One `texTransforms` entry of a MODL material (ModelMaterialTexTransformV*),
 // as stored; a field the version lacks stays 0 (V45-V62 have `random` where
 // V63+ have `flags`, and V45-V63 have no scrollFreq..rotate). Static per-UV-set
@@ -181,6 +192,7 @@ struct Material {
     uint32_t sortLayer = 0;     // transparent/sort hint
     std::vector<MatTexture> textures;
     std::vector<MatConstant> constants;
+    std::vector<MatConstLink> constLinks;        // matConstLinks[], stored order
     std::vector<MatTexTransform> texTransforms;  // texTransforms[], stored order
     // convenience: just the fileIds, file order
     std::vector<uint32_t> textureFileIds() const {
@@ -231,6 +243,15 @@ struct AnimClip {
     // visible at the start, each key toggles.
     struct VisTrack { uint64_t bone = 0; std::vector<float> keys; };
     std::vector<VisTrack> visTracks;
+    // ModelAnimationData.matConstAnim (ModelMatConstAnimV25), as stored: the
+    // material constant `constToken` of material `materialId` follows the granny
+    // vector track (trackGroupIndex, vectorTrackIndex) of this clip; initialValue
+    // is its value before the clip runs.
+    struct MatConstAnim {
+        uint32_t materialId = 0, constToken = 0, trackGroup = 0, vectorTrack = 0;
+        float initial[4] = {0, 0, 0, 0};
+    };
+    std::vector<MatConstAnim> matConstAnims;
 };
 
 // One entry of ModelFileAnimationBank.imports -- the geometry<->animation link.
@@ -1711,6 +1732,13 @@ public:
         uint32_t flags = 0;
         uint32_t clutFile = 0;                   // clutTexturePath fileId, 0 if null
     };
+    // Wind (PackMapEnvDataWind*, dataGlobal->wind[]), the raw bytes as stored (V29 has no
+    // gustSpeed: hasGustSpeed false). How the client turns them into the vegetation shaders'
+    // Wind / WindGust uniforms is not traced.
+    struct MapWind {
+        uint8_t azimuth = 0, elevation = 0, noise = 0, speed = 0, gust = 0, gustFreq = 0, gustSpeed = 0;
+        bool hasGustSpeed = false;
+    };
     // dataGlobal->particleFields[i] (PackMapEnvDataPField*): one tile of ambient particles the
     // shader wraps around the camera (docs/research/gw2-particle-fields.md). Pairs are {min, max}.
     struct MapParticleField {
@@ -1757,6 +1785,8 @@ public:
         std::vector<MapHaze> haze;
         // dataGlobal->effect[] (same slots as haze, as stored).
         std::vector<MapEnvEffect> effect;
+        // dataGlobal->wind[] (as stored; which slot the client uses is not traced).
+        std::vector<MapWind> wind;
         // dataGlobal->particleFields[] and particleFieldCutouts[].
         std::vector<MapParticleField> particleFields;
         std::vector<MapParticleFieldCutout> particleFieldCutouts;
@@ -1992,6 +2022,32 @@ public:
             }
         };
         try { readHaze(gt, g, out.haze); } catch (const std::exception&) { out.haze.clear(); }
+        // Wind: a ptr_array_ptr of PackMapEnvDataWind*, byte fields.
+        try {
+            size_t o; json fj;
+            const std::string wt = fieldOffset(gt, "wind", o, fj) ? subType(fj, "element") : std::string();
+            uint32_t n = 0;
+            const size_t base = wt.empty() ? 0 : arrayAt(g + o, n);
+            for (uint32_t i = 0; base && n <= 16 && i < n; ++i) {
+                const size_t e = follow(base + (size_t)i * ptr_);
+                if (!e) continue;
+                MapWind w;
+                auto byte = [&](const char* name, uint8_t& v) {
+                    size_t a; json cf;
+                    if (!fOff(wt, name, e, a, cf)) return false;
+                    v = rd8(a);
+                    return true;
+                };
+                byte("azimuth", w.azimuth);
+                byte("elevation", w.elevation);
+                byte("noise", w.noise);
+                byte("speed", w.speed);
+                byte("gust", w.gust);
+                byte("gustFreq", w.gustFreq);
+                w.hasGustSpeed = byte("gustSpeed", w.gustSpeed);
+                out.wind.push_back(w);
+            }
+        } catch (const std::exception&) { out.wind.clear(); }
         // Effect: a ptr_array_ptr of PackMapEnvDataEffect*, like haze.
         try {
             size_t o; json fj;
@@ -3983,6 +4039,7 @@ private:
         if (fieldOffset(meshType, "materialIndex", off, fj)) mesh.materialIndex = rd32(s + off);
         if (fieldOffset(meshType, "flags", off, fj)) mesh.flags = rd32(s + off);
         if (fieldOffset(meshType, "meshName", off, fj)) mesh.meshName = detokenizeName64(rd64(s + off));
+        if (fieldOffset(meshType, "visBone", off, fj)) mesh.visBone = rd64(s + off);
         if (fieldOffset(meshType, "materialName", off, fj)) {
             size_t strAt = follow(s + off);
             if (strAt) mesh.materialName = readCString(strAt);
@@ -4289,6 +4346,22 @@ private:
                     if (fieldOffset(cType, "name", so, sfj)) mc.name = rd32(cElem + so);
                     if (fieldOffset(cType, "value", so, sfj)) for (int k = 0; k < 4; ++k) mc.value[k] = rdf(cElem + so + 4 * k);
                     mat.constants.push_back(mc);
+                }
+            }
+            // matConstLinks[] -- token64 + token32 per entry; token64 is 8 bytes on
+            // any pointer width (rd64, as `token` above).
+            if (fieldOffset(matType, "matConstLinks", off, fj)) {
+                uint32_t lcount = 0;
+                size_t lbase = arrayAt(matPtr + off, lcount);
+                std::string lType = fj["element"].value("struct", std::string());
+                int lSize = typeSize(lType);
+                for (uint32_t l = 0; lbase && lSize > 0 && l < lcount; ++l) {
+                    size_t lElem = lbase + (size_t)l * lSize;
+                    MatConstLink ml;
+                    size_t so; json sfj;
+                    if (fieldOffset(lType, "linkToken", so, sfj)) ml.linkToken = rd64(lElem + so);
+                    if (fieldOffset(lType, "constantToken", so, sfj)) ml.constantToken = rd32(lElem + so);
+                    mat.constLinks.push_back(ml);
                 }
             }
             // texTransforms[] -- static per-UV-set scroll/flipbook, read by field
@@ -4815,6 +4888,22 @@ private:
                             for (uint32_t q = 0; kb && q < kn && q < 256 && kb + 4u * q + 4 <= n_; ++q) t.keys.push_back(rdf(kb + 4u * q));
                         }
                         c.visTracks.push_back(std::move(t));
+                    }
+                }
+                if (fieldOffset(clipType, "matConstAnim", o, f)) {
+                    const std::string mt = f.contains("element") ? f["element"].value("struct", std::string()) : std::string();
+                    const int ms = mt.empty() ? 0 : typeSize(mt);
+                    uint32_t mn = 0; size_t mb = arrayAt(clip + o, mn);
+                    for (uint32_t k = 0; mb && ms > 0 && k < mn && k < 4096; ++k) {
+                        const size_t e = mb + (size_t)k * ms;
+                        AnimClip::MatConstAnim m;
+                        size_t fo; json ff;
+                        if (fieldOffset(mt, "materialId", fo, ff)) m.materialId = rd32(e + fo);
+                        if (fieldOffset(mt, "constToken", fo, ff)) m.constToken = rd32(e + fo);
+                        if (fieldOffset(mt, "trackGroupIndex", fo, ff)) m.trackGroup = rd32(e + fo);
+                        if (fieldOffset(mt, "vectorTrackIndex", fo, ff)) m.vectorTrack = rd32(e + fo);
+                        if (fieldOffset(mt, "initialValue", fo, ff)) for (int q = 0; q < 4; ++q) m.initial[q] = rdf(e + fo + 4 * q);
+                        c.matConstAnims.push_back(m);
                     }
                 }
                 // data (PackGrannyAnimationType*) -> raw granny blob + fixup table

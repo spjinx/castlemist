@@ -28,6 +28,51 @@
 namespace castlemist::exportgltf {
 
 namespace fs = std::filesystem;
+
+namespace {
+
+// A material constant's token32 name: GW2's base-23 Token (docs/research/gw2-uniform-hash.md).
+std::string constant_token_name(uint32_t token) {
+    static const char kAlpha[] = "abcdefghiklmnopvrstuwxy";
+    std::string s;
+    for (uint32_t v = token - 0x30000000u; v; v /= 23) s += kAlpha[v % 23];
+    return s;
+}
+
+// The constants clip `c` animates on material `mat` (materials.json "constAnims"): each one's
+// value sampled at kConstAnimFps over the clip, or its initial value alone when it has no track
+// (the clip holds it). Keyed by the clip's glTF animation name (skeleton_anim_export.cpp).
+constexpr float kConstAnimFps = 30.0f;
+nlohmann::json const_anims_json(const ModelPreview& model, const ModelMaterialCPU& mat) {
+    nlohmann::json out = nlohmann::json::array();
+    for (size_t c = 0; c < model.animClips.size() && c < model.animClipConsts.size(); ++c) {
+        const castlemist::granny::Anim& clip = model.animClips[c];
+        const std::string clipName = sanitize_name(clip.name.empty() ? ("Clip_" + std::to_string(c)) : clip.name);
+        for (const ModelMatConstAnimCPU& k : model.animClipConsts[c]) {
+            if (k.materialId != mat.materialId) continue;
+            const int dim = k.hasTrack && k.curve.dim > 0 ? std::min(k.curve.dim, 4) : 4;
+            nlohmann::json times = nlohmann::json::array(), values = nlohmann::json::array();
+            const int n = k.hasTrack ? std::max(2, static_cast<int>(std::ceil(clip.duration * kConstAnimFps)) + 1) : 1;
+            for (int i = 0; i < n; ++i) {
+                const float t = n > 1 ? clip.duration * static_cast<float>(i) / static_cast<float>(n - 1) : 0.0f;
+                float v[16] = {k.initial[0], k.initial[1], k.initial[2], k.initial[3]};
+                if (k.hasTrack) castlemist::granny::sample(k.curve, t, v, dim);
+                times.push_back(t);
+                values.push_back({v[0], v[1], v[2], v[3]});
+            }
+            out.push_back({{"clip", clipName},
+                           {"duration", clip.duration},
+                           {"constant", constant_token_name(k.constToken)},
+                           {"initial", {k.initial[0], k.initial[1], k.initial[2], k.initial[3]}},
+                           {"animated", k.hasTrack},
+                           {"times", std::move(times)},
+                           {"values", std::move(values)}});
+        }
+    }
+    return out;
+}
+
+}  // namespace
 // Insertion order, so materials.json reads in the spec's field order.
 using json = nlohmann::ordered_json;
 
@@ -447,6 +492,8 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
             {"gw2", std::move(gw2)},
             {"gw2Vectors", std::move(gw2Vectors)},
             {"texTransforms", std::move(texTransforms)},
+            // GW2 animates some constants per clip (ModelAnimationData.matConstAnim).
+            {"constAnims", const_anims_json(model, mat)},
             {"cloth", cloth_json(model, i)},
             {"warnings", warnings},
         };

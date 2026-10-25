@@ -1,7 +1,7 @@
-// castlemist: the material inspectors of Castlemist/GW2 Particle Field and Castlemist/GW2 Haze
+// castlemist: the material inspectors of Castlemist/GW2 Particle Field, GW2 Haze, GW2 Cloud and GW2 Sky Card
 // (tools/unity/Castlemist/Shaders; the shaders name them with CustomEditor), on GW2GUIBase's
 // sections. The values are GW2's own (PackMapEnvDataPField, PackMapEnvDataHaze) as the importer
-// writes them; each section says what the field means in the client.
+// writes them (PackMapEnvDataLayer for the clouds); each section says what the field means in the client.
 
 using UnityEditor;
 using UnityEngine;
@@ -128,6 +128,93 @@ namespace Castlemist
             {
                 Prop("_ApplySkybox", "Don't fog the skybox");
                 Prop("_CullMode", "Cull");
+                editor.RenderQueueField();
+                EndSection();
+            }
+        }
+    }
+
+    public class GW2CloudGUI : GW2GUIBase
+    {
+        public override void OnGUI(MaterialEditor materialEditor, MaterialProperty[] properties)
+        {
+            editor = materialEditor;
+            props = properties;
+
+            EditorGUILayout.LabelField("castlemist GW2 Cloud", EditorStyles.boldLabel);
+            Note("One of a map's cloud layers (environment.clouds): a flat plane at the layer's altitude that follows the " +
+                 "camera, so it draws from above and below alike and stops short of the horizon, as in the game. " +
+                 "GW2Clouds.cs builds it and the importer sets these from the manifest (docs/research/gw2-sky.md §10).");
+
+            if (Section("Layer (PackMapEnvDataLayer)"))
+            {
+                Tex("_MainTex", "texture", "Sampled raw (sRGB off); alpha is the cloud cover and the parallax height");
+                Prop("_Altitude", "altitude (GW2 units)", "The plane sits at map z = -altitude");
+                Prop("_HeightOffset", "Height offset (Unity units)", "castlemist's: raises the plane above GW2's altitude; kept on a rebuild");
+                Prop("_Plane", "skyDistance F, m, scale, depth", "Half-size F m (m = 0.5925 + 0.4075 extent); the texture tiles every 2F / scale; depth = parallax");
+                Prop("_CutOut", "cutOut (GW2 units)", "Soft edge where the scene crosses the plane");
+                Prop("_Fade", "fadeEnd, fadeWidth (GW2 units)", "Fades the layer out as the camera reaches its height");
+                EndSection();
+            }
+            if (Section("Attributes (set 0, day)"))
+            {
+                Prop("_Attr", "brightness, density, haze, light", "light = lightIntensity x the sky's LightIntensity (sunClr.w)");
+                Prop("_Velocity", "velocity (GW2 units/s)", "Scroll; the texture is anchored to the world");
+                EndSection();
+            }
+            if (Section("Sun and fog"))
+            {
+                Prop("_SunDir", "sun direction (map axes)", "The GW2 sun's travel direction (lights[0])");
+                Prop("_SunColor", "sun colour x intensity");
+                Prop("_Ambient", "ambient (SH stand-in)", "GW2's shRed/Green/Blue are UNPROVEN; the importer uses the sun's light");
+                Prop("_SceneSH", "Use Unity's scene SH instead");
+                Prop("_FogFar", "haze farColor", "FogColorFar; the fog colour the layer fades to");
+                Prop("_FogDist", "distRange (d0, d1), nearColor.w", "Linear fog over view depth (VS 1645)");
+                Prop("_FogAmount", "Fog amount", "1 = GW2's");
+                EndSection();
+            }
+            if (Section("Advanced", false))
+            {
+                Prop("_UnityScale", "Unity units per GW2 unit");
+                Prop("_SoftFade", "Soft against the scene (needs a depth texture)");
+                editor.RenderQueueField();
+                EndSection();
+            }
+        }
+    }
+
+    public class GW2SkyCardGUI : GW2GUIBase
+    {
+        public override void OnGUI(MaterialEditor materialEditor, MaterialProperty[] properties)
+        {
+            editor = materialEditor;
+            props = properties;
+
+            EditorGUILayout.LabelField("castlemist GW2 Sky Card", EditorStyles.boldLabel);
+            Note("One of a map's sky cards (environment.skyCards): a quad at the sky distance around the camera, turning " +
+                 "about the zenith at its speed (the moon, cloud wisps, star fields). GW2SkyCards.cs builds it; the mesh " +
+                 "holds the quad's size and texture rectangle (docs/research/gw2-sky.md §9).");
+
+            if (Section("Card (PackMapEnvDataSkyCard, day)"))
+            {
+                Tex("_MainTex", "texture", "Sampled raw (sRGB off), clamped");
+                Prop("_Card", "azimuth, latitude (rad), speed (rad/s)", "az = azimuth + speed x time; latitude 0 = horizon, pi/2 = zenith");
+                Prop("_Attr", "brightness, density, minHaze, light", "light = lightIntensity x the sky's LightIntensity (sunClr.w)");
+                Prop("_Haze", "sky hazeBottom, hazeFalloff, hazeDensity", "Fades the card toward the haze colour near the horizon");
+                EndSection();
+            }
+            if (Section("Sun and fog"))
+            {
+                Prop("_SunDir", "sun direction (map axes)", "The GW2 sun's travel direction (lights[0])");
+                Prop("_SunColor", "sun colour x intensity");
+                Prop("_Ambient", "ambient (SH stand-in)", "GW2's shRed/Green/Blue are UNPROVEN; the importer uses the sun's light");
+                Prop("_SceneSH", "Use Unity's scene SH instead");
+                Prop("_FogFar", "haze farColor", "FogColorFar");
+                EndSection();
+            }
+            if (Section("Advanced", false))
+            {
+                Prop("_UnityScale", "Unity units per GW2 unit");
                 editor.RenderQueueField();
                 EndSection();
             }

@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
@@ -224,6 +225,7 @@ void export_one_model(const cw::WorldScene& scene, uint32_t mi, ModelSource& src
         vo.gltf.sharedImages = pools.dat;                 // dat textures: <out>/textures/<fileId>.png (W8)
         vo.gltf.sharedImageUriPrefix = "../../textures/"; // from models/<fileId>/<fileId>.glb
         vo.gltf.uv1CopyToUv4 = true;                      // GW2 UV1 also in UV4: Unity's lightmapper owns UV1
+        vo.gltf.allUvSets = true;                         // a shader's UV set is its VS's choice (189632)
         vo.gltf.vertexColors = true;                      // GW2 vertex colours: effect parameters (2591650)
         vo.gltf.exportLods = true;                        // Task 15b: <node>_LOD1 / _LOD2 (world_lods.h)
         // Task 15d: generated images and Poiyomi maps once per content in textures/gen/,
@@ -314,10 +316,28 @@ std::vector<uint8_t> foliage_bytes(const std::vector<FoliageRecord>& recs) {
 
 void export_one_cell(const cw::WorldScene& s, const cw::Cell& c, const cw::TextureLookup& lookup,
                      const std::unordered_map<int64_t, size_t>& chunkAt, const fs::path& dir,
-                     const WorldFolderOptions& opts, const FoliageCtx& fol, Fatal& fatal, CellOut& out) {
+                     const WorldFolderOptions& opts, const FoliageCtx& fol, const std::vector<char>& ownCollider,
+                     Fatal& fatal, CellOut& out) {
     const CellMesh terrain = build_cell_terrain(s.terrain, c, &out.warnings);
     const CellMesh water = build_cell_water(s, c, opts.waterTexelsPerChunk);
-    const std::vector<CellMesh> colliders = opts.collision ? build_cell_colliders(s, c) : std::vector<CellMesh>{};
+    // 2026-10-25: a prop whose model can be demolished (@p ownCollider, by scene.models index)
+    // gets its own collision (PropCollider_<prop>), so the Unity importer can switch it off.
+    std::vector<CellMesh> colliders;
+    std::vector<std::pair<uint32_t, CellMesh>> propColliders;
+    if (opts.collision) {
+        std::vector<uint32_t> own;
+        for (uint32_t p : c.props)
+            if (p < s.props.size() && s.props[p].model < ownCollider.size() && ownCollider[s.props[p].model]) own.push_back(p);
+        const CellCollisionSplit split = split_cell_collision(s, c, own);
+        colliders = build_collider_parts(s, c, split.shared);
+        for (const auto& [prop, instances] : split.props) {
+            std::vector<CellMesh> parts = build_collider_parts(s, c, instances, SIZE_MAX);
+            if (!parts.empty()) {
+                propColliders.emplace_back(prop, std::move(parts.front()));
+                out.mc.propColliders.push_back(prop);
+            }
+        }
+    }
     out.records = cell_foliage_kept(s, c, fol, out);
     if (terrain.vertices() == 0 && water.vertices() == 0 && colliders.empty() && c.props.empty() && out.records.empty())
         return;
@@ -379,7 +399,7 @@ void export_one_cell(const cw::WorldScene& s, const cw::Cell& c, const cw::Textu
     out.mc.colliderParts = colliders.size();
     std::string err;
     if (!write_cell_gltf(utf8(cellsDir / (c.id + ".glb")), c, terrain, water.vertices() ? &water : nullptr, colliders,
-                         img, &err)) {
+                         img, &err, &propColliders)) {
         fatal.set("cannot write " + utf8(cellsDir / (c.id + ".glb")) + ": " + err);
         return;
     }
@@ -675,9 +695,17 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
             return rep;
         }
     }
+    // Models with a "Demolish" clip (any case): their props get their own collision.
+    std::vector<char> ownCollider(scene.models.size(), 0);
+    for (const ModelOut& o : mouts)
+        for (const std::string& clip : o.mm.clips) {
+            std::string low = clip;
+            std::transform(low.begin(), low.end(), low.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
+            if (low == "demolish" && o.mm.index < ownCollider.size()) ownCollider[o.mm.index] = 1;
+        }
     std::vector<CellOut> couts(plan.cells.size());
     run_pool(plan.cells.size(), threads, fatal, [&](size_t k) {
-        export_one_cell(scene, plan.cells[k], lookup, chunkAt, dir, opts, fol, fatal, couts[k]);
+        export_one_cell(scene, plan.cells[k], lookup, chunkAt, dir, opts, fol, ownCollider, fatal, couts[k]);
     });
     lap("cells");
     if (fatal.stopped()) { rep.error = fatal.error; return rep; }
@@ -761,7 +789,15 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
     } else {
         sky::SkyExportOptions so;
         so.approximate = opts.skyApproximate;
-        const sky::SkyExportReport sr = sky::write_skybox(*sky, utf8(dir), "sky", so);
+        // 2026-10-25: the texture sky cards go to manifest.environment.skyCards, which the Unity
+        // importer draws turning (GW2SkyCards); the bake leaves them out so they do not show twice.
+        // Material cards (no Unity port) stay in the bake.
+        sky::SkyInputs baked = *sky;
+        auto& cards = baked.sky.cards;
+        cards.erase(std::remove_if(cards.begin(), cards.end(),
+                                   [](const castlemist::model::Extractor::MapSkyCard& k) { return k.materialFile == 0; }),
+                    cards.end());
+        const sky::SkyExportReport sr = sky::write_skybox(baked, utf8(dir), "sky", so);
         if (!sr.ok && sr.error.rfind("cannot ", 0) == 0) { rep.error = "sky: " + sr.error; return rep; }
         for (const std::string& w : sr.warnings) warnings.push_back("sky: " + w);
         if (sr.ok) skyJson = sky_block(dir);
@@ -862,6 +898,53 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
         fieldTextures[key] = "environment/" + name;
     }
 
+    // 7d. The cloud layers' textures (environment/cloud_<fileId>.png, rows as stored).
+    json cloudTextures = json::object();
+    for (const auto& L : scene.environment.sky.clouds) {
+        const std::string key = std::to_string(L.texture);
+        if (!L.texture || cloudTextures.contains(key)) continue;
+        const auto tex = src.texture(L.texture, 4096);
+        const int w = tex ? tex->width : 0, h = tex ? tex->height : 0;
+        if (!tex || tex->mips.empty() || w <= 0 || h <= 0 || tex->mips[0].size() < size_t(w) * h * 4) {
+            warnings.push_back("environment: cloud texture " + key + " did not decode; texture: null");
+            continue;
+        }
+        const std::string name = "cloud_" + key + ".png";
+        std::error_code ec;
+        make_dirs(dir / "environment", ec);
+        const std::vector<uint8_t> png = encode_png_pixels(w, h, 4, tex->mips[0]);
+        if (ec || png.empty() || !write_bytes(dir / "environment" / name, png)) {
+            rep.error = "cannot write " + utf8(dir / "environment" / name);
+            return rep;
+        }
+        cloudTextures[key] = "environment/" + name;
+    }
+
+    // 7e. The texture sky cards' day and night textures (environment/card_<fileId>.png, rows as stored).
+    json cardTextures = json::object();
+    for (const auto& k : scene.environment.sky.cards) {
+        if (k.materialFile) continue;
+        for (uint32_t id : {k.day.texture, k.night.texture}) {
+            const std::string key = std::to_string(id);
+            if (!id || cardTextures.contains(key)) continue;
+            const auto tex = src.texture(id, 4096);
+            const int w = tex ? tex->width : 0, h = tex ? tex->height : 0;
+            if (!tex || tex->mips.empty() || w <= 0 || h <= 0 || tex->mips[0].size() < size_t(w) * h * 4) {
+                warnings.push_back("environment: sky card texture " + key + " did not decode; texture: null");
+                continue;
+            }
+            const std::string name = "card_" + key + ".png";
+            std::error_code ec;
+            make_dirs(dir / "environment", ec);
+            const std::vector<uint8_t> png = encode_png_pixels(w, h, 4, tex->mips[0]);
+            if (ec || png.empty() || !write_bytes(dir / "environment" / name, png)) {
+                rep.error = "cannot write " + utf8(dir / "environment" / name);
+                return rep;
+            }
+            cardTextures[key] = "environment/" + name;
+        }
+    }
+
     // 8. The manifest, last (not once cancelled).
     if (fatal.stopped()) { rep.error = fatal.error; return rep; }
     size_t animated = 0, resolved = 0, failedDecode = 0;
@@ -873,10 +956,14 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
             const cw::PropInstance& p = scene.props[pi];
             const ModelOut* o = p.model < outOf.size() ? outOf[p.model] : nullptr;
             if (!o || !o->mm.ok) continue;
-            const int c = cw::resolve_prop_clip(o->clipTokens, p.animSequence);
-            if (c >= 0 && static_cast<size_t>(c) < o->mm.clips.size()) {
+            // The clip, or the suffixed sequence ("on04+on08": intro then loop, played in order).
+            std::string names;
+            for (int c : cw::resolve_prop_sequence(o->clipTokens, p.animSequence))
+                if (static_cast<size_t>(c) < o->mm.clips.size())
+                    names += (names.empty() ? "" : "+") + o->mm.clips[static_cast<size_t>(c)];
+            if (!names.empty()) {
                 ++resolved;
-                clipOf[pi] = o->mm.clips[static_cast<size_t>(c)];
+                clipOf[pi] = names;
             } else if (std::find(o->allTokens.begin(), o->allTokens.end(), p.animSequence) != o->allTokens.end()) {
                 ++failedDecode;   // the clip exists but did not decode (sub-project 3's split)
             }
@@ -893,6 +980,8 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
     in.spawn = spawn;
     in.environmentClut = clut;
     in.particleFieldTextures = fieldTextures;
+    in.cloudTextures = cloudTextures;
+    in.cardTextures = cardTextures;
     in.counts = {{"chunksUnbaked", unbaked}, {"animated", animated}, {"animatedResolved", resolved},
                  {"clipsFailedDecode", failedDecode},
                  {"foliage", {{"scatter", folScatter}, {"density", folDensity}, {"skipped", folSkipped},

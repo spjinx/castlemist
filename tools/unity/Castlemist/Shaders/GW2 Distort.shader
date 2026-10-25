@@ -10,6 +10,11 @@
 //   four-tap test; _DepthReject; needs the camera depth texture, otherwise nothing is rejected)
 //   colour = grab(screen uv + offset) x _Tint (592660, 27304, 49659, 63923: modxcol x 2)
 //            x vertex colour x 2 (_UseVertexColor, 709206)
+//            x _MainTex(uv).rgb x 2 (_TintTex: 752360, the Mad King portal's edge particles, ps 31 read
+//            2026-10-23; alpha the step of mask.G with the vertex alpha inside it, _StepVertexAlpha:
+//            smooth01(saturate(stepmin (mask.g + vc.a - 1) / (1 - stepmin))) x vc.r x the soft fade)
+//   particles: _ParticleRect maps UV0 by _MainTex_ST (the cloud's texCoordRect, as GW2's CPU-built
+//            particle vertices carry it) for every map
 //   alpha  = 1 (50159, 339341, 49659), or alphaMask(uv) with AlphaRef discard (47396, 63923 mask.G,
 //            57026 mask.R, 709206: x vertex alpha), or the GW2 step of mask.G (stepmin, stepcol)
 //            x ramp(|N.V|) x soft depth fade (592660, 27304)
@@ -49,6 +54,9 @@ Shader "Castlemist/GW2 Distort"
         [ToggleUI] _DepthReject ("Keep foreground out (depth test)", Float) = 1
         [HDR] _Tint ("Tint (modxcol x 2)", Color) = (1, 1, 1, 1)
         [ToggleUI] _UseVertexColor ("Colour x vertex colour x 2, alpha x vertex alpha", Float) = 0
+        [ToggleUI] _TintTex ("Colour x the diffuse (_MainTex) x 2 (752360)", Float) = 0
+        [ToggleUI] _StepVertexAlpha ("Step the mask with the vertex alpha, x vertex red (752360)", Float) = 0
+        [ToggleUI] _ParticleRect ("UV0 through _MainTex's tiling and offset (a particle's atlas rect)", Float) = 0
 
         [Header(Alpha)]
         [Enum(Opaque, 0, Alpha mask, 1, Stepped mask, 2)] _AlphaSource ("Alpha", Float) = 0
@@ -136,7 +144,8 @@ Shader "Castlemist/GW2 Distort"
             float _DistortUV, _DistortUV2, _UseMap2, _Distort, _DistortBias, _DepthReject, _ViewReflect, _MaskOffset;
             float _DistortIsNormal, _DistortTex2IsNormal;
             half4 _Tint;
-            float _UseVertexColor;
+            float _UseVertexColor, _TintTex, _StepVertexAlpha, _ParticleRect;
+            float4 _MainTex_ST;
             float _AlphaSource, _MaskUV, _MaskChannel, _Cutoff, _StepMin, _UseRamp, _SoftFade, _DepDist;
             float _UseLit, _MainUV, _UseMainTex, _LitFadeDist, _SunScale;
             half4 _LitDiffuse;
@@ -195,7 +204,8 @@ Shader "Castlemist/GW2 Distort"
                 UNITY_INITIALIZE_OUTPUT(v2f, o);
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
                 o.pos = UnityObjectToClipPos(v.vertex);
-                o.uv01 = float4(Animate(v.uv0, _UVAnim0), Animate(v.uv1, _UVAnim1));
+                float2 uv0 = _ParticleRect > 0.5 ? v.uv0 * _MainTex_ST.xy + _MainTex_ST.zw : v.uv0;
+                o.uv01 = float4(Animate(uv0, _UVAnim0), Animate(v.uv1, _UVAnim1));
                 o.uv23 = float4(Animate(v.uv2, _UVAnim2), Animate(v.uv3, _UVAnim3));
                 o.grabPos = ComputeGrabScreenPos(o.pos);
                 COMPUTE_EYEDEPTH(o.grabPos.z);
@@ -317,6 +327,8 @@ Shader "Castlemist/GW2 Distort"
                     col = Grab(suv, off, i.grabPos.z) * _Tint.rgb;
                     // 709206: x vertex colour x 2 (gamma 2x; unity_ColorSpaceDouble keeps it right in linear).
                     if (_UseVertexColor > 0.5) col *= i.color.rgb * unity_ColorSpaceDouble.rgb;
+                    // 752360: x the diffuse x 2.
+                    if (_TintTex > 0.5) col *= UNITY_SAMPLE_TEX2D_SAMPLER(_MainTex, _DistortTex, UVSet(i, _MainUV)).rgb * unity_ColorSpaceDouble.rgb;
                     if (lit) N = ToWorld(i, wn, nt);
                 }
 
@@ -326,10 +338,16 @@ Shader "Castlemist/GW2 Distort"
                     half4 m = UNITY_SAMPLE_TEX2D_SAMPLER(_MaskTex, _DistortTex, UVSet(i, _MaskUV));
                     float ch = _MaskChannel;
                     a = dot(m, half4(ch < 0.5, abs(ch - 1) < 0.5, abs(ch - 2) < 0.5, ch > 2.5));
-                    if (_AlphaSource > 1.5)
+                    if (_AlphaSource > 1.5 && _StepVertexAlpha > 0.5)
+                    {
+                        // 752360: the vertex alpha inside the step, x vertex red (GW2's gamma value).
+                        half vr = IsGammaSpace() ? i.color.r : LinearToGammaSpace(i.color.rgb).r;
+                        a = Smooth01(saturate(_StepMin * (a + i.color.a - 1.0) / max(1.0 - _StepMin, 1e-4))) * vr;
+                    }
+                    else if (_AlphaSource > 1.5)
                         a = Smooth01(saturate(_StepMin * (a + _StepCol.w - 1.0) / max(1.0 - _StepMin, 1e-4))) * _StepCol.x;
                 }
-                if (_UseVertexColor > 0.5) a *= i.color.a;
+                if (_UseVertexColor > 0.5 && _StepVertexAlpha < 0.5) a *= i.color.a;
                 if (_UseRamp > 0.5)
                 {
                     float ndv = saturate(abs(dot(normalize(i.worldNormal), v)));

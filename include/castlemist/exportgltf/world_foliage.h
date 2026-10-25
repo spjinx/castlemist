@@ -66,7 +66,8 @@ FoliageRecord decode_foliage_record(const uint8_t* in);
 ///        Colliders keeps the Collider-source instances. A layer index past
 ///        0xFFFE is written as 0xFFFF. Bit 4 is set when chunk_of_point clamps
 ///        the translation (world::point_in_chunk_grid false on a map with
-///        terrain). Instances whose unity_trs fails (scale 0, a mirror, shear,
+///        terrain), or when the instance's zone has collideData (zoneFlags
+///        bit 1: its z is that geometry's, not the terrain's). Instances whose unity_trs fails (scale 0, a mirror, shear,
 ///        a non-finite number) are skipped and counted in @p skipped.
 std::vector<FoliageRecord> cell_foliage_records(const castlemist::world::WorldScene& s, const castlemist::world::Cell& c,
                                                 FoliageExport mode, size_t& skipped);

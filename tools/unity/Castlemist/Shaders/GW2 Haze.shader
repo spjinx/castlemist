@@ -3,11 +3,11 @@
 // Based on Silent's SkyProbe Fog 1.1 (https://gitlab.com/s-ilent/skyprobe-fog, MIT licence:
 // Copyright (c) Silent; the depth reconstruction, the oblique-frustum correction by Dj Lukis.LT and
 // the probe colour are its). The fog maths are replaced by GW2's own: the engine's VSCalculateFog
-// (docs/research/gw2-sky.md A.2; read from the effect vertex shaders, 2026-10-22), per pixel at the
-// scene point behind the volume:
+// (docs/research/gw2-sky.md A.2; its HLSL source is text in Gw2-64.exe: fogs = 1 - saturate(pow(2,
+// -fogs)), base 2, 2026-10-23), per pixel at the scene point behind the volume:
 //   dist   = |p - camera| (GW2 units), z = map height (up = -Z: z = -y in the Unity frame)
-//   dFog   = 1 - min(exp(-(dist - d0) / (d1 - d0)), 1)              distRange (d0, d1)
-//   hFog   = 1 - min(exp(-(z - h0) / (h1 - h0)), 1)                 heightRange (h0, h1)
+//   dFog   = 1 - min(2^(-(dist - d0) / (d1 - d0)), 1)               distRange (d0, d1)
+//   hFog   = 1 - min(2^(-(z - h0) / (h1 - h0)), 1)                  heightRange (h0, h1)
 //   hAmt   = min(hFog, height.a) x min(dist x depthCue, 1)
 //   dCol   = far + (near - far) (1 - dFog), dAmt = min(dFog, far.a + (near.a - far.a)(1 - dFog))
 //   fog    = (height.rgb hAmt (1 - dAmt) + dCol dAmt,  hAmt (1 - dAmt) + dAmt)
@@ -115,16 +115,21 @@ Shader "Castlemist/GW2 Haze"
                 o.depthTextureUv = ComputeGrabScreenPos(o.pos);
                 o.rayFromCamera.xyz = worldPosition.xyz - _WorldSpaceCameraPos.xyz;
                 o.rayFromCamera.w = dot(o.pos, CalculateObliqueFrustumCorrection());
+                // The cube's own depth means nothing (ZTest Always): every vertex at mid-depth, so a
+                // far plane nearer than the cube's faces (VRChat's 1000 against a 2300-unit cube) does
+                // not clip the haze away and leave it in the corners of the view only. A vertex behind
+                // the camera (w < 0) stays outside the clip range as before.
+                o.pos.z = 0.5 * o.pos.w;
                 return o;
             }
 
             // GW2's VSCalculateFog (see the header), distances in GW2 units.
             half4 GW2Fog(float dist, float z)
             {
-                float dFog = 1.0 - min(exp(-(dist - _DistRange.x) / max(_DistRange.y - _DistRange.x, 1e-3)), 1.0);
+                float dFog = 1.0 - min(exp2(-(dist - _DistRange.x) / max(_DistRange.y - _DistRange.x, 1e-3)), 1.0);
                 float hSpan = _HeightRange.y - _HeightRange.x;
                 hSpan = abs(hSpan) < 1e-3 ? (hSpan < 0 ? -1e-3 : 1e-3) : hSpan;
-                float hFog = 1.0 - min(exp(-(z - _HeightRange.x) / hSpan), 1.0);
+                float hFog = 1.0 - min(exp2(-(z - _HeightRange.x) / hSpan), 1.0);
                 float hAmt = min(hFog, _HazeHeight.a) * min(dist * _DepthCue, 1.0);
                 half4 dCol = _HazeFar + (_HazeNear - _HazeFar) * (1.0 - dFog);
                 float dAmt = min(dFog, dCol.a);
@@ -145,7 +150,7 @@ Shader "Castlemist/GW2 Haze"
                     clip(-_ApplySkybox);   // the sky: GW2 hazes it in the sky draws, not here
                     sceneZ = 0;
                 }
-                float sceneDepth = CorrectedLinearEyeDepth(sceneZ, rayFromCamera.w * perspectiveDivide);
+                float sceneDepth = CorrectedLinearEyeDepth(sceneZ, rayFromCamera.w);   // already divided above
                 float3 worldPosition = rayFromCamera.xyz * sceneDepth + _WorldSpaceCameraPos.xyz;
 
                 float s = max(_UnityScale, 1e-6);

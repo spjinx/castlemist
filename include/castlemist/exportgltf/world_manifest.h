@@ -117,6 +117,7 @@ struct ManifestModel { uint32_t index = 0, fileId = 0; bool ok = false;
 ///        colliderTrees, triangles} (world-foliage spec "manifest.json additions").
 struct ManifestCell { const castlemist::world::Cell* cell = nullptr; std::string glb, albedo, water; int albedoW = 0, albedoH = 0;
                       size_t colliderParts = 0, colliderTriangles = 0;
+                      std::vector<uint32_t> propColliders;   ///< props with their own PropCollider_<prop> node
                       std::string foliageFile; size_t foliageRecords = 0, colliderTrees = 0; uint64_t foliageTriangles = 0; };
 
 /// @brief Everything world_manifest_json needs. `sky` and `spawn` are null or
@@ -149,6 +150,10 @@ struct WorldManifestInput {
     nlohmann::json environmentClut;
     /// The particle field textures written: {"<fileId>": path relative to the folder} or null.
     nlohmann::json particleFieldTextures;
+    /// The cloud layer textures written: {"<fileId>": path relative to the folder} or null.
+    nlohmann::json cloudTextures;
+    /// The texture sky cards' textures written: {"<fileId>": path relative to the folder} or null.
+    nlohmann::json cardTextures;
 };
 
 /// @brief The manifest's `environment` (null without an env chunk): slot
@@ -157,9 +162,14 @@ struct WorldManifestInput {
 ///        (each falling back to slot 0), and the dataLocalArray zones that have
 ///        haze and shapes. Raw GW2 values; colours R, G, B(, A) 0..1. @p clut is
 ///        WorldManifestInput::environmentClut. particleFields / particleFieldCutouts: dataGlobal's,
-///        raw, with each field's texture path from @p fieldTextures.
+///        raw, with each field's texture path from @p fieldTextures. clouds: dataGlobal's
+///        cloud layers (docs/research/gw2-sky.md §10), raw, every attribute set, with
+///        each layer's texture path from @p cloudTextures. skyCards: dataGlobal's sky cards
+///        (gw2-sky.md §9), raw, day and night, each texture's path from @p cardTextures.
 nlohmann::json world_environment_json(const castlemist::model::Extractor::MapSky& sky, int presetIndex,
-                                      const nlohmann::json& clut, const nlohmann::json& fieldTextures = nullptr);
+                                      const nlohmann::json& clut, const nlohmann::json& fieldTextures = nullptr,
+                                      const nlohmann::json& cloudTextures = nullptr,
+                                      const nlohmann::json& cardTextures = nullptr);
 
 /// @brief The manifest's `light` (spec D5, amended in Task 13): MapEnvLight::sunDir
 ///        as parsed from the env chunk is the direction the light travels (map

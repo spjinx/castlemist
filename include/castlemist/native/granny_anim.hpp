@@ -72,6 +72,7 @@ struct Curve {
     int   degree   = 0;
     int   dim      = 0;          // output components (3 pos / 4 ori / 9 scaleshear)
     bool  keyframed= false;      // transient: set by decodeCurve, cleared in parse()
+    bool  vector   = false;      // a vector track's values: 4 floats are not a quaternion
     std::vector<float> knots;    // key times
     std::vector<float> controls; // dim per key
 };
@@ -83,11 +84,25 @@ struct Track {
     Curve sca;  // scaleshear (row-major 3x3)
 };
 
+// A granny_vector_track: a named curve of `dim` floats (GW2 animates material
+// constants with them: ModelMatConstAnim names one by track group and index).
+struct VectorTrack {
+    std::string name;
+    uint32_t group = 0, index = 0;  // its track group and its index in that group's VectorTracks
+    uint32_t key = 0;               // TrackKey, as stored
+    Curve curve;                    // curve.dim = Dimension
+};
+
 struct Anim {
     bool valid = false;
     std::string name;
     float duration = 0, timeStep = 0, oversampling = 1;
     std::vector<Track> tracks;
+    std::vector<VectorTrack> vectorTracks;   // every group's, group by group
+    const VectorTrack* vectorTrack(uint32_t group, uint32_t index) const {
+        for (const auto& v : vectorTracks) if (v.group == group && v.index == index) return &v;
+        return nullptr;
+    }
 };
 
 // QuaternionCurveScaleOffsetTable (granny_quaternion_scaleoffset.cpp): 16 entries
@@ -510,6 +525,23 @@ inline Anim parse(const uint8_t* b, size_t n, int ptrSize = 4) {
     for (uint32_t g = 0; g < tgc && g < 64; ++g) {
         size_t tg = u32(b, n, tgs + p*g);       // TrackGroups[g] (p-byte pointer)
         if (!tg) continue;
+        // vector_track (stride 3p+8): Name@0, TrackKey@p, Dimension@p+4,
+        //   ValueCurve curve2{Type, Object}, so Object@2p+8.
+        uint32_t vtc = u32(b, n, tg + p);
+        size_t   vt  = u32(b, n, tg + p + 4);
+        for (uint32_t i = 0; vt && i < vtc && i < 4096; ++i) {
+            size_t t = vt + (size_t)i * (3*p + 8);
+            VectorTrack v;
+            v.name = cstr(b, n, u32(b, n, t));
+            v.group = g; v.index = i;
+            v.key = u32(b, n, t + p);
+            int dim = (int)u32(b, n, t + p + 4);
+            if (dim < 1 || dim > 16) continue;
+            decodeCurve(b, n, u32(b, n, t + 2*p + 8), dim, v.curve, (int)p);
+            materializeKeyframed(v.curve);
+            v.curve.vector = true;
+            a.vectorTracks.push_back(std::move(v));
+        }
         uint32_t ttc = u32(b, n, tg + 2*p + 4);
         size_t   tt  = u32(b, n, tg + 2*p + 8);
         if (!tt || !ttc) continue;
@@ -579,7 +611,8 @@ inline void sample(const Curve& c, float t, float* out, int expectDim) {
         ti[j] = c.knots[idx];
         for (int k = 0; k < wdim; ++k) pi[j*wdim + k] = c.controls[(size_t)idx*wdim + k];
     }
-    if (wdim == 4) ensureQuatContinuity(pi, W); // quaternion continuity over window
+    const bool quat = wdim == 4 && !c.vector;
+    if (quat) ensureQuatContinuity(pi, W); // quaternion continuity over window
 
     const float* tip = ti + d;
     const float* pip = pi + d*wdim;
@@ -591,7 +624,7 @@ inline void sample(const Curve& c, float t, float* out, int expectDim) {
         for (int e = 0; e <= d; ++e) acc += ci[e] * pip[(e - d)*wdim + k];
         res[k] = acc;
     }
-    if (wdim == 4) { // normalize quaternion
+    if (quat) { // normalize quaternion
         float len = std::sqrt(res[0]*res[0]+res[1]*res[1]+res[2]*res[2]+res[3]*res[3]);
         if (len > 1e-12f) { float inv = 1.0f/len; for (int k=0;k<4;++k) res[k]*=inv; }
     }

@@ -146,6 +146,14 @@ struct GltfExportOptions {
     ///        the castlemist shaders read GW2's UV1 from UV4 instead. False writes as before.
     bool uv1CopyToUv4 = false;
 
+    /// @brief World export only: every UV set a mesh's vertex format has (fvf bits
+    ///        0x100 << i / 0x10000 << i) is written, not only those its textures name.
+    ///        A texture's uvPSInputIndex is the pixel shader's input register, which its
+    ///        vertex shader may fill from another set: GW2 189632 (map 506592's ground
+    ///        cover) samples its grass and normal at register 0's xy = UV1 and its mask at
+    ///        zw = UV0, and every texture says 0. False writes as before.
+    bool allUvSets = false;
+
     /// @brief World export only: a mesh with a GW2 vertex colour writes it as COLOR_0
     ///        (as stored: GW2's effect shaders read it as parameters, see GVertex::col).
     ///        Off by default, since glTF viewers multiply the base colour by COLOR_0.

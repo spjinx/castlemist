@@ -302,6 +302,30 @@ CM_TEST(exportgltf, no_particle_sidecar_without_baked_effects) {
     CHECK(!fs::exists(dir / "plain_particles.json"));
 }
 
+// A model with no effects but a mesh that names a visibility bone still gets its sidecar: meshVis
+// (mesh node -> bone) and clips[].boneVis carry the keys that show and hide it (84108's "good" /
+// "demolish" sets, 2026-10-25).
+CM_TEST(exportgltf, particle_sidecar_mesh_visibility) {
+    ModelPreview model = make_skinned_quad();
+    model.meshes[0].meshName = "good";
+    model.meshes[0].visBone = castlemist::model::tokenizeBoneName("child");
+    model.animClipVis.push_back({{castlemist::model::tokenizeBoneName("child"), {0.0f}}});
+    fs::path dir = make_temp_dir("mesh_vis");
+    fs::path glbPath = dir / "vis.glb";
+
+    GltfExportResult result = export_model_gltf(model, glbPath.string());
+    CHECK(result.ok);
+    CHECK(!result.particlesJsonPath.empty());
+    if (result.particlesJsonPath.empty()) return;
+    std::ifstream in(result.particlesJsonPath);
+    json doc;
+    in >> doc;
+    CHECK(doc["meshVis"]["good_0"] == "child");
+    CHECK_EQ(doc["clips"].size(), size_t(1));
+    CHECK(doc["clips"][0]["boneVis"]["child"] == json::array({0.0}));
+    CHECK(doc["clips"][0]["vis"].empty());   // not an effect bone
+}
+
 CM_TEST(exportgltf, glb_header_and_json_are_well_formed) {
     ModelPreview model = make_static_quad();
     fs::path dir = make_temp_dir("header");

@@ -257,9 +257,11 @@ struct MeshExportInfo {
 ///        With @p uv1CopyToUv4 (GltfExportOptions::uv1CopyToUv4), a mesh with a UV1 gets
 ///        TEXCOORD_1..3 and a TEXCOORD_4 copy of TEXCOORD_1. With @p vertexColors
 ///        (GltfExportOptions::vertexColors), a mesh with a vertex colour writes COLOR_0.
+///        With @p allUvSets (GltfExportOptions::allUvSets), every UV set in the mesh's fvf.
 std::vector<MeshExportInfo> write_meshes(GltfWriter& w, const ModelPreview& model,
                                          const std::vector<int>& materialIndices, int lodLevels = 1,
-                                         bool uv1CopyToUv4 = false, bool vertexColors = false);
+                                         bool uv1CopyToUv4 = false, bool vertexColors = false,
+                                         bool allUvSets = false);
 
 // =================================================================== skeleton ==
 

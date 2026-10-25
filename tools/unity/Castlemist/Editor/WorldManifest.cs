@@ -471,9 +471,17 @@ namespace Castlemist
             public double[] BoundsUnity;   // [minX, minZ, maxX, maxZ], GW2 units, Unity frame
         }
 
+        /// environment.wind: dataGlobal->wind[] of the day slot, the raw bytes (gustSpeed null before V30).
+        public sealed class WindEntry
+        {
+            public int Azimuth, Elevation, Noise, Speed, Gust, GustFreq;
+            public int? GustSpeed;
+        }
+
         public sealed class EnvironmentEntry
         {
             public int Preset;
+            public WindEntry Wind;       // null
             public readonly List<EnvLight> Lights = new List<EnvLight>();
             public double ShadowInfluence;
             public EnvLight Backlight;   // null
@@ -504,6 +512,14 @@ namespace Castlemist
             JObj bl = e.OptObj("backlight");
             if (bl != null) env.Backlight = new EnvLight { Color = bl.Vec("color", 3), Intensity = bl.OptNum("intensity", 0) };
             env.Haze = ParseHaze(e.OptObj("haze"));
+            JObj w = e.OptObj("wind");
+            if (w != null)
+                env.Wind = new WindEntry
+                {
+                    Azimuth = (int)w.OptNum("azimuth", 0), Elevation = (int)w.OptNum("elevation", 0), Noise = (int)w.OptNum("noise", 0),
+                    Speed = (int)w.OptNum("speed", 0), Gust = (int)w.OptNum("gust", 0), GustFreq = (int)w.OptNum("gustFreq", 0),
+                    GustSpeed = w.IsNull("gustSpeed") ? (int?)null : (int)w.Num("gustSpeed"),
+                };
             JObj fx = e.OptObj("effect");
             if (fx != null)
             {
@@ -844,6 +860,8 @@ namespace Castlemist
             public readonly Dictionary<string, double[]> Gw2Vectors = new Dictionary<string, double[]>(StringComparer.Ordinal);
             /// texTransforms: the MODL per-UV-set animation, as stored (empty in an older export).
             public readonly List<TexTransform> TexTransforms = new List<TexTransform>();
+            /// constAnims: the constants a clip animates (ModelAnimationData.matConstAnim), per clip.
+            public readonly List<ConstAnim> ConstAnims = new List<ConstAnim>();
 
             public Extra ExtraOf(string role) { return Extras.Find(x => x.Role == role); }
             /// The DDS cubemap layers (maps.cubemaps; the water 3121604's projection / reflect).
@@ -872,6 +890,18 @@ namespace Castlemist
         {
             public double R, G, B, A;
             public double Channel(int c) { return c == 0 ? R : c == 1 ? G : c == 2 ? B : A; }
+        }
+
+        /// One materials.json constAnims entry: constant `Constant` over clip `Clip` (its glTF
+        /// animation name), sampled at `Times` (seconds) as float4 `Values`; one key when the clip
+        /// holds it (`Animated` false).
+        public sealed class ConstAnim
+        {
+            public string Clip, Constant;
+            public double Duration;
+            public bool Animated;
+            public double[] Times = new double[0];
+            public double[][] Values = new double[0][];
         }
 
         /// One MODL texTransform: what TexTransform<Uv> animates in the game's vertex shader.
@@ -991,6 +1021,28 @@ namespace Castlemist
                         Scroll = t.OptVec("scroll", 2) ?? new double[] { 0, 0 },
                         Rotate = t.OptNum("rotate", 0),
                     });
+                foreach (JObj a in m.Objs("constAnims"))
+                {
+                    var ca = new ConstAnim
+                    {
+                        Clip = a.Str("clip"),
+                        Constant = a.Str("constant"),
+                        Duration = a.OptNum("duration", 0),
+                        Animated = a.Bool("animated", false),
+                    };
+                    List<object> times = a.OptArr("times"), values = a.OptArr("values");
+                    int n = Math.Min(times.Count, values.Count);
+                    ca.Times = new double[n];
+                    ca.Values = new double[n][];
+                    for (int i = 0; i < n; ++i)
+                    {
+                        ca.Times[i] = times[i] is double d ? d : 0;
+                        var v = values[i] as List<object>;
+                        ca.Values[i] = new double[4];
+                        for (int c = 0; v != null && c < 4 && c < v.Count; ++c) ca.Values[i][c] = v[c] is double x ? x : 0;
+                    }
+                    e.ConstAnims.Add(ca);
+                }
                 e.SpecularTint = m.OptVec("specularTint", 3);
                 e.ReflectionTint = m.OptVec("reflectionTint", 3);
                 e.HasRim = !m.IsNull("rim");

@@ -67,12 +67,25 @@ void append_decoded_clips(const std::vector<castlemist::model::AnimClip>& clips,
         out.animationTokens.push_back(c.token);
         castlemist::granny::Anim clip = decode(c);
         if (!clip.valid) continue;
+        std::vector<ModelMatConstAnimCPU> consts;   // before `clip` moves: its vector tracks
+        for (const auto& m : c.matConstAnims) {
+            ModelMatConstAnimCPU k;
+            k.materialId = m.materialId;
+            k.constToken = m.constToken;
+            for (int q = 0; q < 4; ++q) k.initial[q] = m.initial[q];
+            if (const castlemist::granny::VectorTrack* vt = clip.vectorTrack(m.trackGroup, m.vectorTrack)) {
+                k.hasTrack = true;
+                k.curve = vt->curve;
+            }
+            consts.push_back(std::move(k));
+        }
         out.animClips.push_back(std::move(clip));
         out.animClipBank.push_back(c.bankFileId);
         out.animClipTokens.push_back(c.token);
         std::vector<std::pair<uint64_t, std::vector<float>>> vis;
         for (const auto& t : c.visTracks) vis.emplace_back(t.bone, t.keys);
         out.animClipVis.push_back(std::move(vis));
+        out.animClipConsts.push_back(std::move(consts));
     }
 }
 
@@ -357,6 +370,7 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
         ModelMeshCPU mesh;
         mesh.materialIndex = src.materialIndex;
         mesh.meshName = src.meshName;
+        mesh.visBone = src.visBone;
         mesh.meshFlags = src.flags;
         mesh.fvf = src.fvf;
         mesh.vertexCount = src.vertexCount;

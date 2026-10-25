@@ -187,11 +187,6 @@ namespace Castlemist.SkillFx
                 EnsureFolder(ptcFolder);
                 if (sidecar != null)
                     sum.particleSystems += ParticleEffects.AddTo(inst, sidecar, mf, folder, ctx, ptcFolder, sum.warnings);
-                // Castlemist/GW2 Particle reads the renderer's custom vertex streams (frame blend,
-                // per-particle randoms); ParticleEffects does not set them yet.
-                foreach (ParticleSystemRenderer r in inst.GetComponentsInChildren<ParticleSystemRenderer>(true))
-                    if (r.sharedMaterial != null && r.sharedMaterial.shader == ctx.ParticleShader)
-                        CastlemistMaterials.ApplyParticleStreams(r);
                 string path = outRoot + "/Effects/" + id + ".prefab";
                 bool ok;
                 GameObject saved = PrefabUtility.SaveAsPrefabAsset(inst, path, out ok);

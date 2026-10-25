@@ -1,0 +1,32 @@
+{
+    "name": "Castlemist.Runtime",
+    "rootNamespace": "Castlemist",
+    "references": [
+        "VRC.SDK3",
+        "VRC.SDKBase",
+        "VRC.Udon",
+        "UdonSharp.Runtime",
+        "UdonSharp.Lib",
+        "com.sylan.gmmenu"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "com.vrchat.worlds",
+            "expression": "3.0.0",
+            "define": "CASTLEMIST_VRC"
+        },
+        {
+            "name": "com.sylan.gmmenu",
+            "expression": "1.0.0",
+            "define": "CASTLEMIST_GMMENU"
+        }
+    ],
+    "noEngineReferences": false
+}

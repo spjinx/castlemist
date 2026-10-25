@@ -92,7 +92,7 @@ std::vector<Entry> build_table() {
 
     // prop-decal (note section 8.4): albedo = lerp(diffuse, decal, saturate(2*decal.a)
     // [x mask]), shine lerped toward saturate(2*decal.a-1); no texture discard. Hand-read
-    // ids only (signature-only 76643, 81309, 62170, 69623 are left out).
+    // ids only (signature-only 76643, 81309, 62170 are left out; 69623 read, below).
     {
         ShaderProfile p = make("prop-decal", AlphaUse::Shine, false);
         p.decalMode = DecalMode::DecalOverDiffuse;
@@ -109,6 +109,14 @@ std::vector<Entry> build_table() {
         m.decalMaskRole = "blend";
         m.decalMaskChannel = Channel::G;
         t.push_back({{60530}, m});
+
+        // 69623 (map 506592's chains 71804 / 71749; ps 43 read 2026-10-23): the same, plus holes:
+        // discard where saturate(2 diffuse.a) - 0.5 < 0, the shine from saturate(2 diffuse.a - 1);
+        // mod x2 at uv1 (t3); no normal map read.
+        ShaderProfile h = p;
+        h.diffuseAlpha = AlphaUse::HolesAndShine;
+        h.clips = true;
+        t.push_back({{69623}, h});
 
         // 57806 also adds decal.rgb * saturate(2*decal.a-1) unlit.
         ShaderProfile g = p;

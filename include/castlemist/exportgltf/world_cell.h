@@ -65,18 +65,37 @@ CellMesh build_cell_water(const castlemist::world::WorldScene& s, const castlemi
 std::vector<CellMesh> build_cell_colliders(const castlemist::world::WorldScene& s, const castlemist::world::Cell& c,
                                            size_t maxVertices = 65535);
 
+/// @brief build_cell_colliders over the collision instances @p instances (scene.collision
+///        indices) instead of the cell's own list.
+std::vector<CellMesh> build_collider_parts(const castlemist::world::WorldScene& s, const castlemist::world::Cell& c,
+                                           const std::vector<uint32_t>& instances, size_t maxVertices = 65535);
+
+/// @brief A cell's collision instances split by owner. An instance of the "prop" group whose
+///        placement translation equals one of @p props' (within 0.01 map units) belongs to that
+///        prop: a havk prop placement shares its prop's transform (docs/research/gw2-world-frame.md
+///        §7). Every other instance stays shared. `props` lists only the props that own any,
+///        in @p props order.
+struct CellCollisionSplit {
+    std::vector<uint32_t> shared;
+    std::vector<std::pair<uint32_t, std::vector<uint32_t>>> props;   ///< (scene.props index, its instances)
+};
+CellCollisionSplit split_cell_collision(const castlemist::world::WorldScene& s, const castlemist::world::Cell& c,
+                                        const std::vector<uint32_t>& props);
+
 /// @brief Image URIs, relative to the .glb. An empty albedoUri leaves Terrain untextured;
 ///        an empty waterUri (no env preset, so no baked water texture) makes Water the
 ///        flat colour world::kFlatWaterTint / kFlatWaterAlpha with extras.note kFlatWaterNote.
 struct CellImages { std::string albedoUri, waterUri; };
 
 /// @brief Root "GW2_MapToGltf" (map_to_gltf_root(1)) -> "Cell" (translation = origin)
-///        -> "Terrain", "Water", "Collider_k" (each only when its mesh has vertices).
+///        -> "Terrain", "Water", "Collider_k", "PropCollider_<prop>" (each only when its mesh
+///        has vertices; @p propColliders: a prop's own collision, split_cell_collision).
 ///        Materials "Terrain" (baseColor albedo), "Water" (baseColor water or the flat colour, BLEND),
 ///        "Collision" (no texture, double-sided: hull winding is UNPROVEN). Indices
 ///        are 16-bit when a mesh has at most 65535 vertices. Parent directories are created.
 bool write_cell_gltf(const std::string& glbPathUtf8, const castlemist::world::Cell& c, const CellMesh& terrain,
                      const CellMesh* water, const std::vector<CellMesh>& colliders, const CellImages& images,
-                     std::string* error = nullptr);
+                     std::string* error = nullptr,
+                     const std::vector<std::pair<uint32_t, CellMesh>>* propColliders = nullptr);
 
 } // namespace castlemist::exportgltf

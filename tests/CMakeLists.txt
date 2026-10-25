@@ -213,6 +213,17 @@ if (_cm_blender_ok)
         LABELS blender
         RESOURCE_LOCK skinned_probe)
 
+    # A model with no clips, skinned to a scaled joint (map 506592's rocks): its
+    # .fbx mesh is at glTF size without the rig, as Unity's None import shows it.
+    add_test(NAME blender_static_skin_fbx
+             COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${PROJECT_SOURCE_DIR}/tests/blender/check_static_skin.py"
+                     -- "${_cm_world_py}" "${CMAKE_BINARY_DIR}/static_skin")
+    set_tests_properties(blender_static_skin_fbx PROPERTIES
+        PASS_REGULAR_EXPRESSION "STATIC_SKIN .* OK"
+        FAIL_REGULAR_EXPRESSION "STATIC_SKIN .* FAIL|Traceback"
+        TIMEOUT 300
+        LABELS blender)
+
     # The importer on the full synthetic export (spec "Testing", Blender).
     add_test(NAME blender_world_import
              COMMAND "${CASTLEMIST_BLENDER}" ${_cm_blender} "${_cm_world_py}"

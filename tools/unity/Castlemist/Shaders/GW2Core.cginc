@@ -24,13 +24,16 @@
 //              _StepMin (w + _InteriorStepOffset - 1) / (1 - _StepMin))), GW2 stepmin / decfade);
 //              _InteriorMode 1 mixes the other way, lerp(colour, layer, w x saturate(2 layer.a))
 //              (GW2 prop-burn 3122105's decal); _InteriorMode 2 is the export's decal map (A =
-//              coverage): lerp(colour, layer, layer.a x w) (prop-decal, subsurface-decal)
+//              coverage): lerp(colour, layer, layer.a x w) (prop-decal, subsurface-decal); _InteriorMode 3
+//              is GW2 69887's own (prop-decal, ps 52 read 2026-10-23: map 506592's island rocks): w =
+//              saturate(2 layer.a) x mask.R, colour lerp(colour, layer, w), specular mask lerp(
+//              saturate(2 colour.a - 1), saturate(2 layer.a - 1), w) x mask.B
 //   cutout     _UseCutout: discard where _CutoutTex channel _CutoutChannel x _CutoutScale < 0.5
 //              (GW2 opacity); + emission smoothstep01(saturate((rgb x _CutoutScale + _BurnOffset
 //              - 1) x -10)) x _BurnColor x 2 along the edge (GW2 burnoff / burncol)
 //   mod        _UseDetailMod: albedo x 2 x _DetailMod ("detail-multiply2x"), its UV + perturb x
 //              _ModPtrb x mask.R (GW2 modptrb, 574526)
-//   normal     _UseNormalMap: _BumpMap
+//   normal     _UseNormalMap: _BumpMap (_BumpMapRawRGB: GW2's RGB normal read raw, 189632)
 //   packed     _UsePacked: _PackedMap R metal, G smoothness, B reflection mask, A specular mask
 //   emission   _UseEmission: _EmissionMap (its UV + perturb x _EmissionPtrb, GW2 gloptrb) x mask
 //              channel x _EmissionColor x _EmissionStrength (GW2 glow x glofade x 2)
@@ -101,8 +104,31 @@
 //              colour R, the export's distance from the GW2 cloth pins (white = still); 1 = UV0 v;
 //              2 = 1 - UV0 v; 3 = everywhere), x _WaveAmplitude (Unity units) x a slow gust. Every
 //              pass but Meta moves the same way, so shadows follow
+//   vegetation _VegMode (GW2's vegetation VS, transcribed 2026-10-23; every pass but Meta): 1 grass
+//              (77876, 189570): per plant phase frac(sum(origin) 0.01) 100 + 0.6 time, waves smoothtri
+//              at (1, 1.36, 2.57); gust g = 0.9 + 0.1 w.x; horizontal offset = W^T (WindGust g + Wind)
+//              x k, k = (g A)^2 + (g A)^4 (A = vertex colour alpha), + noise x 3 x w.yz x A x 60 (the
+//              engine's noise texture is not in the export: CM_VegNoise x _VegNoiseAmount stands in).
+//              2 tree (56795 family): the edge (normal.xy x VegPara.x x B) and branch (z x VegPara.y x
+//              R) waves at VegPara.zw x (1.975, 0.793 | 0.375, 0.193), x f = 1 - (1 - min((Wind.w +
+//              WindGust.w) 0.0005, 1))^2; the main bend W^T (WindGust g + Wind) x (A^2 + A^4)(1 + R/2),
+//              g = 0.5 + 0.5 smoothtri(0.25 time); the length about the origin kept. _VegPara is the
+//              material's grvegp. _VegWind / _VegWindGust (world, Unity axes, GW2 units; w = speed)
+//              come from the map's wind bytes by castlemist's mapping (UNPROVEN: the client's is not
+//              traced). A foliage patch names each plant's origin and scale in UV7
 //   premult    _PremultipliedBase: the base colour is already x its alpha (the export's
 //              fx-soft-additive); an unlit effect then scales it by the alpha shaping only
+//   twirl      _UseTwirl (GW2 55051, ps 12 read 2026-10-23; unlit, SrcAlpha / InvSrcAlpha, no fog):
+//              a = texmult x _TwirlRamp(its UV).rgb - _MainTex(its UV).rgb, worked in gamma; discard
+//              a.r < _Cutoff (GW2 AlphaRef; its runtime value is not in the export); rgb = collow x
+//              saturate(1 - a) + a x colhi, alpha a.r. texmult is animated by the model's clip
+//              (matConstAnim): 0 at rest, map 506592's vortex is invisible until its "on" clip runs
+//   tar        _UseTar (GW2 435467, ps 79 read 2026-10-23; lit): n = whiteout(_BumpMap, _TarAddNormal),
+//              lerped toward _TarRampNormal by mask = _TarMask.g (UV4); the diffuse at UV0 + n.xy x mask
+//              x difptrb, x mod x 2 (the detail mod block's map); specular colour lerp(speccp.rgb x
+//              saturate(2 diffuse.a - 1), 0.3, mask) x 2, power speccp.w; + unlit _TarRamp(N.V, mask +
+//              voffset).rgb x mask x albedo x 2. GW2 lights it from its light buffer: Unity's lighting
+//              stands in
 // Shading formulas of the GW2 shaders these blocks come from are in the README's port table.
 // The block switches are plain ifs on uniforms: the compiler branches or flattens them (no
 // UNITY_BRANCH: fxc rejects gradient samples under forced branches it cannot prove uniform).
@@ -132,7 +158,7 @@ half _UseDetailMod;
 UNITY_DECLARE_TEX2D_NOSAMPLER(_DetailMod);   float4 _DetailMod_ST;   float _DetailModUV;
 half _DetailModStrength;
 
-half _UseNormalMap;
+half _UseNormalMap, _BumpMapRawRGB, _IgnoreBaseAlpha;
 UNITY_DECLARE_TEX2D_NOSAMPLER(_BumpMap);     float _BumpMapUV;       half _BumpScale;
 
 half _UsePacked;
@@ -222,6 +248,23 @@ float _UV1FromUV4;
 
 half _Unlit;
 half _AdditiveFog;
+
+half _UseTwirl;
+UNITY_DECLARE_TEX2D_NOSAMPLER(_TwirlRamp);   float _TwirlRampUV;
+float _TwirlTexMult;
+half4 _TwirlColLow, _TwirlColHi;
+
+half _UseTar;
+UNITY_DECLARE_TEX2D_NOSAMPLER(_TarAddNormal);   float _TarAddNormalUV;
+UNITY_DECLARE_TEX2D_NOSAMPLER(_TarRampNormal);  float _TarRampNormalUV;
+UNITY_DECLARE_TEX2D_NOSAMPLER(_TarMask);        float _TarMaskUV;
+UNITY_DECLARE_TEX2D_NOSAMPLER(_TarRamp);
+float _TarDifPtrb, _TarVOffset;
+float4 _TarSpec;
+float4 _UVAnim4;
+
+// _InteriorMode 3's specular mask (CM_Colour sets it, CM_Surface uses it); -1 when not set.
+static half cm_DecalSpec = -1;
 half _LightVolumes, _LightVolumesBias, _PointLightVolumesShading, _LightVolumeSpecular;
 
 struct appdata
@@ -234,9 +277,93 @@ struct appdata
     float2 uv2 : TEXCOORD2;
     float2 uv3 : TEXCOORD3;
     float2 uv4 : TEXCOORD4;
+    float4 uv7 : TEXCOORD7;   // a foliage patch's plant origin (xyz, object space) and scale (w > 0); else 0
     half4 color : COLOR;
     UNITY_VERTEX_INPUT_INSTANCE_ID
 };
+
+// ---- GW2 vegetation wind (see the header's vegetation block).
+float _VegMode, _VegUnityScale, _VegNoiseAmount;
+float4 _VegPara, _VegWind, _VegWindGust;
+
+// GW2's smoothed triangle wave: t = |frac(x) 2 - 1|, t^2 (3 - 2t).
+float4 CM_VegTri(float4 x)
+{
+    float4 t = abs(frac(x) * 2.0 - 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// Smooth value noise 0.25..0.75 (mean 0.5), castlemist's stand-in for the engine noise texture the
+// grass VS reads. Never 0: a grass material has no grvegp, so GW2 looks it up at (0, 0) every time, and
+// plain value noise is 0 there, which held 193286's grass still (2026-10-23).
+float CM_VegNoise(float2 p)
+{
+    float2 i = floor(p), f = frac(p);
+    f = f * f * (3.0 - 2.0 * f);
+    const float2 k = float2(127.1, 311.7);
+    float4 h = frac(sin(float4(dot(i, k), dot(i + float2(1, 0), k), dot(i + float2(0, 1), k), dot(i + float2(1, 1), k))) * 43758.5453);
+    return lerp(0.25, 0.75, lerp(lerp(h.x, h.y, f.x), lerp(h.z, h.w, f.x), f.y));
+}
+
+// Moves v.vertex in place (object space, GW2 units). The plant is the object, or, in a foliage
+// patch, the one UV7 names. GW2 works in map axes (x east, y north, z down): m = (u.x, u.z, -u.y).
+void CM_Vegetation(inout appdata v)
+{
+    if (_VegMode < 0.5) return;
+    float us = max(_VegUnityScale, 1e-6);
+    bool patch = v.uv7.w > 0.0;
+    float3 origin = patch ? v.uv7.xyz : float3(0, 0, 0);
+    float3 ow = mul(unity_ObjectToWorld, float4(origin, 1.0)).xyz / us;   // the plant, world, GW2 units
+    float s = patch ? v.uv7.w : length(float3(unity_ObjectToWorld._m00, unity_ObjectToWorld._m10, unity_ObjectToWorld._m20)) / us;
+    float ph = frac((ow.x + ow.z - ow.y) * 0.01) * 100.0;                  // frac(sum(World.w) 0.01) 100
+    float t = _Time.y;
+    float3 u = v.vertex.xyz - origin;
+    float3 m = float3(u.x, u.z, -u.y);
+    // GW2's W^T wind (object: s R^T wind) = s^2 us WorldToObject wind.
+    float3x3 w2o = (float3x3)unity_WorldToObject;
+    if (_VegMode < 1.5)
+    {
+        // Grass (77876, 189570; vs 0 read 2026-10-23): xy only, weighted by vertex colour A.
+        float4 s3 = CM_VegTri(float4((t * 0.6 + ph) * float3(1.0, 1.36, 2.57) + float3(0.0, 1.712, 2.666), 0));
+        float g = s3.x * 0.1 + 0.9;
+        float wv = v.color.a;
+        float3 wo = mul(w2o, _VegWindGust.xyz * g + _VegWind.xyz) * (s * s * us);
+        float k = g * wv;
+        k = k * k;
+        k = k * k + k;
+        m.xy += float2(wo.x, wo.z) * k;
+        // Jitter: the engine noise texture at (m.xy / 2 + World.w.xy) VegPara.x, x 3 x waves y, z x A x 60.
+        float n = CM_VegNoise((m.xy * 0.5 + float2(ow.x, ow.z)) * _VegPara.x) * 3.0 * _VegNoiseAmount;
+        m.xy += n * s3.yz * wv * 60.0;
+    }
+    else
+    {
+        // Tree (56795 / 69668 / 47468 / 57606 / 78966; vs 0 read 2026-10-23): vertex colour R branch
+        // stiffness, G branch phase, B edge flutter, A main bend; VegPara = grvegp (edge amplitude,
+        // branch amplitude, edge frequency, branch frequency); the length about the origin kept.
+        half4 c = v.color;
+        float bp = ph + c.g;
+        float mt = abs(frac(t * 0.25 + ph + 0.5) * 2.0 - 1.0);
+        float g = mt * mt * (3.0 - 2.0 * mt) * 0.5 + 0.5;
+        float e = dot(m, (bp + c.b).xxx) + t;
+        float b = bp + t;
+        float4 w4 = CM_VegTri(float4(e, e, b, b) * _VegPara.zzww * float4(1.975, 0.793, 0.375, 0.193));
+        float3 waves = float3(w4.x + w4.y, w4.x + w4.y, w4.z + w4.w);
+        float f = min((_VegWind.w + _VegWindGust.w) * 0.0005, 1.0);
+        f = 1.0 - (1.0 - f) * (1.0 - f);
+        float2 nm = float2(v.normal.x, v.normal.z);
+        float3 att = float3(nm * _VegPara.x * c.b, c.r * _VegPara.y) * f;
+        float3 p1 = m + att * waves;
+        float3 wo = mul(w2o, _VegWindGust.xyz * g + _VegWind.xyz) * (s * s * us);
+        float bf = c.a * c.a;
+        bf = bf * bf + bf;
+        bf = bf * c.r * 0.5 + bf;
+        float3 p2 = p1 + bf * float3(wo.x, wo.z, -wo.y);
+        float l2 = dot(p2, p2);
+        m = l2 > 1e-8 ? p2 * (length(p1) * rsqrt(l2)) : p1;
+    }
+    v.vertex.xyz = origin + float3(m.x, -m.z, m.y);
+}
 
 // The wave weight of a vertex (see the header's wave block).
 float CM_WaveWeight(appdata v)
@@ -339,7 +466,14 @@ half4 CM_Colour(float4 uv01, float4 uv23, float2 viewTS, float2 tnXY)
         float2 iuv = CM_PickUV(uv01, uv23, _InteriorUV) - viewTS * _ParDist + tnXY * _InteriorNormalShift;
         half4 interior = CM_TEX(_InteriorTex, iuv);
         float w = CM_Mask(uv01, uv23, perturb, _MaskChannel);
-        if (_InteriorMode > 1.5) w *= interior.a;
+        if (_InteriorMode > 2.5)
+        {
+            // GW2 69887: coverage saturate(2a) x mask.R; the gloss masks lerped the same way, x mask.B.
+            w *= saturate(2.0 * interior.a);
+            half maskB = CM_Mask(uv01, uv23, perturb, 2);
+            cm_DecalSpec = lerp(saturate(2.0 * c.a - 1.0), saturate(2.0 * interior.a - 1.0), w) * maskB;
+        }
+        else if (_InteriorMode > 1.5) w *= interior.a;
         else if (_InteriorMode > 0.5) w *= saturate(2.0 * interior.a);
         if (_InteriorStep > 0.5)
             w = CM_Smooth01(saturate(_StepMin * (w + _InteriorStepOffset - 1.0) / max(1.0 - _StepMin, 1e-4)));
@@ -535,6 +669,7 @@ struct v2f
     UNITY_FOG_COORDS(7)
     float4 screenPos : TEXCOORD8;
     half4 color : TEXCOORD11;
+    float2 uv4 : TEXCOORD12;   // GW2's UV4 (the tar's mask)
     #if defined(CM_PASS_FORWARDBASE)
         float4 lmap : TEXCOORD9;
         half3 vlight : TEXCOORD10;
@@ -556,6 +691,7 @@ v2f vert(appdata v)
     v2f o;
     UNITY_INITIALIZE_OUTPUT(v2f, o);
     UNITY_SETUP_INSTANCE_ID(v);
+    CM_Vegetation(v);
     CM_Wave(v);
     UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
     o.pos = UnityObjectToClipPos(v.vertex);
@@ -563,6 +699,7 @@ v2f vert(appdata v)
     o.worldNormal = UnityObjectToWorldNormal(v.normal);
     o.worldTangent = float4(UnityObjectToWorldDir(v.tangent.xyz), v.tangent.w * unity_WorldTransformParams.w);
     CM_AnimatedUVs(v, o.uv01, o.uv23);
+    o.uv4 = CM_Animate(v.uv4, _UVAnim4);
     o.color = v.color;
     o.screenPos = ComputeScreenPos(o.pos);
     COMPUTE_EYEDEPTH(o.screenPos.z);
@@ -583,6 +720,20 @@ v2f vert(appdata v)
     return o;
 }
 
+// UV set `ch` (0-4): the four of CM_PickUV, or GW2's UV4.
+float2 CM_PickUV5(v2f i, float ch) { return ch > 3.5 ? i.uv4 : CM_PickUV(i.uv01, i.uv23, ch); }
+
+// A GW2 two-channel normal map read raw (x 2 - 1, z rebuilt), as its shaders do.
+float3 CM_RawNormal(half2 xy)
+{
+    float2 n = xy * 2.0 - 1.0;
+    return float3(n, sqrt(max(1.0 - dot(n, n), 0.0)));
+}
+
+// The tar's extra terms (CM_Surface fills them): its specular colour and the unlit view ramp.
+static half3 cm_TarSpecColor = 0;
+static half3 cm_TarRamp = 0;
+
 // The fire of a mesh (CM_FireCore with its UV sets and vertex colour).
 half4 CM_Fire(v2f i, float3 n) { return CM_FireCore(i.uv01, i.uv23, i.color, n); }
 
@@ -600,7 +751,8 @@ CMSurface CM_Surface(v2f i, float facing, float3 viewDir)
     {
         float2 nuv = CM_PickUV(i.uv01, i.uv23, _BumpMapUV);
         if (_PerturbNormal > 0.5) nuv += CM_Perturb(i.uv01, i.uv23) * _BasePtrb;
-        tn = UnpackScaleNormal(CM_TEX(_BumpMap, nuv), _BumpScale);
+        // GW2 189632 reads an RGB normal map raw (x 2 - 1, normalised); the export ships it as data.
+        tn = _BumpMapRawRGB > 0.5 ? normalize(CM_TEX(_BumpMap, nuv).rgb * 2.0 - 1.0) : UnpackScaleNormal(CM_TEX(_BumpMap, nuv), _BumpScale);
     }
     if (_UseFlow > 0.5)
     {
@@ -609,7 +761,30 @@ CMSurface CM_Surface(v2f i, float facing, float3 viewDir)
         cm_FlowOffset = (CM_TEX(_FlowTex, fuv).xy * 2.0 - 1.0) * k;
     }
     half4 base;
-    if (_UseFire > 0.5)
+    if (_UseTar > 0.5)
+    {
+        // GW2 435467 (see the header): whiteout blend of the normal and the add-normal, toward the
+        // ramp-normal by the mask; the diffuse perturbed by that normal.
+        float3 n1 = UnpackNormal(CM_TEX(_BumpMap, CM_PickUV(i.uv01, i.uv23, _BumpMapUV)));
+        float3 n2 = CM_RawNormal(CM_TEX(_TarAddNormal, CM_PickUV5(i, _TarAddNormalUV)).xy);
+        float3 nb = n1 + n2;
+        nb = nb * (nb.z / max(dot(nb, nb), 1e-5)) * 2.0 - float3(0, 0, 1);
+        float3 n3 = CM_RawNormal(CM_TEX(_TarRampNormal, CM_PickUV5(i, _TarRampNormalUV)).xy);
+        half mask = CM_TEX(_TarMask, CM_PickUV5(i, _TarMaskUV)).g;
+        float3 nl = nb + mask * (n3 - nb);
+        tn = normalize(nl);
+        float2 duv = CM_PickUV(i.uv01, i.uv23, _MainTexUV) + nl.xy * mask * _TarDifPtrb;
+        base = UNITY_SAMPLE_TEX2D(_MainTex, TRANSFORM_TEX(duv, _MainTex)) * _Color;
+        half3 mod = CM_TEX(_DetailMod, CM_PickUV(i.uv01, i.uv23, _DetailModUV)).rgb * unity_ColorSpaceDouble.rgb;
+        half specMask = saturate((base.a - 0.5) * 2.0);
+        base.rgb *= mod;
+        float3 nw = normalize(tn.x * t + tn.y * b + tn.z * n);
+        half3 ramp = CM_TEX(_TarRamp, float2(dot(viewDir, nw), mask + _TarVOffset)).rgb * mask;
+        cm_TarRamp = ramp * base.rgb * unity_ColorSpaceDouble.rgb;
+        cm_TarSpecColor = lerp(_TarSpec.rgb * specMask, 0.3, mask) * unity_ColorSpaceDouble.rgb;
+        base.a = 1;
+    }
+    else if (_UseFire > 0.5)
     {
         base = CM_Fire(i, n) * CM_SoftFade(i.screenPos);
         base.a = saturate(base.a);   // GW2's UNORM target clamps 1.8 K / premult > 1
@@ -617,6 +792,7 @@ CMSurface CM_Surface(v2f i, float facing, float3 viewDir)
     else
         base = CM_Colour(i.uv01, i.uv23, viewTS, tn.xy);
     if (_UseVertexColor > 0.5) base *= i.color;
+    if (_IgnoreBaseAlpha > 0.5) base.a = 1;   // GW2 189632: the alpha is its mask's R alone
     half flowAlpha = 1;
     if (_UseFlow > 0.5)
     {
@@ -634,7 +810,7 @@ CMSurface CM_Surface(v2f i, float facing, float3 viewDir)
     s.alpha = (_UseFlow > 0.5 || _UseFire > 0.5) ? base.a : CM_Alpha(base.a, i.uv01, i.uv23, abs(dot(n, viewDir))) * CM_SoftFade(i.screenPos);
     if (_AlphaTest > 0.5) clip(s.alpha - _Cutoff);
 
-    if (_UseNormalMap > 0.5) n = normalize(tn.x * t + tn.y * b + tn.z * n);
+    if (_UseNormalMap > 0.5 || _UseTar > 0.5) n = normalize(tn.x * t + tn.y * b + tn.z * n);
     s.normal = n * facing;  // two-sided (Cull Off) back faces
 
     half4 p = half4(1, 1, 1, 1);
@@ -643,6 +819,15 @@ CMSurface CM_Surface(v2f i, float facing, float3 viewDir)
     s.smoothness = saturate(p.g * _Glossiness);
     s.reflMask = p.b;
     s.specMask = p.a;
+    if (cm_DecalSpec >= 0) s.specMask = cm_DecalSpec;   // GW2 69887's decal-blended gloss
+    if (_UseTar > 0.5)
+    {
+        // GW2's specular power speccp.w as a smoothness (Blinn-Phong n -> roughness sqrt(2 / (n + 2))).
+        s.metallic = 0;
+        s.smoothness = 1.0 - sqrt(2.0 / (max(_TarSpec.w, 0) + 2.0));
+        s.reflMask = 0;
+        s.specMask = 1;
+    }
     return s;
 }
 
@@ -651,6 +836,12 @@ half3 CM_Colours(CMSurface s, out half3 specColor, out half oneMinusReflectivity
 {
     half3 diffColor = DiffuseAndSpecularFromMetallic(s.albedo, s.metallic, specColor, oneMinusReflectivity);
     specColor *= s.specMask * _SpecularTint.rgb * _SpecularStrength;
+    if (_UseTar > 0.5)
+    {
+        diffColor = s.albedo;
+        specColor = cm_TarSpecColor;
+        oneMinusReflectivity = 1;
+    }
     outAlpha = s.alpha;
     if (_AlphaPremultiply > 0.5)
     {
@@ -756,6 +947,23 @@ half4 fragBase(v2f i, fixed facing : VFACE) : SV_Target
         #endif
         return b;
     }
+    if (_UseTwirl > 0.5)
+    {
+        // GW2 55051 (see the header), in gamma space as GW2 works.
+        half3 r = CM_TEX(_TwirlRamp, CM_PickUV(i.uv01, i.uv23, _TwirlRampUV)).rgb;
+        half3 c = UNITY_SAMPLE_TEX2D(_MainTex, TRANSFORM_TEX(CM_PickUV(i.uv01, i.uv23, _MainTexUV), _MainTex)).rgb;
+        #if !defined(UNITY_COLORSPACE_GAMMA)
+            r = LinearToGammaSpace(r);
+            c = LinearToGammaSpace(c);
+        #endif
+        half3 a = _TwirlTexMult * r - c;
+        clip(a.r - _Cutoff);
+        half3 col = _TwirlColLow.rgb * saturate(1.0 - a) + a * _TwirlColHi.rgb;
+        #if !defined(UNITY_COLORSPACE_GAMMA)
+            col = GammaToLinearSpace(max(col, 0));
+        #endif
+        return half4(col, saturate(a.r));
+    }
     if (_UseWater > 0.5)
     {
         half4 wcol = half4(CM_Water(i, s.normal, viewDir), 1);
@@ -834,6 +1042,7 @@ half4 fragBase(v2f i, fixed facing : VFACE) : SV_Target
     c.rgb += diffColor * i.vlight;
     if (_LightVolumeSpecular > 0.5) c.rgb += lvSpec * s.specMask * _SpecularTint.rgb * _SpecularStrength;
     c.rgb += CM_Emission(i.uv01, i.uv23);
+    if (_UseTar > 0.5) c.rgb += cm_TarRamp;
     if (_UseRim > 0.5)
     {
         half k = _RimShineFade > 0.5 ? 1.0 - s.smoothness : 1.0;
@@ -891,6 +1100,7 @@ v2fShadow vertShadow(appdata v)
     v2fShadow o;
     UNITY_INITIALIZE_OUTPUT(v2fShadow, o);
     UNITY_SETUP_INSTANCE_ID(v);
+    CM_Vegetation(v);
     CM_Wave(v);
     UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
     TRANSFER_SHADOW_CASTER_NORMALOFFSET(o)

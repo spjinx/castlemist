@@ -25,7 +25,7 @@ constexpr int kElementArrayBuffer = 34963;
 
 std::vector<MeshExportInfo> write_meshes(GltfWriter& w, const ModelPreview& model,
                                          const std::vector<int>& materialIndices, int lodLevels,
-                                         bool uv1CopyToUv4, bool vertexColors) {
+                                         bool uv1CopyToUv4, bool vertexColors, bool allUvSets) {
     std::vector<MeshExportInfo> out;
     out.reserve(model.meshes.size());
 
@@ -71,6 +71,12 @@ std::vector<MeshExportInfo> write_meshes(GltfWriter& w, const ModelPreview& mode
         }
         if (mesh.exportUv1 && std::find(extraChannels.begin(), extraChannels.end(), uint8_t{1}) == extraChannels.end())
             extraChannels.push_back(1);
+        if (allUvSets)
+            for (uint8_t c = 1; c < 8; ++c)
+                if ((mesh.fvf & ((0x100u << c) | (0x10000u << c))) &&
+                    std::find(extraChannels.begin(), extraChannels.end(), c) == extraChannels.end())
+                    extraChannels.push_back(c);
+        if (allUvSets) std::sort(extraChannels.begin(), extraChannels.end());
         // extraSource[e]: the GVertex channel TEXCOORD_<extraChannels[e]> is read from.
         std::vector<uint8_t> extraSource(extraChannels);
         if (uv1CopyToUv4 && std::find(extraChannels.begin(), extraChannels.end(), uint8_t{1}) != extraChannels.end()) {

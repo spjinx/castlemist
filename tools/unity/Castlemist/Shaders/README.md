@@ -193,6 +193,12 @@ All GW2 -> Unity mappings below are **UNPROVEN readings** of raw data (`Environm
   in the export).
 - The soft depth fades (`depfade`, `dfadevl`, `depdist`) are set but off on meshes (`_SoftFade` 0);
   particles have them on. Either fades only when a camera depth texture is bound (`CM_SoftFade`).
+- Animated material constants (materials.json `constAnims`, from ModelAnimationData.matConstAnim) are
+  played as material curves on the instance's clip (WorldImporter.WithConstants) for the constants
+  `CastlemistMaterials.AnimatedProperties` maps (55051 texmult / collow / colhi, 54401 fadedif, 500475
+  diffade); particle materials' animated constants (e.g. 52688's fadedif) are not played yet.
+- A particle material whose AMAT is not read falls back to the "basic" family; an opaque texture then
+  draws solid squares (752360 did, as the portal's dark slabs, until it was read).
 - Particle families read so far: the AMATs of the Firebrand tomes (2026-10-22). The Tome's rune
   shaders (1764349, 1764348, 1764443, 1764445, 1764347) and the lit particle shaders (339180,
   48318) are not transcribed: they draw as the family their constants suggest, with a warning.
@@ -250,3 +256,4 @@ name the slots.
 | Rift water | 3121604 | water: GW2's cubes, triplanar caustics, flow |
 | Flow | fx-flow 2591650, 2759298 | flow (parameters in the vertex colour) |
 | Singletons | 3100353 (perturbed normal, cut at 0.25), 1676989 (ramp, step, premultiplied), 80417 (screen layer, ramp RGBA) | as named |
+| Mad King vortex and portal (map 506592, read 2026-10-23) | 55051 (two-texture colour and alpha, texmult animated per clip), 54401 and 500475 / 416173 (reverse-subtract fades, perturbed ghosts), 435467 (tar: layered normals, perturbed diffuse, view ramp; lit), 752360 (refracting edge particles) | twirl; unlit + perturb (MeshFx); tar; `GW2 Distort` `_TintTex` / `_StepVertexAlpha` / `_ParticleRect` |

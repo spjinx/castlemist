@@ -25,6 +25,7 @@
 #include "internal.h"
 #include "long_path.h"
 
+#include "castlemist/exportgltf/world_lods.h"
 #include "castlemist/native/gw2model.hpp"
 
 #include <filesystem>
@@ -128,7 +129,7 @@ json emitter_json(const ParticleEmitterCPU& e, const ModelPreview& model) {
 
 std::string write_particle_sidecar(const ModelPreview& model, const std::vector<int>& glMaterialIndices,
                                    const std::string& glbPath) {
-    if (!model.hasEffects()) return {};
+    if (!model.hasEffects() && !model.hasMeshVis()) return {};
 
     json doc;
     doc["clouds"] = json::array();
@@ -157,17 +158,34 @@ std::string write_particle_sidecar(const ModelPreview& model, const std::vector<
     fxBones.erase(std::string());
     std::map<uint64_t, std::string> byToken;
     for (const std::string& b : fxBones) byToken[castlemist::model::tokenizeBoneName(b)] = b;
+    // boneVis (2026-10-25): the same keys for every named bone, effect or not (a model's mesh
+    // sets, e.g. 84108's "good" / "demolish", switch with them).
+    std::map<uint64_t, std::string> allByToken;
+    for (const auto& j : model.joints)
+        if (!j.name.empty()) allByToken[castlemist::model::tokenizeBoneName(j.name)] = j.name;
     doc["clips"] = json::array();
     for (size_t i = 0; i < model.animClips.size(); ++i) {
         json cj{{"name", model.animClips[i].name}, {"duration", model.animClips[i].duration}};
-        json vis = json::object();
+        json vis = json::object(), boneVis = json::object();
         if (i < model.animClipVis.size())
             for (const auto& [tok, keys] : model.animClipVis[i]) {
                 const auto it = byToken.find(tok);
                 if (it != byToken.end()) vis[it->second] = keys;
+                const auto all = allByToken.find(tok);
+                if (all != allByToken.end()) boneVis[all->second] = keys;
             }
         cj["vis"] = vis;
+        cj["boneVis"] = boneVis;
         doc["clips"].push_back(std::move(cj));
+    }
+
+    // meshVis (2026-10-25): each mesh node (mesh_node_name; its "_LOD<k>" nodes share it) whose
+    // visBone is a named bone, with that bone: clips[].boneVis then show and hide the mesh.
+    const std::string glbStem = std::filesystem::path(glbPath).stem().string();
+    doc["meshVis"] = json::object();
+    for (size_t i = 0; i < model.meshes.size(); ++i) {
+        const auto it = allByToken.find(model.meshes[i].visBone);
+        if (model.meshes[i].visBone && it != allByToken.end()) doc["meshVis"][mesh_node_name(model, i, glbStem)] = it->second;
     }
 
     doc["effectLights"] = json::array();

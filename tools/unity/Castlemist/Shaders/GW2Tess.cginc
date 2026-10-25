@@ -23,6 +23,7 @@ struct CMTessVertex
     float2 uv2 : TEXCOORD2;
     float2 uv3 : TEXCOORD3;
     float2 uv4 : TEXCOORD4;
+    float4 uv7 : TEXCOORD7;
     half4 color : COLOR;
     UNITY_VERTEX_INPUT_INSTANCE_ID
 };
@@ -46,6 +47,7 @@ CMTessVertex tessvert(appdata v)
     o.uv2 = v.uv2;
     o.uv3 = v.uv3;
     o.uv4 = v.uv4;
+    o.uv7 = v.uv7;
     o.color = v.color;
     return o;
 }
@@ -93,6 +95,7 @@ appdata CM_TessInterpolate(const OutputPatch<CMTessVertex, 3> p, float3 b)
     CM_TESS_LERP(uv2)
     CM_TESS_LERP(uv3)
     CM_TESS_LERP(uv4)
+    CM_TESS_LERP(uv7)
     CM_TESS_LERP(color)
     #undef CM_TESS_LERP
     v.normal = normalize(v.normal);

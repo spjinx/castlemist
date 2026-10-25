@@ -254,6 +254,22 @@ namespace Castlemist
                 }
                 EndSection();
             }
+            if (Section("Vegetation wind (GW2)", On("_VegMode")))
+            {
+                Note("GW2's own foliage vertex shader. Grass sways sideways; Tree bends branches and flutters leaf " +
+                     "edges. How strongly each vertex moves comes from the model's vertex colours. Wind and gust " +
+                     "come from the map's wind bytes (the game's exact conversion is not traced).");
+                Prop("_VegMode", "Vegetation wind");
+                if (On("_VegMode"))
+                {
+                    Prop("_VegWind", "Wind (xyz direction x strength, w speed)");
+                    Prop("_VegWindGust", "Gust (xyz direction x strength, w speed)");
+                    Prop("_VegNoiseAmount", "Grass jitter scale (1 = GW2's)");
+                    Prop("_VegPara", "VegPara (tree: edge amp, branch amp, edge freq, branch freq)");
+                    Prop("_VegUnityScale", "Unity units per GW2 unit");
+                }
+                EndSection();
+            }
             if (Section("Wave (cloth, flags)", On("_UseWave")))
             {
                 Note("castlemist's own: GW2 runs cloth physics on banners; this waves them in the vertex shader. " +

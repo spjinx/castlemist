@@ -146,6 +146,27 @@ namespace Castlemist
                 if (e.Const("stepmin", 0, 0.75) <= 0.0)
                     ctx.Warnings.Add(tag + ": " + e.Profile + " with stepmin 0 is fully transparent (a runtime-driven step?)");
             }
+            SetF(mat, "_TintTex", 0f);
+            SetF(mat, "_StepVertexAlpha", 0f);
+            SetF(mat, "_ParticleRect", 0f);
+            if (e.Amat == 752360)
+            {
+                // ps 31 read 2026-10-23: offset = (distort map xy x 2 - 1) x distort, no view
+                // reflection, bias or foreground test; colour = grab x diffuse x 2; alpha = the step
+                // of mask.G with the vertex alpha inside, x vertex red (x the soft fade, off here).
+                SetF(mat, "_ViewReflect", 0f);
+                SetF(mat, "_DistortBias", 0f);
+                SetF(mat, "_DepthReject", 0f);
+                SetF(mat, "_UseVertexColor", 0f);
+                SetF(mat, "_TintTex", e.Map("baseColor") != null ? 1f : 0f);   // bound with the lit diffuse below
+                if (mask != null)
+                {
+                    source = 2f;
+                    SetF(mat, "_MaskChannel", 1f);   // mask.G
+                    SetF(mat, "_StepMin", (float)e.Const("stepmin", 0, 0.75));
+                    SetF(mat, "_StepVertexAlpha", 1f);
+                }
+            }
             SetF(mat, "_AlphaSource", source);
             SetF(mat, "_Cutoff", 1f / 255f);   // AlphaRef (an engine value; 1/255 also for 63923, 57026)
             MaterialsFile.Extra ramp = e.ExtraOf("ramp");
@@ -158,7 +179,7 @@ namespace Castlemist
             // runtime composite), so baseColor is usually absent and _LitDiffuse stands in.
             // 49659 / 63923: the same slot carries the decal (A: saturate(2a) coverage, saturate(2a - 1) gloss).
             SetF(mat, "_UseLit", lit ? 1f : 0f);
-            MaterialsFile.MapRef dif = lit ? e.Map("baseColor") : null;
+            MaterialsFile.MapRef dif = lit || e.Amat == 752360 ? e.Map("baseColor") : null;
             MaterialsFile.Extra decal = glass ? e.ExtraOf("decal") : null;
             if (decal != null) dif = decal.Map;
             Layer(ctx, mat, tag, folder, dif, "_MainTex", "_MainUV");
@@ -247,7 +268,9 @@ namespace Castlemist
                 FxShaping(ctx, mat, tag, modelFolder, e, mode);
                 VertexColourFx(ctx, mat, tag, modelFolder, e);
                 MultiplyAndCubeFx(ctx, mat, tag, modelFolder, e);
+                MeshFx(ctx, mat, tag, modelFolder, e);
                 ClothWave(ctx, mat, e);
+                Vegetation(ctx, mat, e);
                 if (e.Profile == "prop-interior") Interior(ctx, mat, tag, modelFolder, e);
                 else if (e.Profile == "prop-burn") Burn(ctx, mat, tag, modelFolder, e);
                 else if (e.Profile == "fx-ramp-glow" || e.Profile == "fx-perturb-mod-glow") RampGlow(ctx, mat, tag, modelFolder, e);
@@ -256,13 +279,13 @@ namespace Castlemist
 
             // Every texTransform animates its UV set (the game's TexTransform<n>); an export before
             // texTransforms has only the manifest's uvScroll of the base colour's set.
-            var anim = new Vector4[4];
+            var anim = new Vector4[5];
             foreach (MaterialsFile.TexTransform t in e.TexTransforms)
-                if (t.Uv >= 0 && t.Uv < 4)
+                if (t.Uv >= 0 && t.Uv < 5)
                     anim[t.Uv] = new Vector4((float)t.Scroll[0], (float)-t.Scroll[1], (float)-t.Rotate, 0f);
             if (e.TexTransforms.Count == 0 && scroll != null && scroll.UvIndex >= 0 && scroll.UvIndex < 4)
                 anim[scroll.UvIndex] = new Vector4((float)scroll.U, (float)-scroll.V, 0f, 0f);
-            for (int k = 0; k < 4; ++k) SetVec(mat, "_UVAnim" + k, anim[k]);
+            for (int k = 0; k < 5; ++k) SetVec(mat, "_UVAnim" + k, anim[k]);
 
             // A distortion map that is a perturb layer is read through _PerturbTex; a decal through the
             // interior block's decal mode.
@@ -467,7 +490,8 @@ namespace Castlemist
             MaterialsFile.MapRef decal = e.Map("decal");
             if (decal == null || On(mat, "_UseInterior")) return;
             SetF(mat, "_UseInterior", 1f);
-            SetF(mat, "_InteriorMode", 2f);
+            // 69887 (map 506592's rocks; ps 52 read 2026-10-23): GW2's own blend, saturate(2a) x mask.R.
+            SetF(mat, "_InteriorMode", e.Amat == 69887 ? 3f : 2f);
             SetF(mat, "_InteriorStep", 0f);
             Layer(ctx, mat, tag, folder, decal, "_InteriorTex", "_InteriorUV");
             MaterialsFile.MapRef dm = e.Map("decalMask");
@@ -582,6 +606,138 @@ namespace Castlemist
                 SetColor(mat, "_Color", new Color(k, k, k, k));
                 SetF(mat, "_AlphaScale", 1f);
             }
+        }
+
+        /// GW2 mesh effects read 2026-10-23 (map 506592's vortex and portal; AMAT DXBC, `amat --dump-all`):
+        ///   55051 (ps 12): the twirl block (GW2Core.cginc); its texmult is animated by the model's
+        ///     clip (materials.json constAnims), 0 at rest.
+        ///   54401 (ps 12): unlit; rgb = diffuse.rgb x fadedif x (1 - fog), alpha diffuse.a. Its blend
+        ///     (One / One, reverse subtract) darkens what is behind it.
+        ///   500475, 416173 (ps 12): unlit; the diffuse at UV0 + (perturb at UV1 x 2 - 1) x perturb,
+        ///     rgb x its alpha (x diffade for 500475), x (1 - fog); the same darkening blend (the ghosts).
+        ///   435467 (ps 79): the tar block (lit), its maps the material's extras.
+        /// The fades and texmult are what constAnims animate (MaterialConstantAnimation).
+        static void MeshFx(MaterialContext ctx, Material mat, string tag, string folder, MaterialsFile.MaterialEntry e)
+        {
+            if (e.Amat == 55051)
+            {
+                SetF(mat, "_UseTwirl", 1f);
+                SetF(mat, "_Unlit", 1f);
+                SetF(mat, "_UseRamp", 0f);
+                SetF(mat, "_UseEmission", 0f);
+                SetF(mat, "_AlphaTest", 0f);   // the twirl discards by itself
+                SetF(mat, "_Cutoff", 0f);      // GW2's AlphaRef: its runtime value is not in the export (UNPROVEN 0)
+                MaterialsFile.Extra ramp = e.ExtraOf("ramp");
+                Layer(ctx, mat, tag, folder, ramp != null ? ramp.Map : null, "_TwirlRamp", "_TwirlRampUV");
+                SetF(mat, "_TwirlTexMult", (float)e.Const("texmult", 0, 0.0));
+                SetColor(mat, "_TwirlColLow", new Color((float)e.Const("collow", 0, 1), (float)e.Const("collow", 1, 1), (float)e.Const("collow", 2, 1), 1f));
+                SetColor(mat, "_TwirlColHi", new Color((float)e.Const("colhi", 0, 0), (float)e.Const("colhi", 1, 0), (float)e.Const("colhi", 2, 0), 1f));
+            }
+            else if (e.Amat == 54401 || e.Amat == 500475 || e.Amat == 416173)
+            {
+                SetF(mat, "_Unlit", 1f);
+                SetF(mat, "_UseEmission", 0f);
+                SetF(mat, "_UsePacked", 0f);
+                SetF(mat, "_UseRamp", 0f);
+                SetF(mat, "_UseStep", 0f);
+                SetF(mat, "_UseMask", 0f);
+                SetF(mat, "_PremultipliedBase", 0f);
+                SetF(mat, "_AlphaScale", 1f);
+                SetF(mat, "_AdditiveFog", 1f);   // x (1 - fog): toward no change
+                float k = e.Amat == 54401 ? (float)e.Const("fadedif", 0, 1.0) : e.Amat == 500475 ? (float)e.Const("diffade", 0, 1.0) : 1f;
+                SetColor(mat, "_Color", new Color(k, k, k, 1f));
+                SetF(mat, "_AlphaPremultiply", e.Amat == 54401 ? 0f : 1f);
+                if (e.Amat != 54401)
+                {
+                    MaterialsFile.Extra perturb = e.ExtraOf("perturb");
+                    Layer(ctx, mat, tag, folder, perturb != null ? perturb.Map : null, "_PerturbTex", "_PerturbUV");
+                    SetF(mat, "_PerturbSigned", 1f);
+                    SetF(mat, "_BasePtrb", perturb != null ? (float)e.Const("perturb", 0, 0.0) : 0f);
+                }
+            }
+            else if (e.Amat == 189632)
+            {
+                // ps 24 read 2026-10-23 (map 506592's ground cover over the island rocks; forward SH + sun):
+                // the grass colour and its RGB normal map (normal.a: specular, power 64 a, x 0.855) at
+                // register 0's xy, which the VS fills from UV1; alpha = mask.R (the third texture) at
+                // zw = UV0, discarded below AlphaRef. The export's uvIndex says 0 for all three.
+                MaterialsFile.Extra n = e.Extras.Count > 0 ? e.Extras[0] : null, mask = e.Extras.Count > 1 ? e.Extras[1] : null;
+                SetF(mat, "_MainTexUV", 1f);
+                Layer(ctx, mat, tag, folder, n != null ? n.Map : null, "_BumpMap", "_BumpMapUV");
+                SetF(mat, "_BumpMapUV", 1f);
+                SetF(mat, "_UseNormalMap", n != null ? 1f : 0f);
+                SetF(mat, "_BumpMapRawRGB", 1f);
+                Layer(ctx, mat, tag, folder, mask != null ? mask.Map : null, "_MaskTex", "_MaskUV");
+                SetF(mat, "_MaskUV", 0f);
+                SetF(mat, "_MaskChannel", 0f);   // R
+                SetF(mat, "_UseMask", mask != null ? 1f : 0f);
+                SetF(mat, "_IgnoreBaseAlpha", mask != null ? 1f : 0f);
+                SetF(mat, "_UseEmission", 0f);
+                SetF(mat, "_UsePacked", 0f);
+                // Without the packed map, metallic is _Metallic itself (the packed R's multiplier, 1):
+                // the grass drew fully metallic, black (2026-10-23).
+                SetF(mat, "_Metallic", 0f);
+                SetF(mat, "_Glossiness", 0.55f);
+                SetColor(mat, "_SpecularTint", new Color(0.855f, 0.855f, 0.855f, 1f));
+            }
+            else if (e.Amat == 435467)
+            {
+                SetF(mat, "_UseTar", 1f);
+                SetF(mat, "_Unlit", 0f);
+                SetF(mat, "_UsePacked", 0f);
+                SetF(mat, "_UseEmission", 0f);
+                SetF(mat, "_UseMask", 0f);
+                MaterialsFile.Extra add = e.ExtraOf("addnormal"), rn = e.ExtraOf("rampnormal"), mask = e.ExtraOf("mask"),
+                                    ramp = e.ExtraOf("ramp"), mod = e.ExtraOf("mod");
+                Layer(ctx, mat, tag, folder, add != null ? add.Map : null, "_TarAddNormal", "_TarAddNormalUV");
+                Layer(ctx, mat, tag, folder, rn != null ? rn.Map : null, "_TarRampNormal", "_TarRampNormalUV");
+                Layer(ctx, mat, tag, folder, mask != null ? mask.Map : null, "_TarMask", "_TarMaskUV");
+                Layer(ctx, mat, tag, folder, ramp != null ? ramp.Map : null, "_TarRamp", null);
+                if (mod != null)
+                {
+                    Layer(ctx, mat, tag, folder, mod.Map, "_DetailMod", "_DetailModUV");
+                    SetF(mat, "_UseDetailMod", 0f);   // the tar block applies it itself
+                }
+                SetF(mat, "_TarDifPtrb", (float)e.Const("difptrb", 0, 0.0));
+                SetF(mat, "_TarVOffset", (float)e.Const("voffset", 0, 0.0));
+                SetVec(mat, "_TarSpec", new Vector4((float)e.Const("speccp", 0, 0.5), (float)e.Const("speccp", 1, 0.5),
+                                                    (float)e.Const("speccp", 2, 0.5), (float)e.Const("speccp", 3, 32.0)));
+                // Its mask is on GW2's UV4, which then holds that set, not the export's copy of UV1.
+                if (mask != null && mask.Map != null && mask.Map.Uv == 4) SetF(mat, "_UV1FromUV4", 0f);
+            }
+        }
+
+        /// The material properties (with the float4 component each takes) that GW2 constant
+        /// @p constant drives on @p e's material, for the clips' constAnims (MeshFx's mapping):
+        /// empty when castlemist does not animate it.
+        public static List<KeyValuePair<string, int>> AnimatedProperties(MaterialsFile.MaterialEntry e, string constant)
+        {
+            var r = new List<KeyValuePair<string, int>>();
+            void Rgb(string prop, int comp)
+            {
+                r.Add(new KeyValuePair<string, int>(prop + ".r", comp));
+                r.Add(new KeyValuePair<string, int>(prop + ".g", comp));
+                r.Add(new KeyValuePair<string, int>(prop + ".b", comp));
+            }
+            if (e.Amat == 55051)
+            {
+                if (constant == "texmult") r.Add(new KeyValuePair<string, int>("_TwirlTexMult", 0));
+                else if (constant == "collow")
+                {
+                    r.Add(new KeyValuePair<string, int>("_TwirlColLow.r", 0));
+                    r.Add(new KeyValuePair<string, int>("_TwirlColLow.g", 1));
+                    r.Add(new KeyValuePair<string, int>("_TwirlColLow.b", 2));
+                }
+                else if (constant == "colhi")
+                {
+                    r.Add(new KeyValuePair<string, int>("_TwirlColHi.r", 0));
+                    r.Add(new KeyValuePair<string, int>("_TwirlColHi.g", 1));
+                    r.Add(new KeyValuePair<string, int>("_TwirlColHi.b", 2));
+                }
+            }
+            else if (e.Amat == 54401 && constant == "fadedif") Rgb("_Color", 0);
+            else if (e.Amat == 500475 && constant == "diffade") Rgb("_Color", 0);
+            return r;
         }
 
         /// difscal / difcol (2600237, ps 43 read 2026-10-22): the diffuse at UV0 x difscal, x difcol x 2.
@@ -829,8 +985,52 @@ namespace Castlemist
             SetF(mat, "_UseWave", 1f);
             SetF(mat, "_WaveMask", 0f);
             SetF(mat, "_WaveAmplitude", (float)((0.4 + 0.8 * wind) * (1 - 0.5 * rigid) * 30.0 * ctx.UnityScale));
+            // Two-sided (UNPROVEN: GW2's cloth path forcing it is not traced; capes show both faces):
+            // map 506592's chains 71804 / 71749 are flat cloth ribbons, invisible from behind when culled.
+            SetF(mat, "_Cull", (float)CullMode.Off);
             Shader tess = ctx.TessellateCloth ? Shader.Find(TessellatedShaderName) : null;
             if (tess != null && mat.shader != tess) mat.shader = tess;   // same properties: values kept
+        }
+
+        /// GW2's vegetation vertex shaders (vs 0 read 2026-10-23; GW2Core.cginc's vegetation block): the
+        /// grass variant and the tree variant (vertex colour RGBA bend weights), by AMAT.
+        static readonly HashSet<long> VegGrass = new HashSet<long> { 77876, 189570 };
+        static readonly HashSet<long> VegTree = new HashSet<long> { 56795, 69668, 47468, 57606, 78966 };
+
+        public static bool IsVegetation(long amat) { return VegGrass.Contains(amat) || VegTree.Contains(amat); }
+
+        static void Vegetation(MaterialContext ctx, Material mat, MaterialsFile.MaterialEntry e)
+        {
+            float mode = VegGrass.Contains(e.Amat) ? 1f : VegTree.Contains(e.Amat) ? 2f : 0f;
+            SetF(mat, "_VegMode", mode);
+            if (mode == 0f) return;
+            double[] p;
+            // VegPara is the material's grvegp (edge amplitude, branch amplitude, edge frequency, branch
+            // frequency); the grass materials have none (their VegPara only scales the noise lookup).
+            SetVec(mat, "_VegPara", e.Gw2Vectors.TryGetValue("grvegp", out p) && p != null && p.Length >= 4
+                ? new Vector4((float)p[0], (float)p[1], (float)p[2], (float)p[3]) : Vector4.zero);
+            SetVec(mat, "_VegWind", ctx.VegWind);
+            SetVec(mat, "_VegWindGust", ctx.VegWindGust);
+            SetF(mat, "_VegUnityScale", ctx.UnityScale);
+            SetF(mat, "_VegNoiseAmount", 0.35f);   // castlemist's choice: GW2's full scale (1) with the stand-in noise waved too much (2026-10-23)
+        }
+
+        /// GW2's Wind / WindGust from the map's wind bytes (environment.wind). castlemist's mapping,
+        /// UNPROVEN (the client's is not traced): azimuth and elevation bytes as 256ths of a turn, the
+        /// azimuth from map +X (east) toward +Y (north), the elevation up (map -Z); Wind = that direction
+        /// x speed GW2 units, WindGust = it x gust; w = speed and gustSpeed (else gust), the bytes as
+        /// stored (2026-10-23: x 8 on the speeds made the tree VS's wave factor 0.63 and bobbed the
+        /// whole of 506570, whose trunk colours are R = G = B = 1; as stored it is 0.1). Unity axes.
+        public static void VegWindFrom(WorldManifest.WindEntry w, out Vector4 wind, out Vector4 gust)
+        {
+            wind = gust = Vector4.zero;
+            if (w == null) return;
+            double az = w.Azimuth / 256.0 * 2 * System.Math.PI, el = w.Elevation / 256.0 * 2 * System.Math.PI;
+            var dir = new Vector3((float)(System.Math.Cos(el) * System.Math.Cos(az)), (float)System.Math.Sin(el),
+                                  (float)(System.Math.Cos(el) * System.Math.Sin(az)));   // map (x, y, -up) -> Unity (x, up, y)
+            Vector3 a = dir * w.Speed, b = dir * w.Gust;
+            wind = new Vector4(a.x, a.y, a.z, w.Speed);
+            gust = new Vector4(b.x, b.y, b.z, w.GustSpeed ?? w.Gust);
         }
 
         /// The "mask" layer: its map, or its placeholder constant (layerConstants). False when neither.
@@ -927,17 +1127,20 @@ namespace Castlemist
                                          "_PremultipliedBase", "_EmissionPtrb", "_UseScreenLayer", "_RampRGBA", "_PerturbNormal",
                                          "_UseWater", "_UseWaterCubes", "_UseVertexColor", "_UseFlow", "_FlowPremul",
                                          "_UseEnvCube", "_UseBumpShade", "_UseBumpShadeTex", "_UseFogNeutral",
-                                         "_UseFire", "_FireMode", "_FireNoEdge", "_UseWave" })
+                                         "_UseFire", "_FireMode", "_FireNoEdge", "_UseWave", "_UseTwirl", "_UseTar",
+                                         "_TarDifPtrb", "_TarVOffset", "_BumpMapRawRGB", "_IgnoreBaseAlpha", "_VegMode" })
                 SetF(mat, f, 0f);
             foreach (string t in new[] { "_MainTex", "_DetailMod", "_BumpMap", "_PackedMap", "_EmissionMap", "_EmissionMask",
                                          "_ParallaxTex", "_OffsetTex", "_MaskTex", "_PerturbTex", "_RampTex", "_InteriorTex",
                                          "_CutoutTex", "_ScreenTex", "_FlowTex", "_ProjCube", "_ReflCube", "_EnvCube",
-                                         "_BumpShadeTex", "_FireDetail", "_FireFlowB" })
+                                         "_BumpShadeTex", "_FireDetail", "_FireFlowB", "_TwirlRamp", "_TarAddNormal",
+                                         "_TarRampNormal", "_TarMask", "_TarRamp" })
                 if (mat.HasProperty(t)) mat.SetTexture(t, null);
             SetColor(mat, "_BurnColor", Color.black);
             SetF(mat, "_CutoutScale", 1f);
             SetF(mat, "_InteriorStepOffset", 1f);
             SetF(mat, "_AlphaScale", 1f);
+            SetF(mat, "_TwirlTexMult", 1f);
             SetF(mat, "_Glossiness", 0.5f);
             if (mat.HasProperty("_MainTex")) { mat.SetTextureScale("_MainTex", Vector2.one); mat.SetTextureOffset("_MainTex", Vector2.zero); }
             SetColor(mat, "_Color", Color.white);
@@ -1004,8 +1207,14 @@ namespace Castlemist
         {
             // Screen distortion (heat haze; 709206, 959502): Castlemist/GW2 Distort, which reads the
             // vertex colour as the particle shaders do.
-            if (ctx.DistortShader != null && (IsDistort(e) || e.ExtraOf("distort") != null && e.Map("baseColor") == null))
-                return BuildDistort(ctx, e, modelFolder, assetPath);
+            // 752360 (the Mad King portal's edge) refracts the scene through its diffuse.
+            if (ctx.DistortShader != null && (IsDistort(e) || e.Amat == 752360 || e.ExtraOf("distort") != null && e.Map("baseColor") == null))
+            {
+                Material dmat = BuildDistort(ctx, e, modelFolder, assetPath);
+                SetF(dmat, "_ParticleRect", 1f);   // GW2's particle UVs carry the cloud's atlas rect
+                EditorUtility.SetDirty(dmat);
+                return dmat;
+            }
             string tag = Path.GetFileName(modelFolder) + "/" + e.Name;
             int mode = darkDecal ? PoiyomiMaterials.Fade : e.Mode;
             Material mat = PoiyomiMaterials.GetOrCreate(ctx.ParticleShader, assetPath);

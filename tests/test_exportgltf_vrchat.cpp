@@ -348,8 +348,14 @@ CM_TEST(vrchat, profile_decal_modes) {
     CHECK(sd.decalGlow == DecalGlow::None);
 
     // Signature-only ids stay out of the table.
-    for (uint32_t id : {76643u, 81309u, 62170u, 69623u})
+    for (uint32_t id : {76643u, 81309u, 62170u})
         CHECK(&profile_for(mat_with_file(id), 0) == &default_profile());
+    // 69623, read (2026-10-23): prop-decal with holes.
+    const ShaderProfile& ch = profile_for(mat_with_file(69623), 0);
+    CHECK(ch.name == "prop-decal");
+    CHECK(ch.clips);
+    CHECK(ch.diffuseAlpha == AlphaUse::HolesAndShine);
+    CHECK(ch.decalMode == DecalMode::DecalOverDiffuse);
     CHECK(default_profile().decalMode == DecalMode::None);
 }
 

@@ -124,6 +124,9 @@ namespace Castlemist
                 // Not a skinned mesh: Unity's baker skips them, but Bakery lightmaps a static one through
                 // GW2's UV1 (no lightmap UV), which baked 3560849's platform discs dark (2026-10-22).
                 if (q < 2500 && !(r is SkinnedMeshRenderer)) f |= StaticEditorFlags.ContributeGI;
+                // The vegetation wind works in the plant's object space, which static batching merges away.
+                foreach (Material m in r.sharedMaterials)
+                    if (m != null && m.HasProperty("_VegMode") && m.GetFloat("_VegMode") > 0.5f) { f &= ~StaticEditorFlags.BatchingStatic; break; }
             }
             if (r != null && o.reflectionProbes) f |= StaticEditorFlags.ReflectionProbeStatic;
             return f;
@@ -442,6 +445,90 @@ namespace Castlemist
             c.Sum.warnings.Add("reflection probes: " + cells.Count + " baked box probe(s) at " + c.Opts.reflectionResolution +
                                " px: they render black / the sky until Castlemist > Bake Lighting and Occlusion (Unity / Bakery)");
             return cells.Count.ToString(CultureInfo.InvariantCulture);
+        }
+
+        /// One baked box probe per VRC Light Volume of the open scene, on the volume's world box
+        /// (the user's hand-placed volumes cover the map better than the import's per-cell boxes,
+        /// 2026-10-23), then baked (BakeReflectionProbes). The volume covering the most space gets
+        /// importance 1, the others 2, so a local box wins inside it. Earlier castlemist probes and
+        /// stray probes on the volumes' own objects are replaced. Returns the probes made.
+        [MenuItem("Castlemist/Fit Reflection Probes to Light Volumes")]
+        public static void FitReflectionProbesMenu()
+        {
+            int n = FitReflectionProbesToLightVolumes(256, true);
+            Debug.Log("CASTLEMIST reflection probes fitted to " + n + " light volume(s)");
+        }
+
+        public static int FitReflectionProbesToLightVolumes(int resolution, bool bake)
+        {
+            var volumes = new List<Transform>();
+            foreach (MonoBehaviour mb in Object.FindObjectsByType<MonoBehaviour>(FindObjectsInactive.Exclude, FindObjectsSortMode.None))
+                if (mb != null && mb.GetType().Name == "LightVolumeInstance") volumes.Add(mb.transform);
+            if (volumes.Count == 0) return 0;
+
+            // A volume is its transform's unit cube; a rotated one becomes its world AABB (probes are axis-aligned).
+            Bounds BoxOf(Transform t)
+            {
+                var b = new Bounds(t.position, Vector3.zero);
+                for (int i = 0; i < 8; ++i)
+                    b.Encapsulate(t.TransformPoint(new Vector3((i & 1) - 0.5f, ((i >> 1) & 1) - 0.5f, ((i >> 2) & 1) - 0.5f)));
+                return b;
+            }
+            float largest = 0f;
+            foreach (Transform t in volumes) { Vector3 s = BoxOf(t).size; largest = Mathf.Max(largest, s.x * s.y * s.z); }
+
+            // Replace earlier probes: castlemist's, and any sitting on a light volume's own object.
+            Transform parent = null;
+            foreach (ReflectionProbe old in Object.FindObjectsByType<ReflectionProbe>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                if (old.transform.parent != null && old.transform.parent.name == "ReflectionProbes")
+                {
+                    parent = old.transform.parent;
+                    Undo.DestroyObjectImmediate(old.gameObject);
+                }
+                else if (volumes.Contains(old.transform))
+                    Undo.DestroyObjectImmediate(old);
+            }
+            if (parent == null)
+            {
+                Transform env = volumes[0].parent != null ? volumes[0].parent.parent : null;   // <Environment>/LightVolumes/<volume>
+                var go = new GameObject("ReflectionProbes");
+                Undo.RegisterCreatedObjectUndo(go, "Fit reflection probes");
+                if (env != null) go.transform.SetParent(env, false);
+                parent = go.transform;
+            }
+
+            Physics.SyncTransforms();
+            int made = 0;
+            foreach (Transform t in volumes)
+            {
+                Bounds b = BoxOf(t);
+                var go = new GameObject("ReflectionProbe_" + t.name);
+                Undo.RegisterCreatedObjectUndo(go, "Fit reflection probes");
+                go.transform.SetParent(parent, false);
+                Vector3 eye = b.center;
+                RaycastHit hit;
+                if (Physics.Raycast(new Vector3(b.center.x, b.max.y - 0.01f, b.center.z), Vector3.down, out hit, b.size.y))
+                    eye = hit.point + Vector3.up * ProbeEyeHeight;
+                go.transform.position = eye;
+                var p = go.AddComponent<ReflectionProbe>();
+                p.mode = ReflectionProbeMode.Baked;
+                p.boxProjection = true;
+                p.center = b.center - eye;
+                p.size = b.size;
+                p.resolution = resolution;
+                p.hdr = true;
+                p.importance = b.size.x * b.size.y * b.size.z >= largest * 0.999f ? 1 : 2;
+                p.blendDistance = Mathf.Clamp(Mathf.Min(b.size.x, b.size.y, b.size.z) * 0.05f, 1f, 8f);
+                p.nearClipPlane = 0.1f;
+                p.farClipPlane = Mathf.Max(100f, b.size.magnitude * 2f);
+                p.clearFlags = ReflectionProbeClearFlags.Skybox;
+                GameObjectUtility.SetStaticEditorFlags(go, StaticEditorFlags.ReflectionProbeStatic);
+                ++made;
+            }
+            EditorSceneManager.MarkSceneDirty(UnityEngine.SceneManagement.SceneManager.GetActiveScene());
+            if (bake) BakeReflectionProbes();
+            return made;
         }
 
         // ---- lighting settings -----------------------------------------------------------------------

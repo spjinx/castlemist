@@ -72,7 +72,9 @@ namespace Castlemist
             var list = new List<Part>();
             if (modelPrefabs.TryGetValue(model, out prefab))
             {
-                Matrix4x4 toRoot = prefab.transform.worldToLocalMatrix;
+                // The root's own rotation and scale kept, as WorldImporter.Place keeps them for an instance.
+                Matrix4x4 toRoot = Matrix4x4.TRS(Vector3.zero, prefab.transform.localRotation, prefab.transform.localScale) *
+                                   prefab.transform.worldToLocalMatrix;
                 ICollection<string> far = LodGroups.EffectiveFar(prefab, m.Models[model].FarMeshes);
                 foreach (MeshFilter mf in prefab.GetComponentsInChildren<MeshFilter>(true))
                 {
@@ -80,6 +82,26 @@ namespace Castlemist
                     if (mf.sharedMesh == null || mr == null) continue;
                     if (LodGroups.IsLodObject(mf.gameObject, far)) continue;   // Task 15b: patches keep LOD0 only, no stand-ins
                     list.Add(new Part { Mesh = mf.sharedMesh, ToRoot = toRoot * mf.transform.localToWorldMatrix, Materials = mr.sharedMaterials });
+                }
+                // A static model kept rigged (WorldImporter NeedsRig: a joint scale the FBX cannot
+                // bake) has a SkinnedMeshRenderer: its posed mesh, baked from an instance at the origin.
+                if (prefab.GetComponentsInChildren<SkinnedMeshRenderer>(true).Length > 0)
+                {
+                    var inst = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
+                    try
+                    {
+                        inst.transform.position = Vector3.zero;   // its own rotation and scale kept (WorldImporter.Place)
+                        foreach (SkinnedMeshRenderer smr in inst.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                        {
+                            if (smr.sharedMesh == null || LodGroups.IsLodObject(smr.gameObject, far)) continue;
+                            var baked = new Mesh { name = smr.sharedMesh.name + "_baked" };
+                            smr.BakeMesh(baked, false);   // the renderer's space without its scale
+                            bakedMeshes.Add(baked);
+                            Transform t = smr.transform;
+                            list.Add(new Part { Mesh = baked, ToRoot = Matrix4x4.TRS(t.position, t.rotation, Vector3.one), Materials = smr.sharedMaterials });
+                        }
+                    }
+                    finally { Object.DestroyImmediate(inst); }
                 }
             }
             ps = list.Count > 0 ? list.ToArray() : null;
@@ -140,6 +162,7 @@ namespace Castlemist
             FoliageRecord first = pp.Records[0];
             var origin = new Vector3(first.T[0], first.T[1], first.T[2]);
             var byMat = new List<KeyValuePair<Material, List<CombineInstance>>>();
+            var recs = new List<List<Matrix4x4>>();   // per byMat entry, each part's record (its plant)
             var index = new Dictionary<Material, int>();
             Material nullKey = null;
             foreach (FoliageRecord r in pp.Records)
@@ -162,8 +185,10 @@ namespace Castlemist
                             k = byMat.Count;
                             index[mat] = k;
                             byMat.Add(new KeyValuePair<Material, List<CombineInstance>>(mat, new List<CombineInstance>()));
+                            recs.Add(new List<Matrix4x4>());
                         }
                         byMat[k].Value.Add(new CombineInstance { mesh = p.Mesh, subMeshIndex = s, transform = rec * p.ToRoot });
+                        recs[k].Add(rec);
                     }
                 }
             }
@@ -179,6 +204,10 @@ namespace Castlemist
                     mats[k] = byMat[k].Key;
                     var t = new Mesh { indexFormat = IndexFormat.UInt32 };
                     t.CombineMeshes(byMat[k].Value.ToArray(), true, true);
+                    t.SetUVs(7, PlantChannel(byMat[k].Value, recs[k], t.vertexCount));
+                    // No vertex colours (map 506592's pebbles 189628 / 189629): Unity would feed white, full
+                    // bend weight to the vegetation wind; zero holds them still.
+                    if (!t.HasVertexAttribute(VertexAttribute.Color)) t.colors32 = new Color32[t.vertexCount];
                     total += t.vertexCount;
                     temps.Add(t);
                     subs[k] = new CombineInstance { mesh = t, subMeshIndex = 0, transform = Matrix4x4.identity };
@@ -192,6 +221,27 @@ namespace Castlemist
             finally { foreach (Mesh t in temps) Object.DestroyImmediate(t); }
         }
 
+        /// UV7 per vertex, in CombineMeshes' order: its plant's origin (patch space, the record's unity.t
+        /// less the patch's) and scale (w), for the vegetation wind (GW2Core.cginc), which needs each plant.
+        /// CombineMeshes copies a part's whole vertex buffer or its sub-mesh's range; `total` tells which.
+        static List<Vector4> PlantChannel(List<CombineInstance> parts, List<Matrix4x4> recs, int total)
+        {
+            int whole = 0;
+            foreach (CombineInstance c in parts) whole += c.mesh.vertexCount;
+            var uv = new List<Vector4>(total);
+            for (int i = 0; i < parts.Count; ++i)
+            {
+                CombineInstance c = parts[i];
+                Vector3 o = recs[i].MultiplyPoint3x4(Vector3.zero);
+                float s = recs[i].MultiplyVector(Vector3.right).magnitude;
+                int n = whole == total ? c.mesh.vertexCount : c.mesh.GetSubMesh(c.subMeshIndex).vertexCount;
+                for (int v = 0; v < n; ++v) uv.Add(new Vector4(o.x, o.y, o.z, s));
+            }
+            while (uv.Count < total) uv.Add(Vector4.zero);   // never expected: no plant, no wind
+            if (uv.Count > total) uv.RemoveRange(total, uv.Count - total);
+            return uv;
+        }
+
         static void EnsureFolder(string path)
         {
             if (AssetDatabase.IsValidFolder(path)) return;
@@ -200,8 +250,13 @@ namespace Castlemist
             AssetDatabase.CreateFolder(path.Substring(0, slash), path.Substring(slash + 1));
         }
 
+        readonly List<Mesh> bakedMeshes = new List<Mesh>();
+
         public void Finish()
         {
+            foreach (Mesh b in bakedMeshes) Object.DestroyImmediate(b);
+            bakedMeshes.Clear();
+            parts.Clear();
             if (bigPatches > 0)
                 sum.warnings.Add("foliage: " + bigPatches + " patches hold more than 65 535 vertices (a single record of a large model, or " +
                                  "fewer triangles than vertices / 3): 32-bit indices");

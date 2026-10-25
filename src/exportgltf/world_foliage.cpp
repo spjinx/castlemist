@@ -82,6 +82,12 @@ std::vector<FoliageRecord> cell_foliage_records(const cw::WorldScene& s, const c
         uint16_t flags = uint16_t((uint16_t(z.source) & 3u) << kFoliageSourceShift);
         if (z.source == cw::ZoneSource::Collider) flags |= kFoliageFlagCollider;
         if (terrain && !cw::point_in_chunk_grid(s.terrain, z.world[12], z.world[13])) flags |= kFoliageFlagOutsideTerrain;
+        // A zone with collideData (zoneFlags bit 1) takes its z from it, not the terrain: the
+        // instance stands on geometry (map 506592's island rocks), so it is no Terrain detail.
+        if (terrain && z.placement < s.zones.placements.size()) {
+            const uint32_t zone = s.zones.placements[z.placement].zone;
+            if (zone < s.zones.zones.size() && (s.zones.zones[zone].zoneFlags & 2u)) flags |= kFoliageFlagOutsideTerrain;
+        }
         r.flags = flags;
         for (int col = 0; col < 4; ++col)
             for (int row = 0; row < 3; ++row) r.m[col * 3 + row] = z.world[col * 4 + row];

@@ -253,6 +253,21 @@
       "properties": {
         "preset": { "type": "integer", "minimum": 0 },
         "hazeEffectPreset": { "type": "integer", "minimum": 0 },
+        "wind": {
+          "description": "dataGlobal->wind[] of the day slot (as haze), the raw PackMapEnvDataWind bytes; gustSpeed null before V30. How the client makes the vegetation shaders' Wind / WindGust uniforms from them is not traced. Null without a wind record. Optional.",
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["azimuth", "elevation", "noise", "speed", "gust", "gustFreq", "gustSpeed"],
+          "properties": {
+            "azimuth": { "type": "integer", "minimum": 0, "maximum": 255 },
+            "elevation": { "type": "integer", "minimum": 0, "maximum": 255 },
+            "noise": { "type": "integer", "minimum": 0, "maximum": 255 },
+            "speed": { "type": "integer", "minimum": 0, "maximum": 255 },
+            "gust": { "type": "integer", "minimum": 0, "maximum": 255 },
+            "gustFreq": { "type": "integer", "minimum": 0, "maximum": 255 },
+            "gustSpeed": { "type": ["integer", "null"], "minimum": 0, "maximum": 255 }
+          }
+        },
         "lights": {
           "description": "Every light of lighting[preset] in stored order (null pointers and NaN intensities skipped).",
           "type": "array",
@@ -361,6 +376,81 @@
               "texFPS": { "type": "number" },
               "texFileId": { "type": ["integer", "null"], "minimum": 1 },
               "texture": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "skyDistance": {
+          "description": "The sky distance F0 (GW2 units, docs/research/gw2-sky.md §7.1); a cloud plane's half-size is skyDistance * m.",
+          "type": "number"
+        },
+        "skyLightIntensity": {
+          "description": "The sky params' (dayLightIntensity, nightLightIntensity): the factor on a cloud layer's lightIntensity in its sunClr.w (docs/research/gw2-sky.md §10.3).",
+          "$ref": "#/$defs/vec2"
+        },
+        "clouds": {
+          "description": "dataGlobal->clouds: the cloud layers (docs/research/gw2-sky.md §10). Raw values; attributes as stored (0 day, 1 night, 2 the camera.z > level set); m = 0.5925 + 0.4075 extent; fadeEnd / fadeWidth from the last set; texture is the written PNG (relative to the folder) or null.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["altitude", "scale", "m", "attributes", "texture"],
+            "properties": {
+              "name": { "type": "string" },
+              "altitude": { "type": "number" },
+              "cutOut": { "type": "number" },
+              "depth": { "type": "number" },
+              "extent": { "type": "number" },
+              "scale": { "type": "number" },
+              "m": { "type": "number" },
+              "fadeEnd": { "type": "number" },
+              "fadeWidth": { "type": "number" },
+              "attributes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["brightness", "density", "haze", "lightIntensity", "velocity"],
+                  "properties": {
+                    "brightness": { "type": "number" },
+                    "density": { "type": "number" },
+                    "haze": { "type": "number" },
+                    "lightIntensity": { "type": "number" },
+                    "velocity": { "$ref": "#/$defs/vec2" },
+                    "fadeEnd": { "type": "number" },
+                    "fadeWidth": { "type": "number" }
+                  }
+                }
+              },
+              "texFileId": { "type": ["integer", "null"], "minimum": 1 },
+              "texture": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "skyHaze": {
+          "description": "The sky params' haze terms the sky cards read (docs/research/gw2-sky.md §9.4 skypara): (day, night) each.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["bottom", "falloff", "density"],
+          "properties": {
+            "bottom": { "$ref": "#/$defs/vec2" },
+            "falloff": { "$ref": "#/$defs/vec2" },
+            "density": { "$ref": "#/$defs/vec2" }
+          }
+        },
+        "skyCards": {
+          "description": "dataGlobal->skyCards (docs/research/gw2-sky.md §9). Raw, day and night attribute sets: latitude as stored (0..1 = horizon..zenith), azimuth radians, speed the spin (radians per second), scale (x, y), textureUV (uLeft, uRight, 1 - vTop, 1 - vBottom); flags and location as stored; materialFileId for material cards (no texture); texture is the written PNG (relative to the folder) or null.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["flags", "location", "materialFileId", "day", "night"],
+            "properties": {
+              "name": { "type": "string" },
+              "flags": { "type": "integer", "minimum": 0 },
+              "location": { "$ref": "#/$defs/vec3" },
+              "materialFileId": { "type": ["integer", "null"], "minimum": 1 },
+              "day": { "$ref": "#/$defs/skyCardAttr" },
+              "night": { "$ref": "#/$defs/skyCardAttr" }
             }
           }
         },
@@ -553,6 +643,25 @@
     "vec4": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 },
     "rgba": { "type": "array", "items": { "type": "number", "minimum": 0, "maximum": 1 }, "minItems": 4, "maxItems": 4 },
     "rgb": { "type": "array", "items": { "type": "number", "minimum": 0, "maximum": 1 }, "minItems": 3, "maxItems": 3 },
+    "skyCardAttr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["texture", "azimuth", "latitude", "speed", "scale", "textureUV", "brightness", "density"],
+      "properties": {
+        "texFileId": { "type": ["integer", "null"], "minimum": 1 },
+        "texture": { "type": ["string", "null"] },
+        "azimuth": { "type": "number" },
+        "latitude": { "type": "number" },
+        "speed": { "type": "number" },
+        "scale": { "$ref": "#/$defs/vec2" },
+        "textureUV": { "$ref": "#/$defs/vec4" },
+        "brightness": { "type": "number" },
+        "density": { "type": "number" },
+        "hazeDensity": { "type": "number" },
+        "minHaze": { "type": "number" },
+        "lightIntensity": { "type": "number" }
+      }
+    },
     "vec2": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
     "envHaze": {
       "description": "PackMapEnvDataHaze*: distRange in map units; heightRange as stored (map z, up = -Z, unsorted); heightRangeUnity the same as Unity-frame height (-z), sorted. Null where a block has none (zones[].haze never is).",
@@ -679,6 +788,10 @@
         },
         "colliderParts": { "$ref": "#/$defs/count" },
         "colliderTriangles": { "$ref": "#/$defs/count" },
+        "propColliders": {
+          "description": "Props (instances[].prop) whose collision is their own PropCollider_<prop> node in the cell, not in Collider_k: props of a model with a Demolish clip, which the Unity importer can switch off.",
+          "type": "array", "items": { "type": "integer", "minimum": 0 }
+        },
         "budget": {
           "type": "object",
           "additionalProperties": false,

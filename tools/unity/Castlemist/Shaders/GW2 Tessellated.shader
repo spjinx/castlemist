@@ -142,6 +142,14 @@ Shader "Castlemist/GW2 Tessellated"
         _FireColorH ("colorh (raw GW2 value)", Vector) = (1, 1, 1, 1)
         _FireDye ("Dye palette colour, raw GW2 value (1171331 dyedot)", Vector) = (1, 1, 1, 1)
 
+        [Header(GW2 vegetation wind VegPara Wind WindGust)]
+        [Enum(Off, 0, Grass 77876, 1, Tree 56795, 2)] _VegMode ("Vegetation wind", Float) = 0
+        _VegPara ("VegPara (grvegp: edge amp, branch amp, edge freq, branch freq)", Vector) = (0, 0, 0, 0)
+        _VegWind ("Wind (world xyz GW2 units, w speed; from the map wind bytes, UNPROVEN)", Vector) = (0, 0, 0, 0)
+        _VegWindGust ("WindGust (world xyz, w speed)", Vector) = (0, 0, 0, 0)
+        _VegUnityScale ("Unity units per GW2 unit", Float) = 0.0254
+        _VegNoiseAmount ("Grass jitter scale (1 = GW2's; the noise stands in for the engine texture)", Float) = 0.35
+
         [Header(Wave castlemist cloth wave)]
         [ToggleUI] _UseWave ("Wave", Float) = 0
         [Enum(GW2 cloth pins (vertex colour), 0, UV0 V, 1, UV0 V inverted, 2, Everywhere, 3)] _WaveMask ("Wave weight", Float) = 0

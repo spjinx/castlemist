@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -160,8 +161,35 @@ CellMesh build_cell_water(const cw::WorldScene& s, const cw::Cell& c, int waterT
 }
 
 std::vector<CellMesh> build_cell_colliders(const cw::WorldScene& s, const cw::Cell& c, size_t maxVertices) {
+    return build_collider_parts(s, c, c.collision, maxVertices);
+}
+
+CellCollisionSplit split_cell_collision(const cw::WorldScene& s, const cw::Cell& c, const std::vector<uint32_t>& props) {
+    CellCollisionSplit out;
+    std::vector<std::vector<uint32_t>> owned(props.size());
+    for (uint32_t i : c.collision) {
+        int owner = -1;
+        if (i < s.collision.instances.size() && s.collision.instances[i].group == "prop") {
+            const float* w = s.collision.instances[i].world;
+            for (size_t k = 0; k < props.size() && owner < 0; ++k) {
+                if (props[k] >= s.props.size()) continue;
+                const float* p = s.props[props[k]].world;   // column-major: translation in 12..14
+                if (std::fabs(w[12] - p[12]) < 0.01f && std::fabs(w[13] - p[13]) < 0.01f && std::fabs(w[14] - p[14]) < 0.01f)
+                    owner = int(k);
+            }
+        }
+        if (owner < 0) out.shared.push_back(i);
+        else owned[size_t(owner)].push_back(i);
+    }
+    for (size_t k = 0; k < props.size(); ++k)
+        if (!owned[k].empty()) out.props.emplace_back(props[k], std::move(owned[k]));
+    return out;
+}
+
+std::vector<CellMesh> build_collider_parts(const cw::WorldScene& s, const cw::Cell& c, const std::vector<uint32_t>& instances,
+                                           size_t maxVertices) {
     std::vector<float> tris;
-    for (uint32_t i : c.collision) cw::collision_instance_triangles(s, i, tris);
+    for (uint32_t i : instances) cw::collision_instance_triangles(s, i, tris);
     const size_t perPart = std::max<size_t>(1, maxVertices / 3);
     const size_t count = tris.size() / 9;
     std::vector<CellMesh> parts;
@@ -227,7 +255,8 @@ json textured_pbr(int tex) {
 } // namespace
 
 bool write_cell_gltf(const std::string& glbPathUtf8, const cw::Cell& c, const CellMesh& terrain, const CellMesh* water,
-                     const std::vector<CellMesh>& colliders, const CellImages& images, std::string* error) {
+                     const std::vector<CellMesh>& colliders, const CellImages& images, std::string* error,
+                     const std::vector<std::pair<uint32_t, CellMesh>>* propColliders) {
     auto fail = [&](std::string why) {
         if (error) *error = std::move(why);
         return false;
@@ -270,6 +299,17 @@ bool write_cell_gltf(const std::string& glbPathUtf8, const cw::Cell& c, const Ce
         const std::string name = "Collider_" + std::to_string(k);
         children.push_back(w.add_node(json{{"name", name}, {"mesh", write_cell_mesh(w, colliders[k], name, collisionMat)}}));
     }
+    if (propColliders)
+        for (const auto& [prop, mesh] : *propColliders) {
+            if (mesh.vertices() == 0 || mesh.idx.empty()) continue;
+            if (collisionMat < 0) {
+                json pbr = textured_pbr(-1);
+                pbr["baseColorFactor"] = {0.8, 0.2, 0.8, 1.0};
+                collisionMat = w.add_material(json{{"name", "Collision"}, {"pbrMetallicRoughness", pbr}, {"doubleSided", true}});
+            }
+            const std::string name = "PropCollider_" + std::to_string(prop);
+            children.push_back(w.add_node(json{{"name", name}, {"mesh", write_cell_mesh(w, mesh, name, collisionMat)}}));
+        }
 
     json cell = {{"name", "Cell"}, {"translation", {c.origin[0], c.origin[1], c.origin[2]}}};
     if (!children.empty()) cell["children"] = children;

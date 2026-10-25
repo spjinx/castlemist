@@ -554,6 +554,35 @@ CM_TEST(world_cell, collider_parts_under_65535) {
     CHECK_EQ(parts[0].pos[2], 1.f);
 }
 
+// A "prop" collision instance at a listed prop's translation is that prop's; obs instances and
+// prop instances elsewhere stay shared (2026-10-25, demolishable props' own colliders).
+CM_TEST(world_cell, collision_split_by_prop_translation) {
+    cw::WorldScene s = cell_grid(4, 4);
+    add_hull(s, 4);
+    add_hull(s, 2);
+    add_hull(s, 3);
+    s.collision.instances[0].group = "prop";                       // at the prop: owned
+    s.collision.instances[1].group = "obs";                        // same place, other group: shared
+    s.collision.instances[2].group = "prop";
+    s.collision.instances[2].world[12] = 500;                      // elsewhere: shared
+    cw::PropInstance p;
+    p.world[0] = p.world[5] = p.world[10] = p.world[15] = 1;
+    p.world[12] = 0.004f;                                          // within 0.01
+    s.props.push_back(p);
+    cw::Cell c = cell_by_id(s, "c0_0_4x4");
+    c.collision = {0, 1, 2};
+    const CellCollisionSplit split = split_cell_collision(s, c, {0});
+    CHECK(split.shared == std::vector<uint32_t>({1, 2}));
+    CHECK_EQ(split.props.size(), size_t(1));
+    if (split.props.size() != 1) return;
+    CHECK_EQ(split.props[0].first, 0u);
+    CHECK(split.props[0].second == std::vector<uint32_t>({0}));
+    const std::vector<CellMesh> own = build_collider_parts(s, c, split.props[0].second, SIZE_MAX);
+    CHECK_EQ(own.size(), size_t(1));
+    if (!own.empty()) CHECK_EQ(own[0].idx.size() / 3, size_t(4));
+    CHECK(split_cell_collision(s, c, {}).props.empty());           // no props listed: all shared
+}
+
 CM_TEST(world_cell, water_only_where_below) {
     cw::WorldScene s = cell_grid(1, 1);
     add_water(s);
@@ -1176,6 +1205,9 @@ CM_TEST(world_manifest, environment_block) {
     e.has = X::MapEnvEffect::Glow | X::MapEnvEffect::Saturation | X::MapEnvEffect::Clut;
     e.saturation = 0.9f; e.clutFile = 77;
     sky.effect = {e, X::MapEnvEffect{}};
+    X::MapWind w;                                                 // a V29-shaped wind: no gustSpeed
+    w.azimuth = 64; w.speed = 200; w.gust = 30;
+    sky.wind = {w};
     X::MapEnvZone z;
     z.name = "zone";
     z.haze = {h};
@@ -1190,6 +1222,9 @@ CM_TEST(world_manifest, environment_block) {
     if (!env.is_object()) return;
     CHECK_EQ(env["preset"].get<int>(), 1);
     CHECK_EQ(env["hazeEffectPreset"].get<int>(), 0);
+    CHECK_EQ(env["wind"]["azimuth"].get<int>(), 64);
+    CHECK_EQ(env["wind"]["speed"].get<int>(), 200);
+    CHECK(env["wind"]["gustSpeed"].is_null());
     CHECK_EQ(env["lights"].size(), size_t(2));
     // unityForward as light.sun's: map_to_unity of the normalised direction.
     const float d[3] = {0.70710678f, 0, 0.70710678f};
@@ -1218,6 +1253,84 @@ CM_TEST(world_manifest, environment_block) {
     // A slot past the map's presets (presetIndex differs): no lights.
     sky.lighting[1].presetIndex = 0;
     CHECK(world_manifest_json(m.in)["environment"]["lights"].empty());
+}
+
+// environment.clouds (gw2-sky.md §10): raw layer values, every attribute set, m from extent,
+// the last set's fades, the written texture path; skyDistance F0.
+CM_TEST(world_manifest, environment_clouds) {
+    using X = castlemist::model::Extractor;
+    SyntheticManifest m;
+    make_synthetic(m);
+    X::MapSky& sky = m.scene.environment.sky;
+    sky.present = true;
+    sky.skyDistance = 24576;
+    sky.params.dayLightIntensity = 1.5f;
+    X::MapSkyCloudLayer lo, hi;                                   // map 506592's two layers
+    lo.altitude = 1185.41f; lo.cutOut = 1000; lo.depth = 0.198f; lo.extent = 1; lo.scale = 2.37f; lo.texture = 189255;
+    X::MapSkyCloudAttr a;
+    a.brightness = 1; a.density = 1; a.haze = 1; a.lightIntensity = 0.988f;
+    a.velocity[0] = -253.3f; a.velocity[1] = 431.1f; a.fadeEnd = 16; a.fadeWidth = 33.3f;
+    X::MapSkyCloudAttr alt = a;
+    alt.velocity[0] = alt.velocity[1] = 0; alt.fadeEnd = 20; alt.fadeWidth = 40;
+    lo.attributes = {a, a, alt};
+    hi.altitude = 9199.08f; hi.extent = 0; hi.scale = 3.27f; hi.texture = 506588;   // texture not written
+    hi.attributes = {a};
+    sky.clouds = {lo, hi};
+    m.in.cloudTextures = {{"189255", "environment/cloud_189255.png"}};
+    const json man = world_manifest_json(m.in);
+    check_valid(man, "environment_clouds");
+    const json& env = man["environment"];
+    CHECK_EQ(env["skyDistance"].get<float>(), 24576.0f);
+    CHECK_EQ(env["skyLightIntensity"][0].get<float>(), 1.5f);
+    CHECK_EQ(env["clouds"].size(), size_t(2));
+    const json& c0 = env["clouds"][0];
+    CHECK_EQ(c0["altitude"].get<float>(), 1185.41f);
+    CHECK_EQ(c0["m"].get<float>(), 1.0f);
+    CHECK_EQ(c0["attributes"].size(), size_t(3));
+    CHECK_EQ(c0["attributes"][0]["velocity"][1].get<float>(), 431.1f);
+    CHECK_EQ(c0["fadeEnd"].get<float>(), 20.0f);                  // the last set's
+    CHECK_EQ(c0["fadeWidth"].get<float>(), 40.0f);
+    CHECK(c0["texture"] == "environment/cloud_189255.png");
+    const json& c1 = env["clouds"][1];
+    CHECK(std::fabs(c1["m"].get<float>() - 0.5925f) < 1e-6f);
+    CHECK_EQ(c1["texFileId"].get<int>(), 506588);
+    CHECK(c1["texture"].is_null());
+}
+
+// environment.skyCards (gw2-sky.md §9): raw day / night sets, the written texture paths, material
+// cards' fileId; skyHaze from the sky params.
+CM_TEST(world_manifest, environment_sky_cards) {
+    using X = castlemist::model::Extractor;
+    SyntheticManifest m;
+    make_synthetic(m);
+    X::MapSky& sky = m.scene.environment.sky;
+    sky.present = true;
+    sky.params.dayHazeBottom = 0.1f; sky.params.dayHazeFalloff = 0.3f; sky.params.dayHazeDensity = 0.7f;
+    X::MapSkyCard moon, mat;                                      // map 506592's card 0, a material card
+    moon.flags = 0x0b738b80;
+    moon.day.texture = moon.night.texture = 504870;
+    moon.day.azimuth = -3.004911f; moon.day.latitude = 0.242236f; moon.day.speed = 0.034906f;
+    moon.day.scale[0] = moon.day.scale[1] = 4.968944f;
+    moon.day.textureUV[0] = 0; moon.day.textureUV[1] = 1; moon.day.textureUV[2] = 1; moon.day.textureUV[3] = 0;
+    moon.day.brightness = 1; moon.day.density = 1; moon.day.lightIntensity = 1;
+    mat.materialFile = 3135800;
+    sky.cards = {moon, mat};
+    m.in.cardTextures = {{"504870", "environment/card_504870.png"}};
+    const json man = world_manifest_json(m.in);
+    check_valid(man, "environment_sky_cards");
+    const json& env = man["environment"];
+    CHECK_EQ(env["skyCards"].size(), size_t(2));
+    const json& k = env["skyCards"][0];
+    CHECK_EQ(k["flags"].get<uint32_t>(), 0x0b738b80u);
+    CHECK(k["materialFileId"].is_null());
+    CHECK(k["day"]["texture"] == "environment/card_504870.png");
+    CHECK_EQ(k["day"]["speed"].get<float>(), 0.034906f);
+    CHECK_EQ(k["day"]["latitude"].get<float>(), 0.242236f);
+    CHECK_EQ(k["day"]["scale"][1].get<float>(), 4.968944f);
+    CHECK_EQ(env["skyCards"][1]["materialFileId"].get<int>(), 3135800);
+    CHECK(env["skyCards"][1]["day"]["texture"].is_null());
+    CHECK_EQ(env["skyHaze"]["bottom"][0].get<float>(), 0.1f);
+    CHECK_EQ(env["skyHaze"]["density"][0].get<float>(), 0.7f);
 }
 
 CM_TEST(world_manifest, settings_labelled) {
@@ -2246,6 +2359,29 @@ CM_TEST(world_foliage, outside_terrain_clamped_bit4) {
         CHECK_EQ(r.placement, 2u);
     }
     CHECK_EQ(outside, size_t(1));
+}
+
+// A zone with collideData (zoneFlags bit 1) puts its instances on that geometry: bit 4, no Terrain detail.
+CM_TEST(world_foliage, collide_data_zone_bit4) {
+    cw::WorldScene s = tw::synthetic_world();
+    CHECK(!s.zones.instances.empty() && s.zones.instances[0].placement < s.zones.placements.size());
+    if (s.zones.instances.empty() || s.zones.instances[0].placement >= s.zones.placements.size()) return;
+    const uint32_t zone = s.zones.placements[s.zones.instances[0].placement].zone;
+    s.zones.zones[zone].zoneFlags |= 2u;
+    const json man = export_synthetic(s, "foliage_collide_data", synthetic_opts());
+    check_valid(man, "foliage collide data");
+    size_t onGeometry = 0, inZone = 0;
+    for (const json& c : man["cells"]) {
+        if (!c.contains("foliage") || !c["foliage"].is_object()) continue;
+        for (const FoliageRecord& r : read_records(out_dir("foliage_collide_data") / c["foliage"]["file"].get<std::string>())) {
+            const bool zoned = r.placement < s.zones.placements.size() && s.zones.placements[r.placement].zone == zone;
+            inZone += zoned;
+            onGeometry += (r.flags & kFoliageFlagOutsideTerrain) != 0;
+            if (zoned) CHECK((r.flags & kFoliageFlagOutsideTerrain) != 0);
+        }
+    }
+    CHECK(inZone > 0);
+    CHECK_EQ(onGeometry, inZone);
 }
 
 // A failed record write stops the export and leaves no manifest.json (spec "Error handling").

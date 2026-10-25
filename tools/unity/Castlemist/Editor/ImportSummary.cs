@@ -54,11 +54,19 @@ namespace Castlemist
         public int foliagePatches, terrains, detailPrototypes, detailCells, treeInstances;
         /// Task 15b (in the PLAN line).
         public int lodPrefabs, lodTreePrefabs, lodOverrides;
+        public int riggedStatic;
+        public int constantClips;  // clips given GW2's animated material constants (WorldImporter.WithConstants)   // models with no clip kept rigged: skinned to a scaled joint (WorldImporter.NeedsRig)
         /// Particle systems built in model prefabs (ParticleEffects); not in the PLAN line, which
         /// the dry run must match and which cannot count them without the sidecars.
         public int particleSystems;
         /// Ambient particle fields built (ParticleFields); not in the PLAN line.
         public int particleFields;
+        /// Cloud layers built (GW2Clouds); not in the PLAN line.
+        public int clouds;
+        /// Texture sky cards built (GW2SkyCards); not in the PLAN line.
+        public int skyCards;
+        /// Props made demolishable (Demolishables); not in the PLAN line.
+        public int demolishables;
         /// Foliage records not placed (not in the PLAN line): skipped because their
         /// model failed or has no prefab or mesh.
         public int foliageSkipped;
@@ -84,7 +92,7 @@ namespace Castlemist
                    " terrainColliders=" + terrainColliders + " water=" + water + " lights=" + lights +
                    " skybox=" + skybox + " foliageTrees=" + foliageTrees + " foliagePatches=" + foliagePatches +
                    " terrains=" + terrains + " detailPrototypes=" + detailPrototypes + " detailCells=" + detailCells +
-                   " treeInstances=" + treeInstances + " lodPrefabs=" + lodPrefabs + " lodTreePrefabs=" + lodTreePrefabs +
+                   " treeInstances=" + treeInstances + " lodPrefabs=" + lodPrefabs + " riggedStatic=" + riggedStatic + " constantClips=" + constantClips + " lodTreePrefabs=" + lodTreePrefabs +
                    " lodOverrides=" + lodOverrides;
         }
     }

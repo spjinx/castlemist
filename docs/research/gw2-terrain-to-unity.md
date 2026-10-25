@@ -522,7 +522,7 @@ props the export flags in `darkDecalMaterials`.
 | needed | chunk / field | castlemist today | research to do |
 |---|---|---|---|
 | foliage placements | `zon2` | native RLE walk, first model only, no jitter, not in `WorldScene` | own decoder from the template; `flags` low nibble; jitter, rotation, scale, probability, RNG |
-| foliage wind | foliage AMAT VS (`Wind`, `WindGust`, `VegPara`, vertex `COLOR`) | not read | transcribe one VS |
+| foliage wind | foliage AMAT VS (`Wind`, `WindGust`, `VegPara`, vertex `COLOR`) | read 2026-10-23: two variants, grass (77876, 189570: xy sway by COLOR.a + an engine noise texture) and tree (56795, 69668, 47468, 57606, 78966: COLOR R/G/B/A branch, phase, edge, bend; VegPara = the material's grvegp); transcribed in GW2Core.cginc (_VegMode) | trace the client's Wind / WindGust from PackMapEnvDataWind (azimuth, elevation, noise, speed, gust, gustFreq, gustSpeed; exported raw as environment.wind) and the noise texture |
 | decals | `dcal` | not read | conform rule (`gridSize`, `surfaceBias`, `projection`), `flags`, UV fields |
 | holes | `trn.tileFlagArray`, `chunkFlags` | not read | §1.6 proof |
 | ground repeat | `uvScale` / `tiling` | 8, UNPROVEN | `gw2-world-materials.md` §1.6 proof |

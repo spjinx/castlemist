@@ -6,7 +6,9 @@
 //   Normal                                         -> NormalMap
 //   Packed, EmissionMask, Distortion, DecalMask,
 //   AlphaMask, RimMask                             -> sRGB off (data maps)
-//   BaseColor                                      -> sRGB, alphaIsTransparency
+//   BaseColor                                      -> sRGB, alphaIsTransparency off: GW2 samples the stored RGB
+//                                                     under alpha 0 (Unity's dilation overwrote 44% of map 506592's
+//                                                     ground cover 186607, read with its alpha ignored, 2026-10-23)
 //   EmissionMap, Emission, Decal, Projector        -> sRGB (colour maps)
 //   x-<role> (a raw layer, materials.json extras): x-parallax, x-mod, x-glow, x-decal,
 //   x-projector, x-interior -> sRGB (colour); every other x-<role> (mask, mskptrb, ramp,
@@ -177,7 +179,7 @@ namespace Castlemist
             {
                 case Role.Normal: ti.textureType = TextureImporterType.NormalMap; break;
                 case Role.Data: ti.sRGBTexture = false; break;
-                case Role.BaseColor: ti.sRGBTexture = true; ti.alphaIsTransparency = true; break;
+                case Role.BaseColor: ti.sRGBTexture = true; ti.alphaIsTransparency = false; break;
                 case Role.Colour: ti.sRGBTexture = true; break;
             }
         }

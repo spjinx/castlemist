@@ -633,7 +633,7 @@ opcode stream or by uniform/role signature. They were not read line by line.
 | 221571 | **`fx-cubemap`** (new, unsupported) | supported=false | colour = material cubemap by view direction |
 | 49659, 63923, 57026; (sig) 729279, 592660, 797215, 55669, 52624, 959502, 74113 | **`glass-refract`** (new, unsupported) | supported=false | samples the scene colour t14 offset by `distort`; decal alpha = coverage over the refraction |
 | 56533, 60027, 62212 (same), 44479, 60145 (same), 19910, 525886 (same), 69887, 69913, 79884, 60530, 69713, 2597095; (sig) 76643, 81309, 62170 | **`prop-decal`** | Shine + **new `decalMode=DecalOverDiffuse`** (+ `decalMask` role/channel: 19910 decalmask.R, 69887 mask.R, 60530 blend.G) | `lerp(diffuse, decal, saturate(2*decal.a)[*mask])`, shine lerped to `saturate(2*decal.a-1)`; no texture discard |
-| 69623 (sig) | `prop-decal` with clips | HolesAndShine, clips, decalMode | t0 discard (signature) |
+| 69623 (read 2026-10-23) | `prop-decal` with clips | HolesAndShine, clips, decalMode | ps 43: t0 discard below a 0.25, decal over diffuse by saturate(2 decal.a), mod x2 at uv1 (t3) |
 | 57806 | `prop-decal` + **new `decalGlow=AboveHalf`** | Shine, decalMode=DecalOverDiffuse | `+ decal.rgb * saturate(2*decal.a-1)` unlit |
 | 57131 | **`decal-glow`** | Shine + **`decalMode=DiffuseOverDecal`, `decalGlow=BelowHalf`** (x `glowcol` x2) | `lerp(decal, diffuse, decal.a)`; emission `decal*glowcol*2*(1-decal.a)`; decal A 61% < 16 |
 | 44709 | **`fx-alpha-glow`** | **new `AlphaUse::OpacityAndGlow`** | opacity `saturate(2a)*ramp*diffade`, unlit `rgb*saturate(2a-1)*2`; 69% of texels >= 128 | **implemented: `fx-alpha-glow`** |

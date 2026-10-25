@@ -84,7 +84,7 @@ GltfExportResult export_model_gltf(const ModelPreview& model, const std::string&
         result.materialKeys = write_material_keys(w, materialIndices, opts.materialKeyInputs);
     std::vector<MeshExportInfo> meshes =
         write_meshes(w, model, materialIndices, opts.exportLods ? model_lod_levels(model) : 1, opts.uv1CopyToUv4,
-                     opts.vertexColors);
+                     opts.vertexColors, opts.allUvSets);
     result.particlesJsonPath = write_particle_sidecar(model, materialIndices, glbPath);
 
     std::vector<JointExportInfo> joints;
