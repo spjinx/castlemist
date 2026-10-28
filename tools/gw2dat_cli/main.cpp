@@ -2166,6 +2166,99 @@ json npc_json(const castlemist::npc::NpcRecord& n) {
             {"name", n.name}};
 }
 
+// fx census: which effect features the dat's models use, with example fileIds (the
+// curated test cases are picked from this). One feature counts a model once.
+std::vector<std::string> fx_features(const castlemist::model::Model& m) {
+    std::set<std::string> f;
+    const auto& fx = m.effects;
+    auto hex = [](uint32_t v) { char b[16]; std::snprintf(b, sizeof b, "%x", v); return std::string(b); };
+    auto nz2 = [](const float p[2]) { return p[0] != 0 || p[1] != 0; };
+    if (!fx.clouds.empty()) f.insert("clouds");
+    for (const auto& c : fx.clouds) {
+        f.insert("cloud_flags_" + hex(c.flags));
+        f.insert("cloud_fvf_" + hex(c.fvf));
+        if (!c.obstacleIndices.empty()) f.insert("cloud_obstacles");
+        if (c.drag != 0) f.insert("cloud_drag");
+    }
+    for (const auto& e : fx.emitters) {
+        f.insert(e.hasV70Extras ? "emitter_v70" : "emitter_pre_v70");
+        if (nz2(e.velocityInherit)) f.insert("velocity_inherit");
+        if (nz2(e.velocityDistRange) || nz2(e.velocityDistSpeed) || nz2(e.accelerationDistRange) || nz2(e.accelerationDistSpeed))
+            f.insert("dist_terms");
+        if (e.affinity) f.insert("affinity");
+        if (e.mesh.present) f.insert("mesh_emitter");
+        if (e.mesh.present) f.insert("mesh_alignment_" + std::to_string(e.mesh.alignment));
+        if (e.hasPlane) f.insert("alignment_" + std::to_string(e.alignmentType));
+        f.insert("spawn_shape_" + std::to_string(e.spawnShape));
+        if (e.opacityCurvePreset) f.insert("opacity_preset_" + std::to_string(e.opacityCurvePreset));
+        if (e.scaleCurvePreset) f.insert("scale_preset_" + std::to_string(e.scaleCurvePreset));
+        if (!e.opacityCurve.empty()) f.insert("opacity_curve");
+        if (!e.scaleCurve.empty()) f.insert("scale_curve");
+        for (int b = 0; b < 32; ++b) {
+            if (e.emitterFlags & (1u << b)) f.insert("emitter_flag_" + hex(1u << b));
+            if (e.flags & (1u << b)) f.insert("flag_" + hex(1u << b));
+        }
+        if (e.drag != 0) f.insert("emitter_drag");
+    }
+    if (!fx.streaks.empty()) f.insert("streak");
+    if (!fx.obstacles.empty()) f.insert("obstacle");
+    for (const auto& o : fx.obstacles) f.insert("obstacle_type_" + std::to_string(o.type) + "_response_" + std::to_string(o.response));
+    if (!fx.winds.empty()) f.insert("effect_wind");
+    if (!fx.lightningSystems.empty()) f.insert("lightning");
+    if (!fx.lights.empty()) f.insert("effect_light");
+    static const char* kTarget[] = {"cloud", "light", "streak", "lightning", "wind"};
+    for (const auto& c : m.anim.clips)
+        for (const auto& t : c.effectTracks)
+            f.insert(std::string("track_") + (t.target < 5 ? kTarget[t.target] : "other") + "_type_" + std::to_string(t.type));
+    return {f.begin(), f.end()};
+}
+
+// fx-census --dat D [--template T --offset N --count N --examples N]: every MODL entry (from the
+// index DB), effects + clips only. Prints {models, effectModels, counts, examples}.
+void cmd_fx_census(const Args& a) {
+    std::filesystem::path tpl_path = has(a, "template") ? std::filesystem::path(utf8_arg("--template"))
+        : castlemist::character::find_castlemist_root(exe_dir()) / "dumps" / "packfile" / "gw2_packfile.json";
+    std::ifstream tin(tpl_path, std::ios::binary);
+    if (!tin) fail("cannot open template: " + tpl_path.string());
+    json tpl; try { tin >> tpl; } catch (const std::exception& ex) { fail(std::string("template JSON error: ") + ex.what()); }
+    open_index(a);
+    if (!castlemist::db::is_open()) fail("no index DB: pass --index");
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    std::vector<uint32_t> bases = castlemist::db::query_base_ids("", "MODL", 0, false, false, 1000000);
+    std::sort(bases.begin(), bases.end());
+    const size_t offset = has(a, "offset") ? to_u64(a.at("offset")) : 0;
+    const size_t count = has(a, "count") ? to_u64(a.at("count")) : bases.size();
+    const size_t maxEx = has(a, "examples") ? to_u64(a.at("examples")) : 8;
+    std::map<std::string, size_t> counts;
+    std::map<std::string, std::vector<uint32_t>> examples;
+    size_t models = 0, effectModels = 0, failed = 0;
+    for (size_t i = offset; i < bases.size() && i < offset + count; ++i) {
+        const uint32_t b = bases[i];
+        if (b == 0 || b - 1 >= dat.mft_data_list.size()) continue;
+        const MftData& e = dat.mft_data_list[b - 1];
+        std::vector<uint8_t> data;
+        try { data = decompress_entry(read_entry_bytes(dat.file_info.file_path, e), e.compression_flag); }
+        catch (...) { ++failed; continue; }
+        if (data.size() < 16 || data[0] != 'P' || data[1] != 'F' || tag_at(data, 8) != "MODL") continue;
+        castlemist::model::Model model;
+        try { model = castlemist::model::Extractor(data, tpl).extractEffects(); } catch (...) { ++failed; continue; }
+        ++models;
+        std::vector<std::string> feats = fx_features(model);
+        if (feats.empty()) continue;
+        ++effectModels;
+        std::vector<uint32_t> fids = get_by_file_id(dat, b);
+        const uint32_t fid = fids.empty() ? 0 : *std::min_element(fids.begin(), fids.end());
+        for (const auto& ft : feats) {
+            ++counts[ft];
+            auto& ex = examples[ft];
+            if (ex.size() < maxEx) ex.push_back(fid);
+        }
+    }
+    emit({{"ok", true}, {"models", models}, {"effectModels", effectModels}, {"failed", failed},
+          {"counts", counts}, {"examples", examples}});
+}
+
 // The NPC catalogue: --model F (body model fileId), --race R, --limit N (default 100).
 void cmd_npc_list(const Args& a) {
     castlemist::npc::Catalogue cat = ensure_npc(a);
@@ -3606,6 +3699,7 @@ int main(int argc, char** argv) {
         else if (cmd == "scananim") cmd_scananim(a);
         else if (cmd == "amat") cmd_amat(a);
         else if (cmd == "effscan") cmd_effscan(a);
+        else if (cmd == "fx-census") cmd_fx_census(a);
         else if (cmd == "animmach") cmd_animmach(a);
         else if (cmd == "matcensus") cmd_matcensus(a);
         else if (cmd == "compress") cmd_compress(a);

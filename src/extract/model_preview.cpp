@@ -79,6 +79,18 @@ void append_decoded_clips(const std::vector<castlemist::model::AnimClip>& clips,
             }
             consts.push_back(std::move(k));
         }
+        std::vector<EffectTrackCPU> tracks;          // likewise; joints are resolved with the effects
+        for (const auto& t : c.effectTracks) {
+            EffectTrackCPU k;
+            k.target = static_cast<EffectTrackTarget>(t.target);
+            k.bone = t.bone; k.type = t.type; k.trackGroup = t.trackGroup; k.vectorTrack = t.vectorTrack;
+            for (int q = 0; q < 4; ++q) k.initial[q] = t.initial[q];
+            if (const castlemist::granny::VectorTrack* vt = clip.vectorTrack(t.trackGroup, t.vectorTrack)) {
+                k.hasTrack = true;
+                k.curve = vt->curve;
+            }
+            tracks.push_back(std::move(k));
+        }
         out.animClips.push_back(std::move(clip));
         out.animClipBank.push_back(c.bankFileId);
         out.animClipTokens.push_back(c.token);
@@ -86,6 +98,7 @@ void append_decoded_clips(const std::vector<castlemist::model::AnimClip>& clips,
         for (const auto& t : c.visTracks) vis.emplace_back(t.bone, t.keys);
         out.animClipVis.push_back(std::move(vis));
         out.animClipConsts.push_back(std::move(consts));
+        out.animClipEffectTracks.push_back(std::move(tracks));
     }
 }
 
@@ -520,6 +533,7 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
             pc.materialIndex = c.materialIndex; pc.flags = c.flags; pc.fvf = c.fvf; pc.drag = c.drag;
             for (int k = 0; k < 3; ++k) { pc.acceleration[k]=c.acceleration[k]; pc.velocity[k]=c.velocity[k]; }
             pc.emitterIndices = c.emitterIndices;
+            pc.obstacleIndices = c.obstacleIndices;
             pc.boneJoint = resolveBone(c.bone);
             out->clouds.push_back(std::move(pc));
         }
@@ -546,6 +560,22 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
             em.flipbook.rows = e.flipbook.rows; em.flipbook.count = e.flipbook.count;
             em.flipbook.start = e.flipbook.start; em.flipbook.fps = e.flipbook.fps;
             em.hasMesh = e.hasMesh; em.meshFileId = e.meshFileId;
+            em.extra.present = e.hasV70Extras;
+            copy2(e.accelerationDistRange, em.extra.accelerationDistRange); copy2(e.accelerationDistSpeed, em.extra.accelerationDistSpeed);
+            copy2(e.velocityDistRange, em.extra.velocityDistRange); copy2(e.velocityDistSpeed, em.extra.velocityDistSpeed);
+            copy2(e.velocityInherit, em.extra.velocityInherit);
+            em.extra.affinity = e.affinity;
+            {
+                const auto& m = e.mesh;
+                auto& d = em.extra.mesh;
+                d.present = m.present; d.fileId = m.fileId; d.alignment = m.alignment;
+                d.bankThreshold = m.bankThreshold; d.bankScale = m.bankScale; d.obstacleRadius = m.obstacleRadius;
+                for (int r = 0; r < 3; ++r) {
+                    copy2(m.rotation[r], d.rotation[r]); copy2(m.scaleChange[r], d.scaleChange[r]);
+                    copy2(m.scaleInitial[r], d.scaleInitial[r]); copy2(m.spin[r], d.spin[r]);
+                    d.rotationDrag[r] = m.rotationDrag[r];
+                }
+            }
             em.boneJoint = resolveBone(e.bone); // -1: the emitter attaches by its owning cloud's bone
             out->emitters.push_back(std::move(em));
         }
@@ -578,6 +608,39 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
                 lb.variance = b.variance; lb.noise = b.noise; lb.numSegments = b.numSegments; lb.type = b.type;
                 out->lightning.push_back(std::move(lb));
             }
+        for (const auto& st : fx.streaks) {
+            StreakCPU d;
+            d.bone = st.bone; d.boneJoint = resolveBone(st.bone);
+            for (int k = 0; k < 3; ++k) { d.acceleration[k] = st.acceleration[k]; d.velocity[k] = st.velocity[k]; }
+            d.anchorIndices = st.anchorIndices; d.flags = st.flags; d.materialIndex = st.materialIndex;
+            d.jitter = st.jitter; d.noise = st.noise; d.spawnDist = st.spawnDist; d.texScale = st.texScale; d.wind = st.wind;
+            out->streaks.push_back(std::move(d));
+        }
+        for (const auto& an : fx.streakAnchors) {
+            StreakAnchorCPU d;
+            d.bone = an.bone; d.boneJoint = resolveBone(an.bone);
+            d.colorStart = an.colorStart; d.colorEnd = an.colorEnd;
+            d.falloff = an.falloff; d.lifetime = an.lifetime; d.texV = an.texV; d.flags = an.flags;
+            out->streakAnchors.push_back(d);
+        }
+        for (const auto& ob : fx.obstacles) {
+            ObstacleCPU d;
+            d.bone = ob.bone; d.boneJoint = resolveBone(ob.bone);
+            d.affinity = ob.affinity; d.flags = ob.flags; d.type = ob.type; d.response = ob.response;
+            d.dragCoef = ob.dragCoef; d.gravityCoef = ob.gravityCoef;
+            d.length = ob.length; d.width = ob.width; d.height = ob.height; d.radius = ob.radius;
+            for (int k = 0; k < 12; ++k) d.transform[k] = ob.transform[k];
+            d.hasTransform = ob.hasTransform;
+            out->obstacles.push_back(d);
+        }
+        for (const auto& w : fx.winds) {
+            EffectWindCPU d;
+            d.bone = w.bone; d.boneJoint = resolveBone(w.bone);
+            d.farDistance = w.farDistance; d.intensity = w.intensity; d.nearDistance = w.nearDistance;
+            out->effectWinds.push_back(d);
+        }
+        for (auto& clipTracks : out->animClipEffectTracks)
+            for (auto& t : clipTracks) t.boneJoint = resolveBone(t.bone);
     }
 
     for (int i = 0; i < 3; ++i) out->center[i] = (lo[i] + hi[i]) * 0.5f;

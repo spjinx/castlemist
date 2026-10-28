@@ -252,6 +252,17 @@ struct AnimClip {
         float initial[4] = {0, 0, 0, 0};
     };
     std::vector<MatConstAnim> matConstAnims;
+    // ModelAnimationData cloudAnim / lightAnimData / streakAnim (per anchor) / lightningAnim /
+    // windAnimData: each ModelTrackTypeData follows the granny vector track (trackGroup,
+    // vectorTrack) from `initial`; `type` is as stored (what it drives: research note).
+    struct EffectTrack {
+        uint8_t target = 0;   // 0 cloud, 1 light, 2 streak anchor, 3 lightning, 4 wind
+        uint64_t bone = 0;    // the anim entry's bone (the anchor's, for streaks)
+        uint8_t type = 0;
+        uint32_t trackGroup = 0, vectorTrack = 0;
+        float initial[4] = {0, 0, 0, 0};
+    };
+    std::vector<EffectTrack> effectTracks;
 };
 
 // One entry of ModelFileAnimationBank.imports -- the geometry<->animation link.
@@ -346,6 +357,19 @@ struct ParticleEmitter {
     // mesh emitter
     bool hasMesh = false;
     uint32_t meshFileId = 0;
+    // V70 fields, as stored ({min, max} pairs); hasV70Extras = the version has them
+    float accelerationDistRange[2] = {0, 0}, accelerationDistSpeed[2] = {0, 0};
+    float velocityDistRange[2] = {0, 0}, velocityDistSpeed[2] = {0, 0};
+    float velocityInherit[2] = {0, 0};
+    uint32_t affinity = 0;
+    bool hasV70Extras = false;
+    // MeshEmitterSettingsV*, whole; present = the pointer is set (hasMesh / meshFileId mirror it)
+    struct MeshEmitter {
+        bool present = false;
+        uint32_t fileId = 0, alignment = 0;
+        float bankThreshold = 0, bankScale = 0, obstacleRadius = 0;
+        float rotation[3][2] = {}, rotationDrag[3] = {}, scaleChange[3][2] = {}, scaleInitial[3][2] = {}, spin[3][2] = {};
+    } mesh;
 };
 struct ParticleCloud {
     uint32_t materialIndex = 0, flags = 0, fvf = 0;
@@ -354,6 +378,35 @@ struct ParticleCloud {
     float velocity[3] = {0, 0, 0};
     float drag = 0;
     std::vector<uint32_t> emitterIndices; // -> indices into CloudSystem.emitters
+    std::vector<uint32_t> obstacleIndices; // -> indices into CloudSystem.obstacles
+};
+// MODL streakData (ModelStreakDataV*): a streak is a ribbon through its anchors.
+struct StreakAnchor {
+    uint64_t bone = 0;
+    uint32_t colorStart = 0, colorEnd = 0;   // packed colours, as stored
+    float falloff = 0, lifetime = 0, texV = 0;
+    uint32_t flags = 0;
+};
+struct Streak {
+    uint64_t bone = 0;
+    float acceleration[3] = {0, 0, 0}, velocity[3] = {0, 0, 0};
+    std::vector<uint32_t> anchorIndices;     // -> CloudSystem.streakAnchors
+    uint32_t flags = 0, materialIndex = 0;
+    float jitter = 0, noise = 0, spawnDist = 0, texScale = 0, wind = 0;
+};
+// ModelFileData.obstacles (ModelObstacleDataV*): shapes particles collide with.
+struct Obstacle {
+    uint64_t bone = 0;
+    uint32_t affinity = 0, flags = 0;
+    uint8_t type = 0, response = 0;
+    float dragCoef = 0, gravityCoef = 0, length = 0, width = 0, height = 0, radius = 0;
+    float transform[12] = {1,0,0,0, 0,1,0,0, 0,0,1,0};
+    bool hasTransform = false;
+};
+// ModelFileData.windData.effectWind (ModelEffectWindV*).
+struct EffectWind {
+    uint64_t bone = 0;
+    float farDistance = 0, intensity = 0, nearDistance = 0;
 };
 struct EffectLight {
     uint64_t bone = 0;
@@ -392,7 +445,13 @@ struct CloudSystem {
     std::vector<LightningSystem> lightningSystems;
     std::vector<LightningBolt> lightningBolts;
     std::vector<LightningNode> lightningNodes;
-    bool present() const { return !clouds.empty() || !lights.empty() || !lightningSystems.empty(); }
+    std::vector<Streak> streaks;
+    std::vector<StreakAnchor> streakAnchors;
+    std::vector<Obstacle> obstacles;
+    std::vector<EffectWind> winds;
+    bool present() const {
+        return !clouds.empty() || !lights.empty() || !lightningSystems.empty() || !streaks.empty();
+    }
 };
 
 // One authored cloth simulation piece (ModelFileData.clothData[i]). GW2 cloth is
@@ -1024,6 +1083,14 @@ public:
         try { parseEffects(m); }  catch (const std::exception&) { /* effects are optional */ }
         try { if (modl) parseLodOverride(modl, m); } catch (const std::exception&) { /* optional */ }
         resolveBoneBindings(m);
+        return m;
+    }
+
+    // Effects and clips only (no geometry or materials): what the fx census reads.
+    Model extractEffects() {
+        Model m;
+        try { parseAnim(m); }    catch (const std::exception&) { /* animation is optional */ }
+        try { parseEffects(m); } catch (const std::exception&) { /* effects are optional */ }
         return m;
     }
 
@@ -4465,6 +4532,9 @@ private:
         parseCloudData(root, modl, out);
         parseLightData(root, modl, out);
         parseLightningData(root, modl, out);
+        parseStreakData(root, modl, out);
+        parseObstacles(root, modl, out);
+        parseWindData(root, modl, out);
     }
 
     // an array_ptr<word> field (index lists) into @p o
@@ -4576,6 +4646,10 @@ private:
                     uint32_t en = 0; size_t eb = arrayAt(o, en);
                     for (uint32_t k = 0; eb && k < en && k < 256; ++k) pc.emitterIndices.push_back(rd32(eb + 4u*k));
                 }
+                if (fOff(clType, "obstacleIndices", e, o, f2)) {
+                    uint32_t on = 0; size_t ob = arrayAt(o, on);
+                    for (uint32_t k = 0; ob && k < on && k < 128 && ob + 4u*k + 4 <= n_; ++k) pc.obstacleIndices.push_back(rd32(ob + 4u*k));
+                }
                 out.effects.clouds.push_back(std::move(pc));
             }
         }
@@ -4644,9 +4718,121 @@ private:
         if (fOff(t, "meshEmitterSettings", e, o, fj)) {
             size_t p = follow(o);
             std::string mt = ptrTargetStruct(fj);
-            if (p && !mt.empty()) { em.hasMesh = true; em.meshFileId = decodeFilename(mt, p); }
+            if (p && !mt.empty()) {
+                em.hasMesh = true; em.meshFileId = decodeFilename(mt, p);
+                parseMeshSettings(mt, p, em.mesh);
+                em.mesh.fileId = em.meshFileId;
+            }
+        }
+        // V70 additions
+        if (fOff(t, "velocityInherit", e, o, fj)) {
+            em.hasV70Extras = true;
+            rdFloat2(t, "velocityInherit", e, em.velocityInherit);
+            rdFloat2(t, "accelerationDistRange", e, em.accelerationDistRange);
+            rdFloat2(t, "accelerationDistSpeed", e, em.accelerationDistSpeed);
+            rdFloat2(t, "velocityDistRange", e, em.velocityDistRange);
+            rdFloat2(t, "velocityDistSpeed", e, em.velocityDistSpeed);
+            em.affinity = rdDword(t, "affinity", e);
         }
         return em;
+    }
+
+    // MeshEmitterSettingsV*: arrays of float2 pairs, as stored.
+    void parseMeshSettings(const std::string& t, size_t p, ParticleEmitter::MeshEmitter& m) {
+        m.present = true;
+        m.alignment = rdDword(t, "alignment", p);
+        m.bankThreshold = rdFloat1(t, "bankThreshold", p);
+        m.bankScale = rdFloat1(t, "bankScale", p);
+        m.obstacleRadius = rdFloat1(t, "obstacleRadius", p);
+        size_t o; json fj;
+        auto pairs3 = [&](const char* name, float dst[3][2]) {
+            if (fOff(t, name, p, o, fj)) for (int r = 0; r < 3; ++r) { dst[r][0] = rdf(o + 8*r); dst[r][1] = rdf(o + 8*r + 4); }
+        };
+        pairs3("rotation", m.rotation);
+        pairs3("scaleChange", m.scaleChange);
+        pairs3("scaleInitial", m.scaleInitial);
+        pairs3("spin", m.spin);
+        if (fOff(t, "rotationDrag", p, o, fj)) for (int k = 0; k < 3; ++k) m.rotationDrag[k] = rdf(o + 4*k);
+    }
+
+    void parseStreakData(const std::string& root, size_t modl, Model& out) {
+        size_t a; json fj;
+        if (!fOff(root, "streakData", modl, a, fj)) return;
+        size_t sd = follow(a);
+        std::string t = ptrTargetStruct(fj);              // ModelStreakDataV*
+        if (!sd || t.empty()) return;
+        CloudSystem& fx = out.effects;
+        eachElement(t, "streaks", sd, 256, [&](const std::string& st, size_t e) {
+            Streak s;
+            size_t o; json f2;
+            if (fOff(st, "bone", e, o, f2)) s.bone = rd64(o);
+            if (fOff(st, "acceleration", e, o, f2)) for (int k = 0; k < 3; ++k) s.acceleration[k] = rdf(o + 4*k);
+            if (fOff(st, "velocity", e, o, f2)) for (int k = 0; k < 3; ++k) s.velocity[k] = rdf(o + 4*k);
+            if (fOff(st, "anchorIndices", e, o, f2)) {
+                uint32_t n = 0; size_t b = arrayAt(o, n);
+                for (uint32_t k = 0; b && k < n && k < 1024 && b + 4u*k + 4 <= n_; ++k) s.anchorIndices.push_back(rd32(b + 4u*k));
+            }
+            s.flags = rdDword(st, "flags", e);
+            s.materialIndex = rdDword(st, "materialIndex", e);
+            s.jitter = rdFloat1(st, "jitter", e);
+            s.noise = rdFloat1(st, "noise", e);
+            s.spawnDist = rdFloat1(st, "spawnDist", e);
+            s.texScale = rdFloat1(st, "texScale", e);
+            s.wind = rdFloat1(st, "wind", e);
+            fx.streaks.push_back(std::move(s));
+        });
+        eachElement(t, "anchors", sd, 1024, [&](const std::string& st, size_t e) {
+            StreakAnchor an;
+            size_t o; json f2;
+            if (fOff(st, "bone", e, o, f2)) an.bone = rd64(o);
+            an.colorStart = rdDword(st, "colorStart", e);
+            an.colorEnd = rdDword(st, "colorEnd", e);
+            an.falloff = rdFloat1(st, "falloff", e);
+            an.lifetime = rdFloat1(st, "lifetime", e);
+            an.flags = rdDword(st, "flags", e);
+            an.texV = rdFloat1(st, "texV", e);
+            fx.streakAnchors.push_back(an);
+        });
+    }
+
+    void parseObstacles(const std::string& root, size_t modl, Model& out) {
+        eachElement(root, "obstacles", modl, 128, [&](const std::string& st, size_t e) {
+            Obstacle ob;
+            size_t o; json f2;
+            if (fOff(st, "bone", e, o, f2)) ob.bone = rd64(o);
+            ob.affinity = rdDword(st, "affinity", e);
+            ob.flags = rdDword(st, "flags", e);
+            if (fOff(st, "type", e, o, f2) && o < n_) ob.type = d_[o];
+            if (fOff(st, "response", e, o, f2) && o < n_) ob.response = d_[o];
+            ob.dragCoef = rdFloat1(st, "dragCoef", e);
+            ob.gravityCoef = rdFloat1(st, "gravityCoef", e);
+            ob.length = rdFloat1(st, "length", e);
+            ob.width = rdFloat1(st, "width", e);
+            ob.height = rdFloat1(st, "height", e);
+            ob.radius = rdFloat1(st, "radius", e);
+            if (fOff(st, "transform", e, o, f2)) {
+                size_t m = follow(o);
+                if (m && m + 48 <= n_) { for (int k = 0; k < 12; ++k) ob.transform[k] = rdf(m + 4*k); ob.hasTransform = true; }
+            }
+            out.effects.obstacles.push_back(ob);
+        });
+    }
+
+    void parseWindData(const std::string& root, size_t modl, Model& out) {
+        size_t a; json fj;
+        if (!fOff(root, "windData", modl, a, fj)) return;
+        size_t wd = follow(a);
+        std::string t = ptrTargetStruct(fj);              // ModelWindDataV*
+        if (!wd || t.empty()) return;
+        eachElement(t, "effectWind", wd, 64, [&](const std::string& st, size_t e) {
+            EffectWind w;
+            size_t o; json f2;
+            if (fOff(st, "bone", e, o, f2)) w.bone = rd64(o);
+            w.farDistance = rdFloat1(st, "farDistance", e);
+            w.intensity = rdFloat1(st, "intensity", e);
+            w.nearDistance = rdFloat1(st, "nearDistance", e);
+            out.effects.winds.push_back(w);
+        });
     }
 
     void parsePlane(const std::string& t, size_t p, ParticleEmitter& em) {
@@ -4835,6 +5021,50 @@ private:
     }
 
     // ---- embedded animation bank ----
+    // A clip's effect tracks: cloudAnim, lightAnimData, streakAnim (its anchorAnim entries),
+    // lightningAnim, windAnimData; each entry is {bone, <x>TrackData: ModelTrackTypeData[]}.
+    void readEffectTracks(const std::string& clipType, size_t clip, AnimClip& c) {
+        auto tracks = [&](const std::string& et, size_t e, const char* listName, uint8_t target) {
+            size_t bo, lo; json bf, lf;
+            const uint64_t bone = fieldOffset(et, "bone", bo, bf) ? rd64(e + bo) : 0;
+            if (!fieldOffset(et, listName, lo, lf)) return;
+            const std::string tt = lf.contains("element") ? lf["element"].value("struct", std::string()) : std::string();
+            const int ts = tt.empty() ? 0 : typeSize(tt);
+            uint32_t tn = 0; size_t tb = arrayAt(e + lo, tn);
+            size_t o; json f;
+            for (uint32_t k = 0; tb && ts > 0 && k < tn && k < 256; ++k) {
+                const size_t r = tb + (size_t)k * ts;
+                AnimClip::EffectTrack t;
+                t.target = target; t.bone = bone;
+                if (fieldOffset(tt, "type", o, f) && r + o < n_) t.type = d_[r + o];
+                if (fieldOffset(tt, "trackGroupIndex", o, f)) t.trackGroup = rd32(r + o);
+                if (fieldOffset(tt, "vectorTrackIndex", o, f)) t.vectorTrack = rd32(r + o);
+                if (fieldOffset(tt, "initialValue", o, f)) for (int q = 0; q < 4; ++q) t.initial[q] = rdf(r + o + 4 * q);
+                c.effectTracks.push_back(t);
+            }
+        };
+        auto each = [&](const char* field, auto fn) {
+            size_t o; json f;
+            if (!fieldOffset(clipType, field, o, f)) return;
+            const std::string et = f.contains("element") ? f["element"].value("struct", std::string()) : std::string();
+            const int es = et.empty() ? 0 : typeSize(et);
+            uint32_t n = 0; size_t b = arrayAt(clip + o, n);
+            for (uint32_t k = 0; b && es > 0 && k < n && k < 1024; ++k) fn(et, b + (size_t)k * es);
+        };
+        each("cloudAnim", [&](const std::string& et, size_t e) { tracks(et, e, "cloudTrackData", 0); });
+        each("lightAnimData", [&](const std::string& et, size_t e) { tracks(et, e, "lightTrackData", 1); });
+        each("lightningAnim", [&](const std::string& et, size_t e) { tracks(et, e, "lightningTrackData", 3); });
+        each("windAnimData", [&](const std::string& et, size_t e) { tracks(et, e, "windTrackData", 4); });
+        each("streakAnim", [&](const std::string& et, size_t e) {
+            size_t ao; json af;
+            if (!fieldOffset(et, "anchorAnim", ao, af)) return;
+            const std::string at = af.contains("element") ? af["element"].value("struct", std::string()) : std::string();
+            const int as = at.empty() ? 0 : typeSize(at);
+            uint32_t an = 0; size_t ab = arrayAt(e + ao, an);
+            for (uint32_t k = 0; ab && as > 0 && k < an && k < 1024; ++k) tracks(at, ab + (size_t)k * as, "anchorTrackData", 2);
+        });
+    }
+
     void parseAnim(Model& out) {
         std::string root; uint16_t ver = 0;
         size_t anim = findChunk("ANIM", &root, &ver);
@@ -4906,6 +5136,7 @@ private:
                         c.matConstAnims.push_back(m);
                     }
                 }
+                readEffectTracks(clipType, clip, c);
                 // data (PackGrannyAnimationType*) -> raw granny blob + fixup table
                 if (fieldOffset(clipType, "data", o, f)) {
                     std::string gt = f.value("type", std::string());

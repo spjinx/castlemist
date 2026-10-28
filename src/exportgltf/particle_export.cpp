@@ -65,6 +65,9 @@ std::string bone_name(const ModelPreview& model, int boneJoint) {
     return {};
 }
 
+json pair_json(const float p[2]) { return json::array({p[0], p[1]}); }
+json pairs3_json(const float p[3][2]) { return json::array({pair_json(p[0]), pair_json(p[1]), pair_json(p[2])}); }
+
 json emitter_json(const ParticleEmitterCPU& e, const ModelPreview& model) {
     json j;
     j["spawnShape"] = e.spawnShape;
@@ -122,7 +125,37 @@ json emitter_json(const ParticleEmitterCPU& e, const ModelPreview& model) {
         j["spawnWindSpeed"] = {e.spawnWindSpeed[0], e.spawnWindSpeed[1]};
     if (e.spawnWindEmit[0] != 0 || e.spawnWindEmit[1] != 0)
         j["spawnWindEmit"] = {e.spawnWindEmit[0], e.spawnWindEmit[1]};
+    // 2026-10-28: the V70 fields (absent on older emitters, never zero-filled) and the whole
+    // mesh settings, every pair [min, max] as stored. docs/superpowers/specs/2026-10-28-effect-decode-design.md.
+    const ParticleEmitterExtraCPU& x = e.extra;
+    if (x.present) {
+        j["velocityInherit"] = pair_json(x.velocityInherit);
+        j["velocityDistRange"] = pair_json(x.velocityDistRange);
+        j["velocityDistSpeed"] = pair_json(x.velocityDistSpeed);
+        j["accelerationDistRange"] = pair_json(x.accelerationDistRange);
+        j["accelerationDistSpeed"] = pair_json(x.accelerationDistSpeed);
+        j["affinity"] = x.affinity;
+    }
+    if (x.mesh.present) {
+        const MeshEmitterCPU& m = x.mesh;
+        j["mesh"] = {{"fileId", m.fileId}, {"alignment", m.alignment}, {"bankThreshold", m.bankThreshold},
+                     {"bankScale", m.bankScale}, {"obstacleRadius", m.obstacleRadius},
+                     {"rotation", pairs3_json(m.rotation)}, {"scaleInitial", pairs3_json(m.scaleInitial)},
+                     {"scaleChange", pairs3_json(m.scaleChange)}, {"spin", pairs3_json(m.spin)},
+                     {"rotationDrag", {m.rotationDrag[0], m.rotationDrag[1], m.rotationDrag[2]}}};
+    }
     return j;
+}
+
+const char* track_target_name(EffectTrackTarget t) {
+    switch (t) {
+        case EffectTrackTarget::Cloud: return "cloud";
+        case EffectTrackTarget::Light: return "light";
+        case EffectTrackTarget::Streak: return "streak";
+        case EffectTrackTarget::Lightning: return "lightning";
+        case EffectTrackTarget::Wind: return "wind";
+    }
+    return "unknown";
 }
 
 } // namespace
@@ -146,6 +179,7 @@ std::string write_particle_sidecar(const ModelPreview& model, const std::vector<
         cj["emitters"] = json::array();
         for (uint32_t ei : c.emitterIndices)
             if (ei < model.emitters.size()) cj["emitters"].push_back(emitter_json(model.emitters[ei], model));
+        if (!c.obstacleIndices.empty()) cj["obstacleIndices"] = c.obstacleIndices;
         doc["clouds"].push_back(std::move(cj));
     }
 
@@ -176,6 +210,18 @@ std::string write_particle_sidecar(const ModelPreview& model, const std::vector<
             }
         cj["vis"] = vis;
         cj["boneVis"] = boneVis;
+        if (i < model.animClipEffectTracks.size() && !model.animClipEffectTracks[i].empty()) {
+            json tracks = json::array();
+            for (const auto& t : model.animClipEffectTracks[i]) {
+                json tj{{"target", track_target_name(t.target)}, {"type", t.type}, {"trackGroup", t.trackGroup},
+                        {"vectorTrack", t.vectorTrack},
+                        {"initial", {t.initial[0], t.initial[1], t.initial[2], t.initial[3]}}};
+                const std::string bone = bone_name(model, t.boneJoint);
+                if (!bone.empty()) tj["bone"] = bone;
+                tracks.push_back(std::move(tj));
+            }
+            cj["effectTracks"] = std::move(tracks);
+        }
         doc["clips"].push_back(std::move(cj));
     }
 
@@ -198,6 +244,46 @@ std::string write_particle_sidecar(const ModelPreview& model, const std::vector<
         if (!bone.empty()) lj["bone"] = bone;
         else lj["pos"] = {l.pos[0], l.pos[1], l.pos[2]};
         doc["effectLights"].push_back(std::move(lj));
+    }
+
+    // 2026-10-28: streaks, obstacles and effect winds, fields as stored (colours packed).
+    auto bone_or_skip = [&](json& j, int joint) {
+        const std::string b = bone_name(model, joint);
+        if (!b.empty()) j["bone"] = b;
+    };
+    doc["streaks"] = json::array();
+    for (const auto& st : model.streaks) {
+        json sj{{"materialIndex", st.materialIndex}, {"anchorIndices", st.anchorIndices}, {"flags", st.flags},
+                {"velocity", {st.velocity[0], st.velocity[1], st.velocity[2]}},
+                {"acceleration", {st.acceleration[0], st.acceleration[1], st.acceleration[2]}},
+                {"jitter", st.jitter}, {"noise", st.noise}, {"spawnDist", st.spawnDist},
+                {"texScale", st.texScale}, {"wind", st.wind}};
+        if (st.materialIndex < glMaterialIndices.size() && glMaterialIndices[st.materialIndex] >= 0)
+            sj["gltfMaterial"] = glMaterialIndices[st.materialIndex];
+        bone_or_skip(sj, st.boneJoint);
+        doc["streaks"].push_back(std::move(sj));
+    }
+    doc["streakAnchors"] = json::array();
+    for (const auto& an : model.streakAnchors) {
+        json aj{{"colorStart", an.colorStart}, {"colorEnd", an.colorEnd}, {"falloff", an.falloff},
+                {"lifetime", an.lifetime}, {"flags", an.flags}, {"texV", an.texV}};
+        bone_or_skip(aj, an.boneJoint);
+        doc["streakAnchors"].push_back(std::move(aj));
+    }
+    doc["obstacles"] = json::array();
+    for (const auto& ob : model.obstacles) {
+        json oj{{"type", ob.type}, {"response", ob.response}, {"flags", ob.flags}, {"affinity", ob.affinity},
+                {"dragCoef", ob.dragCoef}, {"gravityCoef", ob.gravityCoef}, {"length", ob.length},
+                {"width", ob.width}, {"height", ob.height}, {"radius", ob.radius}};
+        if (ob.hasTransform) oj["transform"] = std::vector<float>(ob.transform, ob.transform + 12);
+        bone_or_skip(oj, ob.boneJoint);
+        doc["obstacles"].push_back(std::move(oj));
+    }
+    doc["effectWinds"] = json::array();
+    for (const auto& w : model.effectWinds) {
+        json wj{{"intensity", w.intensity}, {"nearDistance", w.nearDistance}, {"farDistance", w.farDistance}};
+        bone_or_skip(wj, w.boneJoint);
+        doc["effectWinds"].push_back(std::move(wj));
     }
 
     std::string jsonPath = glbPath.substr(0, glbPath.find_last_of('.')) + "_particles.json";
