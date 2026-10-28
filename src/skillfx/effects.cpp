@@ -28,6 +28,35 @@ void add_unique(std::vector<uint32_t>& v, uint32_t id) {
 
 }  // namespace
 
+EffectClass effect_class_of_kind(uint32_t kind) {
+    switch (kind) {
+        case 0: return EffectClass::Audio;
+        case 1: case 11: return EffectClass::Compound;
+        case 2: return EffectClass::Decal;
+        case 3: case 5: return EffectClass::Material;
+        case 4: case 6: case 10: return EffectClass::Model;
+        case 7: return EffectClass::PostProc;
+        case 8: case 9: return EffectClass::ShakeSpring;
+        default: return EffectClass::Unknown;
+    }
+}
+
+const char* effect_class_name(EffectClass c) {
+    switch (c) {
+        case EffectClass::Audio: return "audio";
+        case EffectClass::Compound: return "compound";
+        case EffectClass::Decal: return "decal";
+        case EffectClass::Material: return "material";
+        case EffectClass::Model: return "model";
+        case EffectClass::PostProc: return "postproc";
+        case EffectClass::ShakeSpring: return "shakespring";
+        case EffectClass::Unknown: break;
+    }
+    return "unknown";
+}
+
+bool is_compound_kind(uint32_t kind) { return effect_class_of_kind(kind) == EffectClass::Compound; }
+
 std::string codename(const cntc::Object& o) {
     for (const auto& [field, s] : o.strings)
         if (is_slug(s)) return s;
@@ -44,6 +73,7 @@ Guid guid_of(const cntc::Pack& p, const cntc::Object& o) {
 Effect read_effect(const cntc::PackSet& s, size_t pack, const cntc::Object& o, const ContainerOf& container) {
     Effect e;
     e.kind = o.data_id;
+    e.cls = effect_class_of_kind(o.data_id);
     e.codename = codename(o);
     e.guid = guid_of(s.packs[pack], o);
     const std::vector<uint32_t>& refs = s.shared_file_refs();
@@ -60,10 +90,10 @@ Effect read_effect(const cntc::PackSet& s, size_t pack, const cntc::Object& o, c
 SkillLinks find_effects(const cntc::PackSet& s, size_t pack, const cntc::Object& skill, const ContainerOf& container) {
     SkillLinks out;
     std::set<std::pair<const cntc::Pack*, uint32_t>> seen;
-    // A kind-1 effect is a group: its type-183 targets replace it, recursively.
+    // A compound effect (kind 1 or 11) is a group: its type-183 targets replace it, recursively.
     std::function<void(size_t, const cntc::Object&, uint32_t)> add = [&](size_t pi, const cntc::Object& o, uint32_t field) {
         if (!seen.insert({&s.packs[pi], o.begin}).second) return;
-        if (o.data_id != 1) {
+        if (!is_compound_kind(o.data_id)) {
             Effect e = read_effect(s, pi, o, container);
             e.field = field;
             out.effects.push_back(std::move(e));

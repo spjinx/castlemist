@@ -334,6 +334,46 @@ CM_TEST(skillfx, find_effects_direct_group_boon_related) {
     CHECK(l.related_skills == std::vector<uint32_t>{68647});
 }
 
+// The client's factory (EfCliContext, 0x141345920, 2026-09 build) builds one class per kind.
+CM_TEST(skillfx, effect_class_of_kind_matches_factory) {
+    CHECK(effect_class_of_kind(0) == EffectClass::Audio);
+    CHECK(effect_class_of_kind(1) == EffectClass::Compound);
+    CHECK(effect_class_of_kind(11) == EffectClass::Compound);
+    CHECK(effect_class_of_kind(2) == EffectClass::Decal);
+    CHECK(effect_class_of_kind(3) == EffectClass::Material);
+    CHECK(effect_class_of_kind(5) == EffectClass::Material);
+    CHECK(effect_class_of_kind(4) == EffectClass::Model);
+    CHECK(effect_class_of_kind(6) == EffectClass::Model);
+    CHECK(effect_class_of_kind(10) == EffectClass::Model);
+    CHECK(effect_class_of_kind(7) == EffectClass::PostProc);
+    CHECK(effect_class_of_kind(8) == EffectClass::ShakeSpring);
+    CHECK(effect_class_of_kind(9) == EffectClass::ShakeSpring);
+    CHECK(effect_class_of_kind(12) == EffectClass::Unknown);     // the factory asserts past 11
+    CHECK_EQ(std::string(effect_class_name(EffectClass::Decal)), std::string("decal"));
+}
+
+CM_TEST(skillfx, effect_records_its_class) {
+    cntc::PackSet s = make_set({{kEffectType, 2, {{100, "Bmt2N.ddddd"}}, {}, {}}});
+    CHECK(read_effect(s, 0, obj(s, 0), test_container).cls == EffectClass::Decal);
+}
+
+// Kind 11 is a Compound too (its context walk follows two child lists): expanded like kind 1.
+CM_TEST(skillfx, find_effects_expands_kind_11_groups) {
+    cntc::PackSet s = make_set({
+        {kSkillType, 44364, {{500, "Bp5rI.Bw99b"}}, {}, {{184, 1}}},
+        {kEffectType, 11, {{100, "Bmt2N.kkkkk"}}, {}, {{112, 2}, {128, 3}}},
+        {kEffectType, 6, {{100, "Bmt2N.aaaaa"}}, {{48, 1000001}}, {}},
+        {kEffectType, 2, {{100, "Bmt2N.ddddd"}}, {}, {}},
+    });
+    SkillLinks l = find_effects(s, 0, obj(s, 0), test_container);
+    CHECK_EQ(l.effects.size(), size_t{2});
+    if (l.effects.size() == 2) {
+        CHECK_EQ(l.effects[0].codename, std::string("Bmt2N.aaaaa"));
+        CHECK_EQ(l.effects[1].codename, std::string("Bmt2N.ddddd"));
+        CHECK(l.effects[1].cls == EffectClass::Decal);
+    }
+}
+
 CM_TEST(skillfx, set_from_namespace_with_bundle) {
     // 0 seed skill AAAAA.aaaaa -> effect 6; 1 skill AAAAA.bbbbb; 2 skill CCCCC.ccccc (other namespace);
     // 3 item AAAAA.item0 +264 -> bar 4; bar +192 -> 1, +304 -> 0; 5 effect EEEEE.22222 (unlinked);
@@ -684,6 +724,7 @@ CM_TEST(skillfx, export_layout_shared_and_failure) {
     CHECK_EQ(sb["effects"][0]["glb"].get<std::string>(), std::string("models/100/100.glb"));
     CHECK_EQ(sb["effects"][1]["error"].get<std::string>(), std::string("bad model"));
     CHECK_EQ(sb["effects"][1]["folder"].get<std::string>(), std::string(""));
+    CHECK(sb["effects"][0].contains("class"));   // the client class of the effect's kind
     nlohmann::json ul = read_json(out / "unlinked" / "unlinked.json");
     CHECK_EQ(ul["effects"][0]["folder"].get<std::string>(), std::string("models/300"));
     std::filesystem::remove_all(out);

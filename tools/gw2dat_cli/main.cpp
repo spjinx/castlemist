@@ -2550,6 +2550,70 @@ castlemist::cntc::PackSet load_cntc_packs(Gw2Dat& dat) {
 // Research aid: the content graph around one object. From --content-type T --content-id N
 // (dataId) it follows every local/external pointer breadth-first to --depth D (default 3),
 // printing each object reached with its string slots and its file slots (fileId + container).
+// fx-census --what effects --dat D: every type-183 effect object, per kind: the client class,
+// object sizes, file containers, ref target types, examples, and per 4-byte field (offset 44..
+// min(size, --max-offset 256)) the distinct values seen and the commonest ones.
+void cmd_effect_census(const Args& a) {
+    namespace nd = castlemist::cntc;
+    open_index(a);
+    if (!castlemist::db::is_open()) fail("no index DB: pass --index");
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    const nd::PackSet set = load_cntc_packs(dat);
+    const uint32_t maxOff = has(a, "max-offset") ? static_cast<uint32_t>(to_u64(a.at("max-offset"))) : 256;
+    struct KindStats {
+        size_t count = 0;
+        std::vector<uint32_t> sizes;
+        std::map<std::string, size_t> files, refTargets;
+        json examples = json::array();
+        std::map<uint32_t, std::map<uint32_t, size_t>> fields;   // offset -> value -> count
+    };
+    std::map<uint32_t, KindStats> kinds;
+    const std::vector<uint32_t>& refs = set.shared_file_refs();
+    for (size_t pi = 0; pi < set.packs.size(); ++pi) {
+        const nd::Pack& p = set.packs[pi];
+        for (const nd::Object& o : p.objects) {
+            if (o.type != castlemist::skillfx::kEffectType) continue;
+            KindStats& k = kinds[o.data_id];
+            ++k.count;
+            const uint32_t size = o.end - o.begin;
+            k.sizes.push_back(size);
+            for (const auto& [field, idx] : o.files) {
+                const uint32_t fid = idx < refs.size() ? refs[idx] : 0;
+                const uint32_t b = fid ? get_by_base_id(dat, fid) : 0;
+                const std::string c = b ? castlemist::db::lookup(b).container : std::string();
+                ++k.files["+" + std::to_string(field) + " " + (c.empty() ? "?" : c)];
+            }
+            for (const nd::Ref& r : o.refs) {
+                auto [tp, to] = set.resolve(pi, r);
+                ++k.refTargets["+" + std::to_string(r.field) + " type " + (to ? std::to_string(to->type) : std::string("?"))];
+            }
+            for (uint32_t off = 44; off + 4 <= size && off < maxOff; off += 4) ++k.fields[off][p.u32(o, off)];
+            if (k.examples.size() < 6)
+                k.examples.push_back({{"uid", p.u32(o, 20)}, {"codename", castlemist::skillfx::codename(o)},
+                                      {"pack", p.file_id}, {"size", size}});
+        }
+    }
+    json out = json::object();
+    for (auto& [kind, k] : kinds) {
+        std::sort(k.sizes.begin(), k.sizes.end());
+        json fields = json::object();
+        for (const auto& [off, vals] : k.fields) {
+            std::vector<std::pair<size_t, uint32_t>> top;
+            for (const auto& [v, n] : vals) top.push_back({n, v});
+            std::sort(top.rbegin(), top.rend());
+            json t = json::array();
+            for (size_t q = 0; q < top.size() && q < 4; ++q) t.push_back({top[q].second, top[q].first});
+            fields[std::to_string(off)] = {{"distinct", vals.size()}, {"top", t}};
+        }
+        out[std::to_string(kind)] = {
+            {"class", castlemist::skillfx::effect_class_name(castlemist::skillfx::effect_class_of_kind(kind))},
+            {"count", k.count}, {"size", {k.sizes.front(), k.sizes[k.sizes.size() / 2], k.sizes.back()}},
+            {"files", k.files}, {"refs", k.refTargets}, {"examples", k.examples}, {"fields", fields}};
+    }
+    emit({{"ok", true}, {"kinds", out}});
+}
+
 // --reverse also lists the objects that point AT the root; --prefix P lists a codename namespace instead.
 void cmd_cgraph(const Args& a) {
     namespace nd = castlemist::cntc;
@@ -3699,7 +3763,7 @@ int main(int argc, char** argv) {
         else if (cmd == "scananim") cmd_scananim(a);
         else if (cmd == "amat") cmd_amat(a);
         else if (cmd == "effscan") cmd_effscan(a);
-        else if (cmd == "fx-census") cmd_fx_census(a);
+        else if (cmd == "fx-census") (has(a, "what") && a.at("what") == "effects") ? cmd_effect_census(a) : cmd_fx_census(a);
         else if (cmd == "animmach") cmd_animmach(a);
         else if (cmd == "matcensus") cmd_matcensus(a);
         else if (cmd == "compress") cmd_compress(a);

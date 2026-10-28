@@ -103,7 +103,7 @@ ExportReport export_skill_set(const SkillSet& set, const fs::path& out, const Mo
         return done[model] = {err.empty() ? rel : std::string(), err};
     };
     auto effect_json = [&](const Effect& f) {
-        json j{{"field", f.field}, {"kind", f.kind},   {"codename", f.codename}, {"model", f.model},
+        json j{{"field", f.field}, {"kind", f.kind},   {"class", effect_class_name(f.cls)}, {"codename", f.codename}, {"model", f.model},
                {"sound", f.sound}, {"guid", hex(f.guid)}, {"source", f.source},     {"ei_name", f.ei_name},
                {"count", f.count}, {"folder", ""},     {"glb", ""}};
         if (f.model) {
