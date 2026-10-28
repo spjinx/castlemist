@@ -317,6 +317,12 @@ gw2dat_cli world-export --dat $dat --file-id 1151420 --template dumps\packfile\g
 gw2dat_cli users --file-id 1200313 --names
 gw2dat_cli users --content-type 66 --content-id 7562                 # the reverse: a skin's files
 
+# Effects: which models use which particle features (every MODL; about 70 minutes), with
+# example fileIds per feature, and every type-183 effect object by kind (about a minute)
+gw2dat_cli fx-census --dat $dat --template dumps\packfile\gw2_packfile.json > census.json
+gw2dat_cli fx-census --what effects --dat $dat > effects.json
+#   --offset N --count N   a slice of the MODL list; --examples N  fileIds kept per feature
+
 # Characters (API key saved in the Character Ripper)
 gw2dat_cli character --key-name main                                  # list characters
 gw2dat_cli character --key-name main --character "Name" --out m.json  # fetch one
