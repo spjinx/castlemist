@@ -122,3 +122,76 @@ Read from Gw2-64.exe.
   the emitter's full 3x3 world matrix, scale included, with no normalisation. A prop placed at
   x64 (the orrery 3124726) throws its sparks 64 times as far.
 
+
+## Amendment 2026-10-28: curve presets, flags, sprite alignment, mesh particles
+
+Read in the `gw2re` Ghidra project, which holds the **2026-09 build**: the Gw2-64.exe now on
+disk is newer and its addresses differ (the bytes at 0x1409c61c0 there are another function's
+epilogue). Every address below is the project's. Coded in `castlemist::fx` (src/fx/fx_math.cpp).
+
+**Curve presets.** `FUN_1409c61c0(id, t)` jumps through an 18-entry table at 0x14257d870
+(read with tools/ghidra/ReadMem.java; the on-disk table differs). With the constants read from
+0x141b90918..0x141b9096c:
+
+| id | f(t) | function |
+|---|---|---|
+| 0 | 1 | 0x14029cdc0 |
+| 1 | t (a bare `ret`, Ghidra names it `_guard_check_icall`) | 0x140163990 |
+| 2 | A = -1.0347t + 21.174t² - 40.278t³ + 20.139t⁴ (a bump, 0 at both ends) | 0x1409c4930 |
+| 3, 4, 5 | 0.75A + 0.25, 0.5A + 0.5, 0.25A + 0.75 | 0x1409c4980, 49e0, 4a40 |
+| 6 | 8.0606t - 20.059t² + 16.354t³ - 4.3561t⁴ (bump) | 0x1409c4aa0 |
+| 7 | 9.3333t - 30.667t² + 42.667t³ - 21.333t⁴ (bump) | 0x1409c4b30 |
+| 8 | 6.3333t - 11.4t² + 5.0667t³ (bump) | 0x1409c4af0 |
+| 9, 10 | t², t⁴ | 0x1409c4d50, 4be0 |
+| 11 | E = -0.6t + 4.8t² - 3.2t³ (ease, ends at 1) | 0x1409c4bf0 |
+| 12, 13, 14 | 0.75E + 0.25, 0.5E + 0.5, 0.25E + 0.75 | 0x1409c4c30, 4c80, 4cd0 |
+| 15, 16, 17 | (1-\|2t-1\|)², ⁴, ¹ | 0x1409c4b80, 4bb0, 4d20 |
+
+A stored curve wins over the preset: the builders take the preset only when the baked curve's
+key count (`+0x42`) is 0 (`FUN_140ad3920` samples the baked curve at `(count - 1) t`).
+
+**Emitter `flags`, file → runtime** (`FUN_140d52160`): runtime bit k = file bit
+{19, 0, 1, 6, 2, 12, 8, 7, 11, 10, 9, 4, 18, 16, 17, 13, 5, 3, 20, 21}[k]; bits 22+ are dropped.
+It reproduces the three mappings of 2026-10-22 (0x4 → 0x10, 0x10 → 0x800, 0x1000 → 0x20) and adds:
+- file 0x80 (runtime 0x80): opacity preset becomes 1 - value (`FUN_140ad3a30`);
+- file 0x400 (runtime 0x200): the scale preset runs backwards, t → 1 - t (`FUN_140acf880`);
+- file 0x200 (runtime 0x400): the scale preset becomes 1 - value (`FUN_140acf880`, `FUN_140ad11b0`);
+- file 0x80000 (runtime 0x1): a facing test in the sprite builder sets a per-quad flag (meaning not read);
+- file 0x20 (runtime 0x10000): when **clear**, the sprite axes are transformed by the 3x4 at
+  `pfVar20` (with its inverse-scale fix-up); when set they are not (which space that leaves them
+  in is not read).
+
+**File → definition copy** (`FUN_140ceb0b0`): `planeEmitterSettings` @+0x122, `meshEmitterSettings`
+@+0x12a in the V70 record; a mesh emitter sets runtime flag 0x1000. Plane fields land at
+definition dwords 0x45 (alignment case), 0x46..0x48 (alignmentDir, normalised by
+`FUN_140ac8c40`), 0x49 rotationDrag, 0x4a/0x4b rotationInitial and 0x4c/0x4d rotationChange
+(both × π/180), 0x4e..0x51 scaleInitial, 0x52..0x55 scaleChange, 0x56..0x59 texCoordRect —
+the template's field order.
+
+**Sprite alignment.** The plane's `alignmentType` byte is remapped by `FUN_140d52110` (table
+0x141ee8df0): **file 0→1, 1→5, 2→4, 3→2, 4→0, 5→3** (past 5 asserts). The sprite builder
+`FUN_140ad11b0` then branches on the remapped case (particle record: position +0x84, a vector
++0x90 that the cases treat as the motion direction, sizes +0xa8/+0xac clamped at 0, remaining /
+total life +0xb8/+0xbc, runtime flags +0xd4):
+- **case 1 (file 0, the common one): camera-facing.** Half-axes in the view plane
+  u = (cos r, sin r)·sx, v = (-sin r, cos r)·sy (`FUN_140e56c60` = cos, `FUN_140e57160` = sin:
+  the latter returns its argument for tiny inputs). `fx::camera_sprite_axes`.
+- **case 0 (file 4): fixed plane.** Built from `alignmentDir` transformed by the matrix at
+  +0x20..+0x48 of the cloud instance, with the up axis swapped when the direction is ±Z, then
+  rotated by r.
+- **case 2 / 3 (file 3 / 5): faces the motion direction**, `+0x90` normalised (falling back to
+  the position term when it is near 0; ±Z handled as in case 0); case 3 negates it.
+- **case 4 (file 2): along the motion direction on screen** — `+0x90` projected on the camera's
+  first two rows, normalised (a zero projection gives the default axes).
+- **case 5 (file 1): an axis billboard** along `+0x90`, turned about that axis to face the
+  camera position (cross product with the eye vector).
+Cases 0 and 2–5 are read as above but not yet coded (B codes each as its sim needs it).
+
+**Mesh particles** (`FUN_140acf880`, record stride 0x80): life fraction t = 1 - remaining/total
+(+0x54 / +0x58, clamped); orientation = the particle quaternion (+0x5c) times a **bank** rotation
+about X when the angle between the motion direction (+0x24, + the +0x30 term) and +0x30 passes
+`bankThreshold` (emitter +0x50): bank = (angle - threshold) × 0.5 × `bankScale` (emitter +0x54),
+clamped; then the mesh `alignment` (`FUN_140d52030`: 0, 1, 2 pass through; others assert):
+0 none, 1 yaw-then-pitch toward the velocity +0x24, 2 yaw only (velocity's XY). Scale = the
+scale curve or preset (flags above) × emitter +0x1c × the particle's xyz size (+0x3c..+0x44);
+`FUN_1409c8cf0` composes scale, position (+0x18) and rotation. Colour from `FUN_140ad3a30`.
