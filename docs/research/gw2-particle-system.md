@@ -195,3 +195,35 @@ clamped; then the mesh `alignment` (`FUN_140d52030`: 0, 1, 2 pass through; other
 0 none, 1 yaw-then-pitch toward the velocity +0x24, 2 yaw only (velocity's XY). Scale = the
 scale curve or preset (flags above) × emitter +0x1c × the particle's xyz size (+0x3c..+0x44);
 `FUN_1409c8cf0` composes scale, position (+0x18) and rotation. Colour from `FUN_140ad3a30`.
+
+## Amendment 2026-10-28 (2): the random generator, lightning
+
+**The engine's random numbers** (`FUN_140e1e6a0`, per-thread state at TLS +0x68 or a passed
+one): MINSTD — `v = 48271*s - (2^31-1)*(s / 44488)` in 32-bit arithmetic; when v > 0x7fffffff
+the client adds **0x80000000** (Schrage's method adds 2^31 - 1, so the client's sequence differs
+from textbook MINSTD after every negative step); v = 0 becomes 0x75bd924; u = v * 2^-31 (the
+constant at 0x1420b3070). The range sampler `FUN_140e1f110` returns `base` **without drawing**
+when `span` is 0, so constants do not advance the sequence. `fx::Rng`, `fx::sample`. (Which
+seed each emitter starts from is not read; B seeds its own.)
+
+**Lightning** (GrLightning.cpp, GrLightningJob.cpp):
+- **Bolt creation** `FUN_140b13cf0` walks the node tree from the root, depth < 32: every child
+  whose node flags bit 0 is clear and whose `probability` (node def +0x68) passes a draw
+  (u <= p) is followed, so a bolt forks along every passing path; each root-to-leaf path of
+  >= 2 nodes becomes one bolt instance. Its lifetime is sampled from the bolt's `lifetime`
+  range, started `dt` early; a texture offset is u × (bolt +0x3c); a second sample from the
+  range at +0x1c and one from {+0x54, +0x58} (as a {min, max} pair) are kept per instance
+  (which bolt fields these are is not settled by this read).
+- **Node points**: by node `shape` (+0x28): **0** a point on a disc, angle 2πu drawn first,
+  radius sampled from `radius` (`fx::lightning_disc_offset`); **1** a random point from
+  `FUN_140e1f170` with z forced to -|z| (the lower half); **2** the same without the fold
+  (`FUN_140e1f170`'s distribution is not read). The point is moved by the node bone's 3x4.
+- **Path** `FUN_140c08e70`: the bolt at t over its node points, **mode 0 linear, mode 1
+  Catmull-Rom** (constants 0.5, 3, 2, 5) with the end points repeated, returning position and
+  unit tangent; t past the last node gives the last node. `fx::bolt_path_point`. Which field
+  picks the mode (the bolt's `type` is the candidate) is not proven.
+- Not read: the per-segment displacement (`variance`, `noise`, `numSegments`), the strip
+  build, thickness and opacity over life.
+
+**Streaks** (GrStreak.cpp 0x14155e170..0x14155fc80, GrStreakJobCommon.cpp 0x141562eb0..):
+decompiled, not yet read.

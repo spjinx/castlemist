@@ -117,4 +117,59 @@ SpriteAxes camera_sprite_axes(float rotation, float sizeX, float sizeY) {
     return {{c * sx, s * sx}, {-s * sy, c * sy}};
 }
 
+float Rng::u01() {
+    uint32_t v = state * 0xbc8fu + (state / 0xadc8u) * 0x80000001u;   // a*s - (2^31 - 1)*(s / q), mod 2^32
+    if (v > 0x7fffffffu) v += 0x80000000u;
+    if (v == 0) v = 0x75bd924u;
+    state = v;
+    return static_cast<float>(v) * 4.656613e-10f;
+}
+
+float sample(Range r, Rng& rng) { return r.span != 0 ? r.base + rng.u01() * r.span : r.base; }
+
+namespace {
+Vec3 sub3(Vec3 a, Vec3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+Vec3 unit3(Vec3 a) {
+    const float l = std::sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
+    return l > 0 ? Vec3{a.x / l, a.y / l, a.z / l} : Vec3{};
+}
+}  // namespace
+
+PathPoint bolt_path_point(uint32_t mode, const std::vector<Vec3>& nodes, float t) {
+    const size_t n = nodes.size();
+    if (n < 2 || mode > 1) return {};
+    const float seg = 1.0f / static_cast<float>(n - 1);
+    const size_t i = static_cast<size_t>(std::max(0.0f, std::floor(t / seg)));
+    if (i + 1 >= n) return {nodes[n - 1], unit3(sub3(nodes[n - 1], nodes[n - 2]))};
+    const float f = std::fmod(t, seg) / seg;
+    const Vec3 p1 = nodes[i], p2 = nodes[i + 1];
+    if (mode == 0) {
+        const Vec3 d = sub3(p2, p1);
+        return {{p1.x + d.x * f, p1.y + d.y * f, p1.z + d.z * f}, unit3(d)};
+    }
+    const Vec3 p0 = i > 0 ? nodes[i - 1] : p1;
+    const Vec3 p3 = i + 2 < n ? nodes[i + 2] : p2;
+    auto axis = [&](float a0, float a1, float a2, float a3, float& pos, float& tan) {
+        const float c1 = (a2 - a0) * 0.5f;
+        const float c3 = (3.0f * a1 + a3 - a0 - 3.0f * a2) * 0.5f;
+        const float c2 = 2.0f * a2 - (5.0f * a1 + a3) * 0.5f + a0;
+        pos = ((c3 * f + c2) * f + c1) * f + a1;
+        tan = (c3 * 3.0f * f + c2 * 2.0f) * f + c1;
+    };
+    PathPoint out;
+    Vec3 tan;
+    axis(p0.x, p1.x, p2.x, p3.x, out.pos.x, tan.x);
+    axis(p0.y, p1.y, p2.y, p3.y, out.pos.y, tan.y);
+    axis(p0.z, p1.z, p2.z, p3.z, out.pos.z, tan.z);
+    out.tangent = unit3(tan);
+    return out;
+}
+
+Vec3 lightning_disc_offset(Range radius, Rng& rng) {
+    const float u = rng.u01();
+    const float ang = u * 3.1415927f + u * 3.1415927f;             // as the client sums it
+    const float r = sample(radius, rng);
+    return {std::cos(ang) * r, std::sin(ang) * r, 0.0f};
+}
+
 }  // namespace castlemist::fx

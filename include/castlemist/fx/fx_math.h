@@ -86,6 +86,33 @@ struct SpriteAxes {
 ///        u = (cos r, sin r) sx, v = (-sin r, cos r) sy; negative sizes clamp to 0.
 SpriteAxes camera_sprite_axes(float rotation, float sizeX, float sizeY);
 
+/// @brief The client's random generator (FUN_140e1e6a0): MINSTD, a = 48271, computed as
+///        `a*s - (2^31 - 1)*(s / 44488)` in 32 bits; a result past 0x7fffffff gets 0x80000000
+///        added (one more than Schrage's fix-up), a zero state becomes 0x75bd924;
+///        returns state * 2^-31.
+struct Rng {
+    uint32_t state = 1;
+    float u01();
+};
+
+/// @brief A range sampled as the client does (FUN_140e1f110): base + u * span, and **no
+///        draw at all** when span is 0 (so a constant leaves the sequence where it was).
+float sample(Range r, Rng& rng);
+
+/// @brief A point on a bolt's node path and its unit tangent.
+struct PathPoint {
+    Vec3 pos, tangent;
+};
+/// @brief The bolt path at @p t in [0, 1] over @p nodes (>= 2; FUN_140c08e70): mode 0
+///        linear, mode 1 Catmull-Rom (0.5, 3, 2, 5) with the end points repeated; t at or past
+///        the last node gives the last node and the last segment's direction. Other modes:
+///        zero.
+PathPoint bolt_path_point(uint32_t mode, const std::vector<Vec3>& nodes, float t);
+
+/// @brief Lightning node shape 0 (FUN_140b13cf0): (cos a, sin a, 0) * r with a = 2*pi*u drawn
+///        first, then r = sample(radius).
+Vec3 lightning_disc_offset(Range radius, Rng& rng);
+
 }  // namespace castlemist::fx
 
 /// @}

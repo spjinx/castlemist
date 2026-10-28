@@ -137,3 +137,57 @@ CM_TEST(fx, camera_sprite_axes_rotate_in_the_view_plane) {
     const SpriteAxes neg = camera_sprite_axes(0.0f, -1.0f, -1.0f);         // sizes clamp at 0
     CHECK_NEAR(neg.u.x, 0.0f, 1e-6f); CHECK_NEAR(neg.v.y, 0.0f, 1e-6f);
 }
+
+// FUN_140e1e6a0: MINSTD (48271, Schrage q 44488) in 32-bit arithmetic; u = state * 2^-31.
+CM_TEST(fx, rng_matches_the_client_generator) {
+    Rng r{1};
+    CHECK_NEAR(r.u01(), 48271.0f / 2147483648.0f, 1e-12f);
+    CHECK_EQ(r.state, 48271u);
+    r.u01();
+    CHECK_EQ(r.state, 182605794u);                 // 48271^2 mod (2^31 - 1)
+    Rng q{44488};                                  // a*(s mod q) - 3399*(s/q) = -3399 < 0
+    q.u01();
+    CHECK_EQ(q.state, 2147480249u);                // the client adds 2^31 (Schrage adds 2^31 - 1)
+    Rng z{0};
+    z.u01();
+    CHECK_EQ(z.state, 0x75bd924u);                 // a zero state is replaced
+}
+
+// FUN_140e1f110: no draw at all when the span is 0.
+CM_TEST(fx, sample_skips_the_draw_for_a_constant) {
+    Rng r{7};
+    CHECK_NEAR(sample(Range{2.5f, 0.0f}, r), 2.5f, 1e-6f);
+    CHECK_EQ(r.state, 7u);
+    const float v = sample(Range{1.0f, 2.0f}, r);
+    CHECK(r.state != 7u);
+    CHECK(v >= 1.0f && v < 3.0f);
+}
+
+// FUN_140c08e70: mode 0 linear, mode 1 Catmull-Rom with the end points repeated.
+CM_TEST(fx, bolt_path_linear_and_catmull_rom) {
+    const std::vector<Vec3> pts = {{0, 0, 0}, {10, 0, 0}, {10, 10, 0}};
+    const PathPoint a = bolt_path_point(0, pts, 0.25f);   // half way along the first of two segments
+    CHECK_NEAR(a.pos.x, 5.0f, 1e-5f); CHECK_NEAR(a.pos.y, 0.0f, 1e-5f);
+    CHECK_NEAR(a.tangent.x, 1.0f, 1e-5f);
+    const PathPoint b = bolt_path_point(1, pts, 0.5f);    // a node: the curve passes through it
+    CHECK_NEAR(b.pos.x, 10.0f, 1e-4f); CHECK_NEAR(b.pos.y, 0.0f, 1e-4f);
+    // segment 0 at f 0.5, P0 = P1: x = 0.5*(5 + 7.5 - 2.5), y = 0.5*(-2.5 + 1.25)
+    const PathPoint c = bolt_path_point(1, pts, 0.25f);
+    CHECK_NEAR(c.pos.x, 5.0f, 1e-4f);
+    CHECK_NEAR(c.pos.y, -0.625f, 1e-4f);
+    const PathPoint end = bolt_path_point(1, pts, 1.0f);
+    CHECK_NEAR(end.pos.y, 10.0f, 1e-4f);
+    CHECK_NEAR(end.tangent.y, 1.0f, 1e-4f);
+}
+
+// FUN_140b13cf0, node shape 0: a point on a disc, angle 2*pi*u first, then the radius sample.
+CM_TEST(fx, lightning_disc_offset_draw_order) {
+    Rng r{12345};
+    Rng copy = r;
+    const Vec3 p = lightning_disc_offset(Range{3.0f, 0.0f}, r);
+    const float ang = 2.0f * 3.1415927f * copy.u01();
+    CHECK_NEAR(p.x, std::cos(ang) * 3.0f, 1e-4f);
+    CHECK_NEAR(p.y, std::sin(ang) * 3.0f, 1e-4f);
+    CHECK_NEAR(p.z, 0.0f, 1e-6f);
+    CHECK_EQ(r.state, copy.state);                 // a constant radius drew nothing more
+}
