@@ -105,6 +105,9 @@ castlemist_add_layer(native DEPS ext::json)
 
 castlemist_add_layer(core   DEPS castlemist::native)
 
+# fx: the GW2 client's effect maths (particles, streaks, lightning) as pure functions.
+castlemist_add_layer(fx     DEPS castlemist::core)
+
 castlemist_add_layer(format DEPS castlemist::core castlemist::native
                                  ext::jpegturbo ext::webp ext::stb
                                  windowscodecs ole32 oleaut32 uuid)
