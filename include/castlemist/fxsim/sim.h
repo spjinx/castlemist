@@ -36,6 +36,8 @@ SimInput make_input(const ModelPreview& model);
 ///        a cloud instance at 0x4000 and logs "Cloud particle count ... exceeds maximum"
 ///        (FUN_140ac9530).
 constexpr size_t kMaxParticles = 0x4000;
+/// @brief Spawn groups one emitter may run in one step (a guard for degenerate periods).
+constexpr size_t kMaxGroupsPerStep = 4096;
 
 /// @brief One live particle (GW2 model space: Z up, inches).
 struct Particle {
@@ -64,7 +66,9 @@ struct Frame {
 /// @brief The reference sim. Deterministic: the same input, seed and steps give the same frames.
 class Sim {
 public:
-    Sim(SimInput in, uint32_t seed);
+    /// @p collectStats false keeps no history (the app runs the sim for hours; only the CLI and
+    ///  the browser read stats).
+    Sim(SimInput in, uint32_t seed, bool collectStats = true);
     /// @brief Advances @p dt seconds; dt <= 0 does nothing.
     void step(float dt);
     const Frame& frame() const { return frame_; }
@@ -77,6 +81,7 @@ public:
 
 private:
     void spawn(size_t ei);
+    void spawn_group(size_t ei);           ///< one group, capped at kMaxParticles (the rest counted as dropped)
     void appearance(Particle& p) const;   ///< colour, size, rotation, frame from age
     SimInput in_;
     std::vector<fx::Rng> rng_;
@@ -84,14 +89,21 @@ private:
     std::vector<bool> burstFired_;   ///< emitterFlags 0x8 emitters that have fired
     Frame frame_;
     size_t dropped_ = 0;
+    bool collect_ = true;
     // stats: counters kept per step, finished in stats()
     struct Acc {
-        std::vector<float> dist;            ///< Capped sample of distances from the emitter.
+        std::vector<float> dist;            ///< Reservoir sample of distances from the emitter.
+        size_t seen = 0;                    ///< distances offered to the reservoir
         double speedSum = 0; size_t speedN = 0;
         double alpha[5] = {}, size[5] = {}; size_t n[5] = {};
     };
     std::vector<Acc> acc2_;
+    fx::Rng statsRng_{0x5eed5u};
     mutable Stats stats_;
 };
+
+/// @brief Puts @p sim at time @p t by re-running from 0 at the fixed step @p dt
+///        (`round(t / dt)` steps; t < 0 is 0). Exact, because the sim is deterministic.
+void seek(Sim& sim, const SimInput& in, uint32_t seed, float dt, float t, bool collectStats = true);
 
 }  // namespace castlemist::fxsim

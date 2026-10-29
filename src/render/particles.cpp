@@ -11,10 +11,28 @@
 
 namespace castlemist::render {
 
+namespace {
+uint32_t g_fxSeed = 1;
+float g_fxSpeed = 1.0f;
+bool g_fxPaused = false;
+std::vector<bool> g_fxSolo;   // per SimInput emitter; empty or mismatched = all drawn
+}  // namespace
+
 void set_show_effects(bool on) {
     g_show_effects = on;
-    if (!on && g_fxSim) g_fxSim = std::make_unique<fxsim::Sim>(g_fxSim->input(), 1u);   // start over when shown again
+    if (!on && g_fxSim) g_fxSim = std::make_unique<fxsim::Sim>(g_fxSim->input(), g_fxSeed, false);   // start over when shown again
 }
+const fxsim::Sim* effect_sim() { return g_fxSim.get(); }
+void restart_effects(uint32_t seed) {
+    g_fxSeed = seed;
+    if (g_fxSim) g_fxSim = std::make_unique<fxsim::Sim>(g_fxSim->input(), seed, false);
+}
+void set_effect_solo(const std::vector<bool>& mask) { g_fxSolo = mask; }
+void set_effect_time(float seconds) {
+    if (g_fxSim) { const fxsim::SimInput in = g_fxSim->input(); fxsim::seek(*g_fxSim, in, g_fxSeed, 1.0f / 60.0f, seconds, false); }
+}
+void set_effect_speed(float factor) { g_fxSpeed = std::clamp(factor, 0.05f, 8.0f); }
+void set_effects_paused(bool paused) { g_fxPaused = paused; }
 bool show_effects() { return g_show_effects; }
 bool has_effects() { return effects_present(); }
 void effect_stats(int& clouds, int& emitters, int& lights, int& live) {
@@ -39,7 +57,8 @@ void capture_effects(const ModelPreview& model) {
     g_fxClouds = in.clouds;
     for (const auto& e : in.emitters) g_fxEmitters.push_back(e.e);
     g_fxLights = model.effectLights;
-    g_fxSim = std::make_unique<fxsim::Sim>(std::move(in), 1u);
+    g_fxSim = std::make_unique<fxsim::Sim>(std::move(in), g_fxSeed, false);
+    g_fxSolo.clear();
 }
 
 bool effects_present() { return !g_fxClouds.empty() || !g_fxLights.empty(); }
@@ -56,8 +75,8 @@ bool fxIsDistortion(const ParticleEmitterCPU& e) {
 }
 
 void update_particles(float dt) {
-    if (!g_show_effects || !g_fxSim || dt <= 0) return;
-    g_fxSim->step(std::min(dt, 0.05f)); // clamp big frame gaps (paused/minimized)
+    if (!g_show_effects || !g_fxSim || dt <= 0 || g_fxPaused) return;
+    g_fxSim->step(std::min(dt, 0.05f) * g_fxSpeed); // clamp big frame gaps (paused/minimized)
 }
 
 void render_particles(const Mat4& mvp) {
@@ -86,8 +105,7 @@ void render_particles(const Mat4& mvp) {
         vtx.push_back(a); vtx.push_back(d); vtx.push_back(e);
     };
     // Camera-facing, rotated in the view plane (sprite case 1; also the stand-in for 0, 2, 3).
-    auto emitQuad = [&](Vec3 c, float sx, float sy, float rot, const float col[4], int material, float u0, float v0, float u1, float v1) {
-        (void)material;
+    auto emitQuad = [&](Vec3 c, float sx, float sy, float rot, const float col[4], float u0, float v0, float u1, float v1) {
         const fx::SpriteAxes s = fx::camera_sprite_axes(rot, sx, sy);
         emitAxes(c, {right.x*s.u.x + up.x*s.u.y, right.y*s.u.x + up.y*s.u.y, right.z*s.u.x + up.z*s.u.y},
                     {right.x*s.v.x + up.x*s.v.y, right.y*s.v.x + up.y*s.v.y, right.z*s.v.x + up.z*s.v.y},
@@ -110,7 +128,9 @@ void render_particles(const Mat4& mvp) {
     std::vector<int> order;
     order.reserve(parts.size());
     for (size_t i = 0; i < parts.size(); ++i)
-        if (!fxIsDistortion(g_fxEmitters[parts[i].emitter])) order.push_back(static_cast<int>(i));
+        if (!fxIsDistortion(g_fxEmitters[parts[i].emitter]) &&
+            (g_fxSolo.size() != g_fxEmitters.size() || g_fxSolo[parts[i].emitter]))
+            order.push_back(static_cast<int>(i));
     std::vector<int> mats(parts.size());
     for (size_t i = 0; i < parts.size(); ++i) mats[i] = materialOf(parts[i]);
     std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return mats[a] < mats[b]; });
@@ -154,7 +174,7 @@ void render_particles(const Mat4& mvp) {
                 break;
             }
             default:
-                emitQuad(c, p.size[0], p.size[1], p.rotation, col, curMat, p.uv[0], p.uv[1], p.uv[2], p.uv[3]);
+                emitQuad(c, p.size[0], p.size[1], p.rotation, col, p.uv[0], p.uv[1], p.uv[2], p.uv[3]);
         }
     }
     if (curMat != -2) spans.push_back({curMat, spanStart, (UINT)vtx.size() - spanStart});
@@ -166,7 +186,7 @@ void render_particles(const Mat4& mvp) {
             float rad = std::max(0.02f, L.farDistance * 0.5f);
             float inten = std::clamp(L.intensity, 0.05f, 4.0f);
             float col[4] = {L.color[0]*inten, L.color[1]*inten, L.color[2]*inten, 1.0f};
-            emitQuad({L.pos[0], L.pos[1], L.pos[2]}, rad, rad, 0, col, -1, 0, 0, 1, 1);
+            emitQuad({L.pos[0], L.pos[1], L.pos[2]}, rad, rad, 0, col, 0, 0, 1, 1);
         }
         spans.push_back({-1, ls, (UINT)vtx.size() - ls});
     }

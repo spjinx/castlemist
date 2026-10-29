@@ -5,8 +5,13 @@
 
 #include "castlemist/fxsim/sim.h"
 #include "castlemist/fxsim/stats.h"
+#include "castlemist/fxsim/features.h"
+#include "castlemist/native/gw2model.hpp"
 
 #include <nlohmann/json.hpp>
+
+#include <cmath>
+#include <limits>
 
 using namespace castlemist;
 
@@ -256,4 +261,103 @@ CM_TEST(fxsim, burst_emitter_fires_once) {
     run(s, 3.0f, 0.1f);
     CHECK_EQ(s.frame().particles.size(), size_t{5});
     CHECK_EQ(s.stats().emitters[0].spawned, size_t{5});
+}
+
+// The Models tab's per-model counts, from a parsed model (fxsim::summarize).
+CM_TEST(fxsim, summarize_counts_features) {
+    castlemist::model::Model m;
+    m.effects.clouds.resize(2);
+    castlemist::model::ParticleEmitter a, b, c;
+    a.hasPlane = true; a.alignmentType = 1;          // case 5
+    b.hasPlane = true; b.alignmentType = 0;          // case 1
+    b.emitterFlags = 0x8;                            // burst
+    c.hasMesh = true;
+    m.effects.emitters = {a, b, c};
+    m.effects.streaks.resize(3);
+    m.effects.lights.resize(1);
+    m.effects.lightningSystems.resize(1);
+    m.effects.lightningBolts.resize(4);
+    castlemist::model::AnimClip clip;
+    clip.effectTracks.resize(2);
+    m.anim.clips = {clip, clip};
+    const fxsim::ModelFeatures f = fxsim::summarize(m);
+    CHECK_EQ(f.clouds, uint16_t{2});
+    CHECK_EQ(f.emitters, uint16_t{3});
+    CHECK_EQ(f.streaks, uint16_t{3});
+    CHECK_EQ(f.lightning, uint16_t{4});
+    CHECK_EQ(f.lights, uint16_t{1});
+    CHECK_EQ(f.meshEmitters, uint16_t{1});
+    CHECK_EQ(f.bursts, uint16_t{1});
+    CHECK_EQ(f.clipTracks, uint16_t{4});
+    CHECK_EQ(f.alignMask, uint8_t{(1u << 5) | (1u << 1)});
+    CHECK(f.any());
+    CHECK(!fxsim::summarize(castlemist::model::Model{}).any());
+}
+
+// A seek re-runs from 0 at the fixed step: the same frame as stepping there, backwards too.
+CM_TEST(fxsim, seek_equals_stepping_and_goes_backwards) {
+    fxsim::SimInput in = steady(0.05f, 2.0f);
+    in.emitters[0].e.spawnShape = 4;
+    in.emitters[0].e.spawnRadius[0] = 1; in.emitters[0].e.spawnRadius[1] = 5;
+    fxsim::Sim stepped(in, 3);
+    for (int i = 0; i < 60; ++i) stepped.step(1.0f / 60.0f);
+    fxsim::Sim sought(in, 3);
+    for (int i = 0; i < 100; ++i) sought.step(1.0f / 60.0f);   // run past, then seek back
+    fxsim::seek(sought, in, 3, 1.0f / 60.0f, 1.0f);
+    CHECK_EQ(sought.frame().particles.size(), stepped.frame().particles.size());
+    CHECK(sought.frame().particles.front().pos.x == stepped.frame().particles.front().pos.x);
+    fxsim::seek(sought, in, 3, 1.0f / 60.0f, -5.0f);           // clamps at 0
+    CHECK(sought.frame().particles.empty());
+    CHECK_NEAR(sought.frame().time, 0.0f, 1e-9f);
+}
+
+// ---- review fixes (B whole-branch review) ----
+
+// Important 1: without stats the sim keeps no history (the app runs it for hours).
+CM_TEST(fxsim, no_stats_keeps_no_history) {
+    fxsim::Sim s(steady(0.01f, 1.0f), 1, false);
+    run(s, 2.0f, 0.01f);
+    CHECK(s.stats().live.empty());
+    CHECK(s.stats().emitters[0].live.empty());
+    CHECK(!s.frame().particles.empty());
+}
+
+// Important 2: spread covers the whole run, not the first 262,144 samples.
+CM_TEST(fxsim, spread_covers_the_whole_run) {
+    fxsim::SimInput in = steady(0.001f, 10.0f);
+    in.emitters[0].e.velocity[0][0] = 1; in.emitters[0].e.velocity[0][1] = 1;
+    in.emitters[0].e.velocity[3][0] = 10; in.emitters[0].e.velocity[3][1] = 10;
+    fxsim::Sim s(in, 1);
+    run(s, 3.0f, 1.0f / 60.0f);                 // ~3,000 live per step: the old cap filled in ~1.5 s
+    CHECK(s.stats().emitters[0].spread[2] > 18.0f);
+}
+
+// Important 3: data that used to hang the spawn loop.
+CM_TEST(fxsim, degenerate_spawn_data_terminates) {
+    fxsim::Sim tiny(steady(1e-9f, 1.0f), 1);    // period under half an ulp of the accumulator
+    tiny.step(0.05f);
+    CHECK(tiny.frame().particles.size() <= fxsim::kMaxParticles);
+    fxsim::Sim inf(steady(0.1f, 1.0f), 1);
+    inf.step(std::numeric_limits<float>::infinity());
+    CHECK(inf.frame().particles.empty());
+    CHECK_NEAR(inf.frame().time, 0.0f, 1e-9f);
+    fxsim::SimInput huge = steady(0.1f, 100.0f);
+    huge.emitters[0].e.spawnGroupSize[0] = 2e9f; huge.emitters[0].e.spawnGroupSize[1] = 2e9f;
+    fxsim::Sim h(huge, 1);
+    h.step(0.1f);
+    CHECK_EQ(h.frame().particles.size(), fxsim::kMaxParticles);
+    CHECK(h.dropped() > size_t{1000000});
+}
+
+// Important 4: drag past 1/dt diverges as the client's formula does; stats stay finite.
+CM_TEST(fxsim, runaway_drag_keeps_stats_finite) {
+    fxsim::SimInput in = steady(0.1f, 50.0f);
+    in.emitters[0].e.velocity[0][0] = 1; in.emitters[0].e.velocity[0][1] = 1;
+    in.emitters[0].e.velocity[3][0] = 10; in.emitters[0].e.velocity[3][1] = 10;
+    in.emitters[0].e.drag = 1000.0f;
+    fxsim::Sim s(in, 1);
+    run(s, 5.0f, 0.1f);
+    const fxsim::EmitterStats& e = s.stats().emitters[0];
+    CHECK(std::isfinite(e.spread[0]) && std::isfinite(e.spread[2]));
+    CHECK(std::isfinite(e.meanSpeed));
 }

@@ -52,7 +52,7 @@ fx::Vec3 xform_dir(const float m[12], fx::Vec3 d) {
 
 }  // namespace
 
-Sim::Sim(SimInput in, uint32_t seed) : in_(std::move(in)) {
+Sim::Sim(SimInput in, uint32_t seed, bool collectStats) : in_(std::move(in)), collect_(collectStats) {
     for (size_t i = 0; i < in_.emitters.size(); ++i)
         rng_.push_back(fx::Rng{seed ^ static_cast<uint32_t>(i * 0x9e3779b9u)});
     acc_.assign(in_.emitters.size(), 0.0f);
@@ -168,8 +168,20 @@ void Sim::appearance(Particle& p) const {
     p.uv[2] = p.uv[0] + cw;  p.uv[3] = p.uv[1] + ch;
 }
 
+void Sim::spawn_group(size_t ei) {
+    const ParticleEmitterCPU& e = in_.emitters[ei].e;
+    const double want = std::max(0.0, std::round(static_cast<double>(fx::sample(rng2(e.spawnGroupSize), rng_[ei]))));
+    const double room = static_cast<double>(kMaxParticles - std::min(kMaxParticles, frame_.particles.size()));
+    const double n = std::min(want, room);
+    dropped_ += static_cast<size_t>(want - n);   // past the cap: counted, never looped over
+    for (long k = 0; k < static_cast<long>(n); ++k) {
+        spawn(ei);
+        ++stats_.emitters[ei].spawned;
+    }
+}
+
 void Sim::step(float dt) {
-    if (!(dt > 0)) return;
+    if (!(dt > 0) || !std::isfinite(dt)) return;
     frame_.time += dt;
     // age, move, expire
     auto& ps = frame_.particles;
@@ -196,28 +208,24 @@ void Sim::step(float dt) {
         if (e.emitterFlags & 0x8) {   // burst: one group when the bone turns visible (FUN_140acc370)
             if (burstFired_[ei]) continue;
             burstFired_[ei] = true;
-            const long n = std::lround(fx::sample(rng2(e.spawnGroupSize), rng_[ei]));
-            for (long k = 0; k < n; ++k) {
-                if (ps.size() >= kMaxParticles) { ++dropped_; continue; }
-                spawn(ei);
-                ++stats_.emitters[ei].spawned;
-            }
+            spawn_group(ei);
             continue;
         }
         if (!(e.spawnPeriod > 0) || !(e.spawnProbability > 0)) continue;
         acc_[ei] += dt;
-        while (acc_[ei] >= e.spawnPeriod) {
-            acc_[ei] -= e.spawnPeriod;
+        // Whole periods in one go: a period under the accumulator's precision would never
+        // decrease it one subtraction at a time. Groups past kMaxGroupsPerStep are not run.
+        const double due = std::floor(static_cast<double>(acc_[ei]) / e.spawnPeriod);
+        if (!(due >= 1)) continue;
+        acc_[ei] = std::fmod(acc_[ei], e.spawnPeriod);
+        const long groups = static_cast<long>(std::min(due, static_cast<double>(kMaxGroupsPerStep)));
+        for (long g = 0; g < groups; ++g) {
             if (rng_[ei].u01() > e.spawnProbability * 0.01f) continue;
-            const long n = std::lround(fx::sample(rng2(e.spawnGroupSize), rng_[ei]));
-            for (long k = 0; k < n; ++k) {
-                if (ps.size() >= kMaxParticles) { ++dropped_; continue; }
-                spawn(ei);
-                ++stats_.emitters[ei].spawned;
-            }
+            spawn_group(ei);
         }
     }
-    // per-step samples
+    // per-step samples (none without collect_: the app keeps no history)
+    if (!collect_) return;
     constexpr size_t kDistCap = 262144;
     std::vector<uint32_t> live(in_.emitters.size(), 0);
     for (const Particle& p : ps) {
@@ -225,12 +233,20 @@ void Sim::step(float dt) {
         Acc& a = acc2_[p.emitter];
         const fx::Vec3 o = in_.emitters[p.emitter].origin;
         const float dx = p.pos.x - o.x, dy = p.pos.y - o.y, dz = p.pos.z - o.z;
-        if (a.dist.size() < kDistCap) a.dist.push_back(std::sqrt(dx * dx + dy * dy + dz * dz));
-        a.speedSum += std::sqrt(p.vel.x * p.vel.x + p.vel.y * p.vel.y + p.vel.z * p.vel.z);
-        ++a.speedN;
+        const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (std::isfinite(d)) {
+            // reservoir sample over the whole run (its own RNG: the particles' sequences stay put)
+            ++a.seen;
+            if (a.dist.size() < kDistCap) a.dist.push_back(d);
+            else if (const size_t j = static_cast<size_t>(statsRng_.u01() * static_cast<float>(a.seen)); j < kDistCap)
+                a.dist[j] = d;
+        }
+        const float sp = std::sqrt(p.vel.x * p.vel.x + p.vel.y * p.vel.y + p.vel.z * p.vel.z);
+        if (std::isfinite(sp)) { a.speedSum += sp; ++a.speedN; }
         const float t = p.age / p.life;
         const int bin = static_cast<int>(std::lround(t * 4.0f));
-        if (bin >= 0 && bin <= 4 && std::fabs(t * 4.0f - static_cast<float>(bin)) <= 0.5f) {
+        if (bin >= 0 && bin <= 4 && std::fabs(t * 4.0f - static_cast<float>(bin)) <= 0.5f &&
+            std::isfinite(p.colour[3]) && std::isfinite(p.size[0])) {
             a.alpha[bin] += p.colour[3];
             a.size[bin] += p.size[0];
             ++a.n[bin];
@@ -238,6 +254,13 @@ void Sim::step(float dt) {
     }
     for (size_t i = 0; i < live.size(); ++i) stats_.emitters[i].live.push_back(live[i]);
     stats_.live.push_back(static_cast<uint32_t>(ps.size()));
+}
+
+void seek(Sim& sim, const SimInput& in, uint32_t seed, float dt, float t, bool collectStats) {
+    sim = Sim(in, seed, collectStats);
+    if (!(dt > 0) || !(t > 0)) return;
+    const long steps = std::lround(t / dt);
+    for (long i = 0; i < steps; ++i) sim.step(dt);
 }
 
 }  // namespace castlemist::fxsim

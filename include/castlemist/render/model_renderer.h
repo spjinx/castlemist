@@ -9,6 +9,8 @@
 /// swapchain + depth buffer, bound to a dedicated child window (a sibling of the
 /// castlemist::gfx image surface). Shaders are our own runtime-compiled HLSL (ported from
 /// tools/viewer/gw2viewer.cpp) -- NOT the game's DXBC blobs.
+namespace castlemist::fxsim { class Sim; }
+
 namespace castlemist::render {
 
 enum class RenderMode {
@@ -204,6 +206,14 @@ void set_show_effects(bool on);
 bool show_effects();
 bool has_effects();   // true if the current model carries any clouds/lights
 void effect_stats(int& clouds, int& emitters, int& lights, int& live); // debug counts
+// Particle Browser hooks (docs/superpowers/specs/2026-10-29-particle-browser-design.md). The
+// sim stays the renderer's; it keeps no stats history (the browser runs its own copy for those).
+const castlemist::fxsim::Sim* effect_sim();        // nullptr without effects
+void restart_effects(uint32_t seed);               // from t = 0 with this seed
+void set_effect_solo(const std::vector<bool>& mask); // per SimInput emitter; size mismatch = draw all
+void set_effect_time(float seconds);               // exact seek (re-run at 1/60 s)
+void set_effect_speed(float factor);               // playback rate, clamped 0.05..8
+void set_effects_paused(bool paused);
 
 /// --- live cloth simulation (single-model reconstruction path) ---------------
 /// Runs the reverse-engineered GW2 cloth solver on the current mesh: the top band

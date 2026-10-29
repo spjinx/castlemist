@@ -2278,7 +2278,8 @@ void cmd_fx_sim(const Args& a) {
     const float dt = has(a, "dt") ? std::stof(a.at("dt")) : 1.0f / 60.0f;
     const uint32_t seed = has(a, "seed") ? static_cast<uint32_t>(to_u64(a.at("seed"))) : 1u;
     const size_t keep = has(a, "frames") ? to_u64(a.at("frames")) : 0;
-    if (!(dt > 0) || !(seconds >= 0)) fail("--dt must be > 0 and --seconds >= 0");
+    if (!(dt > 0) || !(seconds >= 0) || !std::isfinite(dt) || !std::isfinite(seconds))
+        fail("--dt must be a finite number > 0 and --seconds a finite number >= 0");
     fs::SimInput in = fs::make_input(*m);
     fs::Sim sim(in, seed);
     const size_t steps = static_cast<size_t>(std::lround(seconds / dt));
