@@ -39,6 +39,16 @@ struct Particle {
     uint16_t emitter = 0;   ///< Index into SimInput::emitters.
     fx::Vec3 pos, vel;
     float age = 0, life = 1;
+    // drawn at spawn
+    float begin[4] = {1, 1, 1, 1}, end[4] = {1, 1, 1, 1};
+    float size0[2] = {1, 1}, growth[2] = {0, 0};
+    float rotation0 = 0, spin = 0;          ///< Radians, radians per second.
+    // after each step
+    float colour[4] = {1, 1, 1, 1};         ///< RGBA, alpha with the opacity curve applied.
+    float size[2] = {1, 1};                 ///< Half-sizes (GW2 sizes are half-sizes).
+    float rotation = 0;
+    int frame = 0;                          ///< Flipbook frame (0 without a flipbook).
+    float uv[4] = {0, 0, 1, 1};             ///< u0, v0, u1, v1 inside texCoordRect.
 };
 
 /// @brief The sim's state after a step.
@@ -60,6 +70,7 @@ public:
 
 private:
     void spawn(size_t ei);
+    void appearance(Particle& p) const;   ///< colour, size, rotation, frame from age
     SimInput in_;
     std::vector<fx::Rng> rng_;
     std::vector<float> acc_;

@@ -161,3 +161,57 @@ CM_TEST(fxsim, particles_move_with_velocity_and_gravity) {
     CHECK(p.vel.z < 1.0f && p.vel.z > -1.0f);   // 10 - 10 * ~1 s
     CHECK(p.pos.z > 4.0f && p.pos.z < 6.0f);    // 10t - 5t^2 at t ~ 1
 }
+
+// Colour runs begin -> end by fx::colour_weight over the life fraction (period 1, falloff 0..1).
+CM_TEST(fxsim, colour_follows_the_life_sweep) {
+    fxsim::SimInput in = steady(10.0f, 1.0f);
+    in.emitters[0].e.spawnPeriod = 0.5f;
+    for (int r = 0; r < 2; ++r) {
+        in.emitters[0].e.colorBegin[r][0] = 1; in.emitters[0].e.colorBegin[r][3] = 1;   // red
+        in.emitters[0].e.colorEnd[r][2] = 1;   in.emitters[0].e.colorEnd[r][3] = 1;     // blue
+    }
+    in.emitters[0].e.colorPeriod = 1.0f;
+    in.emitters[0].e.colorFalloff[0] = 0; in.emitters[0].e.colorFalloff[1] = 1;
+    fxsim::Sim s(in, 1);
+    s.step(0.5f);                       // spawn at 0.5
+    for (int i = 0; i < 25; ++i) s.step(0.01f);
+    const fxsim::Particle& p = s.frame().particles.front();
+    CHECK_NEAR(p.colour[0], 0.75f, 0.02f);   // a quarter of the way through its 1 s life
+    CHECK_NEAR(p.colour[2], 0.25f, 0.02f);
+    CHECK_NEAR(p.colour[3], 1.0f, 1e-5f);
+}
+
+// Size = (scaleInitial + scaleChange * age) * scale preset (9: t^2); Y follows X under file flag 0x10.
+CM_TEST(fxsim, size_follows_scale_preset) {
+    fxsim::SimInput in = steady(10.0f, 1.0f);
+    in.emitters[0].e.spawnPeriod = 0.5f;
+    in.emitters[0].e.scaleInitial[0][0] = 4; in.emitters[0].e.scaleInitial[0][1] = 4;
+    in.emitters[0].e.scaleInitial[1][0] = 9; in.emitters[0].e.scaleInitial[1][1] = 9;
+    in.emitters[0].e.scaleCurvePreset = 9;
+    in.emitters[0].e.flags = 0x10;
+    fxsim::Sim s(in, 1);
+    s.step(0.5f);
+    for (int i = 0; i < 50; ++i) s.step(0.01f);
+    const fxsim::Particle& p = s.frame().particles.front();
+    CHECK_NEAR(p.size[0], 4.0f * 0.25f, 0.05f);   // t = 0.5 -> 0.25
+    CHECK_NEAR(p.size[1], p.size[0], 1e-6f);
+}
+
+// Flipbook at fps > 0: frame = start + floor(age * fps) mod count; uv inside texCoordRect.
+CM_TEST(fxsim, flipbook_frame_at_fps) {
+    fxsim::SimInput in = steady(10.0f, 5.0f);
+    in.emitters[0].e.spawnPeriod = 0.5f;
+    auto& fb = in.emitters[0].e.flipbook;
+    fb.present = true; fb.columns = 2; fb.rows = 2; fb.count = 4; fb.start = 0; fb.fps = 10;
+    in.emitters[0].e.texCoordRect[0] = 0.5f; in.emitters[0].e.texCoordRect[1] = 0;
+    in.emitters[0].e.texCoordRect[2] = 1;    in.emitters[0].e.texCoordRect[3] = 0.5f;
+    fxsim::Sim s(in, 1);
+    s.step(0.5f);
+    for (int i = 0; i < 25; ++i) s.step(0.01f);   // age 0.25 -> frame 2 (column 0, row 1)
+    const fxsim::Particle& p = s.frame().particles.front();
+    CHECK_EQ(p.frame, 2);
+    CHECK_NEAR(p.uv[0], 0.5f, 1e-5f);
+    CHECK_NEAR(p.uv[1], 0.25f, 1e-5f);
+    CHECK_NEAR(p.uv[2], 0.75f, 1e-5f);
+    CHECK_NEAR(p.uv[3], 0.5f, 1e-5f);
+}

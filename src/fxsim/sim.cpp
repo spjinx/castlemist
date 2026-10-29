@@ -62,7 +62,8 @@ std::vector<std::string> Sim::approximations() const {
     return {"per-emitter seeds (the client's seeding is not read)",
             "drag: v *= max(0, 1 - (emitter + cloud drag) dt) (the client's integrator is not read)",
             "spawn-shape distributions inside each shape; mesh shapes spawn at the emitter",
-            "emitter transform applied to spawn position and velocity unless file flags 0x4"};
+            "emitter transform applied to spawn position and velocity unless file flags 0x4",
+            "flipbook without fps spread over the life (2026-07 reading)"};
 }
 
 void Sim::spawn(size_t ei) {
@@ -86,7 +87,53 @@ void Sim::spawn(size_t ei) {
     p.pos = {in.origin.x + off.x, in.origin.y + off.y, in.origin.z + off.z};
     p.vel = vel;
     p.life = std::max(1e-4f, fx::sample(rng2(e.lifetime), r));
+    for (int k = 0; k < 4; ++k) {
+        p.begin[k] = fx::sample(fx::Range::from_min_max(e.colorBegin[0][k], e.colorBegin[1][k]), r);
+        p.end[k] = fx::sample(fx::Range::from_min_max(e.colorEnd[0][k], e.colorEnd[1][k]), r);
+    }
+    for (int k = 0; k < 2; ++k) {
+        p.size0[k] = fx::sample(rng2(e.scaleInitial[k]), r);
+        p.growth[k] = fx::sample(rng2(e.scaleChange[k]), r);
+    }
+    // Y = X under file flag 0x10 (runtime 0x800, 2026-10-22 amendment).
+    if (e.flags & 0x10) { p.size0[1] = p.size0[0]; p.growth[1] = p.growth[0]; }
+    constexpr float kDeg = 3.1415927f / 180.0f;   // the loader converts rotations from degrees
+    p.rotation0 = fx::sample(rng2(e.rotationInitial), r) * kDeg;
+    p.spin = fx::sample(rng2(e.rotationChange), r) * kDeg;
+    if ((e.flags & 0x1000) && r.u01() < 0.5f) p.spin = -p.spin;   // file 0x1000: random spin sign
+    appearance(p);
     frame_.particles.push_back(p);
+}
+
+void Sim::appearance(Particle& p) const {
+    const ParticleEmitterCPU& e = in_.emitters[p.emitter].e;
+    const float t = std::clamp(p.age / p.life, 0.0f, 1.0f);
+    const float w = fx::colour_weight(t, e.colorPeriod, rng2(e.colorFalloff));
+    for (int k = 0; k < 4; ++k) p.colour[k] = p.begin[k] * (1 - w) + p.end[k] * w;
+    p.colour[3] *= !e.opacityCurve.empty() ? fx::curve_eval(e.opacityCurve, t, 1.0f)
+                                           : fx::opacity_preset_value(e.opacityCurvePreset, t, e.flags);
+    const float sc = !e.scaleCurve.empty() ? fx::curve_eval(e.scaleCurve, t, 1.0f)
+                                           : fx::scale_preset_value(e.scaleCurvePreset, t, e.flags);
+    for (int k = 0; k < 2; ++k) p.size[k] = std::max(0.0f, (p.size0[k] + p.growth[k] * p.age) * sc);
+    p.rotation = p.rotation0 + p.spin * p.age;
+    const float* rc = e.texCoordRect;
+    const bool rect = rc[2] > rc[0] && rc[3] > rc[1];
+    const float u0 = rect ? rc[0] : 0, v0 = rect ? rc[1] : 0, u1 = rect ? rc[2] : 1, v1 = rect ? rc[3] : 1;
+    const auto& fb = e.flipbook;
+    if (!fb.present || fb.columns == 0 || fb.rows == 0 || fb.count == 0) {
+        p.frame = 0;
+        p.uv[0] = u0; p.uv[1] = v0; p.uv[2] = u1; p.uv[3] = v1;
+        return;
+    }
+    // fps > 0: frames at fps, looping; else the frames spread over the life (2026-07 reading).
+    const int n = fb.count;
+    const int f = fb.fps > 0 ? static_cast<int>(std::floor(p.age * fb.fps)) % n
+                             : std::min(n - 1, static_cast<int>(t * n));
+    p.frame = (fb.start + f) % (fb.columns * fb.rows);
+    const int col = p.frame % fb.columns, row = p.frame / fb.columns;
+    const float cw = (u1 - u0) / fb.columns, ch = (v1 - v0) / fb.rows;
+    p.uv[0] = u0 + col * cw; p.uv[1] = v0 + row * ch;
+    p.uv[2] = p.uv[0] + cw;  p.uv[3] = p.uv[1] + ch;
 }
 
 void Sim::step(float dt) {
@@ -106,6 +153,7 @@ void Sim::step(float dt) {
         const float k = std::max(0.0f, 1.0f - drag * dt);
         p.vel = {p.vel.x * k, p.vel.y * k, p.vel.z * k};
         p.pos = {p.pos.x + p.vel.x * dt, p.pos.y + p.vel.y * dt, p.pos.z + p.vel.z * dt};
+        appearance(p);
     }
     ps.erase(std::remove_if(ps.begin(), ps.end(), [](const Particle& p) { return p.age >= p.life; }), ps.end());
     // spawn: accumulator per emitter, a group each period that passes the chance (percent)
