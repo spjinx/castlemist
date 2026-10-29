@@ -253,3 +253,23 @@ runtime flag 0x1000), then the spawn loop `FUN_140ac9e90`.
   `fx::integrate` is steps 2 and 4.
 - **Live cap**: 0x4000 particles per cloud instance; past it the update logs "Cloud particle
   count ({} total, {} mesh, {} quad) exceeds maximum allowed ({})" and trims.
+
+## Amendment 2026-10-28 (4): streaks, first read
+
+`FUN_14155fc80(streak, ring, ?, dt, offset, scale)` (GrStreak.cpp), per streak per frame, dt
+clamped to the constant at 0x141932f24:
+- **Ring**: points of 0x4c bytes in a ring (head +0x3e, count +0x3c, capacity +0x3a, grown to a
+  power-of-two byte size); points whose remaining life (+0x34) is <= 0 are retired from the tail
+  first. Capacity cap 0x8000 points.
+- **Anchors** (0x8c bytes each, `ModelStreakAnchor`): each frame the largest distance any anchor
+  moved is measured (anchors with flag 4 kept apart from the rest); with the passed offset it is
+  the frame's travel.
+- **Emission**: the travel is added to an accumulator (streak +0x50); while it is positive, or a
+  forced flag is set, a **row of points, one per anchor**, is emitted at the interpolated
+  fraction f of this frame's move (clamped 0..1). Each point: remaining life = the anchor's
+  lifetime - dt f; colour from the anchor (start/end bytes; anchor flag 4 clear zeroes two of
+  them); texV and the anchor's other two values copied; the texture u = lerp(previous u, current
+  u, f) unless ring flag 2. A streak flag 1 leaves the last anchor out of the row.
+- Not yet read: the accumulator's decrement (the spacing, `spawnDist` the candidate), how
+  `jitter` / `noise` / `wind` / `velocity` / `acceleration` move points, the strip build in
+  `FUN_141562eb0`, colour over life.
