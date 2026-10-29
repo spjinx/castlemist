@@ -126,7 +126,7 @@ void render_particles(const Mat4& mvp) {
         // cell; uv is (u0, v0, u1, v1) as the emitter's texCoordRect is stored.
         float col[4] = {p.colour[0], p.colour[1], p.colour[2], std::clamp(p.colour[3], 0.0f, 1.0f) * g_fxIntensity};
         // Sprite alignment by the client's case (fx::plane_alignment_case): 5 along the motion,
-        // 4 along the on-screen motion; 1 (and, until coded, 0 / 2 / 3) camera-facing.
+        // 4 along the on-screen motion, 0 / 2 / 3 planes facing a direction, 1 camera-facing.
         const Vec3 c{p.pos.x, p.pos.y, p.pos.z};
         switch (fx::plane_alignment_case(g_fxEmitters[p.emitter].alignmentType)) {
             case 5: {
@@ -140,6 +140,17 @@ void render_particles(const Mat4& mvp) {
                 emitAxes(c, {right.x*s.u.x + up.x*s.u.y, right.y*s.u.x + up.y*s.u.y, right.z*s.u.x + up.z*s.u.y},
                             {right.x*s.v.x + up.x*s.v.y, right.y*s.v.x + up.y*s.v.y, right.z*s.v.x + up.z*s.v.y},
                          col, p.uv[0], p.uv[1], p.uv[2], p.uv[3]);
+                break;
+            }
+            case 0: case 2: case 3: {
+                // a plane facing alignmentDir (0; model space here, the client uses the cloud's
+                // matrix), the motion (2) or against it (3)
+                const ParticleEmitterCPU& em = g_fxEmitters[p.emitter];
+                const int k = fx::plane_alignment_case(em.alignmentType);
+                const fx::Vec3 n = k == 0 ? fx::Vec3{em.alignmentDir[0], em.alignmentDir[1], em.alignmentDir[2]}
+                                 : k == 2 ? p.vel : fx::Vec3{-p.vel.x, -p.vel.y, -p.vel.z};
+                const fx::Axes3 a = fx::facing_axes(n, p.rotation, p.size[0], p.size[1]);
+                emitAxes(c, {a.u.x, a.u.y, a.u.z}, {a.v.x, a.v.y, a.v.z}, col, p.uv[0], p.uv[1], p.uv[2], p.uv[3]);
                 break;
             }
             default:

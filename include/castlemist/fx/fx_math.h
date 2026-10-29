@@ -103,6 +103,14 @@ Axes3 axis_sprite_axes(Vec3 dir, Vec3 toEye, float sizeX, float sizeY);
 ///        (1, 0). No rotation.
 SpriteAxes screen_velocity_axes(Vec2 screenVelocity, float sizeX, float sizeY);
 
+/// @brief Branches 0, 2, 3 (file alignment 4, 3, 5), FUN_140ad11b0: a quad lying in the plane
+///        that faces @p normal (case 0: alignmentDir through the cloud matrix; 2: the motion
+///        direction; 3: its negation). Reference up u = (0, 0, -1) (0x141936d60), or (1, 0, 0)
+///        when the normal is within 1e-4 of the Z axis; r = normalize(n x u), b = r x n;
+///        u-axis = sx (r cos a + b sin a), v-axis = sy (b cos a - r sin a). A zero normal gives
+///        zero axes; negative sizes clamp to 0.
+Axes3 facing_axes(Vec3 normal, float rotation, float sizeX, float sizeY);
+
 /// @brief One step of a sprite particle's motion (FUN_140acb1d0, called per particle by the
 ///        cloud update FUN_140acb950): `pos += vel dt + accel dt^2 / 2`, `vel += accel dt`, then
 ///        with drag d (the cloud's plus the emitter's) `vel *= 1 - d dt`; a result whose squared

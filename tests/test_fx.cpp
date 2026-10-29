@@ -248,3 +248,19 @@ CM_TEST(fx, integrate_drag_and_its_floor) {
     integrate(r, z, {}, 10.0f, 0.1f); // no direction to keep: stays zero
     CHECK_NEAR(z.x, 0.0f, 1e-9f);
 }
+
+// Cases 0 / 2 / 3 (FUN_140ad11b0): a plane facing n. r = normalize(n x u), u = (0,0,-1), or
+// (1,0,0) when n is along Z; b = r x n; U = sx (r cos + b sin), V = sy (b cos - r sin).
+CM_TEST(fx, facing_plane_axes_basis) {
+    const Axes3 a = facing_axes({1, 0, 0}, 0.0f, 2.0f, 3.0f);
+    CHECK_NEAR(a.u.x, 0.0f, 1e-6f); CHECK_NEAR(a.u.y, 2.0f, 1e-5f); CHECK_NEAR(a.u.z, 0.0f, 1e-6f);
+    CHECK_NEAR(a.v.x, 0.0f, 1e-6f); CHECK_NEAR(a.v.y, 0.0f, 1e-6f); CHECK_NEAR(a.v.z, -3.0f, 1e-5f);
+    const Axes3 z = facing_axes({0, 0, 5}, 0.0f, 2.0f, 3.0f);       // along Z: the X reference
+    CHECK_NEAR(z.u.y, 2.0f, 1e-5f);
+    CHECK_NEAR(z.v.x, 3.0f, 1e-5f);
+    const Axes3 r = facing_axes({1, 0, 0}, 1.5707964f, 2.0f, 3.0f); // rotated a quarter turn
+    CHECK_NEAR(r.u.z, -2.0f, 1e-5f);
+    CHECK_NEAR(r.v.y, -3.0f, 1e-5f);
+    const Axes3 none = facing_axes({0, 0, 0}, 0.0f, 2.0f, 3.0f);
+    CHECK_NEAR(none.u.x, 0.0f, 1e-6f); CHECK_NEAR(none.v.z, 0.0f, 1e-6f);
+}

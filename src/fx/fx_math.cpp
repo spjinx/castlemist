@@ -136,6 +136,23 @@ SpriteAxes screen_velocity_axes(Vec2 v, float sizeX, float sizeY) {
     return {{x * sx, y * sx}, {-y * sy, x * sy}};
 }
 
+Axes3 facing_axes(Vec3 normal, float rotation, float sizeX, float sizeY) {
+    const float sx = std::max(sizeX, 0.0f), sy = std::max(sizeY, 0.0f);
+    const float l = std::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
+    if (!(l > 0)) return {};
+    const Vec3 n{normal.x / l, normal.y / l, normal.z / l};
+    const bool alongZ = std::fabs(n.x) <= 1e-4f && std::fabs(n.y) <= 1e-4f && std::fabs(n.z) > 1e-4f;
+    const Vec3 u = alongZ ? Vec3{1, 0, 0} : Vec3{0, 0, -1};
+    Vec3 r{n.y * u.z - n.z * u.y, n.z * u.x - n.x * u.z, n.x * u.y - n.y * u.x};
+    const float rl = std::sqrt(r.x * r.x + r.y * r.y + r.z * r.z);
+    if (!(rl >= 1e-6f)) return {};   // 0x141936c68 compares the squared length with 1e-12
+    r = {r.x / rl, r.y / rl, r.z / rl};
+    const Vec3 b{r.y * n.z - r.z * n.y, r.z * n.x - r.x * n.z, r.x * n.y - r.y * n.x};
+    const float c = std::cos(rotation), s = std::sin(rotation);
+    return {{sx * (r.x * c + b.x * s), sx * (r.y * c + b.y * s), sx * (r.z * c + b.z * s)},
+            {sy * (b.x * c - r.x * s), sy * (b.y * c - r.y * s), sy * (b.z * c - r.z * s)}};
+}
+
 void integrate(Vec3& pos, Vec3& vel, Vec3 accel, float drag, float dt) {
     const float h = 0.5f * dt;
     pos = {accel.x * h * dt + vel.x * dt + pos.x, accel.y * h * dt + vel.y * dt + pos.y,
