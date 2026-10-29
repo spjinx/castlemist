@@ -14,6 +14,7 @@
 
 #include <d3d11.h>
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -21,6 +22,7 @@
 
 #include "castlemist/render/model_renderer.h"
 #include "castlemist/sim/cloth_sim.h"
+#include "castlemist/fxsim/sim.h"
 
 #include "detail/math.h"
 
@@ -450,34 +452,16 @@ inline void main_camera(Vec3& eye, Mat4& view, Mat4& proj) {
     proj = perspective(0.9f, static_cast<float>(g_w) / std::max(1, g_h), zn, zf);
 }
 
-struct FxParticle {
-    Vec3 pos, vel, acc;
-    float age = 0, life = 1;
-    float sx = 1, sy = 1;         // half-size per axis (model units)
-    float rot = 0, rotVel = 0;    // in-plane billboard rotation
-    float c0[4] = {1,1,1,1}, c1[4] = {1,1,1,1}; // begin/end rgba
-    float frameSeed = 0;          // per-particle flipbook phase
-    int   emitter = 0;            // index into g_fxEmitters
-    int   material = -1;          // cloud material index (-1 = procedural glow)
-};
-// A triangle of the source mesh (model space), for surface-emission spawn shapes.
-struct FxTri { Vec3 a, b, c; float cumArea; };
-
+// Baked effects: the model's clouds/emitters/lights, and the reference sim that runs them
+// (castlemist::fxsim; docs/superpowers/specs/2026-10-28-reference-sim-design.md).
 inline std::vector<ParticleCloudCPU>   g_fxClouds;
-inline std::vector<ParticleEmitterCPU> g_fxEmitters;
+inline std::vector<ParticleEmitterCPU> g_fxEmitters;   // in the sim's emitter order (SimInput::emitters)
 inline std::vector<EffectLightCPU>     g_fxLights;
-inline std::vector<int>                g_fxEmitterCloud;  // emitter idx -> owning cloud idx (-1 none)
-inline std::vector<Vec3>               g_fxCloudOrigin;   // per-cloud spawn origin (bind-pose bone pos)
-inline std::vector<FxTri>              g_fxTris;          // surface-spawn triangles
-inline float                           g_fxTriArea = 0;
-inline std::vector<float>              g_fxAccum;         // per-emitter spawn accumulator
-inline std::vector<FxParticle>         g_fxParticles;
+inline std::unique_ptr<castlemist::fxsim::Sim> g_fxSim;
 inline bool                            g_show_effects = true;
 inline float                           g_fxIntensity = 0.55f; // additive moderation (GW2_FXINTENSITY)
-inline Vec3                            g_fxWindDir{0.94f, 0.33f, 0.10f}; // model-space wind (GW2 Z-up); GW2_WINDDIR
-inline float                           g_fxWindGust = 1.0f;   // gust strength scale (GW2_WIND)
-inline float                           g_fxTime = 0;          // seconds since model load (drives gusts)
-inline uint32_t                        g_fxRng = 0x1234567u;
+inline Vec3                            g_fxWindDir{0.94f, 0.33f, 0.10f}; // GW2_WINDDIR; not used until fxsim models wind
+inline float                           g_fxWindGust = 1.0f;   // GW2_WIND; likewise
 inline LARGE_INTEGER                   g_fx_qpc_last{};
 inline bool                            g_fx_qpc_init = false;
 
@@ -491,13 +475,6 @@ inline ComPtr<ID3D11BlendState>        g_blendAdd;        // additive (glow)
 inline ComPtr<ID3D11ShaderResourceView> g_softDisc;       // procedural soft radial sprite
 
 ComPtr<ID3D11ShaderResourceView> make_srv(const std::vector<uint8_t>& px, int w, int h); // fwd
-
-inline float fxRand01() { // xorshift, deterministic
-    g_fxRng ^= g_fxRng << 13; g_fxRng ^= g_fxRng >> 17; g_fxRng ^= g_fxRng << 5;
-    return (g_fxRng & 0xFFFFFF) / float(0x1000000);
-}
-inline float fxRandSym() { return fxRand01() * 2.0f - 1.0f; }
-inline float fxSample(const float r[2]) { return r[0] + fxRand01() * r[1]; }  // {base,span}
 
 struct PartVtx { float x, y, z, u, v, lu, lv, r, g, b, a; };
 

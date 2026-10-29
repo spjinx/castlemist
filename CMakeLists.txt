@@ -166,7 +166,7 @@ castlemist_add_layer(ripper DEPS castlemist::character castlemist::extract castl
 # render reads exportgltf's material rules (profile_for, alpha_tested,
 # decode_blend) so the map view's prop alpha modes match the glTF export.
 # exportgltf is CPU-only and never depends back on render.
-castlemist_add_layer(render DEPS castlemist::extract castlemist::sim castlemist::world castlemist::exportgltf
+castlemist_add_layer(render DEPS castlemist::extract castlemist::sim castlemist::fxsim castlemist::world castlemist::exportgltf
                                  d3d11 dxgi d3dcompiler dxguid)
 
 # The "Game 1:1" surface. PRIVATE: nothing above render needs bgfx headers --

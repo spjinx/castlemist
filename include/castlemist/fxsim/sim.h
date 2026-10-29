@@ -65,6 +65,7 @@ public:
     /// @brief Advances @p dt seconds; dt <= 0 does nothing.
     void step(float dt);
     const Frame& frame() const { return frame_; }
+    const SimInput& input() const { return in_; }
     size_t dropped() const { return dropped_; }
     /// @brief The run so far (percentiles and means computed on each call).
     const Stats& stats() const;
