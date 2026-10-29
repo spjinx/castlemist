@@ -25,10 +25,14 @@
 //   * an emitter spawns only while its bone is visible: the sidecar's clips[].vis (visible at the
 //     start of a clip, each key toggles: "on" clips carry no keys and "off" clips one key at 0;
 //     castlemist's reading of the keys)
-// Not transcribed (UNPROVEN, castlemist's stand-ins): the opacity / scale curve presets (the
-// viewer's envelope: fade in over 15%, out from 60%), colorPeriod / colorFalloff (begin -> end over
-// the life), alignmentType 1 as a streak along the velocity (length scaleInitial[0], width [1]) and
-// every other alignment as camera-facing, wind and turbulence, the distance-tier flags.
+//   * opacity / scale curve presets: the client's 18 curves (GW2ParticleMath, 2026-10-28), flags
+//     0x80 (opacity inverted), 0x400 (scale reversed), 0x200 (scale inverted); colorPeriod /
+//     colorFalloff as the client's ping-pong weight
+//   * alignment (file value -> client case): 1 (5, axis billboard) and 2 (4, along the on-screen
+//     motion) as Stretch along the velocity (length scaleInitial[0], width [1]); 0 camera-facing
+// Stand-ins (castlemist's, not the client's): alignments 3, 4, 5 (planes facing the motion or
+// alignmentDir) drawn camera-facing; wind and turbulence; the distance-tier flags; MaxAlive 2000
+// per system (the client allows 0x4000 per cloud: kept low for VRChat frame time).
 // Distortion emitters (heat haze, refraction: a normal stored as their colour) are skipped.
 // Materials: the cloud's materials.json entry on Castlemist/GW2 Particle, one .mat per atlas
 // rect (texCoordRect as the material's tiling / offset; a flipbook animates inside it).
@@ -256,7 +260,6 @@ namespace Castlemist
             Vector2 sx, sy;
             float streakLength = StartSize(ps, e, 1f, out sx, out sy);
             bool square = Flag(e, "flags", 0x10);
-            int align = (int)Num(e, "alignmentType", 0);
             Vector2 rot0 = Range(e, "rotationInitial", 0);
             main.startRotation = new ParticleSystem.MinMaxCurve(rot0.x * Mathf.Deg2Rad, rot0.y * Mathf.Deg2Rad);
             main.startColor = Color.white;
@@ -266,7 +269,7 @@ namespace Castlemist
 
             Shape(ps, e);
             Motion(ps, e, cl);
-            ColourAndSize(ps, e, life, sx, sy, align == 1 || square);
+            ColourAndSize(ps, e, life, sx, sy, Stretched(e) || square);
             Sheet(ps, e);
 
             var r = go.GetComponent<ParticleSystemRenderer>();
@@ -281,7 +284,7 @@ namespace Castlemist
             r.reflectionProbeUsage = UnityEngine.Rendering.ReflectionProbeUsage.Off;
             r.sortMode = ParticleSystemSortMode.Distance;
             r.maxParticleSize = 0.5f;   // of the screen: a sprite at the camera does not fill the view
-            if (align == 1)
+            if (Stretched(e))
             {
                 r.renderMode = ParticleSystemRenderMode.Stretch;
                 r.velocityScale = 0f;
@@ -520,9 +523,10 @@ namespace Castlemist
             sy = square ? sx : Range(e, "scaleInitial", 1, 1) * 2f;
             ParticleSystem.MinMaxCurve C(Vector2 r) { return new ParticleSystem.MinMaxCurve(Mathf.Max(r.x, 0.01f) * k, Mathf.Max(r.y, 0.01f) * k); }
             float streakLength = 1f;
-            if ((int)Num(e, "alignmentType", 0) == 1)
+            if (Stretched(e))
             {
-                // a streak: X along the velocity, Y across; the renderer stretches width to length
+                // along the motion (client cases 5 and 4): X along the velocity, Y across; the
+                // renderer stretches width to length
                 float w = Mathf.Max((sy.x + sy.y) * 0.5f, 1e-3f);
                 streakLength = Mathf.Clamp((sx.x + sx.y) * 0.5f / w, 0.05f, 200f);
                 main.startSize3D = false;
@@ -549,7 +553,9 @@ namespace Castlemist
             // weight w(t) (ColourWeight), alpha too, then alpha x the opacity curve
             Color c0 = Mid(e, "colorBegin"), c1 = Mid(e, "colorEnd");
             List<Vector2> op = Curve(e, "opacityCurve");
-            if (op.Count == 0) op = new List<Vector2> { new Vector2(0, 0), new Vector2(0.15f, 1), new Vector2(0.6f, 1), new Vector2(1, 0) };
+            uint fileFlags = (uint)Num(e, "flags", 0);
+            if (op.Count == 0)   // the client's preset (0 = constant 1), flag 0x80 inverting it
+                op = PresetKeys(t => GW2ParticleMath.OpacityPreset((int)Num(e, "opacityCurvePreset", 0), t, fileFlags));
             float period = (float)Num(e, "colorPeriod", Num(e, "colorPeriodSec", 1));
             double[] fo = Arr(e, "colorFalloff");   // as stored: the order matters
             Vector2 falloff = fo.Length >= 2 ? new Vector2((float)fo[0], (float)fo[1]) : new Vector2(0f, 1f);
@@ -560,7 +566,7 @@ namespace Castlemist
             for (int i = 0; i <= samples; ++i)
             {
                 float t = i / (float)samples;
-                float w = ColourWeight(t, period, falloff);
+                float w = GW2ParticleMath.ColourWeight(t, period, falloff.x, falloff.y);
                 ws.Add(new Vector2(t, w));
                 wMean += w / (samples + 1);
             }
@@ -593,8 +599,10 @@ namespace Castlemist
             float gx = (dx.x + dx.y) * 0.5f * meanLife / Mathf.Max((sx.x + sx.y) * 0.5f, 1e-3f);
             float gy = (dy.x + dy.y) * 0.5f * meanLife / Mathf.Max((sy.x + sy.y) * 0.5f, 1e-3f);
             List<Vector2> sc = Curve(e, "scaleCurve");
-            if (sc.Count == 0 && Mathf.Abs(gx) < 1e-3f && Mathf.Abs(gy) < 1e-3f) return;
-            if (sc.Count == 0) sc = new List<Vector2> { new Vector2(0, 1), new Vector2(1, 1) };
+            int scalePreset = (int)Num(e, "scaleCurvePreset", 0);
+            if (sc.Count == 0 && scalePreset == 0 && Mathf.Abs(gx) < 1e-3f && Mathf.Abs(gy) < 1e-3f) return;
+            if (sc.Count == 0)   // the client's preset, flags 0x400 (reversed) / 0x200 (inverted)
+                sc = PresetKeys(t => GW2ParticleMath.ScalePreset(scalePreset, t, fileFlags));
             AnimationCurve Grow(float k)
             {
                 var c = new AnimationCurve();
@@ -789,18 +797,20 @@ namespace Castlemist
         /// The client's colour weight at life fraction @p t (0x140ad3a30): with m = t mod period and
         /// n = floor(t / period), x = m / period on even n and 1 - m / period on odd n (a ping-pong;
         /// period 0: x = 0), remapped from [falloff.x, falloff.y] to [0, 1] and clamped
-        /// (0x140acf2e0). colour = begin x (1 - w) + end x w, alpha included.
-        static float ColourWeight(float t, float period, Vector2 falloff)
+        /// File alignment 1 (case 5, an axis billboard along the motion) and 2 (case 4, along the
+        /// on-screen motion): both lie along the velocity, as Shuriken's Stretch mode does.
+        static bool Stretched(Dictionary<string, object> e)
         {
-            float x = 0f;
-            if (period > 0f)
-            {
-                float m = t % period;
-                int n = (int)Mathf.Floor(t / period);
-                x = (n & 1) == 0 ? m / period : 1f - m / period;
-            }
-            if (falloff.x == falloff.y) return x > falloff.y ? 1f : 0f;
-            return Mathf.Clamp01((x - falloff.x) / (falloff.y - falloff.x));
+            int c = GW2ParticleMath.AlignmentCase((int)Num(e, "alignmentType", 0));
+            return c == 5 || c == 4;
+        }
+
+        /// A client preset as curve keys over the life (33 samples).
+        static List<Vector2> PresetKeys(Func<float, float> f)
+        {
+            var keys = new List<Vector2>();
+            for (int i = 0; i <= 32; ++i) { float t = i / 32f; keys.Add(new Vector2(t, f(t))); }
+            return keys;
         }
 
         /// A piecewise-linear curve through @p keys sampled at @p t.
