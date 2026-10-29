@@ -128,7 +128,7 @@ castlemist_add_test(fx
 
 castlemist_add_test(fxsim
     SOURCES test_fxsim.cpp
-    DEPS    castlemist::fxsim)
+    DEPS    castlemist::fxsim ext::json)
 
 castlemist_add_test(skillfx
     SOURCES test_skillfx.cpp

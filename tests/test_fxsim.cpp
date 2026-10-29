@@ -4,6 +4,9 @@
 #include "test_framework.h"
 
 #include "castlemist/fxsim/sim.h"
+#include "castlemist/fxsim/stats.h"
+
+#include <nlohmann/json.hpp>
 
 using namespace castlemist;
 
@@ -214,4 +217,31 @@ CM_TEST(fxsim, flipbook_frame_at_fps) {
     CHECK_NEAR(p.uv[1], 0.25f, 1e-5f);
     CHECK_NEAR(p.uv[2], 0.75f, 1e-5f);
     CHECK_NEAR(p.uv[3], 0.5f, 1e-5f);
+}
+
+// Stats count spawns and expiries per emitter and sample the live count each step.
+CM_TEST(fxsim, stats_count_spawn_and_expiry) {
+    fxsim::Sim s(steady(0.1f, 1.0f), 1);
+    run(s, 2.0f, 0.1f);
+    const fxsim::Stats& st = s.stats();
+    CHECK_EQ(st.emitters.size(), size_t{1});
+    CHECK(st.emitters[0].spawned >= 19 && st.emitters[0].spawned <= 21);
+    CHECK(st.emitters[0].expired >= 9 && st.emitters[0].expired <= 11);
+    CHECK_EQ(st.live.size(), size_t{20});
+    CHECK_EQ(st.live.back(), static_cast<uint32_t>(s.frame().particles.size()));
+}
+
+// Spread: distances from the emitter at the 5th / 50th / 95th percentile, over all steps.
+CM_TEST(fxsim, stats_spread_on_a_disc_shell) {
+    fxsim::SimInput in = steady(0.01f, 0.5f);
+    in.emitters[0].e.spawnShape = 0;
+    in.emitters[0].e.spawnRadius[0] = 3; in.emitters[0].e.spawnRadius[1] = 3;   // a ring of radius 3
+    fxsim::Sim s(in, 1);
+    run(s, 1.0f, 0.05f);
+    const fxsim::EmitterStats& e = s.stats().emitters[0];
+    CHECK_NEAR(e.spread[0], 3.0f, 1e-3f);
+    CHECK_NEAR(e.spread[2], 3.0f, 1e-3f);
+    const nlohmann::json j = fxsim::stats_json(s.stats());
+    CHECK_NEAR(j["emitters"][0]["spread"][1].get<double>(), 3.0, 1e-3);
+    CHECK(j.contains("live"));
 }

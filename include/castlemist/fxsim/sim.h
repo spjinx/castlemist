@@ -7,6 +7,7 @@
 
 #include "castlemist/extract/model_types.h"
 #include "castlemist/fx/fx_math.h"
+#include "castlemist/fxsim/stats.h"
 
 #include <string>
 #include <vector>
@@ -65,6 +66,8 @@ public:
     void step(float dt);
     const Frame& frame() const { return frame_; }
     size_t dropped() const { return dropped_; }
+    /// @brief The run so far (percentiles and means computed on each call).
+    const Stats& stats() const;
     /// @brief The pieces of client behaviour not yet read, run as approximations.
     std::vector<std::string> approximations() const;
 
@@ -76,6 +79,14 @@ private:
     std::vector<float> acc_;
     Frame frame_;
     size_t dropped_ = 0;
+    // stats: counters kept per step, finished in stats()
+    struct Acc {
+        std::vector<float> dist;            ///< Capped sample of distances from the emitter.
+        double speedSum = 0; size_t speedN = 0;
+        double alpha[5] = {}, size[5] = {}; size_t n[5] = {};
+    };
+    std::vector<Acc> acc2_;
+    mutable Stats stats_;
 };
 
 }  // namespace castlemist::fxsim

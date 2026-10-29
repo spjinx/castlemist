@@ -56,6 +56,28 @@ Sim::Sim(SimInput in, uint32_t seed) : in_(std::move(in)) {
     for (size_t i = 0; i < in_.emitters.size(); ++i)
         rng_.push_back(fx::Rng{seed ^ static_cast<uint32_t>(i * 0x9e3779b9u)});
     acc_.assign(in_.emitters.size(), 0.0f);
+    acc2_.resize(in_.emitters.size());
+    stats_.emitters.resize(in_.emitters.size());
+}
+
+const Stats& Sim::stats() const {
+    stats_.dropped = dropped_;
+    for (size_t i = 0; i < acc2_.size(); ++i) {
+        const Acc& a = acc2_[i];
+        EmitterStats& e = stats_.emitters[i];
+        std::vector<float> d = a.dist;
+        if (!d.empty()) {
+            std::sort(d.begin(), d.end());
+            const float q[3] = {0.05f, 0.5f, 0.95f};
+            for (int k = 0; k < 3; ++k) e.spread[k] = d[static_cast<size_t>(q[k] * static_cast<float>(d.size() - 1))];
+        }
+        e.meanSpeed = a.speedN ? static_cast<float>(a.speedSum / static_cast<double>(a.speedN)) : 0.0f;
+        for (int k = 0; k < 5; ++k) {
+            e.alphaAt[k] = a.n[k] ? static_cast<float>(a.alpha[k] / static_cast<double>(a.n[k])) : 0.0f;
+            e.sizeAt[k] = a.n[k] ? static_cast<float>(a.size[k] / static_cast<double>(a.n[k])) : 0.0f;
+        }
+    }
+    return stats_;
 }
 
 std::vector<std::string> Sim::approximations() const {
@@ -155,6 +177,8 @@ void Sim::step(float dt) {
         p.pos = {p.pos.x + p.vel.x * dt, p.pos.y + p.vel.y * dt, p.pos.z + p.vel.z * dt};
         appearance(p);
     }
+    for (const Particle& p : ps)
+        if (p.age >= p.life) ++stats_.emitters[p.emitter].expired;
     ps.erase(std::remove_if(ps.begin(), ps.end(), [](const Particle& p) { return p.age >= p.life; }), ps.end());
     // spawn: accumulator per emitter, a group each period that passes the chance (percent)
     for (size_t ei = 0; ei < in_.emitters.size(); ++ei) {
@@ -168,9 +192,31 @@ void Sim::step(float dt) {
             for (long k = 0; k < n; ++k) {
                 if (ps.size() >= kMaxParticles) { ++dropped_; continue; }
                 spawn(ei);
+                ++stats_.emitters[ei].spawned;
             }
         }
     }
+    // per-step samples
+    constexpr size_t kDistCap = 262144;
+    std::vector<uint32_t> live(in_.emitters.size(), 0);
+    for (const Particle& p : ps) {
+        ++live[p.emitter];
+        Acc& a = acc2_[p.emitter];
+        const fx::Vec3 o = in_.emitters[p.emitter].origin;
+        const float dx = p.pos.x - o.x, dy = p.pos.y - o.y, dz = p.pos.z - o.z;
+        if (a.dist.size() < kDistCap) a.dist.push_back(std::sqrt(dx * dx + dy * dy + dz * dz));
+        a.speedSum += std::sqrt(p.vel.x * p.vel.x + p.vel.y * p.vel.y + p.vel.z * p.vel.z);
+        ++a.speedN;
+        const float t = p.age / p.life;
+        const int bin = static_cast<int>(std::lround(t * 4.0f));
+        if (bin >= 0 && bin <= 4 && std::fabs(t * 4.0f - static_cast<float>(bin)) <= 0.5f) {
+            a.alpha[bin] += p.colour[3];
+            a.size[bin] += p.size[0];
+            ++a.n[bin];
+        }
+    }
+    for (size_t i = 0; i < live.size(); ++i) stats_.emitters[i].live.push_back(live[i]);
+    stats_.live.push_back(static_cast<uint32_t>(ps.size()));
 }
 
 }  // namespace castlemist::fxsim
