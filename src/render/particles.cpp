@@ -12,6 +12,7 @@
 namespace castlemist::render {
 
 namespace {
+uint64_t g_fxGeneration = 0;   // +1 per capture_effects (the browser keys its inspector on it)
 uint32_t g_fxSeed = 1;
 float g_fxSpeed = 1.0f;
 bool g_fxPaused = false;
@@ -23,6 +24,7 @@ void set_show_effects(bool on) {
     if (!on && g_fxSim) g_fxSim = std::make_unique<fxsim::Sim>(g_fxSim->input(), g_fxSeed, false);   // start over when shown again
 }
 const fxsim::Sim* effect_sim() { return g_fxSim.get(); }
+uint64_t effect_generation() { return g_fxGeneration; }
 void restart_effects(uint32_t seed) {
     g_fxSeed = seed;
     if (g_fxSim) g_fxSim = std::make_unique<fxsim::Sim>(g_fxSim->input(), seed, false);
@@ -52,6 +54,7 @@ void clear_effects() {
 
 void capture_effects(const ModelPreview& model) {
     clear_effects();
+    ++g_fxGeneration;
     if (!model.hasEffects()) return;
     fxsim::SimInput in = fxsim::make_input(model);
     g_fxClouds = in.clouds;

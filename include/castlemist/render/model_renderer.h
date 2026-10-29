@@ -209,6 +209,7 @@ void effect_stats(int& clouds, int& emitters, int& lights, int& live); // debug 
 // Particle Browser hooks (docs/superpowers/specs/2026-10-29-particle-browser-design.md). The
 // sim stays the renderer's; it keeps no stats history (the browser runs its own copy for those).
 const castlemist::fxsim::Sim* effect_sim();        // nullptr without effects
+uint64_t effect_generation();                      // +1 per model capture (not per restart / seek)
 void restart_effects(uint32_t seed);               // from t = 0 with this seed
 void set_effect_solo(const std::vector<bool>& mask); // per SimInput emitter; size mismatch = draw all
 void set_effect_time(float seconds);               // exact seek (re-run at 1/60 s)

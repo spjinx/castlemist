@@ -46,7 +46,8 @@ namespace {
 namespace pb = castlemist::ui::particles;
 
 constexpr UINT WM_APP_PB_EFFECTS = WM_APP + 45;   // lparam: EffectsDone* (owned by the receiver)
-constexpr UINT_PTR TIMER_PB_POLL = 1, TIMER_PB_EDIT = 2;
+constexpr UINT WM_APP_PB_STATS = WM_APP + 47;     // lparam: StatsDone* (owned by the receiver)
+constexpr UINT_PTR TIMER_PB_POLL = 1, TIMER_PB_EDIT = 2, TIMER_PB_SEEK = 3;
 constexpr UINT_PTR ID_PB_TAB = 100, ID_PB_LIST = 101, ID_PB_SEARCH = 102, ID_PB_TREE = 103, ID_PB_INFO = 104,
                    ID_PB_STREAK = 110, ID_PB_LIGHTNING = 111, ID_PB_MESH = 112, ID_PB_BURST = 113, ID_PB_TRACKS = 114,
                    ID_PB_ALIGN = 115, ID_PB_CLASS = 116, ID_PB_PLAY = 120, ID_PB_RESTART = 121, ID_PB_TIME = 122,
@@ -54,6 +55,13 @@ constexpr UINT_PTR ID_PB_TAB = 100, ID_PB_LIST = 101, ID_PB_SEARCH = 102, ID_PB_
 constexpr wchar_t kWndClass[] = L"CastlemistParticleBrowser";
 constexpr int kTopH = 64, kBottomH = 64;
 constexpr float kStep = 1.0f / 60.0f;
+
+struct StatsDone {
+    uint64_t generation = 0;
+    uint32_t seed = 0;
+    fxsim::Stats stats;
+    std::vector<std::string> approximations;
+};
 
 struct EffectsDone {
     std::shared_ptr<cntc::PackSet> set;
@@ -78,6 +86,7 @@ struct Browser {
     std::string effectsError;
     // inspector
     const fxsim::Sim* inspected = nullptr;
+    uint64_t inspectedGeneration = 0;   // render::effect_generation() the tree was built for
     size_t inspectedEmitters = 0;
     std::vector<HTREEITEM> emitterItems;
     fxsim::Stats stats;
@@ -315,9 +324,37 @@ std::wstring stats_text() {
     return t;
 }
 
+// The browser's own statistics run (the preview's sim keeps no history), on a worker: a heavy
+// model must not freeze the window or the preview. A result for an older model or seed is dropped.
+void start_stats() {
+    const fxsim::Sim* sim = render::effect_sim();
+    if (!sim) return;
+    SetWindowTextW(g_pb->info, L"Running the 4 s statistics...");
+    HWND wnd = g_pb->wnd;
+    std::thread([wnd, in = sim->input(), seed = g_pb->seedValue, gen = render::effect_generation()]() {
+        auto* done = new StatsDone;
+        done->generation = gen;
+        done->seed = seed;
+        fxsim::Sim run(in, seed, true);
+        for (int k = 0; k < 240; ++k) run.step(kStep);
+        done->stats = run.stats();
+        done->approximations = run.approximations();
+        if (!PostMessageW(wnd, WM_APP_PB_STATS, 0, reinterpret_cast<LPARAM>(done))) delete done;
+    }).detach();
+}
+
+void on_stats(StatsDone* raw) {
+    std::unique_ptr<StatsDone> done(raw);
+    if (done->generation != g_pb->inspectedGeneration || done->seed != g_pb->seedValue) return;   // stale
+    g_pb->stats = std::move(done->stats);
+    g_pb->approximations = std::move(done->approximations);
+    SetWindowTextW(g_pb->info, stats_text().c_str());
+}
+
 void rebuild_inspector() {
     const fxsim::Sim* sim = render::effect_sim();
     g_pb->inspected = sim;
+    g_pb->inspectedGeneration = render::effect_generation();
     g_pb->inspectedEmitters = sim ? sim->input().emitters.size() : 0;
     TreeView_DeleteAllItems(g_pb->tree);
     g_pb->emitterItems.clear();
@@ -351,13 +388,7 @@ void rebuild_inspector() {
             TreeView_InsertItem(g_pb->tree, &child);
         }
     }
-    // the browser's own statistics run (the preview's sim keeps no history)
-    fxsim::Sim run(in, g_pb->seedValue, true);
-    for (int k = 0; k < 240; ++k) run.step(kStep);
-    g_pb->stats = run.stats();
-    g_pb->approximations = run.approximations();
-    SetWindowTextW(g_pb->info, stats_text().c_str());
-    render::set_effect_solo({});
+    start_stats();
 }
 
 void apply_solo() {
@@ -417,7 +448,7 @@ void read_seed_speed() {
     if (seed && seed != g_pb->seedValue) {
         g_pb->seedValue = seed;
         render::restart_effects(seed);
-        g_pb->inspected = nullptr;   // rebuild with the new seed's statistics
+        start_stats();   // the same model: the tree and the solo mask stay
     }
     const float speeds[] = {0.1f, 0.25f, 0.5f, 1.0f, 2.0f, 4.0f};
     const LRESULT k = SendMessageW(g_pb->speed, CB_GETCURSEL, 0, 0);
@@ -549,7 +580,7 @@ LRESULT CALLBACK BrowserWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
     }
     case WM_APP_PB_EFFECTS + 1: apply_solo(); return 0;
     case WM_HSCROLL:
-        if (reinterpret_cast<HWND>(lparam) == g_pb->time) set_time_from_slider();
+        if (reinterpret_cast<HWND>(lparam) == g_pb->time) SetTimer(hwnd, TIMER_PB_SEEK, 60, nullptr);   // coalesce a drag
         return 0;
     case WM_COMMAND: {
         const UINT id = LOWORD(wparam), code = HIWORD(wparam);
@@ -579,17 +610,19 @@ LRESULT CALLBACK BrowserWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
         if (wparam == TIMER_PB_EDIT) {
             KillTimer(hwnd, TIMER_PB_EDIT);
             refilter();
+        } else if (wparam == TIMER_PB_SEEK) {
+            KillTimer(hwnd, TIMER_PB_SEEK);
+            set_time_from_slider();
         } else if (wparam == TIMER_PB_POLL) {
             if (g_pb->tabIndex == 0 && g_pb->scan.snapshot().size() != g_pb->modelsAtFilter) refilter();
             if (g_pb->tabIndex == 1 && !g_pb->effectsLoading && g_pb->shownEffects.empty() && !g_pb->effects.empty())
                 refilter();
-            const fxsim::Sim* sim = render::effect_sim();
-            if (sim != g_pb->inspected || (sim && sim->input().emitters.size() != g_pb->inspectedEmitters))
-                rebuild_inspector();
+            if (render::effect_generation() != g_pb->inspectedGeneration) rebuild_inspector();
             update_status();
             maybe_shoot();
         }
         return 0;
+    case WM_APP_PB_STATS: on_stats(reinterpret_cast<StatsDone*>(lparam)); return 0;
     case WM_APP_PB_EFFECTS:
         on_effects(reinterpret_cast<EffectsDone*>(lparam));
         if (g_pb->tabIndex == 1) refilter();
@@ -598,6 +631,7 @@ LRESULT CALLBACK BrowserWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
     case WM_DESTROY: {
         KillTimer(hwnd, TIMER_PB_POLL);
         KillTimer(hwnd, TIMER_PB_EDIT);
+        KillTimer(hwnd, TIMER_PB_SEEK);
         g_pb->scan.stop();   // saves the partial index
         render::set_effect_solo({});
         render::set_effects_paused(false);
@@ -605,6 +639,8 @@ LRESULT CALLBACK BrowserWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
         MSG m;
         while (PeekMessageW(&m, hwnd, WM_APP_PB_EFFECTS, WM_APP_PB_EFFECTS, PM_REMOVE))
             delete reinterpret_cast<EffectsDone*>(m.lParam);
+        while (PeekMessageW(&m, hwnd, WM_APP_PB_STATS, WM_APP_PB_STATS, PM_REMOVE))
+            delete reinterpret_cast<StatsDone*>(m.lParam);
         delete g_pb;
         g_pb = nullptr;
         return 0;

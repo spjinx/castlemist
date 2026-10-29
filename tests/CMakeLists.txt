@@ -357,7 +357,7 @@ target_compile_definitions(cm_test_ripper PRIVATE
 castlemist_add_test(render
     SOURCES test_render_math.cpp test_render_preview_rig.cpp test_render_world_view.cpp
             test_render_world_materials.cpp test_render_world_game.cpp
-            test_render_world_sky.cpp
+            test_render_world_sky.cpp test_render_effects.cpp
     DEPS    castlemist::render
     PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/render")
 
