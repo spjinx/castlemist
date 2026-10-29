@@ -24,6 +24,7 @@
 #include "castlemist/format/struct_template.h"
 #include "castlemist/native/cmp_decompress_method0.hpp"
 #include "castlemist/native/gw2model.hpp"
+#include "castlemist/fxsim/sim.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1065,4 +1066,19 @@ CM_TEST(dat, effect_read_failures_stay_contained_1450970) {
     CHECK_EQ(bad.anim.clips.size(), good.anim.clips.size());
     CHECK_EQ(bad.effects.clouds.size(), good.effects.clouds.size());
     CHECK_EQ(bad.effects.emitters.size(), good.effects.emitters.size());
+}
+
+// fxsim on a real model: deterministic (seed 1, 4 s at 1/60 s), its 13 emitters all simulated.
+CM_TEST(dat, fx_sim_1450958_is_deterministic) {
+    if (!ensure_template()) SKIP("no gw2_packfile.json struct template");
+    auto pv = load_model_by_fileid(shared_dat(), 1450958, false);
+    if (!pv) SKIP("model 1450958 did not build on this dat");
+    const castlemist::fxsim::SimInput in = castlemist::fxsim::make_input(*pv);
+    CHECK_EQ(in.emitters.size(), size_t{13});
+    castlemist::fxsim::Sim a(in, 1), b(in, 1);
+    for (int i = 0; i < 240; ++i) { a.step(1.0f / 60.0f); b.step(1.0f / 60.0f); }
+    CHECK_EQ(a.frame().particles.size(), size_t{210});
+    CHECK_EQ(b.frame().particles.size(), a.frame().particles.size());
+    CHECK_EQ(a.dropped(), size_t{0});
+    CHECK(a.frame().particles.front().pos.x == b.frame().particles.front().pos.x);
 }

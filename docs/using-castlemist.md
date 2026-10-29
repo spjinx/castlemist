@@ -322,6 +322,9 @@ gw2dat_cli users --content-type 66 --content-id 7562                 # the rever
 gw2dat_cli fx-census --dat $dat --template dumps\packfile\gw2_packfile.json > census.json
 gw2dat_cli fx-census --what effects --dat $dat > effects.json
 #   --offset N --count N   a slice of the MODL list; --examples N  fileIds kept per feature
+# The reference particle sim on one model: stats (live count per step, spread percentiles, mean
+# speed, alpha and size over life), the approximations it ran with, and the last K steps' particles
+gw2dat_cli fx-sim --dat $dat --template dumps\packfile\gw2_packfile.json --file-id 1450958 --seconds 4 --frames 1
 
 # Characters (API key saved in the Character Ripper)
 gw2dat_cli character --key-name main                                  # list characters

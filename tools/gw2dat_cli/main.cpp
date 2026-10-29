@@ -105,6 +105,7 @@
 #include "castlemist/npc/look.h"
 #include "castlemist/npc/tokens.h"
 #include "castlemist/format/cntc_pack.h"
+#include "castlemist/fxsim/sim.h"
 #include "castlemist/skillfx/evtc.h"
 #include "castlemist/skillfx/export.h"
 #include "castlemist/skillfx/pairing.h"
@@ -2259,6 +2260,43 @@ void cmd_fx_census(const Args& a) {
           {"counts", counts}, {"examples", examples}});
 }
 
+// fx-sim --dat D --file-id N [--template T --seconds 4 --dt 0.0166667 --seed 1 --frames K]: runs the reference
+// particle sim (fxsim) on a model's baked effects; prints its stats, the approximations it ran
+// with, and the particles of the last K steps.
+void cmd_fx_sim(const Args& a) {
+    namespace fs = castlemist::fxsim;
+    if (has(a, "template")) {  // models need it; without --template the usual locations are tried
+        std::string err;
+        if (!castlemist::tpl::load_from_file(utf8_arg("--template"), err)) fail("template: " + err);
+    }
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    const uint32_t fid = static_cast<uint32_t>(to_u64(need(a, "file-id")));
+    std::shared_ptr<ModelPreview> m = load_model_by_fileid(dat, fid, false);
+    if (!m) fail("model " + std::to_string(fid) + " did not load");
+    const float seconds = has(a, "seconds") ? std::stof(a.at("seconds")) : 4.0f;
+    const float dt = has(a, "dt") ? std::stof(a.at("dt")) : 1.0f / 60.0f;
+    const uint32_t seed = has(a, "seed") ? static_cast<uint32_t>(to_u64(a.at("seed"))) : 1u;
+    const size_t keep = has(a, "frames") ? to_u64(a.at("frames")) : 0;
+    if (!(dt > 0) || !(seconds >= 0)) fail("--dt must be > 0 and --seconds >= 0");
+    fs::SimInput in = fs::make_input(*m);
+    fs::Sim sim(in, seed);
+    const size_t steps = static_cast<size_t>(std::lround(seconds / dt));
+    json frames = json::array();
+    for (size_t i = 0; i < steps; ++i) {
+        sim.step(dt);
+        if (i + keep < steps) continue;
+        json ps = json::array();
+        for (const fs::Particle& p : sim.frame().particles)
+            ps.push_back({{"e", p.emitter}, {"pos", {p.pos.x, p.pos.y, p.pos.z}}, {"age", p.age},
+                          {"size", {p.size[0], p.size[1]}}, {"rgba", {p.colour[0], p.colour[1], p.colour[2], p.colour[3]}},
+                          {"rot", p.rotation}, {"uv", {p.uv[0], p.uv[1], p.uv[2], p.uv[3]}}});
+        frames.push_back({{"time", sim.frame().time}, {"particles", std::move(ps)}});
+    }
+    emit({{"ok", true}, {"fileId", fid}, {"emitters", in.emitters.size()}, {"warnings", in.warnings},
+          {"approximations", sim.approximations()}, {"stats", fs::stats_json(sim.stats())}, {"frames", frames}});
+}
+
 // The NPC catalogue: --model F (body model fileId), --race R, --limit N (default 100).
 void cmd_npc_list(const Args& a) {
     castlemist::npc::Catalogue cat = ensure_npc(a);
@@ -3763,6 +3801,7 @@ int main(int argc, char** argv) {
         else if (cmd == "scananim") cmd_scananim(a);
         else if (cmd == "amat") cmd_amat(a);
         else if (cmd == "effscan") cmd_effscan(a);
+        else if (cmd == "fx-sim") cmd_fx_sim(a);
         else if (cmd == "fx-census") (has(a, "what") && a.at("what") == "effects") ? cmd_effect_census(a) : cmd_fx_census(a);
         else if (cmd == "animmach") cmd_animmach(a);
         else if (cmd == "matcensus") cmd_matcensus(a);
