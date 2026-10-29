@@ -291,6 +291,22 @@ CM_TEST(exportgltf, particle_sidecar_written_for_model_with_effects) {
     CHECK_NEAR(doc["effectLights"][0]["intensity"].get<double>(), 2.0, 1e-9);
 }
 
+// D: castlemist's reference particle statistics go beside the sidecar (seed 1, 4 s at 1/60 s),
+// the numbers a Unity port is measured against.
+CM_TEST(exportgltf, fxstats_written_beside_the_sidecar) {
+    ModelPreview model = make_quad_with_effects();
+    fs::path dir = make_temp_dir("fxstats");
+    GltfExportResult result = export_model_gltf(model, (dir / "fx.glb").string());
+    CHECK(result.ok);
+    CHECK(fs::exists(dir / "fx_fxstats.json"));
+    std::ifstream in(dir / "fx_fxstats.json");
+    json doc = json::parse(in);
+    CHECK_EQ(doc["live"].size(), size_t(240));
+    CHECK_EQ(doc["emitters"].size(), model.emitters.size());
+    CHECK_EQ(doc["seed"].get<int>(), 1);
+    CHECK(doc.contains("approximations"));
+}
+
 // The 2026-10-28 effect fields go out beside the old keys, which keep their meaning.
 CM_TEST(exportgltf, particle_sidecar_carries_v70_mesh_streak_obstacle_wind_and_tracks) {
     ModelPreview model = make_quad_with_effects();
@@ -364,6 +380,7 @@ CM_TEST(exportgltf, no_particle_sidecar_without_baked_effects) {
     CHECK(result.ok);
     CHECK(result.particlesJsonPath.empty());
     CHECK(!fs::exists(dir / "plain_particles.json"));
+    CHECK(!fs::exists(dir / "plain_fxstats.json"));
 }
 
 // A model with no effects but a mesh that names a visibility bone still gets its sidecar: meshVis

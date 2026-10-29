@@ -31,6 +31,9 @@
 #include <filesystem>
 #include <fstream>
 
+#include "castlemist/fxsim/sim.h"
+#include "castlemist/fxsim/stats.h"
+
 namespace castlemist::exportgltf {
 
 using nlohmann::json;
@@ -284,6 +287,21 @@ std::string write_particle_sidecar(const ModelPreview& model, const std::vector<
         json wj{{"intensity", w.intensity}, {"nearDistance", w.nearDistance}, {"farDistance", w.farDistance}};
         bone_or_skip(wj, w.boneJoint);
         doc["effectWinds"].push_back(std::move(wj));
+    }
+
+    // castlemist's reference statistics for the same effects (sub-project D: a Unity port is
+    // measured against these): fxsim, seed 1, 4 s at 1/60 s.
+    if (model.hasEffects()) {
+        fxsim::Sim sim(fxsim::make_input(model), 1u, true);
+        for (int i = 0; i < 240; ++i) sim.step(1.0f / 60.0f);
+        json stats = fxsim::stats_json(sim.stats());
+        stats["seed"] = 1;
+        stats["dt"] = 1.0 / 60.0;
+        stats["seconds"] = 4;
+        stats["approximations"] = sim.approximations();
+        const std::string statsPath = glbPath.substr(0, glbPath.find_last_of('.')) + "_fxstats.json";
+        std::ofstream sout(long_path(std::filesystem::path(std::u8string(statsPath.begin(), statsPath.end()))));
+        if (sout) sout << stats.dump(1);
     }
 
     std::string jsonPath = glbPath.substr(0, glbPath.find_last_of('.')) + "_particles.json";

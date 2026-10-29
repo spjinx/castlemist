@@ -148,7 +148,7 @@ castlemist_add_layer(world DEPS castlemist::extract ext::json)
 # to encode embedded textures as PNGs, and ext::json (already used by
 # native/db) to build the glTF JSON chunk without hand-rolled escaping. world
 # is for export_world_gltf, which writes a WorldScene (world never depends back).
-castlemist_add_layer(exportgltf DEPS castlemist::extract castlemist::world ext::stb ext::json)
+castlemist_add_layer(exportgltf DEPS castlemist::extract castlemist::world castlemist::fxsim ext::stb ext::json)
 # Recorded in the VRChat export's materials.json.
 target_compile_definitions(castlemist_exportgltf PRIVATE CASTLEMIST_VERSION_STRING="${PROJECT_VERSION}")
 
