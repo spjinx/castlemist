@@ -130,6 +130,9 @@ castlemist_add_layer(media  DEPS castlemist::core castlemist::native
 castlemist_add_layer(extract DEPS castlemist::format castlemist::media
                                   castlemist::native castlemist::db)
 
+# fxsim: the reference particle sim (fx maths over a ModelPreview), for the browser and Unity checks.
+castlemist_add_layer(fxsim DEPS castlemist::extract castlemist::fx)
+
 # sim sits beside render rather than under it, but it does need extract's mesh
 # types: the solver is fed a ModelMeshCPU straight out of model extraction.
 castlemist_add_layer(sim    DEPS castlemist::extract ext::glm)
