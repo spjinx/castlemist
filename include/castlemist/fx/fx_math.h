@@ -104,8 +104,8 @@ struct PathPoint {
     Vec3 pos, tangent;
 };
 /// @brief The bolt path at @p t in [0, 1] over @p nodes (>= 2; FUN_140c08e70): mode 0
-///        linear, mode 1 Catmull-Rom (0.5, 3, 2, 5) with the end points repeated; t at or past
-///        the last node gives the last node and the last segment's direction. Other modes:
+///        linear, mode 1 Catmull-Rom (0.5, 3, 2, 5) with the end points repeated; t is clamped to [0, 1]; t at the
+///        last node gives the last node and the last segment's direction. Other modes:
 ///        zero.
 PathPoint bolt_path_point(uint32_t mode, const std::vector<Vec3>& nodes, float t);
 

@@ -191,3 +191,18 @@ CM_TEST(fx, lightning_disc_offset_draw_order) {
     CHECK_NEAR(p.z, 0.0f, 1e-6f);
     CHECK_EQ(r.state, copy.state);                 // a constant radius drew nothing more
 }
+
+// Review fix: on an interior node the path is exactly that node (float floor/fmod disagreed:
+// n = 7, t = 0.5 gave node 4), and t outside [0, 1] clamps.
+CM_TEST(fx, bolt_path_lands_on_interior_nodes_and_clamps) {
+    std::vector<Vec3> pts;
+    for (int i = 0; i < 7; ++i) pts.push_back({static_cast<float>(i) * 10.0f, 0, 0});
+    for (uint32_t mode = 0; mode < 2; ++mode) {
+        CHECK_NEAR(bolt_path_point(mode, pts, 0.5f).pos.x, 30.0f, 1e-3f);
+        CHECK_NEAR(bolt_path_point(mode, pts, -0.5f).pos.x, 0.0f, 1e-3f);
+        CHECK_NEAR(bolt_path_point(mode, pts, 1.5f).pos.x, 60.0f, 1e-3f);
+    }
+    std::vector<Vec3> eight;
+    for (int i = 0; i < 8; ++i) eight.push_back({static_cast<float>(i), 0, 0});
+    CHECK_NEAR(bolt_path_point(0, eight, 3.0f / 7.0f).pos.x, 3.0f, 1e-4f);
+}

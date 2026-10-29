@@ -4720,12 +4720,14 @@ private:
             std::string mt = ptrTargetStruct(fj);
             if (p && !mt.empty()) {
                 em.hasMesh = true; em.meshFileId = decodeFilename(mt, p);
-                parseMeshSettings(mt, p, em.mesh);
+                // the rest of the mesh settings are optional: a failed read keeps the emitter
+                try { parseMeshSettings(mt, p, em.mesh); }
+                catch (const std::exception&) { em.mesh = {}; em.mesh.present = true; }
                 em.mesh.fileId = em.meshFileId;
             }
         }
         // V70 additions
-        if (fOff(t, "velocityInherit", e, o, fj)) {
+        if (fOff(t, "velocityInherit", e, o, fj)) try {
             em.hasV70Extras = true;
             rdFloat2(t, "velocityInherit", e, em.velocityInherit);
             rdFloat2(t, "accelerationDistRange", e, em.accelerationDistRange);
@@ -4733,7 +4735,7 @@ private:
             rdFloat2(t, "velocityDistRange", e, em.velocityDistRange);
             rdFloat2(t, "velocityDistSpeed", e, em.velocityDistSpeed);
             em.affinity = rdDword(t, "affinity", e);
-        }
+        } catch (const std::exception&) { em.hasV70Extras = false; }   // optional: keep the emitter
         return em;
     }
 
@@ -5136,7 +5138,8 @@ private:
                         c.matConstAnims.push_back(m);
                     }
                 }
-                readEffectTracks(clipType, clip, c);
+                // optional research data: a failed read keeps the clip and the clips after it
+                try { readEffectTracks(clipType, clip, c); } catch (const std::exception&) { c.effectTracks.clear(); }
                 // data (PackGrannyAnimationType*) -> raw granny blob + fixup table
                 if (fieldOffset(clipType, "data", o, f)) {
                     std::string gt = f.value("type", std::string());

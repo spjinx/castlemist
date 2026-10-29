@@ -1043,3 +1043,26 @@ CM_TEST(dat, sand_dog_emitters_and_streaks) {
     for (const auto& s : pv->streaks)
         for (uint32_t a : s.anchorIndices) CHECK(a < pv->streakAnchors.size());
 }
+
+// Review fix: an effect-track read that throws (here: the track struct padded past the file's
+// end in a template copy) must not cost the model its clips or its particle clouds.
+CM_TEST(dat, effect_read_failures_stay_contained_1450970) {
+    if (!ensure_template()) SKIP("no gw2_packfile.json struct template");
+    const std::vector<uint8_t> bytes = packfile_by_file_id(1450970);
+    nlohmann::json tpl = *castlemist::tpl::get();
+    const castlemist::model::Model good = castlemist::model::Extractor(bytes, tpl).extract();
+    CHECK(!good.anim.clips.empty());
+    CHECK(!good.effects.clouds.empty());
+    auto pad = [&](const char* type) {
+        for (auto& [name, t] : tpl["types"].items())
+            if (name.rfind(type, 0) == 0 && t.contains("fields"))
+                t["fields"].insert(t["fields"].begin(), {{"name", "pad"}, {"kind", "array"}, {"element", "byte"},
+                                                         {"count", 0x40000000}});
+    };
+    pad("ModelTrackTypeData");
+    pad("MeshEmitterSettings");
+    const castlemist::model::Model bad = castlemist::model::Extractor(bytes, tpl).extract();
+    CHECK_EQ(bad.anim.clips.size(), good.anim.clips.size());
+    CHECK_EQ(bad.effects.clouds.size(), good.effects.clouds.size());
+    CHECK_EQ(bad.effects.emitters.size(), good.effects.emitters.size());
+}

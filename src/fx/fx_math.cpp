@@ -138,10 +138,12 @@ Vec3 unit3(Vec3 a) {
 PathPoint bolt_path_point(uint32_t mode, const std::vector<Vec3>& nodes, float t) {
     const size_t n = nodes.size();
     if (n < 2 || mode > 1) return {};
-    const float seg = 1.0f / static_cast<float>(n - 1);
-    const size_t i = static_cast<size_t>(std::max(0.0f, std::floor(t / seg)));
+    // Index and fraction from one value, so a node lands on itself (the client's fraction comes
+    // from FUN_140e593a0, not read; a separate floor and fmod disagree under rounding).
+    const float u = std::clamp(t, 0.0f, 1.0f) * static_cast<float>(n - 1);
+    const size_t i = static_cast<size_t>(std::floor(u));
     if (i + 1 >= n) return {nodes[n - 1], unit3(sub3(nodes[n - 1], nodes[n - 2]))};
-    const float f = std::fmod(t, seg) / seg;
+    const float f = u - static_cast<float>(i);
     const Vec3 p1 = nodes[i], p2 = nodes[i + 1];
     if (mode == 0) {
         const Vec3 d = sub3(p2, p1);
