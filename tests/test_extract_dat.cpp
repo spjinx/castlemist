@@ -1077,7 +1077,7 @@ CM_TEST(dat, fx_sim_1450958_is_deterministic) {
     CHECK_EQ(in.emitters.size(), size_t{13});
     castlemist::fxsim::Sim a(in, 1), b(in, 1);
     for (int i = 0; i < 240; ++i) { a.step(1.0f / 60.0f); b.step(1.0f / 60.0f); }
-    CHECK_EQ(a.frame().particles.size(), size_t{210});
+    CHECK_EQ(a.frame().particles.size(), size_t{212});   // re-pinned 2026-10-28: spawn also draws the acceleration
     CHECK_EQ(b.frame().particles.size(), a.frame().particles.size());
     CHECK_EQ(a.dropped(), size_t{0});
     CHECK(a.frame().particles.front().pos.x == b.frame().particles.front().pos.x);

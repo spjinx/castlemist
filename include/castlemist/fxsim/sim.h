@@ -32,13 +32,16 @@ struct SimInput {
 ///        skipped with a warning; a bone index past the joint list means the model origin.
 SimInput make_input(const ModelPreview& model);
 
-/// @brief Live particles per sim; spawns past it are counted in Sim::dropped().
-constexpr size_t kMaxParticles = 65536;
+/// @brief Live particles per sim; spawns past it are counted in Sim::dropped(). The client caps
+///        a cloud instance at 0x4000 and logs "Cloud particle count ... exceeds maximum"
+///        (FUN_140ac9530).
+constexpr size_t kMaxParticles = 0x4000;
 
 /// @brief One live particle (GW2 model space: Z up, inches).
 struct Particle {
     uint16_t emitter = 0;   ///< Index into SimInput::emitters.
     fx::Vec3 pos, vel;
+    fx::Vec3 accel;                         ///< The emitter's sampled acceleration + the cloud's.
     float age = 0, life = 1;
     // drawn at spawn
     float begin[4] = {1, 1, 1, 1}, end[4] = {1, 1, 1, 1};

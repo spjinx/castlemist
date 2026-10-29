@@ -82,7 +82,7 @@ const Stats& Sim::stats() const {
 
 std::vector<std::string> Sim::approximations() const {
     return {"per-emitter seeds (the client's seeding is not read)",
-            "drag: v *= max(0, 1 - (emitter + cloud drag) dt) (the client's integrator is not read)",
+            "wind and the noise field around each step (FUN_140acb1d0 reads them from the environment)",
             "spawn-shape distributions inside each shape; mesh shapes spawn at the emitter",
             "emitter transform applied to spawn position and velocity unless file flags 0x4",
             "flipbook without fps spread over the life (2026-07 reading)"};
@@ -99,15 +99,23 @@ void Sim::spawn(size_t ei) {
     float u[4];
     for (float& x : u) x = r.u01();
     fx::Vec3 vel = fx::spawn_velocity(dir, rng2(e.velocity[3]), u);
+    const fx::Range adir[3] = {rng2(e.acceleration[0]), rng2(e.acceleration[1]), rng2(e.acceleration[2])};
+    for (float& x : u) x = r.u01();
+    fx::Vec3 acc = fx::spawn_velocity(adir, rng2(e.acceleration[3]), u);
     if (e.hasTransform && !(e.flags & 0x4)) {
         off = xform_point(e.transform, off);
         vel = xform_dir(e.transform, vel);
+        acc = xform_dir(e.transform, acc);
     }
-    if (c) { vel.x += c->velocity[0]; vel.y += c->velocity[1]; vel.z += c->velocity[2]; }
+    if (c) {
+        vel.x += c->velocity[0]; vel.y += c->velocity[1]; vel.z += c->velocity[2];
+        acc.x += c->acceleration[0]; acc.y += c->acceleration[1]; acc.z += c->acceleration[2];
+    }
     Particle p;
     p.emitter = static_cast<uint16_t>(ei);
     p.pos = {in.origin.x + off.x, in.origin.y + off.y, in.origin.z + off.z};
     p.vel = vel;
+    p.accel = acc;
     p.life = std::max(1e-4f, fx::sample(rng2(e.lifetime), r));
     for (int k = 0; k < 4; ++k) {
         p.begin[k] = fx::sample(fx::Range::from_min_max(e.colorBegin[0][k], e.colorBegin[1][k]), r);
@@ -122,6 +130,7 @@ void Sim::spawn(size_t ei) {
     constexpr float kDeg = 3.1415927f / 180.0f;   // the loader converts rotations from degrees
     p.rotation0 = fx::sample(rng2(e.rotationInitial), r) * kDeg;
     p.spin = fx::sample(rng2(e.rotationChange), r) * kDeg;
+    p.rotation = p.rotation0;
     if ((e.flags & 0x1000) && r.u01() < 0.5f) p.spin = -p.spin;   // file 0x1000: random spin sign
     appearance(p);
     frame_.particles.push_back(p);
@@ -137,7 +146,6 @@ void Sim::appearance(Particle& p) const {
     const float sc = !e.scaleCurve.empty() ? fx::curve_eval(e.scaleCurve, t, 1.0f)
                                            : fx::scale_preset_value(e.scaleCurvePreset, t, e.flags);
     for (int k = 0; k < 2; ++k) p.size[k] = std::max(0.0f, (p.size0[k] + p.growth[k] * p.age) * sc);
-    p.rotation = p.rotation0 + p.spin * p.age;
     const float* rc = e.texCoordRect;
     const bool rect = rc[2] > rc[0] && rc[3] > rc[1];
     const float u0 = rect ? rc[0] : 0, v0 = rect ? rc[1] : 0, u1 = rect ? rc[2] : 1, v1 = rect ? rc[3] : 1;
@@ -168,13 +176,13 @@ void Sim::step(float dt) {
         const EmitterIn& in = in_.emitters[p.emitter];
         const ParticleCloudCPU* c = in.cloud >= 0 && static_cast<size_t>(in.cloud) < in_.clouds.size()
                                         ? &in_.clouds[static_cast<size_t>(in.cloud)] : nullptr;
-        fx::Vec3 a{};
-        if (c) a = {c->acceleration[0], c->acceleration[1], c->acceleration[2]};
-        p.vel = {p.vel.x + a.x * dt, p.vel.y + a.y * dt, p.vel.z + a.z * dt};
-        const float drag = in.e.drag + (c ? c->drag : 0.0f);
-        const float k = std::max(0.0f, 1.0f - drag * dt);
-        p.vel = {p.vel.x * k, p.vel.y * k, p.vel.z * k};
-        p.pos = {p.pos.x + p.vel.x * dt, p.pos.y + p.vel.y * dt, p.pos.z + p.vel.z * dt};
+        fx::integrate(p.pos, p.vel, p.accel, in.e.drag + (c ? c->drag : 0.0f), dt);
+        // spin decays by rotationDrag and stops rather than reversing (FUN_140acb950)
+        if (in.e.rotationDrag != 0) {
+            const float s2 = (1.0f - in.e.rotationDrag * dt) * p.spin;
+            p.spin = p.spin * s2 >= 0 ? s2 : 0.0f;
+        }
+        p.rotation += p.spin * dt;
         appearance(p);
     }
     for (const Particle& p : ps)

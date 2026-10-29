@@ -227,3 +227,24 @@ CM_TEST(fx, screen_velocity_sprite_axes) {
     const SpriteAxes z = screen_velocity_axes({0, 0}, 3.0f, 4.0f);
     CHECK_NEAR(z.u.x, 3.0f, 1e-5f); CHECK_NEAR(z.v.y, 4.0f, 1e-5f);
 }
+
+// FUN_140acb1d0: pos += v dt + a dt^2 / 2, v += a dt, then v *= 1 - drag dt with a speed floor.
+CM_TEST(fx, integrate_is_the_exact_constant_acceleration_step) {
+    Vec3 p{0, 0, 0}, v{0, 0, 10};
+    integrate(p, v, {0, 0, -10}, 0.0f, 0.1f);
+    CHECK_NEAR(p.z, 0.95f, 1e-5f);    // 10 * 0.1 - 0.5 * 10 * 0.01
+    CHECK_NEAR(v.z, 9.0f, 1e-5f);
+}
+
+CM_TEST(fx, integrate_drag_and_its_floor) {
+    Vec3 p{}, v{10, 0, 0};
+    integrate(p, v, {}, 0.5f, 0.1f);
+    CHECK_NEAR(v.x, 9.5f, 1e-5f);
+    CHECK_NEAR(p.x, 1.0f, 1e-5f);     // position moves with the pre-drag velocity
+    Vec3 q{}, w{1, 0, 0};
+    integrate(q, w, {}, 10.0f, 0.1f); // 1 - 10 * 0.1 = 0: below the 1e-4 floor
+    CHECK_NEAR(w.x, 1e-4f, 1e-9f);
+    Vec3 r{}, z{};
+    integrate(r, z, {}, 10.0f, 0.1f); // no direction to keep: stays zero
+    CHECK_NEAR(z.x, 0.0f, 1e-9f);
+}

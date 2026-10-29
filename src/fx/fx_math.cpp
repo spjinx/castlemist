@@ -136,6 +136,19 @@ SpriteAxes screen_velocity_axes(Vec2 v, float sizeX, float sizeY) {
     return {{x * sx, y * sx}, {-y * sy, x * sy}};
 }
 
+void integrate(Vec3& pos, Vec3& vel, Vec3 accel, float drag, float dt) {
+    const float h = 0.5f * dt;
+    pos = {accel.x * h * dt + vel.x * dt + pos.x, accel.y * h * dt + vel.y * dt + pos.y,
+           accel.z * h * dt + vel.z * dt + pos.z};
+    vel = {vel.x + accel.x * dt, vel.y + accel.y * dt, vel.z + accel.z * dt};
+    if (drag == 0) return;
+    const float k = 1.0f - drag * dt;
+    const Vec3 d{vel.x * k, vel.y * k, vel.z * k};
+    if (d.x * d.x + d.y * d.y + d.z * d.z >= 1e-4f) { vel = d; return; }
+    const float l = std::sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
+    vel = l > 0 ? Vec3{vel.x / l * 1e-4f, vel.y / l * 1e-4f, vel.z / l * 1e-4f} : Vec3{};
+}
+
 float Rng::u01() {
     uint32_t v = state * 0xbc8fu + (state / 0xadc8u) * 0x80000001u;   // a*s - (2^31 - 1)*(s / q), mod 2^32
     if (v > 0x7fffffffu) v += 0x80000000u;

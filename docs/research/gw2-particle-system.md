@@ -227,3 +227,29 @@ seed each emitter starts from is not read; B seeds its own.)
 
 **Streaks** (GrStreak.cpp 0x14155e170..0x14155fc80, GrStreakJobCommon.cpp 0x141562eb0..):
 decompiled, not yet read.
+
+## Amendment 2026-10-28 (3): the integrator, spin drag, the live cap
+
+Found from the call graph (tools/ghidra/FindCallers.java): the cloud update `FUN_140ac9530` calls,
+per emitter with live particles, `FUN_140acb950` (sprites) or `FUN_140acac60` (mesh particles,
+runtime flag 0x1000), then the spawn loop `FUN_140ac9e90`.
+
+- **Per sprite particle** (`FUN_140acb950`, record stride 0x6c): remaining life (+0x4c) -= dt
+  (a particle flag 0x8000 scales dt by a wind-rate term); expired particles are swapped out;
+  sizes grow linearly, `size += scaleChange * dt`; **spin drag**: when the emitter's rotation
+  drag is set, `spin' = (1 - rotationDrag * dt) * spin`, kept only if it has the same sign
+  (else 0: it stops, never reverses); `rotation += spin * dt`.
+- **Motion** (`FUN_140acb1d0`), in order:
+  1. wind (emitter wind influence x the environment wind): `a += w*k - proj_v(w)` while the
+     along-velocity component is under `k` (with no velocity, `a += w*k`); a cloud-instance flag
+     8 drops the wind's z;
+  2. **`pos += v dt + a dt^2 / 2`, `v += a dt`** (exact constant-acceleration step, 0.5 at
+     0x141923c38), a = the particle's own acceleration;
+  3. a noise field (emitter +0xdc strength, +0xec scale; `FUN_140ddfa40`) moves the position;
+  4. **drag** d = cloud drag + emitter drag: `v *= 1 - d dt`; if the result's squared speed is
+     under 1e-4 (0x141b87a94) the velocity keeps its direction at speed 1e-4;
+  5. obstacles (`FUN_140ad3020`) when the cloud and particle flags ask; height cut-offs
+     (runtime flags 0x100 / 0x200) kill particles above / below.
+  `fx::integrate` is steps 2 and 4.
+- **Live cap**: 0x4000 particles per cloud instance; past it the update logs "Cloud particle
+  count ({} total, {} mesh, {} quad) exceeds maximum allowed ({})" and trims.

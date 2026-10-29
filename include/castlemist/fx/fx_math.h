@@ -103,6 +103,13 @@ Axes3 axis_sprite_axes(Vec3 dir, Vec3 toEye, float sizeX, float sizeY);
 ///        (1, 0). No rotation.
 SpriteAxes screen_velocity_axes(Vec2 screenVelocity, float sizeX, float sizeY);
 
+/// @brief One step of a sprite particle's motion (FUN_140acb1d0, called per particle by the
+///        cloud update FUN_140acb950): `pos += vel dt + accel dt^2 / 2`, `vel += accel dt`, then
+///        with drag d (the cloud's plus the emitter's) `vel *= 1 - d dt`; a result whose squared
+///        speed falls under 1e-4 becomes the old direction at speed 1e-4 (0x141b87a94).
+///        Wind, the noise field and obstacles are applied around this step and are not here.
+void integrate(Vec3& pos, Vec3& vel, Vec3 accel, float drag, float dt);
+
 /// @brief The client's random generator (FUN_140e1e6a0): MINSTD, a = 48271, computed as
 ///        `a*s - (2^31 - 1)*(s / 44488)` in 32 bits; a result past 0x7fffffff gets 0x80000000
 ///        added (one more than Schrage's fix-up), a zero state becomes 0x75bd924;
