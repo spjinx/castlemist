@@ -47,6 +47,38 @@ namespace Castlemist.Tests
 
         static int Main(string[] args)
         {
+            // GW2ParticleMath: the same hand values as tests/test_fx.cpp (the C++ originals).
+            Run("particles.presets", () =>
+            {
+                Func<float, float, bool> near = (a, b) => Math.Abs(a - b) < 2e-3f;
+                Check(near(GW2ParticleMath.CurvePreset(0, 0.3f), 1f), "preset 0");
+                Check(near(GW2ParticleMath.CurvePreset(1, 0.3f), 0.3f), "preset 1");
+                Check(near(GW2ParticleMath.CurvePreset(9, 0.5f), 0.25f), "preset 9");
+                Check(near(GW2ParticleMath.CurvePreset(17, 0.25f), 0.5f), "preset 17");
+                float t = 0.5f, a2 = -1.0347f * t + 21.174f * t * t - 40.278f * t * t * t + 20.139f * t * t * t * t;
+                Check(near(GW2ParticleMath.CurvePreset(3, t), a2 * 0.75f + 0.25f), "preset 3");
+                Check(near(GW2ParticleMath.CurvePreset(11, 1f), 1f), "preset 11 ends at 1");
+                Check(near(GW2ParticleMath.CurvePreset(99, 0.5f), 1f), "past the table");
+            });
+            Run("particles.flags", () =>
+            {
+                Check(GW2ParticleMath.RuntimeFlags(0x4) == 0x10, "0x4");
+                Check(GW2ParticleMath.RuntimeFlags(0x400) == 0x200, "0x400");
+                Check(GW2ParticleMath.RuntimeFlags(0x80000) == 0x1, "0x80000");
+                Check(Math.Abs(GW2ParticleMath.ScalePreset(9, 0.25f, 0x400) - 0.5625f) < 1e-6f, "reversed");
+                Check(Math.Abs(GW2ParticleMath.ScalePreset(9, 0.25f, 0x200) - 0.9375f) < 1e-6f, "inverted");
+                Check(Math.Abs(GW2ParticleMath.OpacityPreset(9, 0.25f, 0x80) - 0.9375f) < 1e-6f, "opacity inverted");
+            });
+            Run("particles.colour_and_alignment", () =>
+            {
+                Check(Math.Abs(GW2ParticleMath.ColourWeight(0.75f, 0.5f, 0f, 1f) - 0.5f) < 1e-6f, "ping-pong");
+                Check(GW2ParticleMath.ColourWeight(0.7f, 0f, 0f, 1f) == 0f, "period 0");
+                Check(GW2ParticleMath.ColourWeight(0.6f, 1f, 0.5f, 0.5f) == 1f, "step");
+                Check(GW2ParticleMath.ColourWeight(0.4f, 1f, 0.5f, 0.5f) == 0f, "step below");
+                int[] expect = { 1, 5, 4, 2, 0, 3 };
+                for (int f = 0; f < 6; ++f) Check(GW2ParticleMath.AlignmentCase(f) == expect[f], "alignment " + f);
+                Check(GW2ParticleMath.AlignmentCase(6) == -1, "alignment 6");
+            });
             Run("minijson.values", () =>
             {
                 var d = (Dictionary<string, object>)MiniJson.Parse(
