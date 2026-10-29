@@ -65,6 +65,7 @@ HMENU build_menu() {
 
     HMENU view_menu = CreatePopupMenu();
     AppendMenuW(view_menu, MF_STRING, ID_VIEW_TEXTURE_GALLERY, L"Texture &Gallery...");
+    AppendMenuW(view_menu, MF_STRING, ID_VIEW_PARTICLE_BROWSER, L"&Particle Browser...");
     AppendMenuW(view_menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(view_menu, MF_POPUP, reinterpret_cast<UINT_PTR>(g_theme_menu), L"&Theme");
 
@@ -1191,6 +1192,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         case ID_VIEW_TEXTURE_GALLERY:
             open_texture_gallery(hwnd);
             return 0;
+        case ID_VIEW_PARTICLE_BROWSER:
+            open_particle_browser(hwnd);
+            return 0;
         case ID_DATA_BADGE:
             if (HIWORD(wparam) == STN_CLICKED) open_data_status_dialog(hwnd);
             return 0;
@@ -1644,6 +1648,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         // threads start stopping) before the message loop exits.
         close_map_window();
         close_texture_gallery();
+        close_particle_browser();
         KillTimer(hwnd, TIMER_ANIM);
         KillTimer(hwnd, TIMER_AUDIO);
         KillTimer(hwnd, TIMER_VIDEO);

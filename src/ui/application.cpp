@@ -906,6 +906,9 @@ int run(HINSTANCE hInstance, int cmd_show) {
     // (GW2_GALLERY_QUIT: then closes the app).
     if (castlemist::core::env::is_set("GW2_GALLERY") && !mapwin_hook)
         open_texture_gallery(hwnd, castlemist::core::env::text("GW2_GALLERY").c_str());
+    // GW2_PARTICLES=<fileId> opens the Particle Browser on that model (GW2_PARTICLES_SOLO,
+    // GW2_PARTICLES_SHOT=<png>, GW2_PARTICLES_QUIT: a headless shot of window + preview).
+    if (castlemist::core::env::is_set("GW2_PARTICLES") && !mapwin_hook) open_particle_browser(hwnd);
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

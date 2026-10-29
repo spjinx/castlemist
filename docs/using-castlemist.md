@@ -279,6 +279,19 @@ game's deferred lighting or shadows.
 
 ### View
 
+**Particle Browser...** finds and runs GW2 effects. The *Models* tab lists every model that
+carries effects (the first open scans the dat's ~200k models in the background, about an hour,
+and keeps the result in `dumps/index/gw2_fx_index.bin`; later opens resume or reuse it), with
+filters for streaks, lightning, mesh particles, bursts, clip effect tracks and sprite alignment.
+The *Effects* tab lists every effect object (type 183) with its client class (audio, compound,
+decal, material, model, postproc, shakespring). Selecting a row shows its model in the preview,
+run by castlemist's reference particle sim. The right side lists the emitters with every decoded
+field and its meaning; untick emitters to hide them (tick one to solo it). Under them: what the
+sim still approximates, and a 4-second statistics run (live count, spread, speed, alpha over
+life). The bottom row pauses, restarts and scrubs time (exact: the sim is deterministic), sets the
+seed and speed, exports the model for Unity, copies the id and saves the statistics as JSON.
+
+
 **Theme:** dark (default), light, or a custom accent colour.
 
 ## The command line
