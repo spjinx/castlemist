@@ -293,3 +293,9 @@ clamped to the constant at 0x141932f24:
 - Points carry a flag 0x40000000 when they close a strip (the last row before a break).
 - Still not read: the strip build (`FUN_141562eb0`: width, texture u along the strip, colour
   start -> end by life with `falloff`) and the `jitter` field.
+- **Strip build, first read** (`FUN_141562eb0`): one vertex pair per point (point +0xc position,
+  +0x24 texture u, flags +0x40). Colour: the anchor's packed `colorStart` (point +0x2c); with
+  anchor flag 4, lerped byte-wise to `colorEnd` (+0x30) by a clamped fraction (by its shape the
+  life fraction: not traced). Alpha is then multiplied by a fade from the point's u along the
+  strip, `((u - u0) / span) / 2x`, clamped 0..1, unless ring flag 2. A point with flag
+  0x40000000 ends a strip (no fade, no join to the next).
