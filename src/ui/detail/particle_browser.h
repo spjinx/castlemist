@@ -5,7 +5,12 @@
 #pragma once
 
 #include <cstdint>
+#include <atomic>
 #include <filesystem>
+#include <functional>
+#include <mutex>
+#include <optional>
+#include <thread>
 #include <string>
 #include <vector>
 
@@ -30,6 +35,39 @@ bool save_index(const std::filesystem::path& path, const std::string& fingerprin
 ///        truncated file.
 bool load_index(const std::filesystem::path& path, const std::string& fingerprint, uint32_t& scannedUpTo,
                 std::vector<ModelRow>& rows);
+
+/// @brief Where the scan reads entries: entry i of @p count, a row when it carries effects.
+///        The window's source reads MODL entries from the dat (Extractor::extractEffects).
+struct ScanSource {
+    size_t count = 0;
+    std::function<std::optional<ModelRow>(size_t)> read;
+};
+
+/// @brief The Models tab's background scan: walks the source from @p startAt on a worker,
+///        appending rows; saves the index every 2,000 entries, when it finishes and on stop().
+class ModelScan {
+public:
+    ~ModelScan();
+    void start(ScanSource src, std::filesystem::path cache, std::string fingerprint, uint32_t startAt,
+               std::vector<ModelRow> rows);
+    void stop();                       ///< asks the worker to stop, waits, saves
+    void wait();                       ///< waits for the worker to finish on its own
+    bool running() const { return running_; }
+    size_t done() const { return done_; }    ///< entries walked so far (including startAt)
+    size_t total() const { return total_; }
+    std::vector<ModelRow> snapshot() const;  ///< the rows so far (copied under the lock)
+
+private:
+    void run(ScanSource src);
+    void save();
+    std::filesystem::path cache_;
+    std::string fingerprint_;
+    std::vector<ModelRow> rows_;
+    mutable std::mutex mu_;
+    std::thread worker_;
+    std::atomic<bool> stop_{false}, running_{false};
+    std::atomic<size_t> done_{0}, total_{0};
+};
 
 /// @brief The Models tab's filter bar. Feature boxes require the feature; alignCase -1 = any.
 struct ModelFilter {

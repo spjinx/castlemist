@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
 #include <fstream>
 
 namespace castlemist::ui::particles {
@@ -119,6 +120,58 @@ bool load_index(const std::filesystem::path& path, const std::string& fingerprin
     scannedUpTo = upTo;
     rows = std::move(out);
     return true;
+}
+
+ModelScan::~ModelScan() { stop(); }
+
+void ModelScan::start(ScanSource src, std::filesystem::path cache, std::string fingerprint, uint32_t startAt,
+                      std::vector<ModelRow> rows) {
+    stop();
+    cache_ = std::move(cache);
+    fingerprint_ = std::move(fingerprint);
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        rows_ = std::move(rows);
+    }
+    stop_ = false;
+    total_ = src.count;
+    done_ = std::min<size_t>(startAt, src.count);
+    running_ = true;
+    worker_ = std::thread([this, src = std::move(src)]() mutable { run(std::move(src)); });
+}
+
+void ModelScan::run(ScanSource src) {
+    size_t sinceSave = 0;
+    for (size_t i = done_; i < src.count && !stop_; ++i) {
+        std::optional<ModelRow> r = src.read ? src.read(i) : std::nullopt;
+        if (r) {
+            std::lock_guard<std::mutex> lock(mu_);
+            rows_.push_back(*r);
+        }
+        done_ = i + 1;
+        if (++sinceSave >= 2000) { save(); sinceSave = 0; }
+    }
+    save();
+    running_ = false;
+}
+
+void ModelScan::save() {
+    std::vector<ModelRow> rows = snapshot();
+    if (!cache_.empty()) save_index(cache_, fingerprint_, static_cast<uint32_t>(done_), rows);
+}
+
+void ModelScan::stop() {
+    stop_ = true;
+    if (worker_.joinable()) worker_.join();
+}
+
+void ModelScan::wait() {
+    if (worker_.joinable()) worker_.join();
+}
+
+std::vector<ModelRow> ModelScan::snapshot() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return rows_;
 }
 
 std::vector<size_t> filter_rows(const std::vector<ModelRow>& rows, const ModelFilter& f) {

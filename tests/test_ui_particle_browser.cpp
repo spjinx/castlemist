@@ -7,6 +7,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <optional>
+#include <thread>
 #include <string>
 #include <vector>
 
@@ -110,4 +112,37 @@ CM_TEST(ui, filter_effects_by_class_and_search) {
     CHECK(filter_effects(rows, -1, "1000001") == std::vector<size_t>{1});      // or the model
     CHECK(filter_effects(rows, -1, "Xy9z") == std::vector<size_t>{2});         // else codename text
     CHECK(filter_effects(rows, -1, "bmt2n").size() == size_t{2});              // case-insensitive
+}
+
+// A scan over a fake source: stop() mid-way saves what it has; a full run saves all of it.
+CM_TEST(ui, model_scan_cancel_saves_partial) {
+    const fs::path p = temp_file("cm_test_fx_scan.bin");
+    fs::remove(p);
+    ScanSource src;
+    src.count = 200000;
+    src.read = [](size_t i) -> std::optional<ModelRow> {
+        if (i % 10) return std::nullopt;
+        ModelRow r; r.fileId = static_cast<uint32_t>(i); r.clouds = 1;
+        return r;
+    };
+    ModelScan scan;
+    scan.start(src, p, "dat-A", 0, {});
+    while (scan.done() < 5000) std::this_thread::yield();
+    scan.stop();
+    uint32_t upTo = 0;
+    std::vector<ModelRow> rows;
+    CHECK(load_index(p, "dat-A", upTo, rows));
+    CHECK(upTo >= 5000 && upTo < 200000);
+    CHECK_EQ(rows.size(), static_cast<size_t>((upTo + 9) / 10));
+    CHECK(!scan.running());
+
+    // resume from the saved point and finish
+    ModelScan rest;
+    rest.start(src, p, "dat-A", upTo, rows);
+    rest.wait();
+    CHECK(load_index(p, "dat-A", upTo, rows));
+    CHECK_EQ(upTo, 200000u);
+    CHECK_EQ(rows.size(), size_t{20000});
+    CHECK_EQ(rest.snapshot().size(), size_t{20000});
+    fs::remove(p);
 }
