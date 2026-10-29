@@ -273,3 +273,23 @@ clamped to the constant at 0x141932f24:
 - Not yet read: the accumulator's decrement (the spacing, `spawnDist` the candidate), how
   `jitter` / `noise` / `wind` / `velocity` / `acceleration` move points, the strip build in
   `FUN_141562eb0`, colour over life.
+
+## Amendment 2026-10-29: streaks, motion and spacing (FUN_14155fc80, second read)
+
+- **Spacing**: after each row of points the travel accumulator drops by `scale x` the ring's
+  spacing value (ring +0x10; `spawnDist` is the field that lands there — candidate, not traced
+  through the loader); rows keep coming while the accumulator stays above a small epsilon, so a
+  row is laid every spacing of anchor travel. A forced row (first frame, or a reset flag) sets
+  the accumulator to 0.
+- **A new point's velocity** (+0x18..+0x20): with streak flag 0x10, the anchor's own velocity
+  (its position delta / dt) is added; when the streak's noise value (streak +0x68) is > 0, a
+  random vector (`FUN_140e1ec30`) is low-pass smoothed per anchor (factor the constant at
+  0x141932f24) and added times the noise value times a constant. Without either, points start
+  still. A point emitted mid-frame copies the previous row's state where the anchor did not move.
+- **Each live point, each frame**: `life -= dt` (floored at 0; the streak keeps the largest
+  remaining life); `vel += dt * (acceleration + wind x windFactor)` — the streak's `acceleration`
+  (+0x20..+0x28) plus the passed wind vector times the streak's wind value (+0x6c); then
+  `pos += vel dt` plus the frame's origin offset.
+- Points carry a flag 0x40000000 when they close a strip (the last row before a break).
+- Still not read: the strip build (`FUN_141562eb0`: width, texture u along the strip, colour
+  start -> end by life with `falloff`) and the `jitter` field.
