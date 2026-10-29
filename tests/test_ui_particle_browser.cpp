@@ -97,3 +97,17 @@ CM_TEST(ui, describe_emitter_alignment_burst_flags) {
     for (const auto& l : lines) life = life || (l.label == "lifetime" && l.value == "1..2 s");
     CHECK(life);
 }
+
+CM_TEST(ui, filter_effects_by_class_and_search) {
+    std::vector<castlemist::skillfx::EffectRow> rows(3);
+    rows[0].uid = 10; rows[0].kind = 1; rows[0].codename = "Bmt2N.ggggg";
+    rows[1].uid = 20; rows[1].kind = 6; rows[1].codename = "Bmt2N.aaaaa"; rows[1].model = 1000001;
+    rows[2].uid = 30; rows[2].kind = 2; rows[2].codename = "Xy9zQ.ddddd";
+    using castlemist::skillfx::EffectClass;
+    CHECK_EQ(filter_effects(rows, -1, "").size(), size_t{3});
+    CHECK(filter_effects(rows, static_cast<int>(EffectClass::Model), "") == std::vector<size_t>{1});
+    CHECK((filter_effects(rows, -1, "10-20") == std::vector<size_t>{0, 1}));   // ids: the uid
+    CHECK(filter_effects(rows, -1, "1000001") == std::vector<size_t>{1});      // or the model
+    CHECK(filter_effects(rows, -1, "Xy9z") == std::vector<size_t>{2});         // else codename text
+    CHECK(filter_effects(rows, -1, "bmt2n").size() == size_t{2});              // case-insensitive
+}

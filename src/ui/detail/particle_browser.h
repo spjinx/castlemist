@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "castlemist/extract/model_types.h"
+#include "castlemist/skillfx/effects.h"
 
 namespace castlemist::ui::particles {
 
@@ -38,6 +39,12 @@ struct ModelFilter {
 };
 /// @brief Indices of the rows that pass, in row order.
 std::vector<size_t> filter_rows(const std::vector<ModelRow>& rows, const ModelFilter& f);
+
+/// @brief The Effects tab's filter: @p cls is a skillfx::EffectClass value (-1 any); @p search
+///        is an id query matched on the uid or the model fileId, else a case-insensitive
+///        codename substring.
+std::vector<size_t> filter_effects(const std::vector<castlemist::skillfx::EffectRow>& rows, int cls,
+                                   const std::string& search);
 
 /// @brief One line of the inspector: a decoded field, its value, what it means.
 struct FieldLine {

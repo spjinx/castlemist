@@ -778,3 +778,23 @@ CM_TEST(skillfx, pairing_moves_effect_out_of_unlinked) {
         CHECK_EQ(f.ei_name, std::string("SomeEIName"));
     }
 }
+
+// The Particle Browser's Effects tab: every type-183 object as a row.
+CM_TEST(skillfx, effect_rows_read_kind_model_children) {
+    cntc::PackSet s = make_set({
+        {kSkillType, 44364, {{500, "Bp5rI.Bw99b"}}, {}, {}},
+        {kEffectType, 1, {{100, "Bmt2N.ggggg"}}, {}, {{112, 2}, {120, 3}}},
+        {kEffectType, 6, {{100, "Bmt2N.aaaaa"}}, {{48, 1000001}, {56, 900001}}, {}},
+        {kEffectType, 2, {{100, "Bmt2N.ddddd"}}, {}, {}},
+    });
+    const std::vector<EffectRow> rows = effect_rows(s, test_container);
+    CHECK_EQ(rows.size(), size_t{3});                 // the skill is not an effect
+    if (rows.size() != 3) return;
+    CHECK_EQ(rows[0].kind, 1u);
+    CHECK_EQ(rows[0].children, 2u);
+    CHECK_EQ(rows[0].codename, std::string("Bmt2N.ggggg"));
+    CHECK_EQ(rows[1].model, 1000001u);
+    CHECK_EQ(rows[1].sound, 900001u);
+    CHECK_EQ(rows[1].children, 0u);
+    CHECK(effect_class_of_kind(rows[2].kind) == EffectClass::Decal);
+}

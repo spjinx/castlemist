@@ -70,6 +70,18 @@ Guid guid_of(const cntc::Pack& p, const cntc::Object& o);
 /// @brief Reads one type-183 object.
 Effect read_effect(const cntc::PackSet& s, size_t pack, const cntc::Object& o, const ContainerOf& container);
 
+/// @brief One type-183 object as the Particle Browser's Effects tab lists it.
+struct EffectRow {
+    uint32_t uid = 0;          ///< @+20
+    uint32_t kind = 0;         ///< @+40 (effect_class_of_kind)
+    uint32_t model = 0, sound = 0;
+    uint32_t children = 0;     ///< refs to other effects (compound kinds)
+    std::string codename;
+};
+
+/// @brief Every type-183 object of every pack, in pack order.
+std::vector<EffectRow> effect_rows(const cntc::PackSet& s, const ContainerOf& container);
+
 /// @brief What one skill points at.
 struct SkillLinks {
     std::vector<Effect> effects;            ///< Field order; compound (kind 1 / 11) groups expanded in place.

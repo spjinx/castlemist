@@ -87,6 +87,29 @@ Effect read_effect(const cntc::PackSet& s, size_t pack, const cntc::Object& o, c
     return e;
 }
 
+std::vector<EffectRow> effect_rows(const cntc::PackSet& s, const ContainerOf& container) {
+    std::vector<EffectRow> rows;
+    for (size_t pi = 0; pi < s.packs.size(); ++pi) {
+        const cntc::Pack& p = s.packs[pi];
+        for (const cntc::Object& o : p.objects) {
+            if (o.type != kEffectType) continue;
+            const Effect e = read_effect(s, pi, o, container);
+            EffectRow r;
+            r.uid = p.u32(o, 20);
+            r.kind = e.kind;
+            r.model = e.model;
+            r.sound = e.sound;
+            r.codename = e.codename;
+            for (const cntc::Ref& ref : o.refs) {
+                auto [tp, to] = s.resolve(pi, ref);
+                if (tp && to && to->type == kEffectType) ++r.children;
+            }
+            rows.push_back(std::move(r));
+        }
+    }
+    return rows;
+}
+
 SkillLinks find_effects(const cntc::PackSet& s, size_t pack, const cntc::Object& skill, const ContainerOf& container) {
     SkillLinks out;
     std::set<std::pair<const cntc::Pack*, uint32_t>> seen;

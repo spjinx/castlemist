@@ -6,6 +6,7 @@
 
 #include "castlemist/fx/fx_math.h"
 
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -135,6 +136,29 @@ std::vector<size_t> filter_rows(const std::vector<ModelRow>& rows, const ModelFi
         if (f.tracks && !r.clipTracks) continue;
         if (f.alignCase >= 0 && !((r.alignMask >> f.alignCase) & 1)) continue;
         if (searching && !q.contains(r.fileId)) continue;
+        out.push_back(i);
+    }
+    return out;
+}
+
+std::vector<size_t> filter_effects(const std::vector<castlemist::skillfx::EffectRow>& rows, int cls,
+                                   const std::string& search) {
+    gallery::IdQuery q;
+    std::string err;
+    const bool byId = !search.empty() && gallery::parse_id_query(search, q, err);
+    std::string needle = search;
+    for (char& c : needle) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    std::vector<size_t> out;
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const auto& r = rows[i];
+        if (cls >= 0 && static_cast<int>(castlemist::skillfx::effect_class_of_kind(r.kind)) != cls) continue;
+        if (byId) {
+            if (!q.contains(r.uid) && !(r.model && q.contains(r.model))) continue;
+        } else if (!needle.empty()) {
+            std::string code = r.codename;
+            for (char& c : code) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (code.find(needle) == std::string::npos) continue;
+        }
         out.push_back(i);
     }
     return out;
