@@ -56,6 +56,7 @@ Sim::Sim(SimInput in, uint32_t seed) : in_(std::move(in)) {
     for (size_t i = 0; i < in_.emitters.size(); ++i)
         rng_.push_back(fx::Rng{seed ^ static_cast<uint32_t>(i * 0x9e3779b9u)});
     acc_.assign(in_.emitters.size(), 0.0f);
+    burstFired_.assign(in_.emitters.size(), false);
     acc2_.resize(in_.emitters.size());
     stats_.emitters.resize(in_.emitters.size());
 }
@@ -85,7 +86,8 @@ std::vector<std::string> Sim::approximations() const {
             "wind and the noise field around each step (FUN_140acb1d0 reads them from the environment)",
             "spawn-shape distributions inside each shape; mesh shapes spawn at the emitter",
             "emitter transform applied to spawn position and velocity unless file flags 0x4",
-            "flipbook without fps spread over the life (2026-07 reading)"};
+            "flipbook without fps spread over the life (2026-07 reading)",
+            "bones are visible from the start and never toggle (no clip played): bursts fire once"};
 }
 
 void Sim::spawn(size_t ei) {
@@ -191,6 +193,17 @@ void Sim::step(float dt) {
     // spawn: accumulator per emitter, a group each period that passes the chance (percent)
     for (size_t ei = 0; ei < in_.emitters.size(); ++ei) {
         const ParticleEmitterCPU& e = in_.emitters[ei].e;
+        if (e.emitterFlags & 0x8) {   // burst: one group when the bone turns visible (FUN_140acc370)
+            if (burstFired_[ei]) continue;
+            burstFired_[ei] = true;
+            const long n = std::lround(fx::sample(rng2(e.spawnGroupSize), rng_[ei]));
+            for (long k = 0; k < n; ++k) {
+                if (ps.size() >= kMaxParticles) { ++dropped_; continue; }
+                spawn(ei);
+                ++stats_.emitters[ei].spawned;
+            }
+            continue;
+        }
         if (!(e.spawnPeriod > 0) || !(e.spawnProbability > 0)) continue;
         acc_[ei] += dt;
         while (acc_[ei] >= e.spawnPeriod) {

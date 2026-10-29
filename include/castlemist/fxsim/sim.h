@@ -81,6 +81,7 @@ private:
     SimInput in_;
     std::vector<fx::Rng> rng_;
     std::vector<float> acc_;
+    std::vector<bool> burstFired_;   ///< emitterFlags 0x8 emitters that have fired
     Frame frame_;
     size_t dropped_ = 0;
     // stats: counters kept per step, finished in stats()

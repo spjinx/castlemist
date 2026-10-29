@@ -245,3 +245,15 @@ CM_TEST(fxsim, stats_spread_on_a_disc_shell) {
     CHECK_NEAR(j["emitters"][0]["spread"][1].get<double>(), 3.0, 1e-3);
     CHECK(j.contains("live"));
 }
+
+// emitterFlags 0x8: a burst emitter fires one group when its bone turns visible, nothing else
+// (FUN_140acc370). Without a clip the bone is visible from the start: one group at t = 0.
+CM_TEST(fxsim, burst_emitter_fires_once) {
+    fxsim::SimInput in = steady(0.1f, 10.0f);
+    in.emitters[0].e.emitterFlags = 0x8;
+    in.emitters[0].e.spawnGroupSize[0] = 5; in.emitters[0].e.spawnGroupSize[1] = 5;
+    fxsim::Sim s(in, 1);
+    run(s, 3.0f, 0.1f);
+    CHECK_EQ(s.frame().particles.size(), size_t{5});
+    CHECK_EQ(s.stats().emitters[0].spawned, size_t{5});
+}

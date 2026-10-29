@@ -215,6 +215,12 @@ void render_particles(const Mat4& mvp) {
             srv = g_mats[s.material].srv.Get();
         ID3D11ShaderResourceView* srvs[] = {srv};
         g_ctx->PSSetShaderResources(0, 1, srvs);
+        // The cloud material's own blend (its AMAT renderState: additive One/InvSrcColor,
+        // premultiplied One/InvSrcAlpha, ...); additive when the material has none.
+        ID3D11BlendState* blend = g_blendAdd.Get();
+        if (s.material >= 0 && s.material < (int)g_mats.size() && g_mats[s.material].blend)
+            blend = g_mats[s.material].blend.Get();
+        g_ctx->OMSetBlendState(blend, bf, 0xffffffff);
         g_ctx->Draw(s.count, s.start);
     }
     // restore sane defaults for any following passes
