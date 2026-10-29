@@ -2288,12 +2288,22 @@ void cmd_fx_sim(const Args& a) {
         if (i + keep < steps) continue;
         json ps = json::array();
         for (const fs::Particle& p : sim.frame().particles)
-            ps.push_back({{"e", p.emitter}, {"pos", {p.pos.x, p.pos.y, p.pos.z}}, {"age", p.age},
+            ps.push_back({{"e", p.emitter}, {"pos", {p.pos.x, p.pos.y, p.pos.z}}, {"vel", {p.vel.x, p.vel.y, p.vel.z}}, {"age", p.age},
                           {"size", {p.size[0], p.size[1]}}, {"rgba", {p.colour[0], p.colour[1], p.colour[2], p.colour[3]}},
                           {"rot", p.rotation}, {"uv", {p.uv[0], p.uv[1], p.uv[2], p.uv[3]}}});
         frames.push_back({{"time", sim.frame().time}, {"particles", std::move(ps)}});
     }
-    emit({{"ok", true}, {"fileId", fid}, {"emitters", in.emitters.size()}, {"warnings", in.warnings},
+    json info = json::array();
+    for (const fs::EmitterIn& ei : in.emitters) {
+        const ParticleEmitterCPU& e = ei.e;
+        info.push_back({{"cloud", ei.cloud}, {"alignmentType", e.alignmentType},
+                        {"alignmentCase", castlemist::fx::plane_alignment_case(e.alignmentType)},
+                        {"flags", e.flags}, {"emitterFlags", e.emitterFlags}, {"spawnShape", e.spawnShape},
+                        {"scaleInitial", {{e.scaleInitial[0][0], e.scaleInitial[0][1]}, {e.scaleInitial[1][0], e.scaleInitial[1][1]}}},
+                        {"scaleChange", {{e.scaleChange[0][0], e.scaleChange[0][1]}, {e.scaleChange[1][0], e.scaleChange[1][1]}}},
+                        {"hasTransform", e.hasTransform}});
+    }
+    emit({{"ok", true}, {"fileId", fid}, {"emitters", in.emitters.size()}, {"emitterInfo", info}, {"warnings", in.warnings},
           {"approximations", sim.approximations()}, {"stats", fs::stats_json(sim.stats())}, {"frames", frames}});
 }
 

@@ -86,6 +86,23 @@ struct SpriteAxes {
 ///        u = (cos r, sin r) sx, v = (-sin r, cos r) sy; negative sizes clamp to 0.
 SpriteAxes camera_sprite_axes(float rotation, float sizeX, float sizeY);
 
+/// @brief A quad's two half-axes in 3D.
+struct Axes3 {
+    Vec3 u, v;
+};
+
+/// @brief Branch 5 (file alignment 1), FUN_140ad11b0: an axis billboard. u runs along the
+///        motion, `normalize(dir) * sizeX`; v = `normalize(dir x toEye) * sizeY`, so the quad
+///        turns about its motion to face the eye. No rotation. A zero direction (or one pointing
+///        at the eye) gives zero axes. Negative sizes clamp to 0.
+Axes3 axis_sprite_axes(Vec3 dir, Vec3 toEye, float sizeX, float sizeY);
+
+/// @brief Branch 4 (file alignment 2), FUN_140ad11b0: the velocity's on-screen direction
+///        (its dot products with the camera's x and y rows) normalised to (x, y);
+///        u = (x, y) sizeX, v = (-y, x) sizeY in the view plane. No on-screen motion gives
+///        (1, 0). No rotation.
+SpriteAxes screen_velocity_axes(Vec2 screenVelocity, float sizeX, float sizeY);
+
 /// @brief The client's random generator (FUN_140e1e6a0): MINSTD, a = 48271, computed as
 ///        `a*s - (2^31 - 1)*(s / 44488)` in 32 bits; a result past 0x7fffffff gets 0x80000000
 ///        added (one more than Schrage's fix-up), a zero state becomes 0x75bd924;

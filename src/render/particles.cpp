@@ -75,19 +75,27 @@ void render_particles(const Mat4& mvp) {
     std::vector<PartVtx> vtx;
     vtx.reserve((parts.size() + g_fxLights.size()) * 6);
 
-    auto emitQuad = [&](Vec3 c, float sx, float sy, float rot, const float col[4], int material, float u0, float v0, float u1, float v1) {
-        float cs = std::cos(rot), sn = std::sin(rot);
-        // rotated billboard axes
-        Vec3 ax{ (right.x*cs + up.x*sn), (right.y*cs + up.y*sn), (right.z*cs + up.z*sn) };
-        Vec3 ay{ (-right.x*sn + up.x*cs), (-right.y*sn + up.y*cs), (-right.z*sn + up.z*cs) };
+    // A quad from its two half-axes (already scaled by the sizes).
+    auto emitAxes = [&](Vec3 c, Vec3 ax, Vec3 ay, const float col[4], float u0, float v0, float u1, float v1) {
         auto corner = [&](float dx, float dy, float u, float v) -> PartVtx {
-            return { c.x + ax.x*dx*sx + ay.x*dy*sy, c.y + ax.y*dx*sx + ay.y*dy*sy, c.z + ax.z*dx*sx + ay.z*dy*sy,
+            return { c.x + ax.x*dx + ay.x*dy, c.y + ax.y*dx + ay.y*dy, c.z + ax.z*dx + ay.z*dy,
                      u, v, dx, dy, col[0], col[1], col[2], col[3] };
         };
         PartVtx a = corner(-1,-1,u0,v1), b = corner(1,-1,u1,v1), d = corner(1,1,u1,v0), e = corner(-1,1,u0,v0);
         vtx.push_back(a); vtx.push_back(b); vtx.push_back(d);
         vtx.push_back(a); vtx.push_back(d); vtx.push_back(e);
     };
+    // Camera-facing, rotated in the view plane (sprite case 1; also the stand-in for 0, 2, 3).
+    auto emitQuad = [&](Vec3 c, float sx, float sy, float rot, const float col[4], int material, float u0, float v0, float u1, float v1) {
+        (void)material;
+        const fx::SpriteAxes s = fx::camera_sprite_axes(rot, sx, sy);
+        emitAxes(c, {right.x*s.u.x + up.x*s.u.y, right.y*s.u.x + up.y*s.u.y, right.z*s.u.x + up.z*s.u.y},
+                    {right.x*s.v.x + up.x*s.v.y, right.y*s.v.x + up.y*s.v.y, right.z*s.v.x + up.z*s.v.y},
+                 col, u0, v0, u1, v1);
+    };
+    // The view axis in model space, from the same basis as right / up (its sign only mirrors
+    // an axis billboard across its own axis).
+    const fx::Vec3 toEye{right.y*up.z - right.z*up.y, right.z*up.x - right.x*up.z, right.x*up.y - right.y*up.x};
 
     // Group particles by material so we can bind each cloud material's texture in
     // one draw. We build all verts, tracking per-material spans.
@@ -117,7 +125,26 @@ void render_particles(const Mat4& mvp) {
         // The sim's colour (begin -> end, opacity curve or preset), size, rotation and flipbook
         // cell; uv is (u0, v0, u1, v1) as the emitter's texCoordRect is stored.
         float col[4] = {p.colour[0], p.colour[1], p.colour[2], std::clamp(p.colour[3], 0.0f, 1.0f) * g_fxIntensity};
-        emitQuad({p.pos.x, p.pos.y, p.pos.z}, p.size[0], p.size[1], p.rotation, col, curMat, p.uv[0], p.uv[1], p.uv[2], p.uv[3]);
+        // Sprite alignment by the client's case (fx::plane_alignment_case): 5 along the motion,
+        // 4 along the on-screen motion; 1 (and, until coded, 0 / 2 / 3) camera-facing.
+        const Vec3 c{p.pos.x, p.pos.y, p.pos.z};
+        switch (fx::plane_alignment_case(g_fxEmitters[p.emitter].alignmentType)) {
+            case 5: {
+                const fx::Axes3 a = fx::axis_sprite_axes(p.vel, toEye, p.size[0], p.size[1]);
+                emitAxes(c, {a.u.x, a.u.y, a.u.z}, {a.v.x, a.v.y, a.v.z}, col, p.uv[0], p.uv[1], p.uv[2], p.uv[3]);
+                break;
+            }
+            case 4: {
+                const fx::Vec2 sv{p.vel.x*right.x + p.vel.y*right.y + p.vel.z*right.z, p.vel.x*up.x + p.vel.y*up.y + p.vel.z*up.z};
+                const fx::SpriteAxes s = fx::screen_velocity_axes(sv, p.size[0], p.size[1]);
+                emitAxes(c, {right.x*s.u.x + up.x*s.u.y, right.y*s.u.x + up.y*s.u.y, right.z*s.u.x + up.z*s.u.y},
+                            {right.x*s.v.x + up.x*s.v.y, right.y*s.v.x + up.y*s.v.y, right.z*s.v.x + up.z*s.v.y},
+                         col, p.uv[0], p.uv[1], p.uv[2], p.uv[3]);
+                break;
+            }
+            default:
+                emitQuad(c, p.size[0], p.size[1], p.rotation, col, curMat, p.uv[0], p.uv[1], p.uv[2], p.uv[3]);
+        }
     }
     if (curMat != -2) spans.push_back({curMat, spanStart, (UINT)vtx.size() - spanStart});
 

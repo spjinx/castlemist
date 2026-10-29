@@ -117,6 +117,25 @@ SpriteAxes camera_sprite_axes(float rotation, float sizeX, float sizeY) {
     return {{c * sx, s * sx}, {-s * sy, c * sy}};
 }
 
+Axes3 axis_sprite_axes(Vec3 dir, Vec3 toEye, float sizeX, float sizeY) {
+    const float sx = std::max(sizeX, 0.0f), sy = std::max(sizeY, 0.0f);
+    const float dl = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+    if (!(dl > 0)) return {};
+    const Vec3 d{dir.x / dl, dir.y / dl, dir.z / dl};
+    Vec3 n{d.y * toEye.z - d.z * toEye.y, d.z * toEye.x - d.x * toEye.z, d.x * toEye.y - d.y * toEye.x};
+    const float nl = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+    n = nl > 1e-12f ? Vec3{n.x / nl, n.y / nl, n.z / nl} : Vec3{};
+    return {{d.x * sx, d.y * sx, d.z * sx}, {n.x * sy, n.y * sy, n.z * sy}};
+}
+
+SpriteAxes screen_velocity_axes(Vec2 v, float sizeX, float sizeY) {
+    const float sx = std::max(sizeX, 0.0f), sy = std::max(sizeY, 0.0f);
+    float x = 1, y = 0;
+    const float l = std::sqrt(v.x * v.x + v.y * v.y);
+    if (std::fabs(v.x) + std::fabs(v.y) > 1e-6f && l > 0) { x = v.x / l; y = v.y / l; }
+    return {{x * sx, y * sx}, {-y * sy, x * sy}};
+}
+
 float Rng::u01() {
     uint32_t v = state * 0xbc8fu + (state / 0xadc8u) * 0x80000001u;   // a*s - (2^31 - 1)*(s / q), mod 2^32
     if (v > 0x7fffffffu) v += 0x80000000u;

@@ -206,3 +206,24 @@ CM_TEST(fx, bolt_path_lands_on_interior_nodes_and_clamps) {
     for (int i = 0; i < 8; ++i) eight.push_back({static_cast<float>(i), 0, 0});
     CHECK_NEAR(bolt_path_point(0, eight, 3.0f / 7.0f).pos.x, 3.0f, 1e-4f);
 }
+
+// Case 5 (file alignment 1), FUN_140ad11b0: u = dir * sx along the motion, v = normalize(dir x toEye) * sy.
+CM_TEST(fx, axis_sprite_runs_along_the_motion) {
+    const Axes3 a = axis_sprite_axes({2, 0, 0}, {0, 0, 5}, 3.0f, 4.0f);
+    CHECK_NEAR(a.u.x, 3.0f, 1e-5f); CHECK_NEAR(a.u.y, 0.0f, 1e-6f); CHECK_NEAR(a.u.z, 0.0f, 1e-6f);
+    CHECK_NEAR(a.v.x, 0.0f, 1e-6f); CHECK_NEAR(a.v.y, -4.0f, 1e-5f); CHECK_NEAR(a.v.z, 0.0f, 1e-6f);
+    const Axes3 still = axis_sprite_axes({0, 0, 0}, {0, 0, 5}, 3.0f, 4.0f);   // no motion: degenerate
+    CHECK_NEAR(still.u.x, 0.0f, 1e-6f); CHECK_NEAR(still.v.y, 0.0f, 1e-6f);
+    const Axes3 neg = axis_sprite_axes({1, 0, 0}, {0, 0, 5}, -3.0f, 4.0f);    // sizes clamp at 0
+    CHECK_NEAR(neg.u.x, 0.0f, 1e-6f);
+}
+
+// Case 4 (file alignment 2): the velocity's on-screen direction (x, y) -> u = (x, y) sx, v = (-y, x) sy;
+// no on-screen motion gives (1, 0).
+CM_TEST(fx, screen_velocity_sprite_axes) {
+    const SpriteAxes a = screen_velocity_axes({0, 2}, 3.0f, 4.0f);
+    CHECK_NEAR(a.u.x, 0.0f, 1e-6f); CHECK_NEAR(a.u.y, 3.0f, 1e-5f);
+    CHECK_NEAR(a.v.x, -4.0f, 1e-5f); CHECK_NEAR(a.v.y, 0.0f, 1e-6f);
+    const SpriteAxes z = screen_velocity_axes({0, 0}, 3.0f, 4.0f);
+    CHECK_NEAR(z.u.x, 3.0f, 1e-5f); CHECK_NEAR(z.v.y, 4.0f, 1e-5f);
+}
