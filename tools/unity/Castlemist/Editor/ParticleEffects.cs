@@ -689,7 +689,7 @@ namespace Castlemist
         }
 
         /// "GW2 FX <bone> <cloud>.<emitter>[ abs]" -> its parts.
-        static bool ParseName(string name, out string bone, out int cloud, out int emitter)
+        internal static bool ParseName(string name, out string bone, out int cloud, out int emitter)
         {
             bone = null; cloud = emitter = -1;
             string s = name.Substring(ObjectPrefix.Length);
