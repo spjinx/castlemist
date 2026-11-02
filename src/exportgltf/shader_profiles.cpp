@@ -69,7 +69,7 @@ std::vector<Entry> build_table() {
 
         // On these the mask is R = glow gate (G = glow-perturb gate), not metal/gloss.
         clip.maskGlowGate = Channel::R;
-        t.push_back({{14149, 14213, 14165}, clip});
+        t.push_back({{14149, 14213, 14165, 498990}, clip});   // 498990: Mad King Thorn (ps 96, 2026-11-02)
     }
 
     t.push_back({{13843, 13856, 13864, 14003, 31327, 32657, 34181, 44707, 44708, 72583, 27352,

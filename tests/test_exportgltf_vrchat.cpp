@@ -180,6 +180,12 @@ CM_TEST(vrchat, profile_by_amat) {
     CHECK(lc.name == "legacy-spec");
     CHECK(lc.clips);
     CHECK(lc.maskGlowGate == Channel::R);
+    // 2026-11-02: Mad King Thorn's body (model 498997): ps 96 discards on 2a-1 of the diffuse, takes the
+    // spec alpha x128 as the exponent and gates the glow by saturate(mask.R + gloover).
+    const ShaderProfile& mk = profile_for(mat_with_file(498990), 0);
+    CHECK(mk.name == "legacy-spec");
+    CHECK(mk.clips);
+    CHECK(mk.maskGlowGate == Channel::R);
 
     const ShaderProfile& am = profile_for(mat_with_file(2449347), 0);
     CHECK(am.name == "armor-mask");

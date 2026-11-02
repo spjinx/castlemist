@@ -105,6 +105,7 @@
 #include "castlemist/npc/look.h"
 #include "castlemist/npc/tokens.h"
 #include "castlemist/format/cntc_pack.h"
+#include "castlemist/fxsim/features.h"
 #include "castlemist/fxsim/sim.h"
 #include "castlemist/skillfx/evtc.h"
 #include "castlemist/skillfx/export.h"
@@ -2308,6 +2309,99 @@ void cmd_fx_sim(const Args& a) {
           {"approximations", sim.approximations()}, {"stats", fs::stats_json(sim.stats())}, {"frames", frames}});
 }
 
+// npc-folder --dat D --id N [--look K] --out DIR [--fbx [--blender exe]]: one NPC's body (its model,
+// or a race-body NPC dressed from look K) as a world-model folder DIR/models/<model>/ - glb,
+// materials.json, _particles.json and _fxstats.json in the world's frame, as a world export
+// writes a model - so the Unity world importer (materials, ParticleEffects) reads it unchanged.
+void cmd_npc_folder(const Args& a) {
+    namespace fs = std::filesystem;
+    castlemist::npc::Catalogue cat = ensure_npc(a);
+    const uint32_t id = static_cast<uint32_t>(to_u64(need(a, "id")));
+    const castlemist::npc::NpcRecord* n = cat.find(id);
+    if (!n) fail("no npc with id " + std::to_string(id));
+    if (has(a, "template")) {
+        std::string err;
+        if (!castlemist::tpl::load_from_file(utf8_arg("--template"), err)) fail("template: " + err);
+    }
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    const size_t look = has(a, "look") ? static_cast<size_t>(to_u64(a.at("look"))) : 0;
+    castlemist::npc::NpcModel nm = castlemist::npc::npc_model(dat, *n, look);
+    if (!nm.model) fail("npc " + std::to_string(id) + " has no body to export");
+    const uint32_t key = n->model ? n->model : 0x80000000u + id;   // a dressed body has no model fileId
+    const std::string name = n->model ? std::to_string(n->model) : "npc" + std::to_string(id);
+    const fs::path out = fs::u8path(utf8_arg("--out").empty() ? need(a, "out") : utf8_arg("--out"));
+    const fs::path folder = out / "models" / name;
+    fs::create_directories(folder);
+    castlemist::exportgltf::VrchatFolderOptions vo;
+    vo.gltf.rootMatrix = castlemist::exportgltf::map_to_gltf_root(1.0);
+    vo.gltf.uv1CopyToUv4 = true;
+    vo.gltf.vertexColors = true;
+    vo.gltf.exportLods = true;
+    const std::u8string dir = folder.u8string();
+    auto r = castlemist::exportgltf::write_vrchat_folder(*nm.model, std::string(dir.begin(), dir.end()), name, key, vo);
+    if (!r.ok) fail(r.error.empty() ? std::string("export failed") : r.error);
+    for (const auto& em : nm.model->emitters) {
+        if (!em.hasMesh || !em.meshFileId) continue;
+        const fs::path mesh = folder / (std::to_string(em.meshFileId) + ".glb");
+        if (fs::exists(mesh)) continue;
+        if (auto mm = load_model_by_fileid(dat, em.meshFileId)) castlemist::exportgltf::export_model_gltf(*mm, mesh.string());
+    }
+    json fbx = nullptr;
+    if (has(a, "fbx")) {
+        std::string log;
+        const bool ok = castlemist::ripper::convert_folder_to_fbx(std::string(dir.begin(), dir.end()), log,
+                                                                  has(a, "blender") ? a.at("blender") : std::string());
+        fbx = {{"ok", ok}, {"log_tail", log.size() > 400 ? log.substr(log.size() - 400) : log}};
+    }
+    json files = json::array();
+    for (const auto& f : fs::directory_iterator(folder)) files.push_back(f.path().filename().string());
+    emit({{"ok", true}, {"npc", id}, {"folder", folder.generic_string()}, {"clips", nm.model->animClips.size()},
+          {"emitters", nm.model->emitters.size()}, {"notes", nm.notes}, {"files", files}, {"fbx", fbx}});
+}
+
+// npc-anim-scan --dat D [--template T]: for every distinct NPC body model, what links it to others:
+// its animation-bank imports, external skeleton, joint count and texture fileIds (research: a
+// mini and its full-size NPC share a skeleton, a bank or textures).
+void cmd_npc_anim_scan(const Args& a) {
+    castlemist::npc::Catalogue cat = ensure_npc(a);
+    std::filesystem::path tpl_path = has(a, "template") ? std::filesystem::path(utf8_arg("--template"))
+        : castlemist::character::find_castlemist_root(exe_dir()) / "dumps" / "packfile" / "gw2_packfile.json";
+    std::ifstream tin(tpl_path, std::ios::binary);
+    if (!tin) fail("cannot open template: " + tpl_path.string());
+    json tpl; tin >> tpl;
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    std::set<uint32_t> models;
+    for (const auto& n : cat.npcs) if (n.model) models.insert(n.model);
+    json out = json::array();
+    for (uint32_t fid : models) {
+        const uint32_t b = get_by_base_id(dat, fid);
+        if (!b || b - 1 >= dat.mft_data_list.size()) continue;
+        const MftData& e = dat.mft_data_list[b - 1];
+        try {
+            std::vector<uint8_t> data = decompress_entry(read_entry_bytes(dat.file_info.file_path, e), e.compression_flag);
+            if (data.size() < 16 || data[0] != 'P' || data[1] != 'F') continue;
+            castlemist::model::Model m = castlemist::model::Extractor(data, tpl).extract();
+            json imports = json::array();
+            for (const auto& im : m.anim.imports) imports.push_back(im.fileId);
+            std::set<uint32_t> tex;
+            for (const auto& mat : m.materials)
+                for (const auto& t : mat.textures) if (t.fileId) tex.insert(t.fileId);
+            size_t tris = 0;
+            for (const auto& mesh : m.meshes) tris += mesh.indices.size() / 3;
+            const castlemist::fxsim::ModelFeatures f = castlemist::fxsim::summarize(m);
+            out.push_back({{"model", fid}, {"imports", imports}, {"skeleton", m.skeleton.externalRef},
+                           {"joints", m.skeleton.bones.size()}, {"meshes", m.meshes.size()}, {"triangles", tris},
+                           {"clouds", f.clouds}, {"emitters", f.emitters}, {"streaks", f.streaks},
+                           {"lights", f.lights}, {"bolts", f.lightning},
+                           {"textures", std::vector<uint32_t>(tex.begin(), tex.end())}});
+        } catch (...) {
+        }
+    }
+    emit({{"ok", true}, {"models", out}});
+}
+
 // The NPC catalogue: --model F (body model fileId), --race R, --limit N (default 100).
 void cmd_npc_list(const Args& a) {
     castlemist::npc::Catalogue cat = ensure_npc(a);
@@ -3829,6 +3923,8 @@ int main(int argc, char** argv) {
         else if (cmd == "npc-show") cmd_npc_show(a);
         else if (cmd == "npc-export") cmd_npc_export(a);
         else if (cmd == "npc-model") cmd_npc_model(a);
+        else if (cmd == "npc-anim-scan") cmd_npc_anim_scan(a);
+        else if (cmd == "npc-folder") cmd_npc_folder(a);
         else if (cmd == "clips") cmd_clips(a);
         else if (cmd == "npc-names") cmd_npc_names(a);
         else if (cmd == "look-options") cmd_look_options(a);
