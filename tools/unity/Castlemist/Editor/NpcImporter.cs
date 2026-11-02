@@ -140,8 +140,11 @@ namespace Castlemist
             try
             {
                 inst.name = name;
-                Animator an = inst.GetComponent<Animator>();
-                if (an == null) an = inst.AddComponent<Animator>();   // not ??: a missing component is Unity's fake null
+                // One Animator: the Generic rig's own once the .fbx has reimported, else one added (not ??:
+                // a missing component is Unity's fake null). Two left the rig's, with no controller, in charge.
+                Animator[] ans = inst.GetComponents<Animator>();
+                Animator an = ans.Length > 0 ? ans[0] : inst.AddComponent<Animator>();
+                for (int k = 1; k < ans.Length; ++k) Object.DestroyImmediate(ans[k]);
                 an.runtimeAnimatorController = ac;
                 an.cullingMode = AnimatorCullingMode.CullUpdateTransforms;
                 if (ac != null) WorldImporter.FitSkinnedBounds(inst, ac);
@@ -184,6 +187,10 @@ namespace Castlemist
             go.transform.position = pos;
             go.transform.rotation = rot;
             go.transform.localScale = saved.transform.localScale * unityScale;
+            // As WorldImporter's animated props: the controller set on the placed copy (on the saved
+            // model-prefab variant the reference read back empty, 2026-11-02).
+            Animator placed = go.GetComponent<Animator>();
+            if (placed != null) placed.runtimeAnimatorController = ac;
             // The Animator plays only in Play mode: the placed copy stands in the idle's first frame
             // in the editor too, not the bind pose.
             if (clip != null) clip.SampleAnimation(go, 0f);
