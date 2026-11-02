@@ -101,16 +101,31 @@ namespace Castlemist
             return sb.ToString();
         }
 
-        void Measure()
+        /// The Measure table for @p go as text (no window): for automation and the console.
+        public static string ReportFor(GameObject go, string referencePath = "")
+        {
+            var w = CreateInstance<ParticleMeasure>();
+            try
+            {
+                w.reference = referencePath ?? "";
+                w.Measure(new[] { go });
+                return (w.message.Length > 0 ? w.message + "\n" : "") + "reference: " + w.reference + "\n" + w.Report();
+            }
+            finally { DestroyImmediate(w); }
+        }
+
+        void Measure() { Measure(Selection.gameObjects); }
+
+        void Measure(GameObject[] selection)
         {
             rows.Clear();
             message = "";
             var systems = new List<ParticleSystem>();
-            foreach (GameObject go in Selection.gameObjects)
+            foreach (GameObject go in selection)
                 systems.AddRange(go.GetComponentsInChildren<ParticleSystem>(true)
                                    .Where(p => p.name.StartsWith(ParticleEffects.ObjectPrefix, StringComparison.Ordinal)));
             if (systems.Count == 0) { message = "Select a model instance that has GW2 FX particle systems."; return; }
-            if (reference.Length == 0) reference = GuessReference(Selection.gameObjects[0]);
+            if (reference.Length == 0) reference = GuessReference(selection[0]);
 
             List<object> refEmitters = null;
             List<int> cloudStart = null;
@@ -133,7 +148,7 @@ namespace Castlemist
                 }
                 rows.Add(row);
             }
-            Repaint();
+            if (this != null) Repaint();
         }
 
         /// The first stats index of each cloud: the reference lists emitters cloud by cloud, each

@@ -460,6 +460,19 @@ namespace Castlemist
             float drag = (float)Num(e, "drag", 0) + cl.Drag;
             if (drag > 0f)
             {
+                // 2026-11-02 (measured): Shuriken's velocity-over-lifetime is not slowed by the
+                // limit-velocity drag below, so these particles kept their start speed (76846's embers
+                // 3.7x too fast, castlemist Measure). The client's v(t) = v0 e^(-drag t) goes on the
+                // module's speed modifier over the mean life instead.
+                Vector2 lifeRange = Range(e, "lifetimeSec", 1f);
+                float meanLife = Mathf.Max((lifeRange.x + lifeRange.y) * 0.5f, 1e-3f);
+                var decay = new AnimationCurve();
+                for (int k = 0; k <= 16; ++k)
+                {
+                    float u = k / 16f;
+                    decay.AddKey(u, Mathf.Exp(-drag * meanLife * u));
+                }
+                v.speedModifier = new ParticleSystem.MinMaxCurve(1f, decay);
                 var l = ps.limitVelocityOverLifetime;
                 l.enabled = true;
                 l.limit = 1e6f;
