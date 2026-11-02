@@ -137,9 +137,11 @@ namespace Castlemist
             }
             else message = "No _fxstats.json found beside the model: re-export it from castlemist, or Load reference.";
 
+            int idle = 0;
             foreach (ParticleSystem ps in systems)
             {
                 var row = new Row { name = ps.name.Substring(ParticleEffects.ObjectPrefix.Length), unity = Simulate(ps) };
+                if (row.unity[0] == 0f && row.unity[1] == 0f) { row.name += "  (not playing: on demand or never visible)"; ++idle; }
                 if (refEmitters != null && cloudStart != null &&
                     ParticleEffects.ParseName(ps.name, out string _, out int ci, out int ei) && ci >= 0 && ci < cloudStart.Count)
                 {
@@ -148,6 +150,7 @@ namespace Castlemist
                 }
                 rows.Add(row);
             }
+            if (idle > 0) message += (message.Length > 0 ? " " : "") + idle + " system(s) did not play in the 4 s run.";
             if (this != null) Repaint();
         }
 
@@ -200,24 +203,37 @@ namespace Castlemist
             long speedN = 0, midN = 0;
             var buf = new ParticleSystem.Particle[ps.main.maxParticles];
             int alive = 0;
+            // A stretched system keeps its length (GW2's X half-size) on the 3D size's Y
+            // (ParticleEffects.StartSize); the speed is measured from each particle's movement, which
+            // includes the velocity module's speed modifier (the drag decay) that totalVelocity leaves out.
+            var renderer = ps.GetComponent<ParticleSystemRenderer>();
+            bool stretched = renderer != null && renderer.renderMode == ParticleSystemRenderMode.Stretch;
+            var last = new Dictionary<uint, Vector3>();
+            var seen = new Dictionary<uint, Vector3>();
             for (int i = 0; i < Steps; ++i)
             {
                 ps.Simulate(Dt, false, i == 0, true);
                 alive = ps.GetParticles(buf);
+                seen.Clear();
                 for (int k = 0; k < alive; ++k)
                 {
                     ParticleSystem.Particle p = buf[k];
                     dist.Add(p.position.magnitude);
-                    speedSum += p.totalVelocity.magnitude;
-                    ++speedN;
+                    if (last.TryGetValue(p.randomSeed, out Vector3 before))
+                    {
+                        speedSum += (p.position - before).magnitude / Dt;
+                        ++speedN;
+                    }
+                    seen[p.randomSeed] = p.position;
                     float t = p.startLifetime > 0f ? 1f - p.remainingLifetime / p.startLifetime : 0f;
                     if (Mathf.Abs(t - 0.5f) <= 0.125f)
                     {
                         alphaSum += p.GetCurrentColor(ps).a / 255f;
-                        sizeSum += p.GetCurrentSize(ps) * 0.5f;   // GW2 sizes are half-sizes
+                        sizeSum += (stretched ? p.GetCurrentSize3D(ps).y : p.GetCurrentSize(ps)) * 0.5f;   // GW2 sizes are half-sizes
                         ++midN;
                     }
                 }
+                var swap = last; last = seen; seen = swap;
             }
             ps.Stop(false, ParticleSystemStopBehavior.StopEmittingAndClear);
             ps.useAutoRandomSeed = autoSeed;
