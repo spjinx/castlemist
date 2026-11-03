@@ -22,6 +22,7 @@
 #include "castlemist/ripper/skeleton_merge.h"
 #include "castlemist/ripper/thumbnail.h"
 #include "castlemist/ripper/vrchat.h"
+#include "castlemist/ripper/weld.h"
 #include "internal.h"
 
 namespace castlemist::ripper {
@@ -901,6 +902,9 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
         // 2026-11-02: seams sealed: texels no mesh samples take their sampled neighbours' colour and alpha, so
         // filtering and mipmaps at a mesh's edge read its own (the Mad Prince's ears had orange fringes from the
         // coat beside them and see-through gaps from cut-away texels).
+        // One normal where separate meshes meet (face, ears, scalp, the coat's neck): the light broke at the jaw
+        // and in front of the ears (weld.h).
+        weld_normals(out, atlas_meshes);
         if (!sel.preview) {
             ModelPreview sampled;
             for (size_t mi : atlas_meshes) sampled.meshes.push_back(out.meshes[mi]);

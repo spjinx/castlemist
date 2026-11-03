@@ -585,7 +585,10 @@ private:
         const bool shineB = diffuse_.usable() && profile_.diffuseAlpha == AlphaUse::ReflectionOnly;
 
         // Each channel: a per-texel source, or a constant.
-        enum class Src { Const, Mask, SpecA, Shine };
+        enum class Src { Const, Mask, SpecA, Shine, MrMetal, MrSmooth };
+        // 2026-11-02: the ripper's baked surface (glTF metallic-roughness: G roughness, B metal) on a character
+        // atlas: per texel, where no mask, specular layer or constant says otherwise.
+        const Layer* mr = find({"metalRough"});
         struct Ch { Src src = Src::Const; int channel = 0; uint8_t value = 0; };
         Ch ch[4];
 
@@ -595,6 +598,9 @@ private:
         } else if (const auto m = constant("mtlness")) {
             ch[0].value = to_byte(*m);
             out_.metalSource = "mtlness";
+        } else if (mr) {
+            ch[0] = {Src::MrMetal, 2, 0};
+            out_.metalSource = "metalRough.B";
         } else if (const auto c = constant("conduct");
                    c && profile_.name != "default" && profile_.maskTintsReflection == Channel::None) {
             // Not for the default profile (an AMAT the table does not have) nor a profile whose
@@ -616,6 +622,9 @@ private:
         } else if (shineGA) {
             ch[1].src = Src::Shine;
             out_.smoothSource = "diffuseAlpha";
+        } else if (mr) {
+            ch[1] = {Src::MrSmooth, 1, 0};
+            out_.smoothSource = "1 - metalRough.G";
         } else if (const auto s = constant("specstr")) {
             ch[1].value = to_byte(*s);
             out_.smoothSource = "specstr";
@@ -716,6 +725,8 @@ private:
                         case Src::Mask: t.rgba[i + c] = mask->at(x, y, w, h, k.channel); break;
                         case Src::SpecA: t.rgba[i + c] = spec->at(x, y, w, h, 3); break;
                         case Src::Shine: t.rgba[i + c] = shine(diffuse_.at(x, y, w, h, 3)); break;
+                        case Src::MrMetal: t.rgba[i + c] = mr->at(x, y, w, h, 2); break;
+                        case Src::MrSmooth: t.rgba[i + c] = static_cast<uint8_t>(255 - mr->at(x, y, w, h, 1)); break;
                     }
                 }
             }

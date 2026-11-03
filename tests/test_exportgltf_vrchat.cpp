@@ -462,6 +462,26 @@ MaterialMaps build(const ModelPreview& model, const ModelMaterialCPU& mat, Blend
 
 }  // namespace
 
+// 2026-11-02: a baked character atlas (no game shader) carries the ripper's per-texel surface as glTF
+// metallic-roughness (G roughness, B metal): Packed reads it, not "smoothness 0.5" everywhere (the Mad
+// Prince's matte leather coat shone silver in Unity).
+CM_TEST(vrchat, packed_reads_a_baked_metal_rough_layer) {
+    ModelPreview model;
+    ModelMaterialCPU mat;
+    mat.materialName = "CharacterAtlas";
+    mat.hasRenderState = false;
+    mat.diffuseTex = add_tex(model, solid(2, 1, {90, 20, 20, 255}, 0));
+    mat.metalRoughTex = add_tex(model, tex_from(2, 1, {{255, 170, 0, 255}, {255, 40, 255, 255}}, 0));
+    MaterialMaps m = build_material_maps(model, mat, blend_of(BlendPreset::Cutout), profile_for(mat, 0));
+    CHECK(m.packed.present);
+    CHECK(m.metalSource == "metalRough.B");
+    CHECK(m.smoothSource == "1 - metalRough.G");
+    CHECK_EQ(px(m.packed.tex, 0, 0), 0);     // leather: not metal
+    CHECK_EQ(px(m.packed.tex, 0, 1), 85);    // rough 170 -> smooth 85
+    CHECK_EQ(px(m.packed.tex, 1, 0), 255);   // a buckle: metal
+    CHECK_EQ(px(m.packed.tex, 1, 1), 215);
+}
+
 CM_TEST(vrchat, alpha_bands_with_clipping_profile) {
     ModelPreview model;
     ModelMaterialCPU mat = mat_with_file(561567);  // weapon-glow
