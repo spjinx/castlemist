@@ -823,10 +823,10 @@ CM_TEST(npc_look, a_type_13_helm_is_worn_when_the_look_has_no_type_11_helm) {
     CHECK_EQ(aquatic, 1);
 }
 
-// 2026-11-02: an NPC look carries its record's weapons in the hands: slot 200 the main hand (WeaponA1), 208 the
+// 2026-11-02: an NPC look carries its record's weapons, stowed on the back: slot 200 the main hand (WeaponA1), 208 the
 // off-hand (WeaponA2); other slots (192, 3287 of the catalogue's weapons) are left off with a note. The Mad
 // Prince's staff and the Lunatic Boatmaster's torch were missing.
-CM_TEST(npc_look, weapons_go_in_the_hands) {
+CM_TEST(npc_look, weapons_are_stowed) {
     NpcRecord n = look_npc("humanfemale", "banditvar");
     n.weapons = {{200, 1, 2, 648137}, {208, 3, 4, 499374}, {192, 5, 6, 61723}, {200, 7, 8, 0}};
     auto a = npc_assembly(n, 0, look_composite());
@@ -846,7 +846,7 @@ CM_TEST(npc_look, weapons_go_in_the_hands) {
         if (!main->file_ids.empty()) CHECK_EQ(main->file_ids[0], 648137u);
     }
     if (off && !off->file_ids.empty()) CHECK_EQ(off->file_ids[0], 499374u);
-    CHECK(a->options.weapons == castlemist::ripper::WeaponPlacement::Hands);
+    CHECK(a->options.weapons == castlemist::ripper::WeaponPlacement::Stowed);
     bool noted = false;
     for (const std::string& t : a->notes) noted = noted || t.find("slot 192") != std::string::npos;
     CHECK(noted);

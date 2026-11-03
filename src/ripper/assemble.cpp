@@ -53,6 +53,19 @@ bool is_armor(const ManifestPiece& p) {
 
 bool aquatic(const std::string& slot) { return slot.find("Aquatic") != std::string::npos; }
 
+/// A mesh drawn with a texture of its own rather than the character atlas (an armour piece's effect mesh).
+bool own_texture(const ModelPreview& m, const ModelMeshCPU& mesh) {
+    return mesh.materialIndex < m.materials.size() && m.materials[mesh.materialIndex].diffuseTex >= 0;
+}
+
+/// A mesh on an armour piece's glowing material ("Glow": it samples the atlas and lights it).
+bool glow_material(const ModelPreview& m, const ModelMeshCPU& mesh) {
+    if (mesh.materialIndex >= m.materials.size()) return false;
+    std::string n = m.materials[mesh.materialIndex].materialName;
+    std::transform(n.begin(), n.end(), n.begin(), [](unsigned char c) { return std::tolower(c); });
+    return n.find("glow") != std::string::npos;
+}
+
 const ManifestPiece* find_slot(const CharacterManifest& m, const std::string& slot) {
     for (const ManifestPiece& p : m.pieces)
         if (p.slot == slot && p.status != character::PieceStatus::NoSkin) return &p;
@@ -442,6 +455,7 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
         normal.px[i + 3] = 255;
     }
     std::vector<size_t> atlas_meshes;  // indices into out.meshes that sample the atlas
+    std::vector<size_t> glow_meshes;   // the same, on a glowing material ("Glow"): the atlas as their emission
     // Armor surface maps on the same layout, each piece only inside its own
     // rects (a set's mask covers the whole set; the other pieces' parts of it
     // are left out): glTF metallic-roughness (G = roughness, B = metal) and a
@@ -871,11 +885,13 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
                 mat.extraTextures.clear();
             }
         } else {
-            for (ModelMeshCPU& mesh : model->meshes)
+            for (ModelMeshCPU& mesh : model->meshes) {
+                if (own_texture(*model, mesh)) continue;   // its own texture's UVs, not the atlas's
                 for (GVertex& v : mesh.vertices) {
                     v.u = wrap_uv(v.u);
                     v.v = wrap_uv(v.v);
                 }
+            }
         }
         if (part.scalp_only) {
             std::vector<ModelMeshCPU> scalp;
@@ -884,8 +900,14 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
             model->meshes = std::move(scalp);
         }
         const size_t first = merge_into(out, *model);
+        // 2026-11-02: a piece's meshes on materials of their own stay apart (the Lunatic Boatmaster's flame
+        // leggings: "Armor" and "Glow" sample the atlas, "Flame" its own texture with a perturb): own-textured ones
+        // keep their material, "Glow" ones take the glowing atlas material, the rest the atlas.
         if (in_atlas)
-            for (size_t mi = first; mi < out.meshes.size(); ++mi) atlas_meshes.push_back(mi);
+            for (size_t mi = first; mi < out.meshes.size(); ++mi) {
+                if (own_texture(out, out.meshes[mi])) continue;
+                (glow_material(out, out.meshes[mi]) ? glow_meshes : atlas_meshes).push_back(mi);
+            }
         // Which avatar piece these meshes belong to: the bare body and head,
         // the hair, or the armor slot (vrchat merges per piece).
         const std::string group = part.piece          ? part.piece->slot
@@ -898,16 +920,19 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
     }
 
     // One material for everything that samples the atlas.
+    if (atlas_meshes.empty() && !glow_meshes.empty()) atlas_meshes.swap(glow_meshes);
     if (!atlas_meshes.empty()) {
         // 2026-11-02: seams sealed: texels no mesh samples take their sampled neighbours' colour and alpha, so
         // filtering and mipmaps at a mesh's edge read its own (the Mad Prince's ears had orange fringes from the
         // coat beside them and see-through gaps from cut-away texels).
         // One normal where separate meshes meet (face, ears, scalp, the coat's neck): the light broke at the jaw
         // and in front of the ears (weld.h).
-        weld_normals(out, atlas_meshes);
+        std::vector<size_t> on_atlas = atlas_meshes;
+        on_atlas.insert(on_atlas.end(), glow_meshes.begin(), glow_meshes.end());
+        weld_normals(out, on_atlas);
         if (!sel.preview) {
             ModelPreview sampled;
-            for (size_t mi : atlas_meshes) sampled.meshes.push_back(out.meshes[mi]);
+            for (size_t mi : on_atlas) sampled.meshes.push_back(out.meshes[mi]);
             const std::vector<uint8_t> used = detail::uv_coverage(sampled, kAtlas, kAtlas, true);
             seal_seams(diffuse, used, 8);
             seal_seams(normal, used, 8);
@@ -925,6 +950,14 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
             mat.extraTextures.push_back({detail::add_texture(out, *detail_map, 0, false), 0, 0, "decal"});
         out.materials.push_back(mat);
         for (size_t mi : atlas_meshes) out.meshes[mi].materialIndex = mat.index;
+        if (!glow_meshes.empty()) {   // the glowing armour regions: lit by the atlas itself
+            ModelMaterialCPU glow = mat;
+            glow.index = static_cast<uint32_t>(out.materials.size());
+            glow.materialName = "CharacterAtlasGlow";
+            glow.emissiveTex = d;
+            out.materials.push_back(glow);
+            for (size_t mi : glow_meshes) out.meshes[mi].materialIndex = glow.index;
+        }
         if (opt.vrchat) {  // Body and Hair on the pre-armor atlas
             if (!body_diffuse) {
                 body_diffuse = diffuse;
