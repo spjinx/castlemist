@@ -267,25 +267,61 @@ CM_TEST(atlas, slot_rects_follow_rect_index) {
     CHECK(slot_rects(BlitRectSet{}, 0).empty());
 }
 
-// The Mad Prince's helm (madprinceih, ArmorLight): its meshes sit in (0,768)-(128,1024), its 512x256 texture is laid
-// out from (0,512), the corner it shares with the face, whose paint lands on (384,512)-(768,768).
-CM_TEST(atlas, face_overlay_anchors_at_the_corner_shared_with_the_face) {
+// Measured 2026-11-02 on the Mad Prince's pieces (HumanMale, ArmorLight): each full-size texture lands 100% inside
+// the slots it names when anchored at their common top-left.
+CM_TEST(atlas, piece_regions_anchor_at_every_named_slot) {
     BlitRectSet s = armor_light();
-    AtlasRegion own{{{0, 768, 128, 1024}}, 0, 768};
-    AtlasRegion face = face_overlay(own, s, 512, 256, 2.0f);
-    CHECK_EQ(face.rects.size(), size_t{1});
-    CHECK_EQ(own.ax, 0u);
-    CHECK_EQ(own.ay, 512u);
-    CHECK_EQ(face.ax, 0u);
-    CHECK_EQ(face.ay, 512u);
+    // Helm madprinceih: type 13 (slot 7), skinFlags face; 512x256 at 2x.
+    PieceRegions h = piece_regions(s, 13, 0, kSkinFlagFace, {}, 512, 256, 2.0f);
+    CHECK_EQ(h.paint.rects.size(), size_t{1});
+    CHECK_EQ(h.paint.ax, 0u);
+    CHECK_EQ(h.paint.ay, 512u);
+    CHECK_EQ(h.skin.rects.size(), size_t{1});
+    CHECK_EQ(h.skin.rects[0].x0, 384u);
+    // Gloves villacig: type 10 (slots 4, 5), hands skin; 1024x1024 at 1x.
+    PieceRegions g = piece_regions(s, 10, 0x2000, 0x2000, {}, 1024, 1024, 1.0f);
+    CHECK_EQ(g.paint.ax, 256u);
+    CHECK_EQ(g.paint.ay, 256u);
+    CHECK_EQ(g.paint.rects.size(), size_t{4});   // slots 4, 5 and the hands skin it hides
+    // Boots carnieacib: type 8 (slots 2, 3).
+    PieceRegions b = piece_regions(s, 8, 0x1000, 0x1000, {}, 512, 1024, 1.0f);
+    CHECK_EQ(b.paint.ax, 512u);
+    CHECK_EQ(b.paint.ay, 0u);
 }
 
-CM_TEST(atlas, face_overlay_is_empty_when_the_texture_does_not_reach_the_face) {
+// The Mad Prince's coat (hideFlags 31038: slots 1-5 and 8, the four body skins) paints the leggings, boots,
+// gloves and shoulders slots; the gloves, losing theirs, paint nothing.
+CM_TEST(atlas, hide_flags_hand_slots_to_the_coat) {
     BlitRectSet s = armor_light();
-    AtlasRegion own{{{0, 0, 384, 256}}, 0, 0};   // a helm in the hair rect: a 512x256 texture ends at y 512
-    AtlasRegion face = face_overlay(own, s, 512, 256, 2.0f);
-    CHECK(face.rects.empty());
-    CHECK_EQ(own.ay, 0u);   // unchanged
+    PieceRegions c = piece_regions(s, 9, 31038, 0x800, {}, 1024, 1024, 1.0f);
+    CHECK_EQ(c.paint.ax, 0u);
+    CHECK_EQ(c.paint.ay, 0u);
+    // slot 0 (2) + 1 (2) + 2 (1) + 3 (1) + 4 (1) + 5 (2) + 8 (1), and the skin it hides, painted outright:
+    // chest, feet, hands, legs (2) -- its cut-away chest drops the coat's own chest skin mesh.
+    CHECK_EQ(c.paint.rects.size(), size_t{15});
+    CHECK(c.skin.rects.empty());   // skinFlags' chest is hidden too: painted, not through the cut mask
+    PieceRegions g = piece_regions(s, 10, 0x2000, 0x2000, {4, 5, 14}, 1024, 1024, 1.0f);
+    CHECK(g.paint.rects.empty());
+    CHECK(g.skin.rects.empty());
+    CHECK_EQ(g.paint.ax, 256u);   // still laid out from its own corner
+}
+
+CM_TEST(atlas, piece_regions_are_empty_when_the_texture_does_not_reach) {
+    BlitRectSet s = armor_light();
+    PieceRegions h = piece_regions(s, 13, 0, kSkinFlagFace, {}, 64, 64, 2.0f);
+    CHECK(h.paint.rects.empty());
+    CHECK(h.skin.rects.empty());
+    CHECK(piece_regions(BlitRectSet{}, 9, 0, 0, {}, 512, 512, 2.0f).paint.rects.empty());
+    CHECK(piece_regions(s, 5, 0, 0, {}, 512, 512, 2.0f).paint.rects.empty());   // not armour
+}
+
+CM_TEST(atlas, flag_bits_name_slots) {
+    CHECK_EQ(flag_slot(0), size_t{0});
+    CHECK_EQ(flag_slot(9), kFaceSlot);
+    CHECK_EQ(flag_slot(11), size_t{12});   // chest skin
+    CHECK_EQ(flag_slot(14), size_t{15});   // legs skin
+    CHECK_EQ(flag_slot(16), size_t{11});   // ears
+    CHECK_EQ(flag_slot(15), kNoSlot);
 }
 
 CM_TEST(atlas, mask_alpha_takes_the_masks_red) {

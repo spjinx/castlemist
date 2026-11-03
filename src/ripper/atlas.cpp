@@ -157,23 +157,65 @@ std::vector<composite::BlitRect> slot_rects(const composite::BlitRectSet& set, s
     return {set.rects.begin() + static_cast<std::ptrdiff_t>(a), set.rects.begin() + static_cast<std::ptrdiff_t>(b)};
 }
 
-AtlasRegion face_overlay(AtlasRegion& own, const composite::BlitRectSet& set, int tw, int th, float scale) {
-    std::vector<composite::BlitRect> face = slot_rects(set, kFaceSlot);
-    if (own.rects.empty() || face.empty() || tw <= 0 || th <= 0) return {};
-    uint32_t ax = own.ax, ay = own.ay;
-    for (const composite::BlitRect& r : face) {
-        ax = std::min(ax, r.x0);
-        ay = std::min(ay, r.y0);
+std::vector<size_t> armor_slots(uint8_t type) {
+    switch (type) {
+        case 9: return {0};
+        case 12: return {1};
+        case 8: return {2, 3};
+        case 10: return {4, 5};
+        case 11: return {6};
+        case 13: return {7};
+        case 14: return {8};
+        default: return {};
     }
+}
+
+size_t flag_slot(int bit) {
+    if (bit >= 0 && bit <= 10) return static_cast<size_t>(bit);
+    if (bit >= 11 && bit <= 14) return static_cast<size_t>(bit + 1);
+    if (bit == 16) return 11;
+    return kNoSlot;
+}
+
+bool is_skin_slot(size_t slot) { return slot == kFaceSlot || slot == 11 || (slot >= 12 && slot <= 15); }
+
+PieceRegions piece_regions(const composite::BlitRectSet& set, uint8_t type, uint32_t hide_flags, uint32_t skin_flags,
+                           const std::vector<size_t>& lost, int tw, int th, float scale) {
+    const std::vector<size_t> own = armor_slots(type);
+    if (own.empty() || set.rect_index.empty() || tw <= 0 || th <= 0) return {};
+    auto is_lost = [&](size_t s) { return std::find(lost.begin(), lost.end(), s) != lost.end(); };
+    std::vector<size_t> named = own, paint, skin;
+    for (size_t s : own)
+        if (!is_lost(s)) paint.push_back(s);
+    for (int bit = 0; bit < 32; ++bit) {
+        const bool hide = (hide_flags >> bit) & 1u, sk = (skin_flags >> bit) & 1u;
+        const size_t s = flag_slot(bit);
+        if ((!hide && !sk) || s == kNoSlot || std::find(named.begin(), named.end(), s) != named.end()) continue;
+        named.push_back(s);
+        if (is_lost(s)) continue;
+        // Hidden: the piece's own paint (the Mad Prince's coat cuts its chest skin away, its leggings paint the
+        // legs' skin). Only named by skinFlags: through the cut mask (his helm's face paint).
+        if (hide) paint.push_back(s);
+        else if (is_skin_slot(s)) skin.push_back(s);
+    }
+    bool any = false;
+    uint32_t ax = 0, ay = 0;
+    for (size_t s : named)
+        for (const composite::BlitRect& r : slot_rects(set, s)) {
+            ax = any ? std::min(ax, r.x0) : r.x0;
+            ay = any ? std::min(ay, r.y0) : r.y0;
+            any = true;
+        }
+    if (!any) return {};
+    PieceRegions out{{{}, ax, ay}, {{}, ax, ay}};
+    for (size_t s : paint) for (const composite::BlitRect& r : slot_rects(set, s)) out.paint.rects.push_back(r);
+    for (size_t s : skin) for (const composite::BlitRect& r : slot_rects(set, s)) out.skin.rects.push_back(r);
     const float x1 = static_cast<float>(ax) + scale * static_cast<float>(tw);
     const float y1 = static_cast<float>(ay) + scale * static_cast<float>(th);
-    for (const composite::BlitRect& r : face)
-        if (static_cast<float>(r.x1) > x1 || static_cast<float>(r.y1) > y1) return {};
-    for (const composite::BlitRect& r : own.rects)
-        if (static_cast<float>(r.x1) > x1 || static_cast<float>(r.y1) > y1) return {};
-    own.ax = ax;
-    own.ay = ay;
-    return AtlasRegion{std::move(face), ax, ay};
+    for (const AtlasRegion* g : {&out.paint, &out.skin})
+        for (const composite::BlitRect& r : g->rects)
+            if (static_cast<float>(r.x1) > x1 + 0.5f || static_cast<float>(r.y1) > y1 + 0.5f) return {};
+    return out;
 }
 
 std::pair<AtlasRegion, AtlasRegion> split_face(const AtlasRegion& region, const composite::BlitRectSet& set) {

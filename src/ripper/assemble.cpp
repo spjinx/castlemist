@@ -390,6 +390,45 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
         parts.push_back(Part{p->slot, fd, p, true, false, {}});  // armor paints over the body
     }
 
+    // The atlas slots worn pieces' hideFlags take: first the pieces' own slots, then the skin, which a piece left
+    // without some of its own (the Mad Prince's gloves, under his coat) does not claim; the first claim wins.
+    std::map<size_t, const composite::CompositeFileData*> taken;
+    for (const Part& p : parts)
+        if (p.piece)
+            for (int bit = 0; bit < 32; ++bit)
+                if ((p.fd->hide_flags >> bit) & 1u)
+                    if (size_t sl = flag_slot(bit); sl != kNoSlot && !is_skin_slot(sl)) taken.emplace(sl, p.fd);
+    for (const Part& p : parts) {
+        if (!p.piece) continue;
+        bool robbed = false;
+        for (size_t sl : armor_slots(p.fd->type))
+            if (auto it = taken.find(sl); it != taken.end() && it->second != p.fd) robbed = true;
+        if (robbed) continue;
+        for (int bit = 0; bit < 32; ++bit)
+            if ((p.fd->hide_flags >> bit) & 1u)
+                if (size_t sl = flag_slot(bit); sl != kNoSlot && is_skin_slot(sl)) taken.emplace(sl, p.fd);
+    }
+
+    // A piece whose every slot another worn piece's hideFlags take is not drawn: the Mad Prince's long coat
+    // (hideFlags 31038) has his hands and boots, and hides the gloves, boots, leggings and shoulders worn with it;
+    // a coat taking only the gloves' cuff slot (2080) leaves the gloves.
+    for (Part& p : parts) {
+        if (!p.piece) continue;
+        const std::vector<size_t> own = armor_slots(p.fd->type);
+        const composite::CompositeFileData* by = nullptr;
+        bool all = !own.empty();
+        for (size_t sl : own) {
+            auto it = taken.find(sl);
+            if (it == taken.end() || it->second == p.fd) { all = false; break; }
+            by = it->second;
+        }
+        if (all) {
+            p.keep_mesh = false;
+            for (const Part& q : parts)
+                if (q.fd == by && q.piece) p.hidden_reason = "under the " + q.piece->slot + " (its hideFlags)";
+        }
+    }
+
     // ---- textures into the atlas, meshes onto the skeleton -------------------------
     ModelPreview out = ctx.skeleton;
     ImageRgba diffuse{kAtlas, kAtlas, std::vector<uint8_t>(static_cast<size_t>(kAtlas) * kAtlas * 4, 0)};
@@ -626,6 +665,24 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
                                                           : look_dyes,
                                       skin);
         }
+        if (!baked && !part.piece && !part.fd->texture_base) {
+            // 2026-11-02: a head part with no texture of its own (HumanMale's ears, defaultea) is drawn by the face
+            // in the atlas: its meshes sample that, as they are. It was dropped, and the Mad Prince had no ears.
+            if (!part.keep_mesh) continue;
+            for (ModelMeshCPU& mesh : model->meshes)
+                for (GVertex& v : mesh.vertices) {
+                    v.u = wrap_uv(v.u);
+                    v.v = wrap_uv(v.v);
+                }
+            const size_t first = merge_into(out, *model);
+            for (size_t mi = first; mi < out.meshes.size(); ++mi) {
+                atlas_meshes.push_back(mi);
+                out.meshes[mi].meshName = "Body";
+            }
+            if (opt.vrchat) vrchat_body_part(out, first, part.name, sel.worn);
+            report(part.name, "used", "no texture of its own: the face's in the atlas", part.fd->mesh_base);
+            continue;
+        }
         if (!baked) {
             report(part.name, "dropped", "texture failed to decode", part.fd->mesh_base);
             continue;
@@ -642,16 +699,28 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
             uvs.insert(uvs.end(), w.begin(), w.end());
         }
         AtlasRegion region = set ? region_for(*set, uvs) : AtlasRegion{};
-        // 2026-11-02: a piece whose skinFlags name the face (helms) lays its texture out from the corner its rects
-        // share with the face, and paints the face through its cut mask (the Mad Prince's face paint). Its anchor is
-        // then known: no fitting.
-        AtlasRegion face;
-        if (part.piece && set && (part.fd->skin_flags & kSkinFlagFace) && !region.rects.empty())
-            face = face_overlay(region, *set, baked->base.width, baked->base.height, baked->scale);
-        if (!region.rects.empty() && face.rects.empty())
+        // 2026-11-02: armour by the blit set's slots (piece_regions): laid out from the corner of every slot it
+        // names, it paints its own (less those another piece's hideFlags take: the Mad Prince's long coat paints his
+        // gloves, boots, leggings and shoulders) and the skin it names through its cut mask (his helm's face paint).
+        // A piece left no slot still samples the atlas. Without a rectIndex: the UV rects, anchor fitted.
+        AtlasRegion skin_region;
+        bool by_slots = false;
+        if (part.piece && set) {
+            std::vector<size_t> lost;
+            for (const auto& [sl, by] : taken)
+                if (by != part.fd) lost.push_back(sl);
+            PieceRegions pr = piece_regions(*set, part.fd->type, part.fd->hide_flags, part.fd->skin_flags, lost,
+                                            baked->base.width, baked->base.height, baked->scale);
+            if (!pr.paint.rects.empty() || !pr.skin.rects.empty() || !lost.empty()) {
+                region = pr.paint;
+                skin_region = pr.skin;
+                by_slots = !region.rects.empty() || !skin_region.rects.empty() || !lost.empty();
+            }
+        }
+        if (!region.rects.empty() && !by_slots)
             detail::place_texture(region, detail::to_image(baked->base), baked->scale,
                                   detail::uv_coverage(*model, kAtlas, kAtlas, part.skin_meshes_are_part));
-        const bool in_atlas = !region.rects.empty();
+        const bool in_atlas = by_slots || !region.rects.empty();
         if (in_atlas) {
             // Hair and bald-scalp layers paint over the face's region the way the
             // game composites them (by their alpha), and so do the undergarments
@@ -664,19 +733,48 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
             if (part.name == "hair" && set && part.fd->mask_cut && decode_texture_full(ctx.dat, part.fd->mask_cut, hair_cut) &&
                 hair_cut.width > 0) {
                 auto [over_face, rest] = split_face(region, *set);
-                blit(diffuse, detail::to_image(baked->base), rest, baked->scale, mode);
+                // Its own rects are the hair's alone: replaced, alpha and all, so the strands' gaps cut (Over
+                // kept the larger alpha, and the rect was already opaque: the Mad Prince's mohawk drew as cards).
+                blit(diffuse, detail::to_image(baked->base), rest, baked->scale, BlitMode::Replace);
                 blit(diffuse, with_mask_alpha(detail::to_image(baked->base), detail::to_image(hair_cut)), over_face,
                      baked->scale, mode);
             } else {
                 blit(diffuse, detail::to_image(baked->base), region, baked->scale, mode);
             }
+            // 2026-11-02: the eye colour on a face that is not a sylvari's (whose cut mask is the iris; a human
+            // face's is a shine map): the atlas texels its eye meshes ("eye_container") sample take the eye colour
+            // on the untinted face, not the skin colour. The Mad Prince's amber eyes came out skin-tinted brown.
+            if (!part.piece && part.name == "face" && !sylvari && opt.eye_tint) {
+                ModelPreview eyes;
+                for (const ModelMeshCPU& mesh : model->meshes) {
+                    std::string mat = mesh.materialIndex < model->materials.size()
+                                          ? model->materials[mesh.materialIndex].materialName : std::string();
+                    std::transform(mat.begin(), mat.end(), mat.begin(), [](unsigned char c) { return std::tolower(c); });
+                    if (mat.find("eye") != std::string::npos && mat.find("lash") == std::string::npos &&
+                        mat.find("shadow") == std::string::npos)
+                        eyes.meshes.push_back(mesh);
+                }
+                ModelTextureCPU raw;
+                if (!eyes.meshes.empty() && decode_texture_full(ctx.dat, part.fd->texture_base, raw) && raw.width > 0) {
+                    ImageRgba plain{kAtlas, kAtlas, std::vector<uint8_t>(static_cast<size_t>(kAtlas) * kAtlas * 4, 0)};
+                    const float raw_scale = baked->scale * static_cast<float>(baked->base.width) / static_cast<float>(raw.width);
+                    blit(plain, detail::to_image(raw), region, raw_scale);
+                    const std::vector<uint8_t> cov = detail::uv_coverage(eyes, kAtlas, kAtlas, true);
+                    const ColorMatrix em = dye_matrix(*opt.eye_tint);
+                    for_region(region, kAtlas, kAtlas, [&](size_t i) {
+                        if (!cov[i / 4]) return;
+                        const std::array<uint8_t, 3> c = apply_dye(em, {plain.px[i], plain.px[i + 1], plain.px[i + 2]});
+                        for (int k = 0; k < 3; ++k) diffuse.px[i + static_cast<size_t>(k)] = c[static_cast<size_t>(k)];
+                    });
+                }
+            }
             if (baked->normal && mode == BlitMode::Replace)
                 blit(normal, detail::to_image(*baked->normal), region, baked->normal_scale);
-            if (!face.rects.empty() && part.fd->mask_cut) {
+            if (!skin_region.rects.empty() && part.fd->mask_cut) {
                 ModelTextureCPU cut;
                 if (decode_texture_full(ctx.dat, part.fd->mask_cut, cut) && cut.width > 0)
-                    blit(diffuse, with_mask_alpha(detail::to_image(baked->base), detail::to_image(cut)), face, baked->scale,
-                         BlitMode::Over);
+                    blit(diffuse, with_mask_alpha(detail::to_image(baked->base), detail::to_image(cut)), skin_region,
+                         baked->scale, BlitMode::Over);
             }
             // Glow masks, from the region's top-left. A skin pattern's mask
             // covers the part's texture footprint; a sylvari's own glow mask

@@ -296,6 +296,13 @@ private:
                 "default profile on a blended preset: diffuse alpha kept as opacity, not shine");
             return;
         }
+        // 2026-11-02: no game shader and Cutout (vrchat_export: the texture's alpha cuts, as the glTF's MASK): a
+        // baked character atlas, whose alpha is coverage (hair strands, cut-out armour), not shine.
+        if (!mat_.hasRenderState && blend_.preset == BlendPreset::Cutout) {
+            alphaIsOpacity_ = true;
+            out_.warnings.push_back("no game shader, Cutout: diffuse alpha kept as coverage, not shine");
+            return;
+        }
         uint8_t a = 0;
         if (uniform_alpha(diffuse_, a)) {
             alphaUnused_ = true;

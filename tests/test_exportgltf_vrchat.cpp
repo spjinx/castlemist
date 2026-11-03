@@ -1662,6 +1662,25 @@ CM_TEST(vrchat, gltf_alpha_mask_kept_for_baked_textures_without_game_shader) {
     CHECK(glb_json(dir / "d.glb")["materials"][0]["alphaMode"] == "BLEND");
 }
 
+// 2026-11-02: materials.json follows the glTF there: a baked character atlas whose alpha cuts is Cutout, not
+// Opaque (the Mad Prince's hair strands drew as solid cards in Unity).
+CM_TEST(vrchat, materials_json_cutout_for_baked_textures_without_game_shader) {
+    ModelPreview model = glow_quad();
+    model.materials[0].hasRenderState = false;
+    model.materials[0].materialFile = 0;
+    model.materials[0].isEffect = false;
+    model.textures[static_cast<size_t>(model.materials[0].diffuseTex)].hasCutout = true;
+    fs::path dir = fresh_dir("atlas_cutout");
+    VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Npc", 0);
+    CHECK(r.ok);
+    CHECK(read_json(dir / "materials.json")["materials"][0]["preset"] == "Cutout");
+    CHECK(any_of_warnings(r.warnings, "diffuse alpha kept as coverage"));   // the BaseColor keeps its alpha
+    model.textures[static_cast<size_t>(model.materials[0].diffuseTex)].hasCutout = false;
+    fs::path dir2 = fresh_dir("atlas_opaque");
+    CHECK(write_vrchat_folder(model, dir2.string(), "Npc", 0).ok);
+    CHECK(read_json(dir2 / "materials.json")["materials"][0]["preset"] == "Opaque");
+}
+
 CM_TEST(vrchat, materials_json_decal_entry) {
     ModelPreview model = glow_quad();
     ModelMaterialCPU prop = mat_with_file(60027);  // prop-decal

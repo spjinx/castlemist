@@ -106,11 +106,32 @@ constexpr uint32_t kHideFlagHair = 0x400;
 /// The rects of slot `slot`: rect_index holds each slot's first rect, then the rect count. Empty when out of range.
 std::vector<composite::BlitRect> slot_rects(const composite::BlitRectSet& set, size_t slot);
 
-/// For a piece whose skinFlags name the face (helms): its texture is laid out from the top-left its own rects
-/// share with the face slot's. When a `tw` x `th` texture at `scale` reaches the whole face rect from there,
-/// moves `own`'s anchor to that corner and returns the face region (same anchor); else returns empty and
-/// leaves `own` as it is.
-AtlasRegion face_overlay(AtlasRegion& own, const composite::BlitRectSet& set, int tw, int th, float scale);
+constexpr size_t kNoSlot = static_cast<size_t>(-1);
+
+/// The slots a composite piece type owns (2026-11-02, from the Mad Prince's textures): 9 coat -> 0, 12 leggings
+/// -> 1, 8 boots -> 2, 3, 10 gloves -> 4, 5, 11 helm -> 6, 13 aquatic helm -> 7, 14 shoulders -> 8. Empty for
+/// any other type.
+std::vector<size_t> armor_slots(uint8_t type);
+
+/// The slot a hideFlags / skinFlags bit names: bits 0..10 are slots 0..10, 11..14 the chest / feet / hands /
+/// legs skin (slots 12..15), 16 the ears (slot 11). kNoSlot for any other bit.
+size_t flag_slot(int bit);
+
+/// Face, ears and the bare body: slots a piece paints only through its cut mask.
+bool is_skin_slot(size_t slot);
+
+struct PieceRegions {
+    AtlasRegion paint;  // drawn as the piece draws (its own slots and the ones its hideFlags take)
+    AtlasRegion skin;   // drawn through its cut mask
+};
+
+/// Where a piece's texture goes by the blit set: laid out from the top-left of every slot it names -- its own,
+/// the ones its hideFlags take and the skin its hide / skinFlags name -- it paints its own slots and every slot
+/// its hideFlags name (skin included), less `lost` (taken by another piece), and the skin named by skinFlags
+/// alone through its cut mask (`skin`). Both empty when the
+/// set has no rectIndex, the type is not armour, or a `tw` x `th` texture at `scale` does not reach every rect.
+PieceRegions piece_regions(const composite::BlitRectSet& set, uint8_t type, uint32_t hide_flags, uint32_t skin_flags,
+                           const std::vector<size_t>& lost, int tw, int th, float scale);
 
 /// `region` split into its rects that are the face slot's and the rest; both keep its anchor.
 std::pair<AtlasRegion, AtlasRegion> split_face(const AtlasRegion& region, const composite::BlitRectSet& set);
