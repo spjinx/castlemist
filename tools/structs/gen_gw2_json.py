@@ -48,7 +48,6 @@ SIMPLE = {
     0x0C:"float", 0x0D:"float2", 0x0E:"float3", 0x0F:"float4", 0x11:"qword",
     0x12:"wchar_ptr", 0x13:"char_ptr", 0x15:"word", 0x16:"byte16", 0x17:"byte3",
     0x18:"dword2", 0x19:"dword4", 0x1A:"word3", 0x1B:"fileref",
-    0x1C:"dword",        # variant0x1C (belum terbukti; 4B seperti dword)
     0x24:"token32", 0x25:"token64",
 }
 CHILD = {0x01,0x02,0x03,0x10,0x14,0x1D}
@@ -99,6 +98,10 @@ def member(entry):
         e=elem_of(child)
         if isinstance(e,dict): return {"name":nm,"kind":"struct","type":e["struct"]}
         return {"name":nm,"kind":e}
+    if tid==0x1C:
+        # variant: on disk {u32 index; ptr}; child = table of cnt struct descriptors
+        alts=[build_struct(u64(child+8*i)) for i in range(int(cnt))] if child else []
+        return {"name":nm,"kind":"variant","alternatives":alts}
     return {"name":nm,"kind":SIMPLE.get(tid,"dword")}
 
 def build_struct(desc):

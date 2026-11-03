@@ -143,8 +143,9 @@ public:
         if (isDefault_)
             out_.warnings.push_back("default profile used: AMAT " +
                                     std::to_string(mat_.materialFile) +
-                                    " is not in the shader table, channels read generically; "
-                                    "clip unknown: treated as not alpha-tested");
+                                    " is not in the shader table, channels read generically; " +
+                                    (profile_.clips ? std::string("its shaders discard: alpha-tested on the diffuse alpha")
+                                                    : std::string("clip unknown: treated as not alpha-tested")));
         collect_layers();
         classify_default_alpha();
         // (x, 0, 0) is a scalar: grey, not red.
@@ -880,8 +881,9 @@ private:
     /// 44709: the upper half of the diffuse alpha is unlit self-illumination,
     /// `rgb * saturate(2a-1) * 2`. A real glow source keeps the emission slots.
     void build_alpha_glow() {
-        if (profile_.diffuseAlpha != AlphaUse::OpacityAndGlow) return;
-        out_.warnings.push_back("opacity ramp and diffade not mapped (opacity = saturate(2a) only)");
+        if (profile_.diffuseAlpha != AlphaUse::OpacityAndGlow && profile_.diffuseAlpha != AlphaUse::Glow) return;
+        if (profile_.diffuseAlpha == AlphaUse::OpacityAndGlow)
+            out_.warnings.push_back("opacity ramp and diffade not mapped (opacity = saturate(2a) only)");
         if (!diffuse_.real()) return;
         if (emissionTaken_) {
             out_.warnings.push_back(
@@ -907,6 +909,8 @@ private:
         out_.emissionMap.source = "baseColor";
         out_.emissionColor = {1, 1, 1};
         out_.emissionStrength = 2.0f;  // rgb * saturate(2a-1) * 2
+        if (profile_.diffuseAlpha == AlphaUse::Glow)
+            if (const auto g = constant("glofade")) out_.emissionStrength = 2.0f * *g;   // 43833
         emissionTaken_ = true;
         decalGlowBake_ = true;  // bake map x mask x colour
     }
@@ -1141,7 +1145,7 @@ private:
     bool emissionTaken_ = false;            ///< a glow source owns the emission slots
     bool decalGlowBake_ = false;            ///< emission is a decal glow: bake map x mask x colour
     std::vector<std::string> failedRoles_;  ///< roles of layers that failed to decode
-    const bool isDefault_ = &profile_ == &default_profile();
+    const bool isDefault_ = &profile_ == &default_profile() || &profile_ == &default_cutout_profile();
     bool alphaIsOpacity_ = false;  ///< default profile, blended preset: alpha is opacity (I4)
     bool alphaUnused_ = false;     ///< default profile, uniform alpha: no shine data (R8)
 };

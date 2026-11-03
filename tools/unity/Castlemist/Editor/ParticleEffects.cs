@@ -105,7 +105,9 @@ namespace Castlemist
                     ++ei;
                     var e = eo as Dictionary<string, object>;
                     if (e == null) continue;
-                    if (Bool(e, "isDistortion")) { ++distortion; continue; }
+                    // 2026-10-26: also a heat-haze material on an emitter without the flag (71674's fire:
+                    // fx-distort-soft drawn as a 6 m tan sprite over the flames)
+                    if (Bool(e, "isDistortion") || (me.Profile ?? "").StartsWith("fx-distort", StringComparison.Ordinal)) { ++distortion; continue; }
                     if (Num(e, "spawnPeriodSec", 0) <= 1e-5) continue;
                     string bone = Str(e, "bone") ?? cloudBone;
                     Transform at = bone != null ? FindDeep(instance.transform, bone) : null;
@@ -149,6 +151,11 @@ namespace Castlemist
                 duration += (float)Num(clipEntry, "duration", 0);
             }
             bool loops = clip != null && duration > 0.05f;   // an instance without a clip does not animate
+            // Without a clip the effects are those of the model's rest pose: its zeropose clip's first
+            // frame when it has one (2026-10-25: door 226415's demolish dust, hidden in every clip but
+            // DemolishClose, played forever), else a bone every clip hides from its first frame and
+            // never shows stays hidden (airship 1768614's "pasted" fires, 390 m up, hidden in all ten).
+            if (clip == null) vis = RestPose(List(doc, "clips")) ?? NeverShown(List(doc, "clips"));
 
             var clouds = List(doc, "clouds");
             foreach (ParticleSystem ps in systems)
@@ -192,6 +199,44 @@ namespace Castlemist
                 }
             }
             return systems.Count;
+        }
+
+        /// The bones zeropose (or zeropose04, the intro of a "zeropose04+08" pair) hides at its first
+        /// frame, keyed hidden at 0; null when the model has no such clip.
+        static Dictionary<string, object> RestPose(List<object> clips)
+        {
+            Dictionary<string, object> rest = null;
+            foreach (object o in clips)
+                if (o is Dictionary<string, object> c && (Str(c, "name") == "zeropose" || (rest == null && Str(c, "name") == "zeropose04")))
+                    rest = c;
+            if (rest == null) return null;
+            var v = Obj(rest, "vis");
+            var r = new Dictionary<string, object>();
+            if (v != null)
+                foreach (var kv in v)
+                    if (kv.Value is List<object> keys && keys.Count > 0 && keys[0] is double d && d <= 1e-4) r[kv.Key] = new List<object> { 0.0 };
+            return r;
+        }
+
+        /// The bones each of @p clips hides at 0 and never shows again, keyed hidden at 0 (null: none).
+        static Dictionary<string, object> NeverShown(List<object> clips)
+        {
+            HashSet<string> bones = null;
+            foreach (object o in clips)
+            {
+                var c = o as Dictionary<string, object>;
+                var v = c != null ? Obj(c, "vis") : null;
+                var hidden = new HashSet<string>();
+                if (v != null)
+                    foreach (var kv in v)
+                        if (kv.Value is List<object> keys && keys.Count == 1 && keys[0] is double d && d <= 1e-4) hidden.Add(kv.Key);
+                if (bones == null) bones = hidden;
+                else bones.IntersectWith(hidden);
+            }
+            if (bones == null || bones.Count == 0) return null;
+            var r = new Dictionary<string, object>();
+            foreach (string b in bones) r[b] = new List<object> { 0.0 };
+            return r;
         }
 
         /// The visibility keys of @p next (starting at @p offset) after those of @p acc: a bone left
@@ -280,6 +325,9 @@ namespace Castlemist
             main.loop = true;
             main.prewarm = true;
             main.playOnAwake = true;
+            // 2026-10-26: off screen it stops (a looping cloud resumes where it was). Automatic only pauses
+            // procedural systems; GW2's curves make every one non-procedural, so 5272 simulated unseen.
+            main.cullingMode = ParticleSystemCullingMode.Pause;
             // Local: the placement's scale applies to sizes and speeds (GW2 model units); in World
             // space Unity leaves particle sizes unscaled.
             main.simulationSpace = ParticleSystemSimulationSpace.Local;
@@ -291,6 +339,7 @@ namespace Castlemist
             Vector2 sx, sy;
             float streakLength = StartSize(ps, e, 1f, out sx, out sy);
             bool square = Flag(e, "flags", 0x10);
+            int align = (int)Num(e, "alignmentType", 0);
             Vector2 rot0 = Range(e, "rotationInitial", 0);
             main.startRotation = new ParticleSystem.MinMaxCurve(rot0.x * Mathf.Deg2Rad, rot0.y * Mathf.Deg2Rad);
             main.startColor = Color.white;
@@ -300,7 +349,7 @@ namespace Castlemist
 
             Shape(ps, e);
             Motion(ps, e, cl);
-            ColourAndSize(ps, e, life, sx, sy, Stretched(e) || square);
+            ColourAndSize(ps, e, life, sx, sy, square, Stretched(e));
             Sheet(ps, e);
 
             var r = go.GetComponent<ParticleSystemRenderer>();
@@ -319,9 +368,29 @@ namespace Castlemist
             {
                 r.renderMode = ParticleSystemRenderMode.Stretch;
                 r.velocityScale = 0f;
+                // 2026-10-26: the length is the particle's own Y size (StartSize, ColourAndSize: GW2's X
+                // half-size and its growth), so the renderer adds none. Before, one mid-life length / width
+                // ratio x the growing width made 506650's mist puffs 3x too long early on, and square
+                // (flags 0x10) emitters streaks at all.
                 r.lengthScale = streakLength;
             }
             else r.renderMode = ParticleSystemRenderMode.Billboard;
+            if (align == 4)
+            {
+                // 2026-10-26, confirmed 2026-10-28 (client case 0, FUN_140d52110): alignment 4 as a quad fixed facing alignmentDir (model space), not
+                // the camera; 506650's whirl (dir -Y, line spawn 100-250 units) as camera-facing 5-12 m
+                // sprites filled the view. Its spin stays in the quad's plane (Unity's Z is applied first).
+                Vector3 n = Conv(Vec(e, "alignmentDir"));
+                if (n.sqrMagnitude > 1e-8f)
+                {
+                    Vector3 eul = Quaternion.FromToRotation(Vector3.forward, n.normalized).eulerAngles * Mathf.Deg2Rad;
+                    r.alignment = ParticleSystemRenderSpace.Local;
+                    main.startRotation3D = true;
+                    main.startRotationX = eul.x;
+                    main.startRotationY = eul.y;
+                    main.startRotationZ = new ParticleSystem.MinMaxCurve(eul.z + rot0.x * Mathf.Deg2Rad, eul.z + rot0.y * Mathf.Deg2Rad);
+                }
+            }
             // Until Fit: a burst fires once, a continuous emitter runs.
             Timing(ps, e, null, 0f, false);
             ps.Play(true);
@@ -567,14 +636,13 @@ namespace Castlemist
             sy = square ? sx : Range(e, "scaleInitial", 1, 1) * 2f;
             ParticleSystem.MinMaxCurve C(Vector2 r) { return new ParticleSystem.MinMaxCurve(Mathf.Max(r.x, 0.01f) * k, Mathf.Max(r.y, 0.01f) * k); }
             float streakLength = 1f;
-            if (Stretched(e))
+            if (Stretched(e) && !square)
             {
-                // along the motion (client cases 5 and 4): X along the velocity, Y across; the
-                // renderer stretches width to length
-                float w = Mathf.Max((sy.x + sy.y) * 0.5f, 1e-3f);
-                streakLength = Mathf.Clamp((sx.x + sx.y) * 0.5f / w, 0.05f, 200f);
-                main.startSize3D = false;
-                main.startSize = C(sy);
+                // along the motion (client cases 5 and 4): X along the velocity (the stretched billboard's length is its Y size), Y across
+                main.startSize3D = true;
+                main.startSizeX = C(sy);
+                main.startSizeY = C(sx);
+                main.startSizeZ = C(sy);
             }
             else if (square)
             {
@@ -591,7 +659,7 @@ namespace Castlemist
             return streakLength;
         }
 
-        static void ColourAndSize(ParticleSystem ps, Dictionary<string, object> e, Vector2 life, Vector2 sx, Vector2 sy, bool uniform)
+        static void ColourAndSize(ParticleSystem ps, Dictionary<string, object> e, Vector2 life, Vector2 sx, Vector2 sy, bool uniform, bool streak = false)
         {
             // colorBegin / colorEnd are {min, max} colours: their middles, blended by the client's
             // weight w(t) (ColourWeight), alpha too, then alpha x the opacity curve
@@ -642,6 +710,8 @@ namespace Castlemist
             if (Flag(e, "flags", 0x10)) dy = dx;
             float gx = (dx.x + dx.y) * 0.5f * meanLife / Mathf.Max((sx.x + sx.y) * 0.5f, 1e-3f);
             float gy = (dy.x + dy.y) * 0.5f * meanLife / Mathf.Max((sy.x + sy.y) * 0.5f, 1e-3f);
+            // a streak (not square): the width (x) is GW2's Y, the length (y) GW2's X (StartSize)
+            if (streak && !uniform) { float t = gx; gx = gy; gy = t; }
             List<Vector2> sc = Curve(e, "scaleCurve");
             int scalePreset = (int)Num(e, "scaleCurvePreset", 0);
             if (sc.Count == 0 && scalePreset == 0 && Mathf.Abs(gx) < 1e-3f && Mathf.Abs(gy) < 1e-3f) return;

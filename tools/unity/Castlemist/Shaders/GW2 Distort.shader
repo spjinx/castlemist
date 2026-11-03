@@ -89,6 +89,17 @@ Shader "Castlemist/GW2 Distort"
         [ToggleUI] _LightVolumes ("Use Light Volumes (glass decal)", Float) = 1
         _LightVolumesBias ("Light Volumes bias (along the normal)", Float) = 0
         _PointLightVolumesShading ("Point Light Volumes shading", Float) = 2
+        [Header(GW2 haze copied from the haze material by HazeCopy)]
+        [ToggleUI] _UseHaze ("Apply the GW2 haze", Float) = 0
+        _HazeNear ("nearColor", Color) = (0.6, 0.65, 0.7, 1)
+        _HazeFar ("farColor", Color) = (0.6, 0.65, 0.7, 1)
+        _HazeHeight ("heightColor", Color) = (0.6, 0.65, 0.7, 0)
+        _HazeDistRange ("distRange (d0, d1) GW2 units", Vector) = (2000, 40000, 0, 0)
+        _HazeHeightRange ("heightRange (h0, h1)", Vector) = (0, -2000, 0, 0)
+        _HazeDepthCue ("depthCue", Float) = 0.001
+        _HazeMapOriginY ("Map root world Y", Float) = 0
+        _HazeUnityScale ("Unity units per GW2 unit", Float) = 0.0254
+        _HazeAmount ("Haze amount", Range(0, 2)) = 1
 
         [Header(UV animation scroll u v per second rotate radians per second)]
         _UVAnim0 ("UV0", Vector) = (0, 0, 0, 0)
@@ -130,6 +141,7 @@ Shader "Castlemist/GW2 Distort"
             #include "UnityCG.cginc"
             #include "UnityLightingCommon.cginc"
             #include "CastlemistLightVolumes.cginc"
+            #include "GW2HazeFog.cginc"
 
             // Samplers: _CastlemistGrab, _CameraDepthTexture, _DistortTex (shared by every 2D map),
             // linear_clamp, unity_SpecCube0, plus Light Volumes' own (well under 16).
@@ -402,7 +414,9 @@ Shader "Castlemist/GW2 Distort"
                 }
                 if (_AlphaSource > 0.5 || _UseLit > 0.5) clip(a - _Cutoff);
                 fixed4 c = fixed4(col, a);
-                UNITY_APPLY_FOG(i.fogCoord, c);
+                // 2026-10-25: drawn after the GW2 Haze volume, which does not fog it: it fogs itself
+                // at its own distance (the grab behind it was taken with the haze already in it)
+                if (!CM_ApplyGW2Haze(c, i.worldPos)) UNITY_APPLY_FOG(i.fogCoord, c);
                 return c;
             }
             ENDCG

@@ -43,11 +43,12 @@ void assign_texture_slots(ModelMaterialCPU& mat, const std::vector<MaterialTextu
     const std::string* normalRole = nullptr;
     // A slot of the claimed file: the first non-layer slot claims it, a later
     // slot with the same role merges; true when the slot was taken.
-    auto claim = [](const MaterialTextureSlot& s, const std::string*& role, uint8_t& uv) {
+    auto claim = [](const MaterialTextureSlot& s, const std::string*& role, uint8_t& uv, uint8_t& uvAnim) {
         if (is_layer_role(s.role)) return false;
         if (!role) {
             role = &s.role;
             uv = s.uv;
+            uvAnim = s.uvAnim;
             return true;
         }
         return *role == s.role;
@@ -56,9 +57,9 @@ void assign_texture_slots(ModelMaterialCPU& mat, const std::vector<MaterialTextu
         int ti = texIndexOf(s.fileId);
         if (ti < 0) continue;
         if (layerOnly.count(s.fileId) && ti == mat.diffuseTex) mat.diffuseTex = -1;
-        if (ti == mat.diffuseTex && claim(s, diffuseRole, mat.diffuseUv)) continue;
-        if (ti == mat.normalTex && claim(s, normalRole, mat.normalUv)) continue;
-        mat.extraTextures.push_back({ti, s.uv, s.fileId, s.role});
+        if (ti == mat.diffuseTex && claim(s, diffuseRole, mat.diffuseUv, mat.diffuseUvAnim)) continue;
+        if (ti == mat.normalTex && claim(s, normalRole, mat.normalUv, mat.normalUvAnim)) continue;
+        mat.extraTextures.push_back({ti, s.uv, s.fileId, s.role, s.uvAnim});
     }
 }
 void append_decoded_clips(const std::vector<castlemist::model::AnimClip>& clips, ModelPreview& out,
@@ -91,14 +92,28 @@ void append_decoded_clips(const std::vector<castlemist::model::AnimClip>& clips,
             }
             tracks.push_back(std::move(k));
         }
+        std::vector<ModelUvAnimCPU> uvs;
+        for (const auto& u : c.uvAnims) {
+            ModelUvAnimCPU k;
+            k.uvAnimId = u.uvAnimId;
+            k.type = u.type;
+            for (int q = 0; q < 4; ++q) k.initial[q] = u.initial[q];
+            if (const castlemist::granny::VectorTrack* vt = clip.vectorTrack(u.trackGroup, u.vectorTrack)) {
+                k.hasTrack = true;
+                k.curve = vt->curve;
+            }
+            uvs.push_back(std::move(k));
+        }
         out.animClips.push_back(std::move(clip));
         out.animClipBank.push_back(c.bankFileId);
         out.animClipTokens.push_back(c.token);
+        out.animClipMoveSpeed.push_back(c.moveSpeed);
         std::vector<std::pair<uint64_t, std::vector<float>>> vis;
         for (const auto& t : c.visTracks) vis.emplace_back(t.bone, t.keys);
         out.animClipVis.push_back(std::move(vis));
         out.animClipConsts.push_back(std::move(consts));
         out.animClipEffectTracks.push_back(std::move(tracks));
+        out.animClipUvs.push_back(std::move(uvs));
     }
 }
 
@@ -125,6 +140,7 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
     auto out = std::make_shared<ModelPreview>();
     out->lodOverride[0] = model.lodOverride[0];
     out->lodOverride[1] = model.lodOverride[1];
+    out->soundScript = model.soundScript;
     out->hasLodOverride = model.hasLodOverride;
 
     // Resolve an external skeleton reference up front, before the mesh loop, so
@@ -217,7 +233,7 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
         // the material's token up to its first '_' ("mask", "decal", "glow", ...).
         std::vector<MaterialTextureSlot> slots;
         for (const auto& t : m.textures) {
-            slots.push_back({t.fileId, castlemist::model::detokenizeName64(t.token), t.uvIndex});
+            slots.push_back({t.fileId, castlemist::model::detokenizeName64(t.token), t.uvIndex, t.uvAnimId});
             if (t.fileId != 0) continue;
             if (slots.back().role == "diffuse") mat.atlasDiffuseUv = static_cast<int8_t>(t.uvIndex);
             else if (slots.back().role == "normal") mat.atlasNormalUv = static_cast<int8_t>(t.uvIndex);
@@ -341,6 +357,7 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
             if (bestSlotTex >= 0) mat.diffuseTex = bestSlotTex;
             mat.renderState = gm.renderState;
             mat.hasRenderState = true;
+            mat.shaderDiscards = gm.prepassTextureCutout || gm.colourDiscard;
             // The real shader's own bgfx blend word is authoritative: nonzero =>
             // the material is genuinely drawn blended (glow / glass / foliage);
             // zero => it is opaque. Trust it in BOTH directions -- combined with
@@ -377,11 +394,22 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
         if (want_game) out->gameMaterials.push_back(std::move(gm));
     }
 
+    // 2026-10-26: a model's material list can skip slots (506639 holds only slot 1, its "helmet_container"
+    // helper mesh names slot 0): every consumer takes materialIndex as the position in `materials`, so
+    // slots become positions here, and a slot with no material becomes one past the end (no material:
+    // the exporter's editor-helper rule drops the mesh). Before, the helper took slot 1's material and
+    // the real mesh was dropped.
+    auto materialPos = [&](uint32_t slot) -> uint32_t {
+        for (size_t i = 0; i < out->materials.size(); ++i)
+            if (out->materials[i].index == slot) return static_cast<uint32_t>(i);
+        return static_cast<uint32_t>(out->materials.size());
+    };
+
     // Meshes: convert to GVertex + compute overall bounds.
     float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
     for (const auto& src : model.meshes) {
         ModelMeshCPU mesh;
-        mesh.materialIndex = src.materialIndex;
+        mesh.materialIndex = materialPos(src.materialIndex);
         mesh.meshName = src.meshName;
         mesh.visBone = src.visBone;
         mesh.meshFlags = src.flags;
@@ -459,7 +487,7 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
     for (const auto& cp : model.clothPieces) {
         if (cp.verts.empty() || cp.edges.empty()) continue;
         ClothPieceCPU d;
-        d.materialIndex = cp.materialIndex;
+        d.materialIndex = materialPos(cp.materialIndex);
         d.lockCount = cp.lockCount;
         d.gravity = cp.gravity; d.drag = cp.drag; d.wind = cp.wind;
         d.rigidness = cp.rigidness; d.translateWeight = cp.translateWeight;
@@ -530,7 +558,7 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
         auto copy2 = [](const float s[2], float d[2]) { d[0]=s[0]; d[1]=s[1]; };
         for (const auto& c : fx.clouds) {
             ParticleCloudCPU pc;
-            pc.materialIndex = c.materialIndex; pc.flags = c.flags; pc.fvf = c.fvf; pc.drag = c.drag;
+            pc.materialIndex = materialPos(c.materialIndex); pc.flags = c.flags; pc.fvf = c.fvf; pc.drag = c.drag;
             for (int k = 0; k < 3; ++k) { pc.acceleration[k]=c.acceleration[k]; pc.velocity[k]=c.velocity[k]; }
             pc.emitterIndices = c.emitterIndices;
             pc.obstacleIndices = c.obstacleIndices;
@@ -593,7 +621,7 @@ std::shared_ptr<ModelPreview> build_model_preview(const std::vector<uint8_t>& mo
                 if (bi >= fx.lightningBolts.size()) continue;
                 const auto& b = fx.lightningBolts[bi];
                 LightningBoltCPU lb;
-                lb.materialIndex = sys.materialIndex;
+                lb.materialIndex = materialPos(sys.materialIndex);
                 for (uint16_t ni : b.nodes) {
                     if (ni >= fx.lightningNodes.size()) continue;
                     for (uint16_t ci : fx.lightningNodes[ni].children)

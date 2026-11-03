@@ -47,6 +47,24 @@ float linear_to_srgb(float c);
 bool bake_chunk_albedo(const TerrainChunk& c, const TextureLookup& tex, const BakeSettings& s,
                        std::vector<uint8_t>& rgbOut);
 
+/// @brief T*T*3 bytes: the chunk's ground normal maps ("normal", "normalb", "normalc", "normald",
+///        TerrainMaterial::normalFileIds, slot k with colour slot k) blended with the albedo's
+///        weights (terrain_blend), as a Unity tangent-space normal map: R = x, G = y flipped to
+///        Unity's Y+ (as the props' maps, vrchat_maps kFlipNormalGreen), B = z. Same texel grid as
+///        bake_chunk_albedo. An absent normal slot counts as flat. Returns false (flat 128, 128, 255
+///        everywhere) when the chunk has no normal map or no colour slot (2026-10-27).
+bool bake_chunk_normal(const TerrainChunk& c, const TextureLookup& tex, const BakeSettings& s,
+                       std::vector<uint8_t>& rgbOut, std::vector<uint8_t>* specOut = nullptr,
+                       std::vector<uint8_t>* wetOut = nullptr);
+
+/// @brief The hi-res terrain shader's specular strength (AMAT 184988 ps 73, read 2026-10-27): the
+///        normal maps' alpha, blended with the colour's weights, x this; x the sun colour and the
+///        light buffer's specular term. @p specOut of bake_chunk_normal holds it per texel (0..255 =
+///        0..1, T*T bytes; 0 where no normal map).
+inline constexpr float kTerrainSpecularScale = 0.596078f;
+// @p wetOut of bake_chunk_normal: the same shader's reflection mask, saturate((modx.g - 0.5) x 2) (its
+// sky-cube reflection weight, x saturate(1 - N.V)); T*T bytes, 0..255 = 0..1 (2026-10-27).
+
 /// @brief True when light.presetIndex names one of environment.water (pairing UNPROVEN).
 bool water_has_preset(const WorldScene& s);
 
@@ -57,7 +75,8 @@ bool water_below_plane(const WorldScene& s, const float rect[4], int texelsW, in
 
 /// @brief (cw*T) x (ch*T) RGBA8 of the cell rect (x0, y0, x1, y1; row 0 north):
 ///        lerp(shallow, deep, water_depth_mix(terrainZ, planeZ, depthAttenuation)) with the
-///        env preset light.presetIndex; alpha 115 (kFlatWaterAlpha). Texels off the terrain count as
+///        env preset light.presetIndex; alpha kFlatWaterAlpha + (1 - kFlatWaterAlpha) x the mix
+///        (2026-10-25: the water shader's depth; 115 at the shore). Texels off the terrain count as
 ///        shallow. Returns false (nothing written) when !water_has_preset or
 ///        !water_below_plane.
 bool bake_cell_water(const WorldScene& s, const float rect[4], int texelsW, int texelsH, bool srgbColour,

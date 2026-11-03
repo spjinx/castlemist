@@ -397,12 +397,12 @@ bool castlemist::extract::read_dds_cube_by_fileid(Gw2Dat& dat, uint32_t fileId, 
     }
 }
 
-bool decode_texture_capped(Gw2Dat& dat, uint32_t fileId, int maxSize, CappedTexture& out) {
+bool decode_texture_capped(Gw2Dat& dat, uint32_t fileId, int maxSize, CappedTexture& out, bool full) {
     out = CappedTexture{};
     out.fileId = fileId;
     if (maxSize <= 0) return false;
     try {
-        const size_t i0 = texture_entry(dat, fileId, /*full=*/false);
+        const size_t i0 = texture_entry(dat, fileId, full);
         if (i0 == SIZE_MAX) return false;
         ModelTextureCPU tex;
         if (!decode_mft_atex(dat, i0, tex)) {   // sets tex.baseId = i0 + 1

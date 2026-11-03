@@ -19,6 +19,8 @@ Shader "Castlemist/GW2 Sky Card"
     Properties
     {
         _MainTex ("Texture (card texture, raw)", 2D) = "white" {}
+        _NightTex ("Night texture (raw; GW2DayNight cross-fades by _DayWeight)", 2D) = "white" {}
+        _DayWeight ("Day weight t (1 day, 0 night)", Range(0, 1)) = 1
         [Header(PackMapEnvDataSkyCard (day))]
         _Card ("azimuth rad, latitude rad (x pi/2), speed rad/s", Vector) = (0, 0, 0, 0)
         _Attr ("brightness, density, minHaze, lightIntensity x sky LightIntensity", Vector) = (1, 1, 0, 0)
@@ -48,7 +50,8 @@ Shader "Castlemist/GW2 Sky Card"
             #pragma multi_compile_instancing
             #include "GW2Sky.cginc"
 
-            sampler2D _MainTex;
+            sampler2D _MainTex, _NightTex;
+            float _DayWeight;
             float4 _Card, _Attr, _Haze;
 
             struct appdata
@@ -90,7 +93,10 @@ Shader "Castlemist/GW2 Sky Card"
             {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(i);
                 float3 d = normalize(i.d);
-                float4 T = tex2D(_MainTex, float2(i.uv.x, 1 - i.uv.y));   // GW2's v down on Unity's rows
+                float2 tuv = float2(i.uv.x, 1 - i.uv.y);   // GW2's v down on Unity's rows
+                // GW2 binds the day texture at t = 1, the night one at t = 0, both cross-faded between
+                // (gw2-sky.md §9, 0x140ca9d00); _NightTex is the day texture when the card has no night one.
+                float4 T = _DayWeight >= 1 ? tex2D(_MainTex, tuv) : lerp(tex2D(_NightTex, tuv), tex2D(_MainTex, tuv), _DayWeight);
                 GW2SkyLights k = GW2SkyInputs(d);
                 float3 col = GW2SkyLit(T.rgb, d, _Attr.w, k);
                 float e = saturate(-d.z);

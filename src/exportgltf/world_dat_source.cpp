@@ -61,7 +61,9 @@ public:
             } guard{*this, *slot, done};
             auto t = std::make_shared<CappedTexture>();
             try {
-                decode_texture_capped(dat_, fileId, maxSize, *t);   // never throws (entry_extractor.h)
+                // 2026-10-27: the full-resolution member (the export's maxSize caps it): the reduced
+                // one made Mad King's Labyrinth's 128 px decal masks (full 256) blocky on its rocks
+                decode_texture_capped(dat_, fileId, maxSize, *t, /*full=*/true);   // never throws (entry_extractor.h)
             } catch (...) {
                 t->mips.clear();
             }
@@ -71,6 +73,17 @@ public:
         std::unique_lock<std::mutex> lk(mu_);
         cv_.wait(lk, [&] { return slot->ready; });
         return slot->tex;
+    }
+
+    std::vector<uint8_t> file(uint32_t fileId) override {
+        try {
+            std::optional<std::vector<uint8_t>> b = castlemist::world::read_file_bytes(dat_, fileId);
+            return b ? std::move(*b) : std::vector<uint8_t>();
+        } catch (const castlemist::world::DatIoError&) {
+            throw;
+        } catch (...) {
+            return {};
+        }
     }
 
     void release_textures() override {

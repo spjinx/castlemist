@@ -219,6 +219,8 @@ namespace Castlemist
         public SkyEntry Sky;       // null: no sky
         public LightEntry Light;   // null: not finite or absent
         public double[] SpawnUnity;  // null: no spawn hint
+        /// mapLights.lights (2026-10-25): the lght chunk's point and spot lights; empty in an older export.
+        public readonly List<MapLight> MapLights = new List<MapLight>();
         public ProbeEntry FrameProbe;  // null: no probe
         public EnvironmentEntry Environment;  // null: no environment block, or null in the export
         public FoliageBlock Foliage;   // null: no foliage block (world-foliage D7)
@@ -236,6 +238,16 @@ namespace Castlemist
             public double U, V;
         }
 
+        /// One mapLights.lights entry: map units, Unity axes, under the map root.
+        public sealed class MapLight
+        {
+            public double[] Unity, Color, UnityDirection;
+            public double Intensity, Near, Far, InnerAngle, OuterAngle;
+            public int Flags;
+            public bool Spot;
+            public long[] Layers;   // 2026-10-26: mapLights.lights[].layers (the laye chunk's ids); null = none
+        }
+
         public sealed class ModelEntry
         {
             /// models[].index: the scene.models index (not the position on a region export).
@@ -244,6 +256,8 @@ namespace Castlemist
             public int Position;
             public long FileId;
             public string Folder, Glb, Fbx, Materials, Status, Error;
+            /// models[].sounds (2026-10-25): the sounds sidecar (GW2Sounds), null = none.
+            public string Sounds;
             /// models[].triangles (0 when absent): the patch split's vertex bound (FoliagePlan.PatchCapacity).
             public long Triangles;
             public List<string> Clips = new List<string>();
@@ -283,6 +297,8 @@ namespace Castlemist
             public string Clip;  // null: static
             public double[] M;   // map space, column-major, absolute (null if absent)
             public double[] Lod; // instances[].lod (Task 15b): its own switch distances, model units; null = the model's
+            public long[] Layers; // instances[].layers (2026-10-25): the laye chunk's layer ids; null = none
+            public double[] Color; // instances[].color (2026-10-27): the prop's colour bytes as stored (B, G, R, A, UNPROVEN); null = neutral
         }
 
         public sealed class CellEntry
@@ -352,6 +368,8 @@ namespace Castlemist
         public sealed class TerrainTile
         {
             public string Id, Heights, Holes, Albedo, TreesFile;
+            /// 2026-10-27: unityTerrain.tiles[].normal, the baked ground normals (null in an older export).
+            public string Normal;
             public int[] Chunks;             // cx0, cy0, cx1, cy1 (the real chunks)
             public double[] Position, Size;  // x, up, z
             public int TreesRecords;
@@ -416,6 +434,11 @@ namespace Castlemist
         {
             public bool Plane;
             public double Z;
+            /// water.material (2026-10-25): the preset's textures (null entries kept) and surface, as stored.
+            public List<string> Textures = new List<string>();
+            public double[] BumpTile, BumpSpeed, BumpAngle, Deep;
+            public double BumpAmount, Fresnel;
+            public bool HasMaterial;
         }
 
         public sealed class SkyEntry
@@ -610,6 +633,7 @@ namespace Castlemist
                     Glb = mo.OptStr("glb"),
                     Fbx = mo.OptStr("fbx"),
                     Materials = mo.OptStr("materials"),
+                    Sounds = mo.OptStr("sounds"),
                     Status = mo.Str("status"),
                     Error = mo.OptStr("error"),
                     Triangles = (long)mo.OptNum("triangles", 0),
@@ -671,6 +695,9 @@ namespace Castlemist
                         Clip = inst.OptStr("clip"),
                         M = inst.OptVec("m", 16),
                         Lod = inst.OptVec("lod", 2),
+                        Layers = inst.Raw.TryGetValue("layers", out object lo) && lo is List<object> ll && ll.Count > 0
+                            ? ll.ConvertAll(x => x is double d ? (long)d : x is long l ? l : -1L).ToArray() : null,
+                        Color = inst.OptVec("color", 4),
                     });
                 }
                 m.Cells.Add(cell);
@@ -732,6 +759,7 @@ namespace Castlemist
                         Heights = t.Str("heights"),
                         Holes = t.OptStr("holes"),
                         Albedo = t.Str("albedo"),
+                        Normal = t.OptStr("normal"),
                     };
                     foreach (JObj d in t.Objs("details"))
                         tile.Details.Add(new TileDetail { Prototype = d.Int("prototype"), Counts = d.Str("counts"), Records = d.Int("records") });
@@ -749,7 +777,22 @@ namespace Castlemist
             }
 
             JObj water = r.OptObj("water");
-            if (water != null) m.Water = new WaterEntry { Plane = water.Bool("plane", false), Z = water.OptNum("z", 0) };
+            if (water != null)
+            {
+                m.Water = new WaterEntry { Plane = water.Bool("plane", false), Z = water.OptNum("z", 0), Deep = water.OptVec("deep", 4) };
+                JObj wm = water.OptObj("material");
+                if (wm != null)
+                {
+                    m.Water.HasMaterial = true;
+                    if (wm.Raw.TryGetValue("textures", out object to) && to is List<object> tl)
+                        foreach (object t in tl) m.Water.Textures.Add(t as string);
+                    m.Water.BumpTile = wm.OptVec("bumpTile", 2);
+                    m.Water.BumpSpeed = wm.OptVec("bumpSpeed", 2);
+                    m.Water.BumpAngle = wm.OptVec("bumpAngle", 2);
+                    m.Water.BumpAmount = wm.OptNum("bumpAmount", 0);
+                    m.Water.Fresnel = wm.OptNum("fresnel", 3);
+                }
+            }
 
             JObj sky = r.OptObj("sky");
             if (sky != null) m.Sky = new SkyEntry { Json = sky.Str("json"), Default = sky.Str("default"), Equirect = sky.OptStr("equirect") };
@@ -779,6 +822,19 @@ namespace Castlemist
 
             JObj spawn = r.OptObj("spawn");
             if (spawn != null) m.SpawnUnity = spawn.Vec("unity", 3);
+
+            JObj ml = r.OptObj("mapLights");
+            if (ml != null)
+                foreach (JObj l in ml.Objs("lights"))
+                    m.MapLights.Add(new MapLight
+                    {
+                        Unity = l.Vec("unity", 3), Color = l.Vec("color", 3), Intensity = l.OptNum("intensity", 0),
+                        Near = l.OptNum("near", 0), Far = l.OptNum("far", 0), Flags = (int)l.OptNum("flags", 0),
+                        Spot = l.Bool("spot", false), UnityDirection = l.OptVec("unityDirection", 3),
+                        InnerAngle = l.OptNum("innerAngle", 0), OuterAngle = l.OptNum("outerAngle", 0),
+                        Layers = l.Raw.TryGetValue("layers", out object llo) && llo is List<object> lll && lll.Count > 0
+                            ? lll.ConvertAll(x => x is double d ? (long)d : x is long n ? n : -1L).ToArray() : null,
+                    });
 
             JObj env = r.OptObj("environment");
             if (env != null) m.Environment = ParseEnvironment(env);
@@ -862,6 +918,8 @@ namespace Castlemist
             public readonly List<TexTransform> TexTransforms = new List<TexTransform>();
             /// constAnims: the constants a clip animates (ModelAnimationData.matConstAnim), per clip.
             public readonly List<ConstAnim> ConstAnims = new List<ConstAnim>();
+            /// uvAnims: the texture UV transforms a clip animates (ModelAnimationData.uvAnimData), per clip.
+            public readonly List<UvAnim> UvAnims = new List<UvAnim>();
 
             public Extra ExtraOf(string role) { return Extras.Find(x => x.Role == role); }
             /// The DDS cubemap layers (maps.cubemaps; the water 3121604's projection / reflect).
@@ -900,6 +958,17 @@ namespace Castlemist
             public string Clip, Constant;
             public double Duration;
             public bool Animated;
+            public double[] Times = new double[0];
+            public double[][] Values = new double[0][];
+        }
+
+        /// One materials.json uvAnims entry: GW2 UV transform `Type` (4: a V translation by x) of the
+        /// slots `Maps` (baseColor, normal) over clip `Clip`, sampled as a ConstAnim's values.
+        public sealed class UvAnim
+        {
+            public string Clip;
+            public int Type;
+            public string[] Maps = new string[0];
             public double[] Times = new double[0];
             public double[][] Values = new double[0][];
         }
@@ -1042,6 +1111,22 @@ namespace Castlemist
                         for (int c = 0; v != null && c < 4 && c < v.Count; ++c) ca.Values[i][c] = v[c] is double x ? x : 0;
                     }
                     e.ConstAnims.Add(ca);
+                }
+                foreach (JObj a in m.Objs("uvAnims"))
+                {
+                    var ua = new UvAnim { Clip = a.Str("clip"), Type = (int)a.OptNum("type", 0), Maps = a.Strings("maps").ToArray() };
+                    List<object> times = a.OptArr("times"), values = a.OptArr("values");
+                    int n = Math.Min(times.Count, values.Count);
+                    ua.Times = new double[n];
+                    ua.Values = new double[n][];
+                    for (int i = 0; i < n; ++i)
+                    {
+                        ua.Times[i] = times[i] is double d ? d : 0;
+                        var v = values[i] as List<object>;
+                        ua.Values[i] = new double[4];
+                        for (int c = 0; v != null && c < 4 && c < v.Count; ++c) ua.Values[i][c] = v[c] is double x ? x : 0;
+                    }
+                    e.UvAnims.Add(ua);
                 }
                 e.SpecularTint = m.OptVec("specularTint", 3);
                 e.ReflectionTint = m.OptVec("reflectionTint", 3);

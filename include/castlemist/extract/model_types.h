@@ -134,10 +134,21 @@ struct ModelMatConstAnimCPU {
     castlemist::granny::Curve curve;  ///< The vector track (curve.dim floats), when hasTrack.
 };
 
+/// @brief One UV transform a clip animates (ModelAnimationData.uvAnimData): it moves the UVs of
+///        every texture whose uvAnimId matches (ModelMaterialCPU::diffuseUvAnim / normalUvAnim).
+///        Haunted door 499261's vines grow in by it (type 4, V: 0 -> -0.5 over Unlurk).
+struct ModelUvAnimCPU {
+    uint32_t uvAnimId = 0;
+    uint32_t type = 0;                ///< As stored (gw2model AnimClip::UvAnim::type).
+    float initial[4] = {0, 0, 0, 0};
+    bool hasTrack = false;
+    castlemist::granny::Curve curve;
+};
+
 /// @brief A model material as the reconstruction renderer needs it.
 struct ModelMaterialCPU {
     std::vector<ModelTexTransformCPU> texTransforms; ///< Copied as stored.
-    uint32_t index = 0;                   ///< Material slot, matches ModelMeshCPU::materialIndex.
+    uint32_t index = 0;                   ///< The model's material slot (ModelMeshCPU::materialIndex is the position in materials).
     float tint[4] = {1, 1, 1, 1};         ///< Flat colour multiplier.
     bool isEffect = false;                ///< Additive/translucent effect material.
     int kind = 0;                         ///< 0 normal, 1 terrain, 2 water (procedural shading).
@@ -157,6 +168,10 @@ struct ModelMaterialCPU {
     ///        (the old behaviour) is what made those materials export misaligned.
     uint8_t diffuseUv = 0;
     uint8_t normalUv = 0;
+    /// @brief The uvAnimId (MatTexture::uvAnimId) of the slot diffuseTex / normalTex came from:
+    ///        the clips' ModelUvAnimCPU entries with this id move its UVs (0 = none).
+    uint8_t diffuseUvAnim = 0;
+    uint8_t normalUvAnim = 0;
     /// @brief The UV channel of the material's `diffuse` / `normal` slot when that
     ///        slot names fileId 0, else -1. Character armor does this: the game
     ///        fills the slot at runtime with the character's composited armor
@@ -237,6 +252,7 @@ struct ModelMaterialCPU {
         /// The sampler role, decoded from the material's texture token:
         /// its name up to the first '_': "mask", "decal", "glow", "glowmask", ... (empty = unknown).
         std::string role;
+        uint8_t uvAnim = 0;   ///< MatTexture::uvAnimId (0 = none): 48834's fire scrolls its perturb by it.
     };
     /// @brief Every other texture this material references. Cleared by a
     ///        successful atlas bake (gw2bgfx_view.cpp) -- baking already folds
@@ -256,6 +272,10 @@ struct ModelMaterialCPU {
     uint64_t renderState = 0;
     /// @brief False when game-shader extraction did not run (map props) or did not resolve.
     bool hasRenderState = false;
+    /// @brief The game's shaders cut this material (its normal prepass or its colour pass has
+    ///        a `discard` after sampling a material texture, not the stipple fade;
+    ///        GameMaterial::prepassTextureCutout / colourDiscard). Only with hasRenderState.
+    bool shaderDiscards = false;
 };
 
 /// @name Game-shader (real bgfx DXBC) material payload
@@ -330,6 +350,10 @@ struct GameMaterial {
     /// from the albedo's alpha histogram, which misfires whenever alpha holds a gloss
     /// map instead of coverage.
     bool prepassCutout = false;
+    /// @brief A normal prepass discards after a material texture sample (AmatSet::prepassTextureCutout).
+    bool prepassTextureCutout = false;
+    /// @brief The picked colour pixel shader discards after a material texture sample (2026-10-25).
+    bool colourDiscard = false;
     /// @brief The AMAT (material file id) these shaders were taken from.
     uint32_t amatFile = 0;
     /// @brief Drawn with the AMAT's blended colour effect rather than its default one.
@@ -542,6 +566,8 @@ struct ModelPreview {
     ///        the LOD0->LOD1 and LOD1->LOD2 switch distances. See
     ///        castlemist::world::model_lod_distances for the client's rule.
     float lodOverride[2] = {0, 0};
+    /// @brief `ModelFileData.soundScript`: the AMSP sound script fileId (0 = none).
+    uint32_t soundScript = 0;
     bool hasLodOverride = false;              ///< The MODL version has the field.
 
     /// @name Skeleton (bind pose)
@@ -571,12 +597,18 @@ struct ModelPreview {
     std::vector<uint32_t> animClipBank;
     /// @brief Parallel to @ref animClips: the token64 of each decoded clip (animationTokens lists every clip).
     std::vector<uint64_t> animClipTokens;
+    /// @brief Parallel to @ref animClips: ModelAnimationData.moveSpeed, the ground
+    ///        speed the clip was authored at (GW2 units per second; 0 = in place).
+    ///        The client plays a locomotion clip at movement speed / this.
+    std::vector<float> animClipMoveSpeed;
     /// @brief Parallel to @ref animClips: each clip's bone visibility tracks (bone token64, the
     ///        clip times in seconds the bone's visibility toggles at; gw2model AnimClip::visTracks).
     std::vector<std::vector<std::pair<uint64_t, std::vector<float>>>> animClipVis;
     /// @brief Parallel to @ref animClips: the material constants each clip animates
     ///        (gw2model AnimClip::matConstAnims, with their granny vector tracks).
     std::vector<std::vector<ModelMatConstAnimCPU>> animClipConsts;
+    /// @brief Parallel to @ref animClips: the UV transforms each clip animates.
+    std::vector<std::vector<ModelUvAnimCPU>> animClipUvs;
     /// @brief fileIds of the external animation banks this model imports.
     ///
     /// Populated whether or not the load succeeded, so a UI can show an

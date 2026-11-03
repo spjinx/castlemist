@@ -129,6 +129,7 @@ json model_json(const ManifestModel& m, std::vector<std::string>& warnings) {
               {"glb", str_or_null(m.glb)},
               {"fbx", nullptr},
               {"materials", str_or_null(m.materials)},
+              {"sounds", str_or_null(m.sounds)},
               {"triangles", m.triangles},
               {"textureBytes", m.textureBytes},
               {"clips", m.clips},
@@ -158,7 +159,40 @@ json terrain_json(const cw::Terrain& t, const cw::ChunkRegion& r, std::vector<st
     return j;
 }
 
-json water_json(const cw::WorldScene& s) {
+/// The `lght` chunk's point and spot lights (2026-10-25). Colour: bytes 2, 1, 0 as R, G, B like
+/// the env lights' (UNPROVEN for `lght`; "colorBytes" keeps the file order). Positions and
+/// directions through map_to_unity; distances in map units; the group's first flicker curve.
+json map_lights_json(const castlemist::model::Extractor::MapLights& L, const castlemist::model::Extractor::MapLayers& layers) {
+    std::unordered_map<uint64_t, const std::vector<uint32_t>*> groupLayers;
+    for (const auto& [g, ids] : layers.lights)
+        if (g && !ids.empty()) groupLayers[g] = &ids;
+    json lights = json::array();
+    for (const auto& l : L.lights) {
+        float pu[3], du[3];
+        cw::map_to_unity(l.position, pu);
+        json j = {{"unity", vec(pu, 3)},
+                  {"color", {l.color[2] / 255.0f, l.color[1] / 255.0f, l.color[0] / 255.0f}},
+                  {"colorBytes", {l.color[0], l.color[1], l.color[2]}},
+                  {"intensity", l.intensity}, {"near", l.nearDistance}, {"far", l.farDistance},
+                  {"flags", l.flags}, {"spot", l.spot}};
+        if (l.spot) {
+            cw::map_to_unity(l.direction, du);
+            j["unityDirection"] = vec(du, 3);
+            j["innerAngle"] = l.innerAngle;
+            j["outerAngle"] = l.outerAngle;
+        }
+        if (const auto gl = groupLayers.find(l.group); l.group && gl != groupLayers.end()) j["layers"] = *gl->second;
+        if (l.curve >= 0 && size_t(l.curve) < L.curves.size()) {
+            const auto& c = L.curves[size_t(l.curve)];
+            j["curve"] = {{"gust", c.gust}, {"gustFreq", c.gustFreq}, {"noise", c.noise}, {"phase", c.phase},
+                          {"offset", c.offset}, {"amplitude", c.amplitude}, {"type", c.curveType}};
+        }
+        lights.push_back(std::move(j));
+    }
+    return {{"present", L.present}, {"lights", lights}, {"portalLights", L.portalLights}, {"volumeLights", L.volumeLights}};
+}
+
+json water_json(const cw::WorldScene& s, const json& waterTextures) {
     if (!s.water.hasPlane) return {{"plane", false}};
     json w = {{"plane", true}, {"z", s.water.planeZ}};
     if (cw::water_has_preset(s)) {
@@ -166,13 +200,31 @@ json water_json(const cw::WorldScene& s) {
         const auto& p = s.environment.water[size_t(pi)];
         auto colour = [](const uint8_t stored[4]) {
             float rgb[3];
-            cw::water_colour(stored, rgb);   // bytes 0..2 as RGB, order UNPROVEN (materials note §6)
+            cw::water_colour(stored, rgb);   // bytes 2, 1, 0 as R, G, B (surface_rules.cpp)
             return json{rgb[0], rgb[1], rgb[2], float(stored[3]) / 255.0f};
         };
         w["preset"] = pi;
         w["shallow"] = colour(p.surfaceShallowColor);
         w["deep"] = colour(p.surfaceDeepColor);
         w["depthAttenuation"] = p.depthAttenuation;
+        // 2026-10-25: the preset's surface for a water shader, as stored (units UNPROVEN: the
+        // client fills wtrprm* from them per frame, gw2-world-materials.md §6). textures[k] is
+        // textureFilenames[k]'s written file or null (0: the runtime reflection target).
+        json tex = json::array();
+        for (uint32_t id : p.textureFileIds) {
+            const std::string key = std::to_string(id);
+            tex.push_back(id && waterTextures.is_object() && waterTextures.contains(key) ? waterTextures[key] : json(nullptr));
+        }
+        w["material"] = {{"amat", p.materialFileId}, {"textures", tex}, {"textureFileIds", p.textureFileIds},
+                         {"bumpAmount", p.bumpAmount}, {"bumpAngle", {p.bumpAngle[0], p.bumpAngle[1]}},
+                         {"bumpScale", {p.bumpScale[0], p.bumpScale[1]}}, {"bumpSpeed", {p.bumpSpeed[0], p.bumpSpeed[1]}},
+                         {"bumpTile", {p.bumpTile[0], p.bumpTile[1]}}, {"patternAngle", p.patternAngle},
+                         {"patternTile", p.patternTile}, {"patternSpeed", p.patternSpeed}, {"patternEdge", p.patternEdge},
+                         {"patternColor", colour(p.patternColor)}, {"fresnel", p.surfaceFresnel},
+                         {"distortAmount", p.distortAmount}, {"animAmplitude", p.animAmplitude},
+                         {"animChoppiness", p.animChoppiness}, {"animWind", {p.animWind[0], p.animWind[1]}},
+                         {"foamColor0", colour(p.foamColor0)}, {"foamColor1", colour(p.foamColor1)},
+                         {"foamDepthAttenuation", p.foamDepthAttenuation}};
     } else {
         w["preset"] = nullptr;
         w["flatColour"] = {cw::kFlatWaterTint[0], cw::kFlatWaterTint[1], cw::kFlatWaterTint[2], cw::kFlatWaterAlpha};
@@ -268,7 +320,7 @@ std::vector<ManifestSetting> world_export_settings(const WorldFolderOptions& o, 
         {"collisionHullSelection", "animations[last]", kU, "docs/research/gw2-world-frame.md \xc2\xa7" "7.1"},
         {"unityScale", o.unityScale, kU, "gltf_export.h:57 'GW2 inches'; spec D7"},
         {"clipPhase", "all at t = 0, looping; a sequence \"a+b\" (world/anim.h resolve_prop_sequence: the 04 intro, then the 08 loop) plays a once, then loops b", kU, "docs/research/gw2-world-materials.md \xc2\xa7" "5"},
-        {"texelsPerChunk", o.texelsPerChunk, kC, "spec D3 (allowed 64, 128, 256, 512)"},
+        {"texelsPerChunk", o.texelsPerChunk, kC, "spec D3 (allowed 64, 128, 256, 512; 1024 added 2026-10-25 for close-up ground)"},
         {"waterTexelsPerChunk", o.waterTexelsPerChunk, kC, "spec D3"},
         {"maxTextureSize", o.maxTextureSize, kC, "the map window's texture cap (sub-project 3); spec Performance"},
         {"cellMaxChunks", o.budget.maxChunks, kC, "spec D1 (or 1/pickerScale)"},
@@ -483,6 +535,24 @@ json world_environment_json(const castlemist::model::Extractor::MapSky& sky, int
     }
     env["wind"] = wind;
 
+    // 2026-10-25: the night slot (1) for a day / night cycle: the client blends haze slot 0 (t = 1)
+    // and slot 1 (t = 0) by the day weight (gw2-sky.md A.2, derived); lighting slot 1 as night is
+    // the same three-slot layout, UNPROVEN for the lights. Null when the map has no slot 1.
+    json night = nullptr;
+    if (sky.lighting.size() > 1 && sky.lighting[1].present) {
+        json nl = json::array();
+        for (const auto& l : sky.lighting[1].lights) {
+            float d[3] = {l.direction[0], l.direction[1], l.direction[2]}, uf[3];
+            const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            if (len > 1e-6f) for (float& c : d) c /= len;
+            cw::map_to_unity(d, uf);
+            nl.push_back({{"color", vec(l.color, 3)}, {"intensity", l.intensity}, {"unityForward", vec(uf, 3)}});
+        }
+        const auto* nh = sky.haze.size() > 1 ? &sky.haze[1] : nullptr;
+        night = {{"lights", nl}, {"haze", nh ? haze_json(*nh) : json(nullptr)}};
+    }
+    env["night"] = night;
+
     json effect = nullptr;
     if (const E* e = slot_or_first(sky.effect, daySlot)) {
         effect = json::object();
@@ -694,6 +764,9 @@ json world_manifest_json(const WorldManifestInput& in) {
     float lo[2] = {0, 0}, hi[2] = {0, 0};   // the kept cells' extent, for the probe
     bool anyRect = false;
     json cells = json::array();
+    std::unordered_map<uint64_t, const std::vector<uint32_t>*> propLayers;   // laye: prop guid -> layer ids
+    for (const auto& [g, ids] : s.environment.layers.props)
+        if (g && !ids.empty()) propLayers[g] = &ids;
     const bool foliageOn = in.foliage.is_object();
     uint64_t foliageRecords = 0, foliageColliderTrees = 0;
     std::vector<char> propModel(in.models.size(), 0);   // models[] positions a written cell's prop uses
@@ -753,6 +826,16 @@ json world_manifest_json(const WorldManifestInput& in) {
             // Task 15b: the placement's own LOD distances (OVERRIDE_LOD), model units.
             float lod[2];
             if (prop_lod_override(p.lod1, p.lod2, p.flags, lod)) instances.back()["lod"] = {lod[0], lod[1]};
+            // 2026-10-27: the prop's colour (PackMapPropObj.color, byte4) as stored, when it is not the
+            // neutral 0x80 x 4 nor 0 x 4 (propInstanceArray's unset): the shaders' ModelColor (x 2 in
+            // them; Mad King's Labyrinth's green torch fires 233262 are 00 B9 22 80; byte order read as
+            // B, G, R, A, UNPROVEN).
+            const bool neutral = p.color[0] == 0x80 && p.color[1] == 0x80 && p.color[2] == 0x80 && p.color[3] == 0x80;
+            const bool unset = !p.color[0] && !p.color[1] && !p.color[2] && !p.color[3];
+            if (!neutral && !unset)
+                instances.back()["color"] = {p.color[0], p.color[1], p.color[2], p.color[3]};
+            // 2026-10-25: the laye chunk's layers of this prop (festivals, story states), as stored.
+            if (const auto pl = propLayers.find(p.guid); p.guid && pl != propLayers.end()) instances.back()["layers"] = *pl->second;
             ++written;
         }
         json foliage = nullptr;
@@ -789,7 +872,7 @@ json world_manifest_json(const WorldManifestInput& in) {
     const json unityTerrain =
         in.unityTerrain.is_object() ? finite_or_null(in.unityTerrain, "unityTerrain", notes) : json(nullptr);
     if (unityTerrain.is_object()) man["unityTerrain"] = unityTerrain;
-    man["water"] = finite_or_null(water_json(s), "water", notes);
+    man["water"] = finite_or_null(water_json(s, in.waterTextures), "water", notes);
 
     // sky: only the schema's keys (json, default: strings; equirect: string or null).
     json sky = nullptr;
@@ -835,6 +918,21 @@ json world_manifest_json(const WorldManifestInput& in) {
         notes.push_back("manifest: spawn.map is not three finite numbers; spawn written as null");
     }
     man["spawn"] = spawn;
+    man["mapLights"] = finite_or_null(map_lights_json(s.environment.lights, s.environment.layers), "mapLights", notes);
+    // 2026-10-25: the laye chunk's layers: id, metaData as stored, and how many props / light
+    // groups name each (instances[].layers, mapLights.lights[].layers).
+    {
+        std::unordered_map<uint32_t, std::pair<size_t, size_t>> uses;
+        for (const auto& pr : s.environment.layers.props) for (uint32_t id : pr.second) ++uses[id].first;
+        for (const auto& lg : s.environment.layers.lights) for (uint32_t id : lg.second) ++uses[id].second;
+        json ls = json::array();
+        for (const auto& L : s.environment.layers.layers) {
+            json meta = json::array();
+            for (const auto& q : L.meta) meta.push_back({q[0], q[1], q[2], q[3]});
+            ls.push_back({{"id", L.id}, {"meta", meta}, {"props", uses[L.id].first}, {"lightGroups", uses[L.id].second}});
+        }
+        man["layers"] = ls;
+    }
 
     // The probe sits at the spawn, or at the centre of the kept cells (else the bounds) with z 0.
     float pm[3] = {0, 0, 0};

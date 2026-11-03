@@ -153,6 +153,7 @@ struct MatTexture {
     uint64_t token = 0;     // sampler token (binds to the shader's AmatSamplerConstant)
     uint32_t flags = 0;     // textureFlags
     uint8_t  uvIndex = 0;   // uvPSInputIndex (which UV channel)
+    uint8_t  uvAnimId = 0;  // uvAnimId: the clips' uvAnimData entry that moves this texture's UVs
 };
 struct MatConstant {
     uint32_t name = 0;      // token32 hash of the constant name
@@ -235,6 +236,13 @@ struct AnimClip {
     size_t grannyFileOffset = 0;      // absolute offset of rawGranny[0] within the packfile
     int ptrSize = 4;                  // blob pointer width (4=32-bit packfile, 8=64-bit)
     uint32_t bankFileId = 0;          // 0 = this file's own bank; else the imported file it came from
+    // ModelAnimationData.animLod (ModelAnimationLodV25): `fileFull` names an
+    // animation-only file holding the full-quality clip, streamed in by the
+    // client. Imported banks keep no inline `data` at all, only this, so their
+    // clips are empty until resolveAnimImports loads the file. `lodOnly`: the
+    // blob above is animLod.data (the reduced clip) standing in until then.
+    uint32_t lodFileId = 0;
+    bool lodOnly = false;
     // ModelAnimationData.visTrackData: per bone, the clip times (seconds) its
     // visibility toggles at. GW2 switches a bone's particle clouds with it
     // (GrCloud: an emitter spawns while its bone is visible; a burst emitter
@@ -263,6 +271,17 @@ struct AnimClip {
         float initial[4] = {0, 0, 0, 0};
     };
     std::vector<EffectTrack> effectTracks;
+    // ModelAnimationData.uvAnimData, as stored: each uvTransformData of entry
+    // `uvAnimId` (the MatTexture::uvAnimId of the textures it moves) follows the
+    // granny vector track (trackGroupIndex, vectorTrackIndex), initialValue before
+    // the clip runs. `type` 4 is a V translation by initial[0] (castlemist's
+    // reading: haunted door 499261's vines, on the texture's bottom half, show at
+    // -0.5 in Open / Close and hide at 0 in zeropose; UNPROVEN for other types).
+    struct UvAnim {
+        uint32_t uvAnimId = 0, type = 0, trackGroup = 0, vectorTrack = 0;
+        float initial[4] = {0, 0, 0, 0};
+    };
+    std::vector<UvAnim> uvAnims;
 };
 
 // One entry of ModelFileAnimationBank.imports -- the geometry<->animation link.
@@ -486,6 +505,47 @@ struct Model {
     // 0 where the version has no field; the client then uses 3500 / 7500.
     float lodOverride[2] = {0, 0};
     bool hasLodOverride = false;           // the field exists in this version
+    // ModelFileData.soundScript: the AMSP sound script (fileId) the model's clips trigger
+    // sounds from (Extractor::parseSoundScript; 2026-10-25). 0 = none.
+    uint32_t soundScript = 0;
+};
+
+// --- AMSP sound scripts (ScriptFileData; 2026-10-25) ---
+// What a model's soundScript holds, as stored. Names (sounds, trigger keys, cues, categories)
+// are token64 values in the bone-name packing (tokenizeBoneName); a trigger key whose token is
+// a clip's token plays its markers' cues (metaSound names) at their times into that clip.
+struct SoundEnvelope {                       // EnvelopeData: output = f(input), points (offset, value)
+    uint8_t inputType = 0;
+    float inputScale = 1, inputOffset = 0, outputScale = 1, outputOffset = 0;
+    std::vector<std::pair<float, float>> points;
+};
+struct SoundParam {                          // DynamicParamData: type 0 value, 1 random, 2 envelope
+    float value = 0;
+    uint8_t type = 0;
+    float randomMin = 0, randomMax = 0;      // RandomParamData.value (type 1)
+    bool hasEnvelope = false;
+    SoundEnvelope envelope;                  // type 2
+};
+struct SoundFile { uint32_t fileId = 0; float weight = 1, volume = 1; uint64_t language = 0, condition = 0; };
+struct MetaSound {                           // MetaSoundData
+    uint64_t name = 0, category = 0;
+    std::vector<SoundFile> files;
+    SoundParam volume, pitch;
+    bool hasAttenuation = false;
+    SoundParam attenuationVolume;            // attenuation->volumeA: the distance falloff
+    float fadeIn = 0, fadeOut = 0;
+    float playLength[2] = {0, 0}, replayDelay[2] = {0, 0}, initialDelay[2] = {0, 0};   // {min, max}
+    uint32_t loopCount = 1, flags = 0;
+    uint8_t loopMode = 0, playbackMode = 0, fileIterateMode = 0;
+};
+struct SoundMarker { uint64_t cue = 0; float time = 0; uint8_t type = 0; };
+struct SoundTrigger { uint64_t name = 0; std::vector<SoundMarker> markers; };
+struct SoundScript {
+    bool present = false;
+    float volume = 1;                        // ScriptFileData.volume
+    std::vector<MetaSound> sounds;
+    std::vector<SoundTrigger> triggers;
+    std::vector<uint64_t> handlers;          // handler names (bytecode not decoded)
 };
 
 // --- AMAT (bgfx shader package) extraction ---
@@ -525,6 +585,7 @@ struct AmatShader {
     bool samplesSlot0 = false;       // binds a material texture at t0 (depth-only passes do not)
     bool usesBones = false;          // vertex shader reads the `grbones` matrix palette (GPU skinning)
     bool hasDiscard = false;         // contains a `discard` (alpha cutout / stipple fade)
+    bool hasTextureDiscard = false;  // a `discard` after a material texture sample (cutout, not the stipple)
     // The pixel shader's SV_TARGET alpha is a CONSTANT -- `mov o0.w, cb0[k].x` (the
     // engine's StencilId / submodel id) or a literal -- rather than a computed
     // opacity. Such a shader must never be blended by a SRC_ALPHA-family factor: the
@@ -549,6 +610,9 @@ struct AmatSet {
     // from the albedo's alpha histogram misfires on the many materials that store a
     // GLOSS map in alpha, and punching those full of holes corrupts the light buffer.
     bool prepassCutout = false;
+    /// A normal-prepass shader discards after sampling a material texture (dxbcHasTextureDiscard):
+    /// a real cutout; prepassCutout is also true for the stipple fade every world prepass has.
+    bool prepassTextureCutout = false;
     bool hasPrepass = false;             // a normal-prepass shader was found at all
     /// @brief The effect was chosen by the engine's token rule, not by heuristic.
     ///
@@ -666,17 +730,30 @@ struct GeosetRaw {
     }
 };
 
-// --- Animation machine ("mach"), undecoded ----------------------------------
+// --- Animation machine ("mach") ----------------------------------------------
 //
 // PackAnimMachinesV0/V1: binds a model to a named-state graph -- states,
 // transitions between them, and "action blocks" attached to both (see
-// docs/research/gw2-animation-banks.md). This is the shape a skill->VFX
-// trigger would live in, but every PackAnimMachineAction is a single opaque
-// `actionData` dword with NO bit layout confirmed anywhere in this codebase.
-// It is carried through completely raw rather than guessed. The only
-// consumer is gw2dat_cli's `animmach` command.
+// docs/research/gw2-anim-blend-trees.md). Each action's `actionData` is a
+// template "variant": {u32 index; ptr} to one of five structs, named by the
+// template's `alternatives` list (PackAnimMachineActionPlayAnimationV1, ...).
+// Consumers: gw2dat_cli's `animmach` command and the anic preview.
 struct AnimMachineAction {
-    uint32_t actionData = 0;
+    enum Kind : uint32_t {
+        PlayAnimation = 0,       ///< sequence, blendIn, blendOut, flags
+        PlayBlendTree = 1,       ///< blendTree (content GUID), blendIn
+        PlayBlendTreeAlias = 2,  ///< blendTreeAlias (token64 name), blendIn
+        SetAnimationOptions = 3, ///< blendIn, blendOut, flags
+        SetRotation = 4,         ///< rotation
+    };
+    uint32_t kind = 0;          ///< the variant index
+    std::string type;           ///< alternatives[kind], empty if out of range or null
+    uint64_t sequence = 0;      ///< PlayAnimation.sequence, or PlayBlendTreeAlias.blendTreeAlias
+    uint8_t blendTree[16] = {}; ///< PlayBlendTree.blendTree
+    float blendInTime = 0.0f;
+    float blendOutTime = 0.0f;
+    uint32_t flags = 0;
+    float rotation[4] = {0, 0, 0, 0};
 };
 
 /// @brief Shared shape of `PackAnimMachineActionVariantV*` (per action-block
@@ -715,11 +792,24 @@ struct AnimMachine {
 
 /// @brief `PackAnimModelV0/V1` -- binds one model file to `machines[machineIndex]`.
 struct AnimMachineModelRef {
-    /// @brief Raw `fileref` dword -- a plain inline scalar (see BinaryParser's
-    ///        `fileref` == `dword` handling), NOT the pointer-indirected
-    ///        `filename` encoding that decodeFilename() decodes elsewhere.
+    /// @brief The model's fileId. `fileref` is a self-relative pointer to the
+    ///        compressed fileId pair, decoded like `filename` (decodeFilenameAt).
     uint32_t modelFileId = 0;
     uint32_t machineIndex = 0;
+};
+
+/// @brief One emote of the `emoc` file's `anim` chunk (PackEmoteAnimationsV*):
+///        the clip token it plays and, per model (a race's skeleton file), how.
+struct EmoteAnimation {
+    uint64_t token = 0;  ///< token64 of the clip (the variant nibble included)
+    struct Timing {
+        uint32_t modelFileId = 0;   ///< the model these timings are for
+        float blendIn = 0, blendOut = 0;
+        /// Milliseconds into the clip: the intro, then a loop played while the emote
+        /// lasts (0 = none: a one-shot), then the outro; startOffset as stored.
+        uint32_t intro = 0, loop = 0, outro = 0, startOffset = 0;
+    };
+    std::vector<Timing> timings;
 };
 
 /// @brief `mach` chunk (PackAnimMachinesV0/V1) -- the whole moveset graph.
@@ -953,6 +1043,60 @@ inline bool dxbcHasDiscard(const uint8_t* d, size_t n) {
     return false;
 }
 
+// Does a `discard` follow a sample of a MATERIAL texture (t0..t11)? (2026-10-25.) Every GW2 world
+// prepass starts with the stipple fade, `discard` on the engine's screen-space noise (t12 at the
+// pixel position, ps 68 of AMAT 81309), so dxbcHasDiscard is true for opaque walls as much as for
+// leaves; a cutout samples the material's own texture first (184994: t0.a x 2 - 0.5 < 0). Walks the
+// token stream decoding each sample's third operand (the resource); an operand it cannot decode
+// (relative indexing) stops the walk with the answer so far.
+inline bool dxbcHasTextureDiscard(const uint8_t* d, size_t n) {
+    if (!d || n < 32 || std::memcmp(d, "DXBC", 4) != 0) return false;
+    uint32_t chunkCount;
+    std::memcpy(&chunkCount, d + 28, 4);
+    if (chunkCount > 32 || 32 + (size_t)chunkCount * 4 > n) return false;
+    for (uint32_t i = 0; i < chunkCount; ++i) {
+        uint32_t off;
+        std::memcpy(&off, d + 32 + i * 4, 4);
+        if ((size_t)off + 8 > n) continue;
+        if (std::memcmp(d + off, "SHEX", 4) != 0 && std::memcmp(d + off, "SHDR", 4) != 0) continue;
+        uint32_t sz;
+        std::memcpy(&sz, d + off + 4, 4);
+        if ((size_t)off + 8 + sz > n) sz = (uint32_t)(n - off - 8);
+        const uint8_t* b = d + off + 8;
+        const size_t words = sz / 4;
+        auto at = [&](size_t w) { uint32_t t = 0; if (w < words) std::memcpy(&t, b + w * 4, 4); return t; };
+        bool sampled = false;
+        for (size_t w = 2; w < words;) {
+            const uint32_t tok = at(w);
+            const uint32_t op = tok & 0x7ff, len = (tok >> 24) & 0x7f;
+            if (len == 0) break;
+            if (op == 13 && sampled) return true;            // D3D10_SB_OPCODE_DISCARD
+            if (op >= 69 && op <= 74) {                       // SAMPLE, _C, _C_LZ, _L, _D, _B
+                size_t p = w + 1;
+                for (uint32_t e = tok; (e >> 31) && p < w + len; e = at(p++)) {}   // extended opcode tokens
+                bool ok = true;
+                for (int operand = 0; operand < 3 && ok && p < w + len; ++operand) {
+                    const uint32_t o = at(p++);
+                    for (uint32_t e = o; (e >> 31) && p < w + len; e = at(p++)) {}  // extended operand tokens
+                    const uint32_t type = (o >> 12) & 0xff, dims = (o >> 20) & 3;
+                    uint32_t first = 0;
+                    for (uint32_t k = 0; k < dims; ++k) {
+                        const uint32_t rep = (o >> (22 + 3 * k)) & 7;
+                        if (rep == 0) { if (k == 0) first = at(p); p += 1; }
+                        else if (rep == 1) { p += 2; }
+                        else { ok = false; break; }
+                    }
+                    if (type == 4) p += ((o & 3) == 2 ? 4 : 1);       // immediate32 data
+                    if (operand == 2 && ok && type == 7 && first < 12) sampled = true;   // a t# resource
+                }
+                if (!ok) return false;
+            }
+            w += len;
+        }
+    }
+    return false;
+}
+
 // Is this pixel shader's SV_TARGET alpha a CONSTANT rather than a computed opacity?
 //
 // GW2's ordinary world materials end with `mov o0.w, cb0[k].x` -- the engine's
@@ -1054,6 +1198,7 @@ inline void classifyShader(AmatShader& sh) {
     if (p + cs > d.size()) return;
     sh.writesNormalEncode = dxbcWritesNormalEncode(d.data() + p, cs);
     sh.hasDiscard = dxbcHasDiscard(d.data() + p, cs);
+    sh.hasTextureDiscard = sh.hasDiscard && dxbcHasTextureDiscard(d.data() + p, cs);
     sh.alphaIsConstant = dxbcAlphaIsConstant(d.data() + p, cs);
 }
 
@@ -1082,6 +1227,12 @@ public:
         try { parseAnim(m); }     catch (const std::exception&) { /* animation is optional */ }
         try { parseEffects(m); }  catch (const std::exception&) { /* effects are optional */ }
         try { if (modl) parseLodOverride(modl, m); } catch (const std::exception&) { /* optional */ }
+        try {
+            std::string root;
+            size_t mc = findChunk("MODL", &root);
+            size_t o; json f;
+            if (mc && !root.empty() && fieldOffset(root, "soundScript", o, f)) m.soundScript = decodeFilenameAt(mc + o);
+        } catch (const std::exception&) { /* optional */ }
         resolveBoneBindings(m);
         return m;
     }
@@ -1092,6 +1243,148 @@ public:
         try { parseAnim(m); }    catch (const std::exception&) { /* animation is optional */ }
         try { parseEffects(m); } catch (const std::exception&) { /* effects are optional */ }
         return m;
+    }
+
+    /// @brief An AMSP sound script (ScriptFileData, chunk "AMSP"): its metaSounds, trigger keys
+    ///        and handler names, as stored (2026-10-25). present = false when this is no AMSP.
+    SoundScript parseSoundScript() {
+        SoundScript out;
+        std::string root;
+        size_t s = findChunk("AMSP", &root);
+        if (!s || root.empty()) return out;
+        out.present = true;
+        size_t o; json f;
+        auto f32 = [&](const std::string& t, const char* n, size_t b, float def) -> float {
+            size_t fo; json fj;
+            return fieldOffset(t, n, fo, fj) ? rdf(b + fo) : def;
+        };
+        auto u64 = [&](const std::string& t, const char* n, size_t b) -> uint64_t {
+            size_t fo; json fj;
+            return fieldOffset(t, n, fo, fj) ? rd64(b + fo) : 0;
+        };
+        auto u32 = [&](const std::string& t, const char* n, size_t b, uint32_t def) -> uint32_t {
+            size_t fo; json fj;
+            return fieldOffset(t, n, fo, fj) ? rd32(b + fo) : def;
+        };
+        auto u8 = [&](const std::string& t, const char* n, size_t b) -> uint8_t {
+            size_t fo; json fj;
+            return fieldOffset(t, n, fo, fj) ? rd8(b + fo) : 0;
+        };
+        // an embedded struct field: its type and start (empty type if absent)
+        auto sub = [&](const std::string& t, const char* n, size_t b, size_t& at) -> std::string {
+            size_t fo; json fj;
+            if (!fieldOffset(t, n, fo, fj)) return std::string();
+            at = b + fo;
+            return fj.value("type", std::string());
+        };
+        // a ptr field: target type and start (0 if null)
+        auto ptr = [&](const std::string& t, const char* n, size_t b, std::string& tt) -> size_t {
+            size_t fo; json fj;
+            if (!fieldOffset(t, n, fo, fj) || !fj.contains("target") || !fj["target"].is_object()) return 0;
+            tt = fj["target"].value("struct", std::string());
+            return tt.empty() ? 0 : follow(b + fo);
+        };
+        auto range = [&](const std::string& t, const char* n, size_t b, float mm[2]) {
+            size_t at = 0;
+            std::string rt = sub(t, n, b, at);
+            if (rt.empty()) return;
+            mm[0] = f32(rt, "min", at, 0);   // the first "min" is the float (the byte follows)
+            mm[1] = f32(rt, "max", at, 0);
+        };
+        auto param = [&](const std::string& t, const char* n, size_t b) -> SoundParam {
+            SoundParam p;
+            size_t at = 0;
+            std::string pt = sub(t, n, b, at);
+            if (pt.empty()) return p;
+            p.value = f32(pt, "value", at, 0);
+            p.type = u8(pt, "type", at);
+            std::string rt;
+            if (size_t r = ptr(pt, "randomParamData", at, rt)) {
+                float v[2] = {0, 0};
+                range(rt, "value", r, v);
+                p.randomMin = v[0];
+                p.randomMax = v[1];
+            }
+            std::string et;
+            if (size_t e = ptr(pt, "envelopeData", at, et)) {
+                p.hasEnvelope = true;
+                p.envelope.inputType = u8(et, "inputType", e);
+                p.envelope.inputScale = f32(et, "inputScale", e, 1);
+                p.envelope.inputOffset = f32(et, "inputOffset", e, 0);
+                p.envelope.outputScale = f32(et, "outputScale", e, 1);
+                p.envelope.outputOffset = f32(et, "outputOffset", e, 0);
+                FieldArray pts = fieldArray(et, "envelopePoint", e);
+                for (uint32_t k = 0; k < pts.n; ++k) {
+                    size_t pe = pts.base + (size_t)k * pts.stride;
+                    p.envelope.points.emplace_back(f32(pts.type, "offset", pe, 0), f32(pts.type, "value", pe, 0));
+                }
+            }
+            return p;
+        };
+        if (fieldOffset(root, "volume", o, f)) out.volume = rdf(s + o);
+        try {
+            FieldArray ms = fieldArray(root, "metaSound", s);
+            for (uint32_t i = 0; i < ms.n; ++i) {
+                size_t e = ms.base + (size_t)i * ms.stride;
+                const std::string& t = ms.type;
+                MetaSound m;
+                m.name = u64(t, "name", e);
+                m.category = u64(t, "category", e);
+                FieldArray fa = fieldArray(t, "fileName", e);
+                for (uint32_t k = 0; k < fa.n; ++k) {
+                    size_t fe = fa.base + (size_t)k * fa.stride;
+                    SoundFile sf;
+                    size_t fo; json fj;
+                    if (fieldOffset(fa.type, "fileName", fo, fj)) sf.fileId = decodeFilenameAt(fe + fo);
+                    sf.weight = f32(fa.type, "weight", fe, 1);
+                    sf.volume = f32(fa.type, "volume", fe, 1);
+                    sf.language = u64(fa.type, "language", fe);
+                    sf.condition = u64(fa.type, "condition", fe);
+                    if (sf.fileId) m.files.push_back(sf);
+                }
+                m.volume = param(t, "volume", e);
+                m.pitch = param(t, "pitch", e);
+                std::string at;
+                if (size_t a = ptr(t, "attenuation", e, at)) {
+                    m.hasAttenuation = true;
+                    m.attenuationVolume = param(at, "volumeA", a);
+                }
+                m.fadeIn = f32(t, "fadeInTime", e, 0);
+                m.fadeOut = f32(t, "fadeOutTime", e, 0);
+                range(t, "playLength", e, m.playLength);
+                range(t, "replayDelay", e, m.replayDelay);
+                range(t, "initialDelay", e, m.initialDelay);
+                m.loopCount = u32(t, "loopCount", e, 1);
+                m.flags = u32(t, "flags", e, 0);
+                m.loopMode = u8(t, "loopMode", e);
+                m.playbackMode = u8(t, "playbackMode", e);
+                m.fileIterateMode = u8(t, "fileIterateMode", e);
+                out.sounds.push_back(std::move(m));
+            }
+        } catch (const std::exception&) {}
+        try {
+            FieldArray tk = fieldArray(root, "triggerKey", s);
+            for (uint32_t i = 0; i < tk.n; ++i) {
+                size_t e = tk.base + (size_t)i * tk.stride;
+                SoundTrigger tr;
+                tr.name = u64(tk.type, "name", e);
+                FieldArray mk = fieldArray(tk.type, "triggerMarker", e);
+                for (uint32_t k = 0; k < mk.n; ++k) {
+                    size_t me = mk.base + (size_t)k * mk.stride;
+                    SoundMarker sm;
+                    sm.cue = u64(mk.type, "cue", me);
+                    sm.time = f32(mk.type, "time", me, 0);
+                    sm.type = u8(mk.type, "type", me);
+                    tr.markers.push_back(sm);
+                }
+                out.triggers.push_back(std::move(tr));
+            }
+        } catch (const std::exception&) {}
+        try {
+            FieldArray hd = fieldArray(root, "handler", s);
+            for (uint32_t i = 0; i < hd.n; ++i) out.handlers.push_back(u64(hd.type, "name", hd.base + (size_t)i * hd.stride));
+        } catch (const std::exception&) {}
+        return out;
     }
 
     // One scattered zone instance: which model, and where it lands.
@@ -1551,6 +1844,135 @@ public:
                 if (hQ) { p.hasSequence = true; p.sequence = rd64(e + oQ); }
                 if (hK) p.token = rd64(e + oK);
                 out.placements.push_back(std::move(p));
+            }
+        }
+        return out;
+    }
+
+    /// @brief A `lght` flicker curve (PackMapCurve*), as stored.
+    struct MapLightCurve {
+        float gust = 0, gustFreq = 0, noise = 0, phase = 0, offset = 0, amplitude = 0;
+        uint32_t curveType = 0;
+    };
+    /// @brief One `lght` point or spot light (PackMapLight* / PackMapSpotLight*), as stored:
+    ///        map space, colour bytes in file order, distances in map units.
+    struct MapPointLight {
+        float position[3] = {};
+        uint8_t color[3] = {};
+        float intensity = 0, nearDistance = 0, farDistance = 0;
+        uint32_t flags = 0;
+        bool spot = false;
+        float direction[3] = {}, upDirection[3] = {};
+        float innerAngle = 0, outerAngle = 0;           ///< as stored (spot)
+        uint64_t group = 0;                             ///< its light group's guid
+        int curve = -1;                                 ///< index into MapLights::curves of its group's first curve
+    };
+    /// @brief The map's `lght` chunk (2026-10-25): point and spot lights by group, each group
+    ///        with its flicker curves. Portal and volume lights are counted, not read.
+    struct MapLights {
+        bool present = false;
+        std::vector<MapPointLight> lights;
+        std::vector<MapLightCurve> curves;
+        uint32_t portalLights = 0, volumeLights = 0;
+    };
+
+    /// @brief The map's `laye` chunk (PackMapLayers*, 2026-10-25): the layer ids of props (by prp2
+    ///        guid) and of light groups (by lght group guid), and each layer's id and metaData
+    ///        (dword4s), as stored. What a layer means (a festival, a story state) is not in it.
+    struct MapLayers {
+        bool present = false;
+        std::vector<std::pair<uint64_t, std::vector<uint32_t>>> props, lights;
+        struct Layer { uint32_t id = 0; std::vector<std::array<uint32_t, 4>> meta; };
+        std::vector<Layer> layers;
+    };
+
+    MapLayers parseMapLayers() {
+        MapLayers out;
+        std::string root; uint16_t ver = 0;
+        const size_t h = findChunk("laye", &root, &ver);
+        if (!h || root.empty()) return out;
+        out.present = true;
+        json fj;
+        for (const auto& [name, dst] : {std::pair<const char*, std::vector<std::pair<uint64_t, std::vector<uint32_t>>>*>{"props", &out.props},
+                                        {"lights", &out.lights}}) {
+            const FieldArray a = fieldArray(root, name, h);
+            size_t oG = 0;
+            const bool hG = fieldOffset(a.type, "guid", oG, fj);
+            for (uint32_t i = 0; i < a.n && i < 1000000; ++i) {
+                const size_t e = a.base + (size_t)i * a.stride;
+                const FieldArray ids = fieldArray(a.type, "layerIds", e);
+                std::vector<uint32_t> v;
+                for (uint32_t k = 0; ids.stride == 4 && k < ids.n && k < 256; ++k) v.push_back(rd32(ids.base + 4ull * k));
+                dst->emplace_back(hG ? rd64(e + oG) : 0, std::move(v));
+            }
+        }
+        const FieldArray ls = fieldArray(root, "layers", h);
+        size_t oId = 0;
+        const bool hId = fieldOffset(ls.type, "layerId", oId, fj);
+        for (uint32_t i = 0; i < ls.n && i < 100000; ++i) {
+            const size_t e = ls.base + (size_t)i * ls.stride;
+            MapLayers::Layer L;
+            if (hId) L.id = rd32(e + oId);
+            const FieldArray md = fieldArray(ls.type, "metaData", e);
+            for (uint32_t k = 0; md.stride == 16 && k < md.n && k < 256; ++k)
+                L.meta.push_back({rd32(md.base + 16ull * k), rd32(md.base + 16ull * k + 4), rd32(md.base + 16ull * k + 8), rd32(md.base + 16ull * k + 12)});
+            out.layers.push_back(std::move(L));
+        }
+        return out;
+    }
+
+    MapLights parseMapLights() {
+        MapLights out;
+        std::string root; uint16_t ver = 0;
+        const size_t h = findChunk("lght", &root, &ver);
+        if (!h || root.empty()) return out;
+        out.present = true;
+        out.portalLights = fieldArray(root, "portalLights", h).n;
+        out.volumeLights = fieldArray(root, "volumeLights", h).n;
+        auto f3 = [&](size_t p, float v[3]) { for (int k = 0; k < 3; ++k) v[k] = rdf(p + 4ull * k); };
+        for (const auto& [arrayName, spot] : {std::pair<const char*, bool>{"pointLights", false}, {"spotLights", true}}) {
+            const FieldArray groups = fieldArray(root, arrayName, h);
+            size_t oGuid = 0; json fj;
+            const bool hGuid = fieldOffset(groups.type, "guid", oGuid, fj);
+            for (uint32_t g = 0; g < groups.n && g < 100000; ++g) {
+                const size_t ge = groups.base + (size_t)g * groups.stride;
+                const int firstCurve = int(out.curves.size());
+                const FieldArray cs = fieldArray(groups.type, "curves", ge);
+                for (uint32_t c = 0; c < cs.n && c < 64; ++c) {
+                    const size_t ce = cs.base + (size_t)c * cs.stride;
+                    MapLightCurve k;
+                    k.gust = rdFloat1(cs.type, "gust", ce);
+                    k.gustFreq = rdFloat1(cs.type, "gustFreq", ce);
+                    k.noise = rdFloat1(cs.type, "noise", ce);
+                    k.phase = rdFloat1(cs.type, "phase", ce);
+                    k.offset = rdFloat1(cs.type, "offset", ce);
+                    k.amplitude = rdFloat1(cs.type, "amplitude", ce);
+                    size_t o;
+                    if (fieldOffset(cs.type, "curveType", o, fj)) k.curveType = rd32(ce + o);
+                    out.curves.push_back(k);
+                }
+                const FieldArray ls = fieldArray(groups.type, "lights", ge);
+                for (uint32_t i = 0; i < ls.n && i < 100000; ++i) {
+                    const size_t e = ls.base + (size_t)i * ls.stride;
+                    MapPointLight L;
+                    L.spot = spot;
+                    L.group = hGuid ? rd64(ge + oGuid) : 0;
+                    L.curve = cs.n ? firstCurve : -1;
+                    size_t o;
+                    if (fieldOffset(ls.type, "position", o, fj)) f3(e + o, L.position);
+                    if (fieldOffset(ls.type, "color", o, fj)) for (int k = 0; k < 3; ++k) L.color[k] = d_[e + o + k];
+                    L.intensity = rdFloat1(ls.type, "intensity", e);
+                    L.nearDistance = rdFloat1(ls.type, "nearDistance", e);
+                    L.farDistance = rdFloat1(ls.type, "farDistance", e);
+                    if (fieldOffset(ls.type, "flags", o, fj)) L.flags = rd32(e + o);
+                    if (spot) {
+                        if (fieldOffset(ls.type, "direction", o, fj)) f3(e + o, L.direction);
+                        if (fieldOffset(ls.type, "upDirection", o, fj)) f3(e + o, L.upDirection);
+                        L.innerAngle = rdFloat1(ls.type, "innerAngle", e);
+                        L.outerAngle = rdFloat1(ls.type, "outerAngle", e);
+                    }
+                    out.lights.push_back(L);
+                }
             }
         }
         return out;
@@ -2331,7 +2753,8 @@ public:
         uint8_t color[4] = {0, 0, 0, 0};  // `color` byte4, as stored (meaning UNPROVEN, world-materials §3)
         uint64_t animSequence = 0;        // propAnimArray only: the clip's token64 name (world-materials §5)
         // prp2 `guid` qword, as stored (a havk propModels `token` names it, world-frame §7.1).
-        // 0 for a propInstanceArray transform, whose struct has no guid.
+        // A propInstanceArray transform's struct has none: it carries its base record's,
+        // which is what the laye chunk lists (its layers are the base's).
         uint64_t guid = 0;
         // `lod1`, `lod2` (float) and `flags` (MapPropFlags dword), as stored; a
         // propInstanceArray transform has its base record's. Bit 16 is OVERRIDE_LOD:
@@ -3224,6 +3647,7 @@ public:
                         size_t te = tb + (size_t)j * trSize;
                         MapProp q; q.fileId = p.fileId; q.group = p.group;
                         q.lod1 = p.lod1; q.lod2 = p.lod2; q.flags = p.flags;   // the transform struct has none
+                        q.guid = p.guid;   // nor a guid: the laye chunk's layers are the base record's (2026-10-26)
                         size_t o; json f;
                         if (fieldOffset(trType, "position", o, f)) for (int k=0;k<3;++k) q.pos[k] = rdf(te+o+4*k);
                         if (fieldOffset(trType, "rotation", o, f)) for (int k=0;k<3;++k) q.rot[k] = rdf(te+o+4*k);
@@ -3451,7 +3875,8 @@ public:
         for (const auto& sh : out.shaders) {
             if (!sh.writesNormalEncode || sh.hasShLighting) continue;
             out.hasPrepass = true;
-            if (sh.hasDiscard) { out.prepassCutout = true; break; }
+            if (sh.hasTextureDiscard) out.prepassTextureCutout = true;
+            if (sh.hasDiscard) out.prepassCutout = true;
         }
 
         // Engine-order effect selection. `sub_140BFAD20` matches the material's own
@@ -3684,9 +4109,48 @@ public:
 
     // -----------------------------------------------------------------------
     /// @brief `mach` -- the model's animation-machine graph (states,
-    /// transitions, action blocks), with every `actionData` dword left raw.
+    /// transitions, action blocks), each action decoded from its variant.
     /// See ::AnimMachineSet and gw2dat_cli's `animmach` command.
     // -----------------------------------------------------------------------
+    /// @brief `emoc` file, `anim` chunk: every emote and its per-model timings.
+    std::vector<EmoteAnimation> parseEmotes() {
+        std::vector<EmoteAnimation> out;
+        std::string root; uint16_t ver = 0;
+        size_t start = findChunk("anim", &root, &ver);
+        if (!start || root.empty()) return out;
+        size_t off; json fj;
+        if (!fieldOffset(root, "Animation", off, fj)) return out;
+        const std::string at = fj.contains("element") ? fj["element"].value("struct", std::string()) : std::string();
+        const int as = at.empty() ? 0 : typeSize(at);
+        uint32_t n = 0; size_t base = arrayAt(start + off, n);
+        for (uint32_t i = 0; base && as > 0 && i < n; ++i) {
+            const size_t e = base + (size_t)i * (size_t)as;
+            EmoteAnimation em;
+            size_t o; json f;
+            if (fieldOffset(at, "Token", o, f)) em.token = rd64(e + o);
+            if (fieldOffset(at, "Timing", o, f)) {
+                const std::string tt = f.contains("element") ? f["element"].value("struct", std::string()) : std::string();
+                const int ts = tt.empty() ? 0 : typeSize(tt);
+                uint32_t tn = 0; size_t tb = arrayAt(e + o, tn);
+                for (uint32_t k = 0; tb && ts > 0 && k < tn && k < 256; ++k) {
+                    const size_t te = tb + (size_t)k * (size_t)ts;
+                    EmoteAnimation::Timing t;
+                    size_t fo; json ff;
+                    if (fieldOffset(tt, "ModelFile", fo, ff)) t.modelFileId = decodeFilenameAt(te + fo);
+                    t.blendIn = rdFloat1(tt, "BlendIn", te);
+                    t.blendOut = rdFloat1(tt, "BlendOut", te);
+                    t.intro = rdDword(tt, "IntroDuration", te);
+                    t.loop = rdDword(tt, "LoopDuration", te);
+                    t.outro = rdDword(tt, "OutroDuration", te);
+                    t.startOffset = rdDword(tt, "StartOffset", te);
+                    em.timings.push_back(t);
+                }
+            }
+            out.push_back(std::move(em));
+        }
+        return out;
+    }
+
     AnimMachineSet parseAnimMachines() {
         AnimMachineSet out;
         std::string root; uint16_t ver = 0;
@@ -3706,35 +4170,13 @@ public:
         if (fieldOffset(root, "models", off, fj)) {
             std::string modType = fj.contains("element") ? fj["element"].value("struct", std::string()) : std::string();
             int modSize = modType.empty() ? 0 : typeSize(modType);
-            // PackAnimModelV1's template entry (modelFileId fileref[4] +
-            // modelFileRaw wchar_ptr[8] + machineIndex dword[4] + listeners
-            // byte16[16] = 32) undercounts the real element size by 4 bytes.
-            // Hex-verified against a real anic file (base_id 805509 in a live
-            // gw2index archive): modelFileId repeats every 36 bytes with a
-            // clean, monotonically-adjacent run of plausible real fileIds
-            // (5473446, 5473416, 5473386, ...), and machineIndex (which
-            // increments 1,1,2,3,... across consecutive models -- several
-            // models sharing one machine is expected) sits at +16, not the
-            // template-computed +12. The stray 4 bytes live somewhere between
-            // modelFileRaw and machineIndex (always zero in every sample seen,
-            // so its own meaning is still unknown). This is NOT a general
-            // struct-alignment rule -- applying x64 pointer alignment
-            // (4-byte fields padded to 8 before an 8-byte field) to every
-            // struct in this template was tried and regressed most real
-            // models, so every OTHER struct here still uses the plain
-            // sequential field sum. Scoped to this one struct name+size so it
-            // can't silently misfire if a template update changes the layout.
-            bool knownShortV1 = (modType == "PackAnimModelV1" && modSize == 32);
-            size_t machineIndexOffV1 = 16;
-            if (knownShortV1) modSize = 36;
             uint32_t n = 0; size_t base = arrayAt(start + off, n);
             size_t o; json f;
             for (uint32_t i = 0; base && modSize > 0 && i < n; ++i) {
                 size_t e = base + (size_t)i * (size_t)modSize;
                 AnimMachineModelRef r;
-                if (fieldOffset(modType, "modelFileId", o, f))  r.modelFileId = rd32(e + o);
-                if (knownShortV1) r.machineIndex = rd32(e + machineIndexOffV1);
-                else if (fieldOffset(modType, "machineIndex", o, f)) r.machineIndex = rd32(e + o);
+                if (fieldOffset(modType, "modelFileId", o, f)) r.modelFileId = decodeFilenameAt(e + o);
+                if (fieldOffset(modType, "machineIndex", o, f)) r.machineIndex = rd32(e + o);
                 out.models.push_back(r);
             }
         }
@@ -3930,14 +4372,14 @@ private:
         static const std::pair<const char*, int> tbl[] = {
             {"byte",1},{"byte3",3},{"byte4",4},{"byte16",16},{"word",2},{"word3",6},{"dword",4},
             {"dword2",8},{"dword4",16},{"qword",8},{"float",4},{"float2",8},{"float3",12},
-            {"float4",16},{"double",8},{"fileref",4},{"token32",4},{"token64",8}};
+            {"float4",16},{"double",8},{"token32",4},{"token64",8}};
         for (auto& e : tbl) if (k == e.first) return e.second;
         return -1;
     }
     int fieldSize(const json& f) const {
         std::string k = f.value("kind", std::string("dword"));
-        if (k == "ptr" || k == "char_ptr" || k == "wchar_ptr" || k == "filename") return ptr_;
-        if (k == "array_ptr" || k == "ptr_array_ptr") return 4 + ptr_;
+        if (k == "ptr" || k == "char_ptr" || k == "wchar_ptr" || k == "filename" || k == "fileref") return ptr_;
+        if (k == "array_ptr" || k == "ptr_array_ptr" || k == "variant") return 4 + ptr_;
         if (k == "struct") return typeSize(f.value("type", std::string()));
         if (k == "array") {
             int cnt = f.value("count", 0);
@@ -4397,6 +4839,7 @@ private:
                     if (fieldOffset(texType, "token", so, sfj)) mt.token = rd64(texElem + so);
                     if (fieldOffset(texType, "textureFlags", so, sfj)) mt.flags = rd32(texElem + so);
                     if (fieldOffset(texType, "uvPSInputIndex", so, sfj)) mt.uvIndex = (uint8_t)d_[texElem + so];
+                    if (fieldOffset(texType, "uvAnimId", so, sfj)) mt.uvAnimId = d_[texElem + so];
                     mat.textures.push_back(mt);
                 }
             }
@@ -5140,27 +5583,70 @@ private:
                 }
                 // optional research data: a failed read keeps the clip and the clips after it
                 try { readEffectTracks(clipType, clip, c); } catch (const std::exception&) { c.effectTracks.clear(); }
-                // data (PackGrannyAnimationType*) -> raw granny blob + fixup table
-                if (fieldOffset(clipType, "data", o, f)) {
-                    std::string gt = f.value("type", std::string());
-                    size_t gs = clip + o, go; json gf;
-                    if (!gt.empty() && fieldOffset(gt, "animation", go, gf)) {
-                        uint32_t bn2 = 0; size_t bb = arrayAt(gs + go, bn2);
-                        if (bb && bn2 && bb + bn2 <= n_) {
-                            c.rawGranny.assign(d_ + bb, d_ + bb + bn2);
-                            c.grannyFileOffset = bb;
+                if (fieldOffset(clipType, "uvAnimData", o, f)) {
+                    const std::string ut = f.contains("element") ? f["element"].value("struct", std::string()) : std::string();
+                    const int us = ut.empty() ? 0 : typeSize(ut);
+                    uint32_t un = 0; size_t ub = arrayAt(clip + o, un);
+                    for (uint32_t k = 0; ub && us > 0 && k < un && k < 256; ++k) {
+                        const size_t e = ub + (size_t)k * us;
+                        size_t fo; json ff;
+                        uint32_t id = 0;
+                        if (fieldOffset(ut, "uvAnimId", fo, ff)) id = rd32(e + fo);
+                        if (!fieldOffset(ut, "uvTransformData", fo, ff)) continue;
+                        const std::string tt = ff.contains("element") ? ff["element"].value("struct", std::string()) : std::string();
+                        const int ts = tt.empty() ? 0 : typeSize(tt);
+                        uint32_t tn = 0; size_t tb = arrayAt(e + fo, tn);
+                        for (uint32_t q = 0; tb && ts > 0 && q < tn && q < 64; ++q) {
+                            const size_t te = tb + (size_t)q * ts;
+                            AnimClip::UvAnim u;
+                            u.uvAnimId = id;
+                            size_t go; json gf;
+                            if (fieldOffset(tt, "type", go, gf)) u.type = d_[te + go];
+                            if (fieldOffset(tt, "trackGroupIndex", go, gf)) u.trackGroup = rd32(te + go);
+                            if (fieldOffset(tt, "vectorTrackIndex", go, gf)) u.vectorTrack = rd32(te + go);
+                            if (fieldOffset(tt, "initialValue", go, gf)) for (int w = 0; w < 4; ++w) u.initial[w] = rdf(te + go + 4 * w);
+                            c.uvAnims.push_back(u);
                         }
                     }
-                    if (!gt.empty() && fieldOffset(gt, "pointers", go, gf)) {
-                        uint32_t pn = 0; size_t pb = arrayAt(gs + go, pn);
-                        for (uint32_t k = 0; pb && k < pn && pb + 4u*k + 4 <= n_; ++k)
-                            c.fixups.push_back(rd32(pb + 4u*k));
+                }
+                // data (PackGrannyAnimationType*) -> raw granny blob + fixup table
+                if (fieldOffset(clipType, "data", o, f)) readGrannyBlob(f.value("type", std::string()), clip + o, c);
+                // animLod -> the full clip's file, and the reduced clip as a stand-in
+                if (fieldOffset(clipType, "animLod", o, f)) {
+                    const size_t lod = follow(clip + o);
+                    const std::string lt = ptrTargetStruct(f);
+                    size_t lo; json lf;
+                    if (lod && !lt.empty()) {
+                        if (fieldOffset(lt, "fileFull", lo, lf)) c.lodFileId = decodeFilenameAt(lod + lo);
+                        if (c.rawGranny.empty() && fieldOffset(lt, "data", lo, lf)) {
+                            readGrannyBlob(lf.value("type", std::string()), lod + lo, c);
+                            c.lodOnly = !c.rawGranny.empty();
+                        }
                     }
                 }
             }
             out.anim.clips.push_back(std::move(c));
         }
         parseAnimImports(out, listType, listStart);
+    }
+
+    // A PackGrannyAnimationType struct of type `gt` at `gs` -> c's blob + fixups.
+    void readGrannyBlob(const std::string& gt, size_t gs, AnimClip& c) {
+        if (gt.empty()) return;
+        size_t go; json gf;
+        if (fieldOffset(gt, "animation", go, gf)) {
+            uint32_t bn = 0; size_t bb = arrayAt(gs + go, bn);
+            if (bb && bn && bb + bn <= n_) {
+                c.rawGranny.assign(d_ + bb, d_ + bb + bn);
+                c.grannyFileOffset = bb;
+            }
+        }
+        if (fieldOffset(gt, "pointers", go, gf)) {
+            uint32_t pn = 0; size_t pb = arrayAt(gs + go, pn);
+            c.fixups.clear();
+            for (uint32_t k = 0; pb && k < pn && pb + 4u*k + 4 <= n_; ++k)
+                c.fixups.push_back(rd32(pb + 4u*k));
+        }
     }
 
     // An animation-only .modl has ModelFileAnimation.bank == null and stores its
@@ -5287,7 +5773,29 @@ private:
         return s;
     }
 
-    // PackAnimMachineActionBlockV*.actions -> raw actionData dwords.
+    // One `variant` field at `at` ({u32 index; ptr}) into `a`. The struct is
+    // alternatives[index]; its fields are read by template name, so a missing
+    // field just stays zero.
+    void readActionVariant(const json& field, size_t at, AnimMachineAction& a) const {
+        a.kind = rd32(at);
+        const size_t p = follow(at + 4);
+        const json alts = field.value("alternatives", json::array());
+        if (!p || a.kind >= alts.size() || !alts[a.kind].is_string()) return;
+        a.type = alts[a.kind].get<std::string>();
+        size_t o; json f;
+        if (fOff(a.type, "sequence", p, o, f) || fOff(a.type, "blendTreeAlias", p, o, f)) a.sequence = rd64(o);
+        if (fOff(a.type, "blendTree", p, o, f)) {
+            chk(o, 16);
+            std::memcpy(a.blendTree, d_ + o, 16);
+        }
+        a.blendInTime = rdFloat1(a.type, "blendInTime", p);
+        a.blendOutTime = rdFloat1(a.type, "blendOutTime", p);
+        a.flags = rdDword(a.type, "flags", p);
+        if (fOff(a.type, "rotation", p, o, f))
+            for (int i = 0; i < 4; ++i) a.rotation[i] = rdf(o + 4 * i);
+    }
+
+    // PackAnimMachineActionBlockV*.actions -> decoded actionData variants.
     std::vector<AnimMachineAction> readActionBlock(const std::string& blockType, size_t blockStart) {
         std::vector<AnimMachineAction> out;
         if (blockType.empty()) return out;
@@ -5301,7 +5809,7 @@ private:
         for (uint32_t i = 0; base && i < n; ++i) {
             size_t e = base + (size_t)i * (size_t)elemSize;
             AnimMachineAction a;
-            if (fieldOffset(elemType, "actionData", o, f)) a.actionData = rd32(e + o);
+            if (fieldOffset(elemType, "actionData", o, f)) readActionVariant(f, e + o, a);
             out.push_back(a);
         }
         return out;
@@ -5469,9 +5977,32 @@ inline std::vector<std::string> describeFvf(uint32_t fvf, int* strideOut = nullp
 //     `sequences` list declares. That list is the engine's early-out hint
 //     (ModelAnimBankDir_SetImportSequences @0x140CF3E70), not a filter on the
 //     bank's contents.
+//   * a clip whose animation is streamed (AnimClip::lodFileId, and no inline
+//     blob or only the reduced one) gets the full clip from that file. Imported
+//     banks store every clip this way; a player race's banks name ~1900.
 template <class LoadModlById>
 inline int resolveAnimImports(Model& model, const json& tpl, LoadModlById&& loadById,
-                              size_t maxFiles = 64) {
+                              size_t maxFiles = 256) {
+    // The streamed full clip: an animation-only file, one inline blob. The bank
+    // entry keeps its token, moveSpeed and tracks; only the blob is replaced.
+    auto loadFull = [&](AnimClip& c) {
+        if (!c.lodFileId || (!c.rawGranny.empty() && !c.lodOnly)) return;
+        std::vector<uint8_t> bytes;
+        try { bytes = loadById(c.lodFileId); } catch (const std::exception&) { return; }
+        if (bytes.empty()) return;
+        Model full;
+        try { full = Extractor(bytes, tpl).extract(); } catch (const std::exception&) { return; }
+        for (AnimClip& f : full.anim.clips) {
+            if (f.rawGranny.empty()) continue;
+            c.rawGranny = std::move(f.rawGranny);
+            c.fixups = std::move(f.fixups);
+            c.grannyFileOffset = f.grannyFileOffset;
+            c.ptrSize = f.ptrSize;
+            c.lodOnly = false;
+            return;
+        }
+    };
+    for (AnimClip& c : model.anim.clips) loadFull(c);
     if (model.anim.imports.empty()) return 0;
     // Token identity is what shadowing works on, so a clip WITHOUT a token
     // never shadows and is never shadowed. Animation-only files are exactly
@@ -5493,8 +6024,10 @@ inline int resolveAnimImports(Model& model, const json& tpl, LoadModlById&& load
         Model bank;
         try { bank = Extractor(bytes, tpl).extract(); } catch (const std::exception&) { continue; }
         for (AnimClip& c : bank.anim.clips) {
+            if (c.token && seen.count(c.token)) continue;   // shadowed by an earlier bank
+            loadFull(c);
             if (c.rawGranny.empty()) continue;
-            if (c.token && !seen.emplace(c.token, 1).second) continue;   // shadowed by an earlier bank
+            if (c.token) seen.emplace(c.token, 1);
             c.bankFileId = imp.fileId;
             model.anim.clips.push_back(std::move(c));
             ++merged;

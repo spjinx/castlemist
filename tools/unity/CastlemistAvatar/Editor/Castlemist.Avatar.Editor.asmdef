@@ -1,0 +1,27 @@
+{
+    "name": "Castlemist.Avatar.Editor",
+    "rootNamespace": "Castlemist.Avatar",
+    "references": [
+        "VRC.SDK3A",
+        "VRC.SDK3A.Editor",
+        "VRC.SDKBase",
+        "VRC.SDKBase.Editor"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "com.vrchat.avatars",
+            "expression": "3.0.0",
+            "define": "CASTLEMIST_VRC_AVATARS"
+        }
+    ],
+    "noEngineReferences": false
+}

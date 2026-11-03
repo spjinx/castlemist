@@ -33,7 +33,7 @@ namespace castlemist::extract {
 // animation state-machine graph, see include/castlemist/native/gw2model.hpp's
 // ::AnimMachineSet). It carries no mesh or skeleton of its own, only named
 // states/transitions and which model(s) it drives (AnimMachineModelRef.
-// modelFileId, a plain inline fileId dword). Preview it by loading whichever
+// modelFileId, decoded from its fileref). Preview it by loading whichever
 // referenced model actually builds -- skeleton-only is fine, and several of
 // these reference an anim-only MODL themselves -- falling back to a text
 // summary of the state graph if no referenced model is usable.

@@ -291,6 +291,14 @@ WorldScene load_world(Gw2Dat& dat, uint32_t mapFileId, const nlohmann::json& tpl
     });
     section("water", [&] { attach_water(*ex, w); });
     section("environment", [&] { attach_environment(*ex, w); });
+    section("layers", [&] {
+        w.environment.layers = ex->parseMapLayers();
+        if (has("laye") && !w.environment.layers.present) w.warnings.push_back("layers: laye chunk present but not read");
+    });
+    section("lights", [&] {
+        w.environment.lights = ex->parseMapLights();
+        if (has("lght") && !w.environment.lights.present) w.warnings.push_back("lights: lght chunk present but not read");
+    });
 
     for (std::string& line : absent_chunk_warnings(chunks)) w.warnings.push_back(std::move(line));
     for (std::string& line : unread_chunk_warnings(chunks)) w.warnings.push_back(std::move(line));

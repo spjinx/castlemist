@@ -1,4 +1,5 @@
 #include "castlemist/ripper/assemble.h"
+#include "castlemist/ripper/animator.h"
 
 #include <algorithm>
 #include <array>
@@ -261,6 +262,9 @@ std::unique_ptr<Context> open_context(const CharacterManifest& manifest, const s
             ctx->skeleton.animationTokens = std::move(anims->animationTokens);
             ctx->skeleton.animClips = std::move(anims->animClips);
             ctx->skeleton.animClipBank = std::move(anims->animClipBank);
+            ctx->skeleton.animClipTokens = std::move(anims->animClipTokens);
+            ctx->skeleton.animClipMoveSpeed = std::move(anims->animClipMoveSpeed);
+            if (!opt.clip_select.empty()) select_clips(ctx->skeleton, opt.clip_select);
         }
     plan_weapons(*ctx, manifest, opt);
     return ctx;
@@ -1054,6 +1058,9 @@ bool write_glb(ModelPreview model, const std::string& path, const AssemblyOption
     exportgltf::GltfExportOptions gopts;
     gopts.rootRotation = {0.0, -0.70710678, 0.70710678, 0.0};
     gopts.rootScale = opt.metres ? 0.0254 : 1.0;
+    // GW2 clips are authored at 30 fps (their durations are whole 30ths of a second): sampled at
+    // that rate, every key lands on a GW2 frame (castlemist_vrchat.py runs Blender at 30 too).
+    gopts.animFps = 30;
     exportgltf::GltfExportResult g = exportgltf::export_model_gltf(model, path, gopts);
     if (!g.ok) rep.error = "glTF export failed: " + g.error;
     return g.ok;

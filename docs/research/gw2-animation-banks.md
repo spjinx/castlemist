@@ -146,19 +146,17 @@ which pieces follow the rig.
 - `gw2dat_cli animmach --dat <Gw2.dat> --template <json> (--index N | --file-id N | --base-id N) [--out <path>]`
   dumps a `mach` packfile's `PackAnimMachinesV0/V1` graph: every machine's named
   states, their transitions, and the `models[]` list binding a modelFileId to
-  `machines[machineIndex]`. **`actionData` (one dword per action) is dumped
-  completely raw (decimal + hex) — its bit layout is not decoded anywhere in
-  this codebase; nothing about it is guessed.** This is meant to be eyeballed
-  against known skill VFX to start reverse-engineering it. The `mach` container
+  `machines[machineIndex]`, with each action decoded (see
+  [[gw2-anim-blend-trees]]). The only such file is base id 98781. The `anic` container
   also carries `fall`/`seqn`/`cnfg` chunks (fallbacks, sequences, IK config)
   that this tool does not parse yet.
 
 ## Open
 
-- Clip *blending* and the state machine that picks a clip. Only the loading and
-  the bank chain were traced. `animmach` (above) is a first look at the state
-  graph's shape, but `actionData`'s bit layout — the piece that would actually
-  say "this transition fires this VFX" — is still unsolved.
+- Clip *blending* and the state machine that picks a clip: continued in
+  [[gw2-anim-blend-trees]]. `actionData` turned out to be a tagged variant
+  (play a sequence / a blend tree / set options / set rotation), not a
+  bitfield, and `animmach` now decodes it.
 - `ModelAnimBankDir_*` beyond the import-sequence setter.
 - Whether anything reads `modelReference` at runtime, or whether it is authoring
   metadata that V22+ dropped for that reason.

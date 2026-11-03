@@ -76,7 +76,11 @@ std::vector<Entry> build_table() {
                   19911, 47468, 47469,
                   // second survey (note section 8.3/8.4), hand-read or identical opcode stream
                   20041, 62080, 56795, 69668, 57606, 75035, 57714, 57752, 53237, 16104, 27303,
-                  57685, 60319, 58654},
+                  57685, 60319, 58654,
+                  // 2026-10-25, ps 14 / ps 24 read (Lion's Arch signs 1400355, 1400386): lit,
+                  // alpha saturate(2 diffuse.a) discarded below AlphaRef; were legacy-untagged,
+                  // whose opacity texture 2 they do not have
+                  58246, 196993},
                  make("prop-lit", AlphaUse::HolesAndShine, true)});
     t.push_back({{15999, 54592, 57634, 57715, 27353,
                   14084, 23508, 73205, 73655, 84923, 27305, 76858, 23672, 54889, 231183, 57701,
@@ -92,16 +96,20 @@ std::vector<Entry> build_table() {
 
     // prop-decal (note section 8.4): albedo = lerp(diffuse, decal, saturate(2*decal.a)
     // [x mask]), shine lerped toward saturate(2*decal.a-1); no texture discard. Hand-read
-    // ids only (signature-only 76643, 81309, 62170 are left out; 69623 read, below).
+    // ids only (signature-only 62170 is left out; 69623 read, below). 2026-10-25 (Lion's Arch
+    // 81433 / 1011499, whose walls drew only their tiling diffuse): 76643 (ps 38 read: the decal at
+    // UV1 over the diffuse by saturate(2a), then "decalb" at UV2 the same way (not mapped), mod x2
+    // at UV3); 60474 (ps 43: the decal, then two mods blended by a constant: the nearest, the first
+    // mod); 81309 (ps 63: the decal x decalmask.R, plus an env cube: the nearest, decalmask).
     {
         ShaderProfile p = make("prop-decal", AlphaUse::Shine, false);
         p.decalMode = DecalMode::DecalOverDiffuse;
-        t.push_back({{56533, 60027, 62212, 44479, 60145, 69913, 79884, 69713, 2597095}, p});
+        t.push_back({{56533, 60027, 62212, 44479, 60145, 69913, 79884, 69713, 2597095, 76643, 60474}, p});
 
         ShaderProfile m = p;
         m.decalMaskRole = "decalmask";
         m.decalMaskChannel = Channel::R;
-        t.push_back({{19910, 525886}, m});
+        t.push_back({{19910, 525886, 81309}, m});
         m.decalMaskRole = "mask";
         m.maskSpecular = Channel::B;  // 69887 also multiplies the specular by mask.B
         t.push_back({{69887}, m});
@@ -116,12 +124,17 @@ std::vector<Entry> build_table() {
         ShaderProfile h = p;
         h.diffuseAlpha = AlphaUse::HolesAndShine;
         h.clips = true;
-        t.push_back({{69623}, h});
+        // 62552 (ps 43 read 2026-10-25, Lion's Arch 81433's railings): the same as 69623.
+        // 69748 (ps 58 read 2026-10-25, Lion's Arch banner 80552): the same, its normal lerped
+        // toward the decalnormal by saturate(2 decal.a); "decalb" (UV2) not mapped.
+        t.push_back({{69623, 62552, 69748}, h});
 
         // 57806 also adds decal.rgb * saturate(2*decal.a-1) unlit.
         ShaderProfile g = p;
         g.decalGlow = DecalGlow::AboveHalf;
-        t.push_back({{57806}, g});
+        // 54759 (ps 38 read 2026-10-25, 1768614's AsuraTrimMat): the same with the decal's
+        // coverage and glow x fadedec (not mapped).
+        t.push_back({{57806, 54759}, g});
     }
 
     // decal-glow (note section 8, 57131): albedo = lerp(decal, diffuse, decal.a);
@@ -240,7 +253,13 @@ std::vector<Entry> build_table() {
     // fx-distort-lit (630598, ps 11, character armour): diffuse x grab x 2 (offset = normal.xy x
     // 0.025 x reflection x distance fade), fresnel dim, sun transmission, env cube by gloss x
     // fresnel, spec^256 x gloss; alpha = saturate(2a), gloss = saturate(2a - 1).
-    t.push_back({{50159}, make("fx-distort-opaque", AlphaUse::Unused, false)});
+    // 52624 (ps 31 read 2026-10-25, 1768614's AsuraForceFieldMat): the grab at the offset
+    // ((distort.zw x 2 - 1) + 1) x distort, x modxcol x 2, opaque: the same.
+    t.push_back({{50159, 52624}, make("fx-distort-opaque", AlphaUse::Unused, false)});
+    // prop-glow-alpha (2026-10-25: 43833, ps 65, Lion's Arch 1011602's forge flow and 1768614's
+    // beam; 69942, ps 43, its InquestReactorMat): lit, opaque; rgb x saturate(2a - 1) x 2 added
+    // unlit (43833: x glofade, its diffuse at UV + (perturb x 2 - 1) x difptrb: the importer's).
+    t.push_back({{43833, 69942}, make("prop-glow-alpha", AlphaUse::Glow, false)});
     t.push_back({{339341}, make("fx-distort-opaque-mask", AlphaUse::Unused, false)});
     t.push_back({{47396}, make("fx-distort-mask", AlphaUse::Unused, false)});
     t.push_back({{709206}, make("fx-distort-soft", AlphaUse::Unused, false)});
@@ -429,6 +448,15 @@ const ShaderProfile& default_profile() {
     return p;
 }
 
+const ShaderProfile& default_cutout_profile() {
+    static const ShaderProfile p = [] {
+        ShaderProfile d = default_profile();
+        d.clips = true;
+        return d;
+    }();
+    return p;
+}
+
 const ShaderProfile& profile_for(const ModelMaterialCPU& mat, uint64_t renderState) {
     for (const Entry& e : table())
         for (uint32_t id : e.amats)
@@ -442,7 +470,7 @@ const ShaderProfile& profile_for(const ModelMaterialCPU& mat, uint64_t renderSta
             for (const Entry& e : table())
                 if (e.profile.name == "legacy-untagged") return e.profile;
     }
-    return default_profile();
+    return mat.shaderDiscards ? default_cutout_profile() : default_profile();
 }
 
 }  // namespace castlemist::exportgltf

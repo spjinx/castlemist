@@ -202,7 +202,7 @@ CM_TEST(bake, water_depth) {
         CHECK_NEAR(out[t * 4 + 0], 128, 1);
         CHECK_NEAR(out[t * 4 + 1], 0, 1);
         CHECK_NEAR(out[t * 4 + 2], 128, 1);
-        CHECK_EQ(out[t * 4 + 3], 115);
+        CHECK_NEAR(out[t * 4 + 3], 185, 1);   // 0.45 + 0.55 x the 0.5 mix (the depth, 2026-10-25)
     }
     // sRGB: the mid mix is taken in linear then encoded: 0.5 linear -> 188.
     CHECK(bake_cell_water(w, rect, 1, 1, true, out));

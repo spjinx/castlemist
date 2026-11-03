@@ -17,8 +17,10 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using UnityEditor;
 using UnityEditor.Animations;
 using AssemblyDefinitionAsset = UnityEditorInternal.AssemblyDefinitionAsset;
@@ -32,11 +34,19 @@ namespace Castlemist
         public const string ColliderName = "GW2 Prop Collider";
         const string ClickName = "GW2 Demolish Click";
         const string StartAsPlayerName = "GW2 Start As Player";
+        const float MinClick = 2f;   // metres, the click box's smallest side
 
         /// True when @p clips (models[].clips) has the Demolish clip, in any case.
         public static bool Has(IEnumerable<string> clips)
         {
-            return clips != null && clips.Any(c => string.Equals(c, ClipName, StringComparison.OrdinalIgnoreCase));
+            return Name(clips) != null;
+        }
+
+        /// The Demolish clip's own name in @p clips (2026-10-27: 106866, the Labyrinth's dust-and-rocks
+        /// demolish points, spells it "demolish"); null without one.
+        public static string Name(IEnumerable<string> clips)
+        {
+            return clips?.FirstOrDefault(c => string.Equals(c, ClipName, StringComparison.OrdinalIgnoreCase));
         }
 
         /// The controller at @p path (replaced): Idle (@p idle, may be null) / Demolish / Rubble.
@@ -74,7 +84,7 @@ namespace Castlemist
         /// Sets placed instance @p inst up (see the header). @p propCollider: its PropCollider_<prop>
         /// (null: none split out); @p permissions: the GMMenu's PlayerPermissions or null. False when
         /// UdonSharp's GW2Demolishable is not available.
-        public static bool SetupInstance(GameObject inst, AnimatorController ac, string sidecar, float unityScale,
+        public static bool SetupInstance(GameObject inst, AnimatorController ac, string clip, string sidecar, float unityScale,
                                          Transform propCollider, Component permissions, List<string> warnings)
         {
             Type demolishable = SceneSetup.FindType("Castlemist.GW2Demolishable");
@@ -86,9 +96,10 @@ namespace Castlemist
             foreach (Transform t in inst.GetComponentsInChildren<Transform>(true))
                 GameObjectUtility.SetStaticEditorFlags(t.gameObject, 0);
             WorldImporter.FitSkinnedBounds(inst, ac);
+            RepairVisibility(inst, ac, sidecar);
             ApplyIdleVisibility(inst, ac);
 
-            if (sidecar != null) ParticleEffects.Fit(inst, sidecar, ClipName, unityScale, true);
+            if (sidecar != null) ParticleEffects.Fit(inst, sidecar, clip, unityScale, true);
             ParticleSystem[] dust = inst.GetComponentsInChildren<ParticleSystem>(true)
                 .Where(p => p.name.StartsWith(ParticleEffects.ObjectPrefix, StringComparison.Ordinal)).ToArray();
 
@@ -122,6 +133,9 @@ namespace Castlemist
                 box.center = c;
                 box.size = new Vector3(Mathf.Abs(e.x), Mathf.Abs(e.y), Mathf.Abs(e.z)) * 2f;
             }
+            // 106866's meshes are 10 cm markers (the dust and rocks are the point): never under MinClick metres
+            Vector3 ls = inst.transform.lossyScale;
+            box.size = Vector3.Max(box.size, new Vector3(MinClick / Mathf.Abs(ls.x), MinClick / Mathf.Abs(ls.y), MinClick / Mathf.Abs(ls.z)));
 
             var comp = inst.GetComponent(demolishable) ?? SceneSetup.AddUdonAware(inst, demolishable);
             SceneSetup.SetField(comp, "animator", an);
@@ -131,6 +145,91 @@ namespace Castlemist
             SceneSetup.CopyProxyToUdon(comp);
             if (propCollider == null) warnings.Add("demolish: " + inst.name + " has no own collider: it stays solid once demolished");
             return true;
+        }
+
+        /// FBX transform clips do not carry GW2's mesh-visibility tracks. Always bind the sidecar
+        /// tracks here, independently of the importer's optional material-animation conversion.
+        /// Each clip writes every mapped mesh, so rebuilds and late-join snaps restore the right set.
+        public static int RepairVisibility(GameObject inst, AnimatorController controller, string sidecar)
+        {
+            if (inst == null || controller == null || string.IsNullOrEmpty(sidecar) || !File.Exists(sidecar)) return 0;
+            var doc = MiniJson.Parse(File.ReadAllText(sidecar)) as Dictionary<string, object>;
+            if (doc == null || !doc.TryGetValue("meshVis", out object mv) || !(mv is Dictionary<string, object> meshVis) ||
+                !doc.TryGetValue("clips", out object cl) || !(cl is List<object> clips)) return 0;
+            string directory = Path.GetDirectoryName(AssetDatabase.GetAssetPath(controller)).Replace('\\', '/');
+            string model = Path.GetFileNameWithoutExtension(sidecar).Replace("_particles", "");
+            var motions = new Dictionary<string, AnimationClip>();
+            int bindings = 0;
+            foreach (ChildAnimatorState child in controller.layers[0].stateMachine.states)
+            {
+                string part;
+                if (child.state.name == "Idle") part = "zeropose";
+                else if (child.state.name == "Demolish" || child.state.name == "Rubble") part = "Demolish";
+                else continue;
+                AnimationClip fixedClip;
+                if (!motions.TryGetValue(part, out fixedClip))
+                {
+                    var track = clips.OfType<Dictionary<string, object>>().FirstOrDefault(c =>
+                        c.TryGetValue("name", out object n) && string.Equals(n as string, part, StringComparison.OrdinalIgnoreCase));
+                    if (track == null) continue;
+                    var boneVis = track.TryGetValue("boneVis", out object bv) ? bv as Dictionary<string, object> : null;
+                    var source = child.state.motion as AnimationClip;
+                    string path = directory + "/" + model + "_DemolishVisibility_" + part + ".anim";
+                    fixedClip = AssetDatabase.LoadAssetAtPath<AnimationClip>(path);
+                    if (fixedClip == null)
+                    {
+                        fixedClip = source != null ? UnityEngine.Object.Instantiate(source) : new AnimationClip();
+                        fixedClip.name = Path.GetFileNameWithoutExtension(path);
+                        AssetDatabase.CreateAsset(fixedClip, path);
+                    }
+                    else if (source != null && source != fixedClip)
+                    {
+                        Undo.RecordObject(fixedClip, "Repair demolish mesh visibility");
+                        EditorUtility.CopySerialized(source, fixedClip);
+                        fixedClip.name = Path.GetFileNameWithoutExtension(path);
+                    }
+                    float duration = source != null ? Mathf.Max(source.length, 1f / 30f) : 1f / 30f;
+                    foreach (Renderer renderer in inst.GetComponentsInChildren<Renderer>(true))
+                    {
+                        if (renderer is ParticleSystemRenderer) continue;
+                        string name = Regex.Replace(renderer.name, "_LOD[0-9]+$", "");
+                        string bone = meshVis.TryGetValue(name, out object value) ? value as string : null;
+                        // Far stand-ins depict the intact building; they must not survive its demolition.
+                        if (bone == null && Regex.IsMatch(name, "^lod(?:_|$)", RegexOptions.IgnoreCase) && meshVis.Values.Contains("good")) bone = "good";
+                        if (bone == null) continue;
+                        var times = boneVis != null && boneVis.TryGetValue(bone, out object ks) && ks is List<object> list
+                            ? list.Select(Convert.ToSingle).OrderBy(t => t).ToArray() : new float[0];
+                        var keys = new List<Keyframe> { new Keyframe(0f, 1f) };
+                        float visible = 1f;
+                        foreach (float time in times)
+                        {
+                            visible = 1f - visible;
+                            if (keys[keys.Count - 1].time >= time - 1e-5f) keys[keys.Count - 1] = new Keyframe(keys[keys.Count - 1].time, visible);
+                            else keys.Add(new Keyframe(time, visible));
+                        }
+                        keys.Add(new Keyframe(Mathf.Max(duration, keys[keys.Count - 1].time + 1f / 30f), visible));
+                        var curve = new AnimationCurve(keys.ToArray());
+                        for (int k = 0; k < curve.length; ++k)
+                        {
+                            AnimationUtility.SetKeyLeftTangentMode(curve, k, AnimationUtility.TangentMode.Constant);
+                            AnimationUtility.SetKeyRightTangentMode(curve, k, AnimationUtility.TangentMode.Constant);
+                        }
+                        AnimationUtility.SetEditorCurve(fixedClip, EditorCurveBinding.FloatCurve(
+                            AnimationUtility.CalculateTransformPath(renderer.transform, inst.transform), renderer.GetType(), "m_Enabled"), curve);
+                        ++bindings;
+                    }
+                    EditorUtility.SetDirty(fixedClip);
+                    AssetDatabase.SaveAssetIfDirty(fixedClip);
+                    motions.Add(part, fixedClip);
+                }
+                Undo.RecordObject(child.state, "Repair demolish mesh visibility");
+                child.state.motion = fixedClip;
+                EditorUtility.SetDirty(child.state);
+            }
+            EditorUtility.SetDirty(controller);
+            AssetDatabase.SaveAssetIfDirty(controller);
+            ApplyIdleVisibility(inst, controller);
+            return bindings;
         }
 
         /// The renderers' saved enabled state set to the Idle clip's mesh visibility at its start, so
@@ -218,7 +317,9 @@ namespace Castlemist
                     made = true;
                 }
             }
-            foreach (string script in new[] { "GW2Demolishable", "GW2StartAsPlayer" })
+            foreach (string script in new[] { "GW2Demolishable", "GW2StartAsPlayer", "GW2SoundPlayer", "GW2ProximityDoor", "GW2DayNight", "GW2MapLayer", "GW2Waypoints", "GW2Streamer", "GW2CellSwitcher", "GW2Festival",
+                                                  "GW2GroupLink", "GW2ViewDistance", "GW2MenuTabs", "GW2MenuHint", "GW2DayNightSlider", "GW2Dialogue", "GW2HauntedDoor", "GW2HauntedDoors", "GW2MusicPlayer", "GW2GatherNode", "GW2CarvingPumpkin", "GW2DoorHandle", "GW2FloatingPlatform", "PlatformLink",
+                                                  "GW2Performance", "GW2PlayerTracker" })
             {
                 string guid = AssetDatabase.FindAssets(script + " t:MonoScript")
                     .FirstOrDefault(g => System.IO.Path.GetFileNameWithoutExtension(AssetDatabase.GUIDToAssetPath(g)) == script);

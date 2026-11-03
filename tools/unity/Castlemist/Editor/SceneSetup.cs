@@ -39,7 +39,9 @@
 //                    colour filter, and effect.clut as the LDR lookup strip when it is
 //                    width = height^2; imported linear, uncompressed, no mips, clamp),
 //                    AmbientOcclusion MSVO (ssaoAmount) left off and Bloom fast (VR cost);
-//                    no depth of field (VR). A
+//                    no depth of field (VR). With Silent's Custom Tonemap in the
+//                    project, the grading then goes External through it (Tony
+//                    McMapface; UseCustomTonemap, also Castlemist > Use Custom Tonemap). A
 //                    PostProcessLayer goes on the reference camera: the VRC scene
 //                    descriptor's ReferenceCamera (VRChat SDK3; one is made and linked
 //                    when the descriptor has none), else Camera.main, else a new
@@ -223,6 +225,9 @@ namespace Castlemist
 
         /// Each Cell_<id>'s renderer bounds (Unity Terrain tiles added where they overlap the
         /// cell's XZ), world space; mapBounds their union (size 0 when there is nothing).
+        /// Metres below the water plane a cell's light volume / reflection probe box stops (CellBounds).
+        public const float FloorBelowWater = 10f;
+
         static List<KeyValuePair<string, Bounds>> CellBounds(Context c, out Bounds mapBounds)
         {
             var res = new List<KeyValuePair<string, Bounds>>();
@@ -248,6 +253,14 @@ namespace Castlemist
                         b.Encapsulate(new Vector3(b.center.x, t.max.y, b.center.z));
                     }
                 if (!anyCell) continue;
+                // 2026-10-25: the terrain asset's floor (heightRange min, -10000 map units: ~254 m
+                // under Lion's Arch's sea) dragged every cell's volume and probe down; nothing is
+                // seen below the water plane, so FloorBelowWater metres under it is the bottom.
+                if (c.M.Water != null && c.M.Water.Plane)
+                {
+                    float floor = c.MapRoot.transform.position.y - (float)c.M.Water.Z * c.UnityScale - FloorBelowWater;
+                    if (b.min.y < floor && b.max.y > floor) b.SetMinMax(new Vector3(b.min.x, floor, b.min.z), b.max);
+                }
                 res.Add(new KeyValuePair<string, Bounds>(cell.name.Substring(5), b));
                 if (!anyMap) { mapBounds = b; anyMap = true; } else mapBounds.Encapsulate(b);
             }
@@ -376,10 +389,25 @@ namespace Castlemist
                 {
                     Transform t = r.transform;
                     if (r is ParticleSystemRenderer || r is SkinnedMeshRenderer || r is TrailRenderer || r is LineRenderer ||
-                        Animated(t) || UnderNamed(t, root, "Foliage") || UnderNamed(t, root, "FrameProbe")) { ++left; continue; }
+                        Animated(t) || UnderNamed(t, root, "Foliage") || UnderNamed(t, root, "FrameProbe") ||
+                        // 2026-10-26: the haze box is never static: as an occludee, looking down put all of it
+                        // behind the ground and occlusion culling dropped the haze. Cell proxies switch at runtime.
+                        t.name == "GW2 Haze" || t.name == CellProxies.ProxyName) { ++left; continue; }
                     ApplyStatic(r.gameObject, c.Opts);
                     if ((GameObjectUtility.GetStaticEditorFlags(r.gameObject) & StaticEditorFlags.OccluderStatic) != 0) ++opaque; else ++other;
                 }
+            // 2026-10-26: props on map layers (festivals) are switched at runtime: never occluders.
+            Type layerType = FindType("Castlemist.GW2MapLayer");
+            if (layerType != null)
+                foreach (Component l in Object.FindObjectsByType(layerType, FindObjectsInactive.Include, FindObjectsSortMode.None))
+                    if (layerType.GetField("objects")?.GetValue(l) is GameObject[] objs)
+                        foreach (GameObject o in objs)
+                            if (o != null)
+                                foreach (Transform t in o.GetComponentsInChildren<Transform>(true))
+                                {
+                                    StaticEditorFlags lf = GameObjectUtility.GetStaticEditorFlags(t.gameObject);
+                                    if ((lf & StaticEditorFlags.OccluderStatic) != 0) GameObjectUtility.SetStaticEditorFlags(t.gameObject, lf & ~StaticEditorFlags.OccluderStatic);
+                                }
             foreach (Terrain t in Object.FindObjectsOfType<Terrain>())
             {
                 // Unity Terrain tiles: occluder and occludee; no ContributeGI (a Terrain would be lightmapped).
@@ -581,9 +609,35 @@ namespace Castlemist
             if (undo != null && usb != null && usb.IsAssignableFrom(t))
             {
                 MethodInfo add = undo.GetMethod("AddComponent", BindingFlags.Public | BindingFlags.Static, null, new[] { typeof(GameObject), typeof(Type) }, null);
-                if (add != null) return (Component)add.Invoke(null, new object[] { go, t });
+                if (add != null)
+                {
+                    var comp = (Component)add.Invoke(null, new object[] { go, t });
+                    ApplySyncMode(comp);
+                    return comp;
+                }
             }
             return go.AddComponent(t);
+        }
+
+        /// 2026-10-27: the backing UdonBehaviour's sync method as the script's [UdonBehaviourSyncMode]
+        /// declares it. A behaviour added before UdonSharp compiled its program kept the default,
+        /// Continuous: the carving pumpkins (local, nothing synced) took network ownership for nothing.
+        internal static void ApplySyncMode(Component c)
+        {
+            if (c == null) return;
+            Type attr = FindType("UdonSharp.UdonBehaviourSyncModeAttribute");
+            Type util = FindType("UdonSharpEditor.UdonSharpEditorUtility");
+            object a = attr != null ? c.GetType().GetCustomAttributes(attr, true).FirstOrDefault() : null;
+            if (a == null || util == null) return;
+            string mode = attr.GetProperty("behaviourSyncMode")?.GetValue(a)?.ToString();
+            MethodInfo backing = util.GetMethod("GetBackingUdonBehaviour", BindingFlags.Public | BindingFlags.Static);
+            var ub = backing?.Invoke(null, new object[] { c }) as Component;
+            PropertyInfo sync = ub != null ? ub.GetType().GetProperty("SyncMethod") : null;
+            if (sync == null || mode == null) return;
+            string target = mode == "None" || mode == "NoVariableSync" ? "None" : mode == "Manual" ? "Manual" : mode == "Continuous" ? "Continuous" : null;
+            if (target == null) return;
+            sync.SetValue(ub, Enum.Parse(sync.PropertyType, target));
+            EditorUtility.SetDirty(ub);
         }
 
         internal static void CopyProxyToUdon(Component c)
@@ -792,6 +846,11 @@ namespace Castlemist
             DepthOfField dof;
             if (profile.TryGetSettings(out dof)) dof.enabled.Override(false);
             EditorUtility.SetDirty(profile);
+            if (Shader.Find(CustomTonemapShader) != null)
+            {
+                c.Sum.warnings.Add("post: " + UseCustomTonemap(profile));
+                parts.Add("tonemap:tony-mcmapface");
+            }
 
             int layer = PostLayer();
             if (layer < 0) c.Sum.warnings.Add("post: no free layer for '" + PostLayerName + "': the volume is on Default");
@@ -856,6 +915,126 @@ namespace Castlemist
             c.Sum.warnings.Add("post: LUT " + p + " (" + tex.width + "x" + tex.height + "; UNPROVEN: GW2's strip read with PPv2's slice order and v up)");
             return tex;
         }
+
+        // ---- Custom Tonemap (2026-10-28) ------------------------------------------------------------------
+        // Silent's Custom Tonemap (com.s-ilent.customtonemap, MIT): a 3D custom render texture baked by
+        // its shader, used as PPv2's External grading LUT, so HDR highlights (lanterns, bloom, the
+        // additive Light Volume fog) roll off instead of clipping. Tony McMapface: on Mad King's Labyrinth
+        // (a night map, most pixels under 0.08 linear) it keeps the LDR look's mean (30.6 vs 31.3 of 255);
+        // Khronos Neutral's toe (x < 0.08 -> 6.25 x^2) crushed it to 13.1, GT7 9.1, GT 18.9, AgX 25.3.
+        // The profile's LDR grading moves into the tonemap material: saturation -> _AdjSaturation (PPv2's s / 100 + 1), colour filter ->
+        // _AdjBrightness (PPv2 LDR multiplies sRGB values; x filter in sRGB = x filter.linear in linear),
+        // the GW2 strip -> _CustomLUT1, re-baked as a 3D LUT from linear to linear (the tonemap samples
+        // its LUT slots with linear colour; PPv2 LDR samples the strip in sRGB). PPv2 LDR applies the
+        // strip before saturation and filter; here it comes after them and after the tonemap (UNPROVEN
+        // as close enough: GW2's grading is near neutral). The LDR values stay on the profile, so
+        // switching the mode back to Low Definition Range restores the old look. Rerunning rebuilds.
+
+        const string CustomTonemapShader = "Silent/CustomRenderTexture/CustomTonemap";
+        const int ClutLinearSize = 33;
+
+        [MenuItem("Castlemist/Use Custom Tonemap (Tony McMapface)")]
+        public static void CustomTonemapMenu()
+        {
+            var vol = Object.FindObjectsByType<PostProcessVolume>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+                            .FirstOrDefault(v => v.isGlobal && v.sharedProfile != null);
+            Debug.Log("CASTLEMIST " + (vol == null ? "custom tonemap: no global PostProcessVolume with a profile in the open scene"
+                                                    : UseCustomTonemap(vol.sharedProfile)));
+        }
+
+        /// Switches @p profile's ColorGrading to Custom Tonemap (see above); its assets go next to the
+        /// profile (<profile>_Tonemap.mat, _Tonemap-LUT.asset, _ClutLinear.asset).
+        public static string UseCustomTonemap(PostProcessProfile profile)
+        {
+            if (Shader.Find(CustomTonemapShader) == null) return "custom tonemap: Custom Tonemap (com.s-ilent.customtonemap) is not in the project";
+            string exampleGuid = AssetDatabase.FindAssets("Tony-LUT t:CustomRenderTexture").FirstOrDefault();
+            string exampleMatGuid = AssetDatabase.FindAssets("Tony-Settings t:Material").FirstOrDefault();
+            if (exampleGuid == null || exampleMatGuid == null) return "custom tonemap: the package's Tony McMapface example (Tony-LUT, Tony-Settings) is missing";
+
+            string stem = System.IO.Path.ChangeExtension(AssetDatabase.GetAssetPath(profile), null);
+            string matPath = stem + "_Tonemap.mat", crtPath = stem + "_Tonemap-LUT.asset";
+            // The package's own example assets, copied: they carry the CRT settings its manual asks for
+            // (3D, RGBA half, clamp, trilinear, OnLoad init and update, pass Tonemap).
+            if (AssetDatabase.LoadAssetAtPath<Material>(matPath) == null) AssetDatabase.CopyAsset(AssetDatabase.GUIDToAssetPath(exampleMatGuid), matPath);
+            if (AssetDatabase.LoadAssetAtPath<CustomRenderTexture>(crtPath) == null) AssetDatabase.CopyAsset(AssetDatabase.GUIDToAssetPath(exampleGuid), crtPath);
+            var mat = AssetDatabase.LoadAssetAtPath<Material>(matPath);
+            var crt = AssetDatabase.LoadAssetAtPath<CustomRenderTexture>(crtPath);
+            crt.material = mat;
+            EditorUtility.SetDirty(crt);
+
+            ColorGrading cg = Effect<ColorGrading>(profile);
+            float sat = cg.saturation.overrideState ? cg.saturation.value : 0f;
+            Color filt = cg.colorFilter.overrideState ? cg.colorFilter.value : Color.white;
+            mat.SetFloat("_TonemapperType", 3f);   // Tony McMapface
+            mat.SetFloat("_AdjSaturation", sat / 100f + 1f);
+            Color fl = filt.linear;
+            mat.SetVector("_AdjBrightness", new Vector4(fl.r, fl.g, fl.b, 1f));
+
+            Texture2D strip = cg.ldrLut.overrideState ? cg.ldrLut.value as Texture2D : null;
+            float lutAmount = strip != null ? cg.ldrLutContribution.value : 0f;
+            Texture3D lut3 = strip != null ? LinearClut(strip, stem + "_ClutLinear.asset") : null;
+            mat.SetTexture("_CustomLUT1", lut3);
+            mat.SetFloat("_CustomLUT1Intensity", lut3 != null ? lutAmount : 0f);
+            EditorUtility.SetDirty(mat);
+
+            cg.enabled.Override(true);
+            cg.gradingMode.Override(GradingMode.External);
+            cg.externalLut.Override(crt);
+            EditorUtility.SetDirty(profile);
+            AssetDatabase.SaveAssets();
+            // OnLoad: rendered once when created; release it so the editor re-renders it on its next tick.
+            crt.Release();
+            crt.Initialize();
+            crt.Update();
+
+            return "custom tonemap: Tony McMapface on " + profile.name + " (saturation " + (sat / 100f + 1f).ToString("F2") +
+                   ", filter " + ColorUtility.ToHtmlStringRGB(filt) + (lut3 != null ? ", GW2 LUT " + strip.name + " as " + ClutLinearSize + "^3" : ", no GW2 LUT") +
+                   "); tune it on " + matPath + "; back to the old look: ColorGrading mode Low Definition Range";
+        }
+
+        /// PPv2's LDR @p strip (sRGB in, sRGB out, ApplyLut2D's layout) re-baked as a linear-in,
+        /// linear-out 3D LUT at @p path.
+        static Texture3D LinearClut(Texture2D strip, string path)
+        {
+            // A readable copy (the imported strip is not readable): blit, then read back.
+            var rt = RenderTexture.GetTemporary(strip.width, strip.height, 0, RenderTextureFormat.ARGBFloat, RenderTextureReadWrite.Linear);
+            Graphics.Blit(strip, rt);
+            var prev = RenderTexture.active;
+            RenderTexture.active = rt;
+            var src = new Texture2D(strip.width, strip.height, TextureFormat.RGBAFloat, false, true);
+            src.ReadPixels(new Rect(0, 0, strip.width, strip.height), 0, 0);
+            src.Apply();
+            RenderTexture.active = prev;
+            RenderTexture.ReleaseTemporary(rt);
+            src.wrapMode = TextureWrapMode.Clamp;
+            src.filterMode = FilterMode.Bilinear;
+
+            int n = ClutLinearSize;
+            float sx = 1f / strip.width, sy = 1f / strip.height, sz = strip.height - 1f;
+            var cols = new Color[n * n * n];
+            for (int b = 0; b < n; ++b)
+                for (int g = 0; g < n; ++g)
+                    for (int r = 0; r < n; ++r)
+                    {
+                        var lin = new Color(r / (n - 1f), g / (n - 1f), b / (n - 1f));
+                        Color s = lin.gamma;
+                        // ApplyLut2D
+                        float z = s.b * sz, shift = Mathf.Floor(z);
+                        float u = s.r * sz * sx + sx * 0.5f + shift * sy, v = s.g * sz * sy + sy * 0.5f;
+                        Color a = src.GetPixelBilinear(u, v), c2 = src.GetPixelBilinear(u + sy, v);
+                        Color o = Color.Lerp(a, c2, z - shift).linear;
+                        cols[r + g * n + b * n * n] = new Color(o.r, o.g, o.b, 1f);
+                    }
+            Object.DestroyImmediate(src);
+
+            var tex = new Texture3D(n, n, n, TextureFormat.RGBAHalf, false) { wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Bilinear, name = System.IO.Path.GetFileNameWithoutExtension(path) };
+            tex.SetPixels(cols);
+            tex.Apply(false);
+            var old = AssetDatabase.LoadAssetAtPath<Texture3D>(path);
+            if (old != null) { EditorUtility.CopySerialized(tex, old); Object.DestroyImmediate(tex); tex = old; EditorUtility.SetDirty(tex); }
+            else AssetDatabase.CreateAsset(tex, path);
+            return tex;
+        }
 #endif
 
         // ---- bake ----------------------------------------------------------------------------------------
@@ -888,13 +1067,67 @@ namespace Castlemist
         // ---- light volume fog (2026-10-22) -------------------------------------------------------------------
         // BakedVolumetrics' VRC Light Volumes fog (Assets/BakedVolumetrics/VRC/VolumetricFog.prefab:
         // BakedVolumetrics/SceneVolumetricFog_VRCLV, a ray-marched box lit by the Light Volumes, sized by
-        // its VRCFogVolume from the transform's scale). One box per Light Volume of the open scene,
-        // limited to GW2's height haze: below the haze's top (heightRange's smaller map z, h0: the
-        // haze grows with z, i.e. downward), read from the scene's GW2 Haze material, so the lit fog
-        // pools where GW2 draws its height haze (the Wizard Vault: the void under the walkways). Without
-        // a GW2 Haze, the lower third of each volume. Rerunning replaces the boxes.
+        // its VRCFogVolume from the transform's scale). Boxes over the Light Volumes of the open scene,
+        // reaching at least GW2's height haze top (heightRange's smaller map z, h0: the haze grows with
+        // z, i.e. downward), read from the scene's GW2 Haze material, so the lit fog pools where GW2
+        // draws its height haze (the Wizard Vault: the void under the walkways). Rerunning replaces them.
+        //
+        // The shader marches from the camera and stops at the first sample outside its box
+        // (_KEEP_RAYS_ONLY_IN_VOLUME + _TERMINATE_RAYS_OUTSIDE_VOLUME), over ~15 m: a box only shows
+        // while the viewer is inside it. So each box also reaches GroundFogDepth above its footprint's
+        // floor, else a haze top under the walkable ground (Mad King's Labyrinth: haze top y 76, floor
+        // ~185) fogs only the pit, invisible from the paths (2026-10-28). The material has no jitter
+        // (2026-10-29). Since 2026-11-02 the boxes are a grid of FogTile tiles from where the terrain
+        // starts (see AddLightVolumeFog), not one per volume cut apart.
 
         const string LightVolumeFogName = "LightVolumeFog";
+        const float GroundFogDepth = 6f;
+        /// Additive fog brightness wanted, L0 x _LightIntensity (Mad King's Labyrinth, L0 0.14: 1.0 is a
+        /// lit ground mist, 2.1 a wall of green). Clamped to at least the Mists vaults' 0.3.
+        const float FogTargetGlow = 0.15f;
+
+        /// Mean baked L0 (Texture0's rgb) over @p volumes, or null when none is readable.
+        static float? MeanLightVolumeL0(IEnumerable<Component> volumes)
+        {
+            double sum = 0; long n = 0;
+            foreach (Component v in volumes)
+            {
+                var t = new SerializedObject(v).FindProperty("Texture0")?.objectReferenceValue as Texture3D;
+                if (t == null) continue;
+                try { foreach (Color c in t.GetPixels()) { sum += (c.r + c.g + c.b) / 3f; ++n; } }
+                catch (Exception) { }   // not readable
+            }
+            return n > 0 ? (float)(sum / n) : (float?)null;
+        }
+
+        /// Fog tiles' side, metres (2026-11-02): ~16-30 boxes over a GW2 map, none overlapping.
+        const float FogTile = 160f;
+        /// A tile whose fog would be thinner than this is left out.
+        const float MinFogPiece = 2f;
+
+        /// The highest floor under the box (x, z) +- half, raycast down from @p fromY on a 16 x 16 grid: the
+        /// 95th percentile, so one tower or tree top does not lift a whole tile's fog; null without a hit.
+        static float? FootprintTop(Vector3 c, Vector3 size, float fromY)
+        {
+            var hits = new List<float>();
+            for (int i = 0; i < 16; ++i)
+                for (int j = 0; j < 16; ++j)
+                {
+                    var o = new Vector3(c.x + size.x * ((i + 0.5f) / 16f - 0.5f), fromY, c.z + size.z * ((j + 0.5f) / 16f - 0.5f));
+                    if (Physics.Raycast(o, Vector3.down, out RaycastHit h, size.y + 1f)) hits.Add(h.point.y);
+                }
+            if (hits.Count == 0) return null;
+            hits.Sort();
+            return hits[Mathf.Min(hits.Count - 1, hits.Count * 95 / 100)];
+        }
+
+        static Vector3 Abs(Vector3 v) { return new Vector3(Mathf.Abs(v.x), Mathf.Abs(v.y), Mathf.Abs(v.z)); }
+
+        /// True when @p b overlaps the box at @p c of @p size on X and Z.
+        static bool Overlaps(Bounds b, Vector3 c, Vector3 size)
+        {
+            return b.min.x < c.x + size.x * 0.5f && b.max.x > c.x - size.x * 0.5f && b.min.z < c.z + size.z * 0.5f && b.max.z > c.z - size.z * 0.5f;
+        }
 
         [MenuItem("Castlemist/Add Light Volume Fog")]
         public static void AddLightVolumeFogMenu()
@@ -953,7 +1186,11 @@ namespace Castlemist
             // The fog's own material, per scene: the shader is additive and runs every ray to full
             // opacity, so it adds ~ L0 x _LightIntensity - _LightThreshold to the screen. The sample
             // material's 3.76 / 0.79 on the Mists vaults' bright warm volumes (L0 ~1) was an orange
-            // glare (2026-10-22); 0.3 / 0 is a soft lit mist. Made once, then left to the user's tuning.
+            // glare (2026-10-22); 0.3 / 0 is a soft lit mist. A darker map gets FogTargetGlow / its mean
+            // L0 (Mad King's Labyrinth, L0 ~0.14: 0.3 added ~0.02, unseen). Made once, then left to the
+            // user's tuning.
+            float? meanL0 = MeanLightVolumeL0(volumes);
+            float intensity = meanL0.HasValue ? Mathf.Clamp(FogTargetGlow / Mathf.Max(meanL0.Value, 1e-3f), 0.3f, 4f) : 0.3f;
             Material fogMat = null;
             var srcRenderer = prefab.GetComponent<Renderer>();
             string scenePath = UnityEngine.SceneManagement.SceneManager.GetActiveScene().path;
@@ -964,29 +1201,67 @@ namespace Castlemist
                 if (fogMat == null)
                 {
                     fogMat = new Material(srcRenderer.sharedMaterial);
-                    if (fogMat.HasProperty("_LightIntensity")) fogMat.SetFloat("_LightIntensity", 0.3f);
+                    if (fogMat.HasProperty("_LightIntensity")) fogMat.SetFloat("_LightIntensity", intensity);
                     if (fogMat.HasProperty("_LightThreshold")) fogMat.SetFloat("_LightThreshold", 0f);
                     SetFogSamples(fogMat, 0);
                     AssetDatabase.CreateAsset(fogMat, matPath);
                 }
+                // No GPU instancing: the fragment reads unity_ObjectToWorld and the instanced _VolumeSize
+                // without the instance id (none is passed to it), so instanced boxes all test against the
+                // first one's box and the rays stop at once: no fog unless you stand in that box (2026-10-28).
+                if (fogMat.enableInstancing) { fogMat.enableInstancing = false; EditorUtility.SetDirty(fogMat); }
+                // No jitter (2026-10-29): the animated per-pixel start offset read as crawling grain.
+                if (fogMat.HasProperty("_JitterStrength") && (fogMat.GetFloat("_JitterStrength") != 0f || fogMat.IsKeywordEnabled("_ANIMATED_NOISE")))
+                {
+                    fogMat.SetFloat("_JitterStrength", 0f);
+                    fogMat.SetFloat("_EnableAnimatedJitter", 0f);
+                    fogMat.DisableKeyword("_ANIMATED_NOISE");
+                    EditorUtility.SetDirty(fogMat);
+                }
             }
 
-            int made = 0, skipped = 0;
-            foreach (Component v in volumes)
+            // 2026-11-02: one box per FogTile-metre tile of the Light Volumes' footprint, not per volume. Cut
+            // apart, the overlapping cell volumes left slabs 2-3 m thick that covered little of
+            // the map (Mad King's Labyrinth: 22 boxes, several 2.3 m bars). Each tile runs from the Y the
+            // terrain starts at (the lowest terrain's position; else the volumes' bottom) to GroundFogDepth
+            // over its highest floor (FootprintTop), at least the haze top, at most the volumes' top.
+            var cellVolumes = volumes.Where(v => v.transform.parent == null || v.transform.parent.name != "Detail").ToList();   // not ImmersiveLighting's fine volumes
+            Bounds all = default;
+            for (int i = 0; i < cellVolumes.Count; ++i)
             {
-                if (v.transform.parent != null && v.transform.parent.name == "Detail") continue;   // ImmersiveLighting's fine volumes
-                Transform t = v.transform;
-                Vector3 c = t.position, size = t.lossyScale;   // a Light Volume is a unit box scaled by its transform
-                float lo = c.y - Mathf.Abs(size.y) * 0.5f, hi = c.y + Mathf.Abs(size.y) * 0.5f;
-                float cap = top ?? lo + (hi - lo) / 3f;
-                if (cap <= lo + 0.5f) { ++skipped; continue; }   // the volume is above the haze
-                hi = Mathf.Min(hi, cap);
+                var vb = new Bounds(cellVolumes[i].transform.position, Abs(cellVolumes[i].transform.lossyScale));   // a Light Volume is a unit box scaled by its transform
+                if (i == 0) all = vb; else all.Encapsulate(vb);
+            }
+            Terrain[] terrains = Object.FindObjectsByType<Terrain>(FindObjectsSortMode.None);
+            float bottom = terrains.Length > 0 ? terrains.Min(t => t.transform.position.y) : all.min.y;
+            var boxes = new List<KeyValuePair<string, Bounds>>();
+            int skipped = 0;
+            int nx = Mathf.Max(1, Mathf.CeilToInt(all.size.x / FogTile)), nz = Mathf.Max(1, Mathf.CeilToInt(all.size.z / FogTile));
+            float tx = all.size.x / nx, tz = all.size.z / nz;
+            for (int ix = 0; ix < nx; ++ix)
+                for (int iz = 0; iz < nz; ++iz)
+                {
+                    var c = new Vector3(all.min.x + (ix + 0.5f) * tx, all.max.y, all.min.z + (iz + 0.5f) * tz);
+                    var size = new Vector3(tx, all.max.y - bottom, tz);
+                    if (!cellVolumes.Any(v => Overlaps(new Bounds(v.transform.position, Abs(v.transform.lossyScale)), c, size))) { ++skipped; continue; }
+                    float cap = top ?? bottom;
+                    float? floor = FootprintTop(c, size, all.max.y);
+                    if (floor.HasValue) cap = Mathf.Max(cap, floor.Value + GroundFogDepth);
+                    cap = Mathf.Min(cap, all.max.y);
+                    if (cap <= bottom + MinFogPiece) { ++skipped; continue; }   // no floor in it, above the haze
+                    boxes.Add(new KeyValuePair<string, Bounds>("Tile_" + ix + "_" + iz,
+                        new Bounds(new Vector3(c.x, (bottom + cap) * 0.5f, c.z), new Vector3(tx, cap - bottom, tz))));
+                }
+
+            int made = 0;
+            foreach (KeyValuePair<string, Bounds> kv in boxes)
+            {
                 var go = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
-                go.name = "Fog_" + v.name;
+                go.name = "Fog_" + kv.Key;
                 go.transform.SetParent(group.transform, false);
-                go.transform.position = new Vector3(c.x, (lo + hi) * 0.5f, c.z);
+                go.transform.position = kv.Value.center;
                 go.transform.rotation = Quaternion.identity;   // VRCFogVolume keeps it axis-aligned
-                go.transform.localScale = new Vector3(Mathf.Abs(size.x), hi - lo, Mathf.Abs(size.z));
+                go.transform.localScale = kv.Value.size;
                 if (fogMat != null) go.GetComponent<Renderer>().sharedMaterial = fogMat;
                 foreach (MonoBehaviour b in go.GetComponents<MonoBehaviour>())
                 {
@@ -996,9 +1271,11 @@ namespace Castlemist
                 ++made;
             }
             EditorSceneManager.MarkSceneDirty(group.scene);
-            return "light volume fog: " + made + " box(es) from " + volumes.Count + " Light Volume(s), " + skipped + " above the haze; " +
-                   (top.HasValue ? "below the GW2 height haze top y = " + top.Value.ToString("F1") : "no GW2 Haze: the lower third of each volume") +
-                   " (lit by the Light Volumes: bake them)";
+            return "light volume fog: " + made + " box(es) of ~" + FogTile + " m over " + cellVolumes.Count + " Light Volume(s), " + skipped + " empty tile(s); from y = " +
+                   bottom.ToString("F1") + (terrains.Length > 0 ? " (where the terrain starts)" : " (the volumes' bottom)") + " to " + GroundFogDepth +
+                   " m over each tile's highest floor" + (top.HasValue ? ", at least the GW2 height haze top y = " + top.Value.ToString("F1") : "") +
+                   "; mean L0 " + (meanL0.HasValue ? meanL0.Value.ToString("F2") : "?") +
+                   " (new material's intensity " + intensity.ToString("F2") + "; lit by the Light Volumes: bake them)";
         }
 
         // ---- bake with Bakery (2026-10-22) -----------------------------------------------------------------

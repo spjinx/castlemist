@@ -360,6 +360,8 @@ int mapwin_start_models(HWND wnd, uint64_t gen, std::shared_ptr<Gw2Dat> dat, std
                                     m->animClips.shrink_to_fit();
                                     m->animClipTokens.clear();
                                     m->animClipTokens.shrink_to_fit();
+                                    m->animClipMoveSpeed.clear();
+                                    m->animClipMoveSpeed.shrink_to_fit();
                                 }
                                 // The CPU prep (flatten, AO, MatVtx, ranges) runs
                                 // here, so the window's add_models only uploads.

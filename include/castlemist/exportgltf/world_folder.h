@@ -64,6 +64,9 @@ public:
     /// with the map). Callers keep the shared_ptrs they hold. Not concurrent
     /// with texture().
     virtual void release_textures() {}
+    /// A dat file's bytes, decompressed (2026-10-25: model sound scripts and their ASND
+    /// sounds); empty = missing or unread. Thread-safe.
+    virtual std::vector<uint8_t> file(uint32_t /*fileId*/) { return {}; }
 };
 
 /// @brief What one export did. `dir` and `manifest` are UTF-8 paths.

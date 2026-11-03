@@ -59,6 +59,11 @@ struct AssemblyOptions {
     /// weapon skills, emotes) on the combined character, mirrored with it for glTF.
     /// Off by default: Character Ripper characters stay as they were.
     bool animations = false;
+    /// With `animations`: carry only these clips (by token64), each renamed to
+    /// its name here. Empty = every clip, named as in the dat. A player race
+    /// carries ~1700 clips once its streamed banks load; an animator needs a few
+    /// dozen (ripper/animator.h picks them).
+    std::vector<std::pair<uint64_t, std::string>> clip_select;
 };
 
 struct AssemblyClip {

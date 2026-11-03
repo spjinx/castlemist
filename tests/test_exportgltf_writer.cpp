@@ -12,6 +12,7 @@
 
 #include "internal.h"
 
+#include "castlemist/exportgltf/sound_export.h"
 #include "castlemist/exportgltf/world_export.h"
 
 #include "castlemist/native/granny_anim.hpp"
@@ -405,6 +406,49 @@ CM_TEST(exportgltf, particle_sidecar_mesh_visibility) {
     CHECK_EQ(doc["clips"].size(), size_t(1));
     CHECK(doc["clips"][0]["boneVis"]["child"] == json::array({0.0}));
     CHECK(doc["clips"][0]["vis"].empty());   // not an effect bone
+}
+
+// The sounds sidecar (2026-10-25): sounds with their files and envelope, a trigger resolved to the
+// model clip whose token it names, token ids as decimal strings (a double would round them).
+CM_TEST(exportgltf, sound_sidecar_resolves_clip_triggers) {
+    namespace cm = castlemist::model;
+    ModelPreview model = make_skinned_quad();
+    const uint64_t clipTok = cm::tokenizeBoneName("open");
+    model.animClipTokens = {clipTok};
+    cm::SoundScript s;
+    s.present = true;
+    s.volume = 0.5f;
+    cm::MetaSound snd;
+    snd.name = cm::tokenizeBoneName("creak");
+    snd.category = cm::tokenizeBoneName("props");
+    snd.files = {{53604, 2.0f, 0.8f, 0, 0}, {52739, 1.0f, 1.0f, 0, 0}};
+    snd.hasAttenuation = true;
+    snd.attenuationVolume.type = 2;
+    snd.attenuationVolume.hasEnvelope = true;
+    snd.attenuationVolume.envelope.inputScale = 112;
+    snd.attenuationVolume.envelope.points = {{0.0f, 1.0f}, {1.0f, 0.0f}};
+    snd.loopMode = 1;
+    s.sounds.push_back(snd);
+    s.triggers.push_back({clipTok, {{snd.name, 0.32f, 0}}});
+    s.triggers.push_back({cm::tokenizeBoneName("hitt"), {}});   // no such clip
+    s.handlers = {cm::tokenizeBoneName("hitt")};
+    const json j = castlemist::exportgltf::sound_sidecar_json(model, s, 57185, {{53604, "sounds/53604.mp3"}});
+    CHECK_EQ(j["script"].get<int>(), 57185);
+    CHECK_EQ(j["sounds"].size(), size_t(1));
+    const json& so = j["sounds"][0];
+    CHECK(so["id"] == std::to_string(snd.name));
+    CHECK(so["name"] == "creak");
+    CHECK(so["files"][0]["path"] == "sounds/53604.mp3");
+    CHECK(so["files"][1]["path"].is_null());
+    CHECK_EQ(so["files"][0]["weight"].get<float>(), 2.0f);
+    CHECK_EQ(so["rolloff"]["inputScale"].get<float>(), 112.0f);
+    CHECK_EQ(so["rolloff"]["points"].size(), size_t(2));
+    CHECK_EQ(so["loopMode"].get<int>(), 1);
+    CHECK(j["triggers"][0]["clip"] == "TestClip");
+    CHECK(j["triggers"][0]["markers"][0]["sound"] == std::to_string(snd.name));
+    CHECK_EQ(j["triggers"][0]["markers"][0]["time"].get<float>(), 0.32f);
+    CHECK(j["triggers"][1]["clip"].is_null());
+    CHECK(j["handlers"][0] == "hitt");
 }
 
 CM_TEST(exportgltf, glb_header_and_json_are_well_formed) {

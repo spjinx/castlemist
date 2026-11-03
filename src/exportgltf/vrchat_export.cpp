@@ -10,6 +10,7 @@
 #include "castlemist/exportgltf/vrchat_maps.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <cstring>
 #include <filesystem>
@@ -63,6 +64,50 @@ nlohmann::json const_anims_json(const ModelPreview& model, const ModelMaterialCP
             out.push_back({{"clip", clipName},
                            {"duration", clip.duration},
                            {"constant", constant_token_name(k.constToken)},
+                           {"initial", {k.initial[0], k.initial[1], k.initial[2], k.initial[3]}},
+                           {"animated", k.hasTrack},
+                           {"times", std::move(times)},
+                           {"values", std::move(values)}});
+        }
+    }
+    return out;
+}
+
+// The UV transforms clip `c` animates on `mat`'s diffuse / normal (materials.json "uvAnims"),
+// sampled as const_anims_json samples its constants. `maps`: the slots (baseColor, normal) whose
+// texture carries the entry's uvAnimId.
+nlohmann::json uv_anims_json(const ModelPreview& model, const ModelMaterialCPU& mat) {
+    nlohmann::json out = nlohmann::json::array();
+    bool anyExtra = false;
+    for (const auto& x : mat.extraTextures) anyExtra = anyExtra || x.uvAnim != 0;
+    if (mat.diffuseUvAnim == 0 && mat.normalUvAnim == 0 && !anyExtra) return out;
+    for (size_t c = 0; c < model.animClips.size() && c < model.animClipUvs.size(); ++c) {
+        const castlemist::granny::Anim& clip = model.animClips[c];
+        const std::string clipName = sanitize_name(clip.name.empty() ? ("Clip_" + std::to_string(c)) : clip.name);
+        for (const ModelUvAnimCPU& k : model.animClipUvs[c]) {
+            nlohmann::json maps = nlohmann::json::array();
+            if (mat.diffuseTex >= 0 && mat.diffuseUvAnim == k.uvAnimId) maps.push_back("baseColor");
+            if (mat.normalTex >= 0 && mat.normalUvAnim == k.uvAnimId) maps.push_back("normal");
+            // an extra layer by its role (maps.extras[].role): 48834's fire perturb scrolls (2026-10-27)
+            for (const auto& x : mat.extraTextures)
+                if (x.uvAnim != 0 && x.uvAnim == k.uvAnimId && !x.role.empty() &&
+                    std::find(maps.begin(), maps.end(), x.role) == maps.end()) maps.push_back(x.role);
+            if (maps.empty()) continue;
+            const int dim = k.hasTrack && k.curve.dim > 0 ? std::min(k.curve.dim, 4) : 4;
+            nlohmann::json times = nlohmann::json::array(), values = nlohmann::json::array();
+            const int n = k.hasTrack ? std::max(2, static_cast<int>(std::ceil(clip.duration * kConstAnimFps)) + 1) : 1;
+            for (int i = 0; i < n; ++i) {
+                const float t = n > 1 ? clip.duration * static_cast<float>(i) / static_cast<float>(n - 1) : 0.0f;
+                float v[16] = {k.initial[0], k.initial[1], k.initial[2], k.initial[3]};
+                if (k.hasTrack) castlemist::granny::sample(k.curve, t, v, dim);
+                times.push_back(t);
+                values.push_back({v[0], v[1], v[2], v[3]});
+            }
+            out.push_back({{"clip", clipName},
+                           {"duration", clip.duration},
+                           {"uvAnimId", k.uvAnimId},
+                           {"type", k.type},
+                           {"maps", std::move(maps)},
                            {"initial", {k.initial[0], k.initial[1], k.initial[2], k.initial[3]}},
                            {"animated", k.hasTrack},
                            {"times", std::move(times)},
@@ -452,7 +497,10 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
         for (const auto& [n, v] : mat.namedConstants) gw2[n] = v;
         // The whole float4 of each constant (a shader may read .y-.w: 1507908's stepcol.w).
         json gw2Vectors = json::object();
-        for (const auto& [n, v] : mat.namedConstantVectors) gw2Vectors[n] = {v[0], v[1], v[2], v[3]};
+        // A component the shader never reads can hold garbage, NaN included (2026-10-25: 1011602's
+        // glofade.y), which JSON writes as null: those are 0.
+        const auto fin = [](float x) { return std::isfinite(x) ? x : 0.0f; };
+        for (const auto& [n, v] : mat.namedConstantVectors) gw2Vectors[n] = {fin(v[0]), fin(v[1]), fin(v[2]), fin(v[3])};
         // MODL texTransforms as stored: what the VS's TexTransform<uv> animates per UV set
         // (scroll in UV per settings.uvScrollUnitSeconds, rotate read as radians per second;
         // both UNPROVEN, gw2-world-materials.md).
@@ -501,6 +549,8 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
             {"texTransforms", std::move(texTransforms)},
             // GW2 animates some constants per clip (ModelAnimationData.matConstAnim).
             {"constAnims", const_anims_json(model, mat)},
+            // ... and some texture UVs (ModelAnimationData.uvAnimData): 499261's vines grow in.
+            {"uvAnims", uv_anims_json(model, mat)},
             {"cloth", cloth_json(model, i)},
             {"warnings", warnings},
         };

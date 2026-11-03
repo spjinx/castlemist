@@ -123,3 +123,29 @@ CM_TEST(vrchat, prepares_merges_prunes_and_renames) {
     CHECK_EQ(chains[0], std::string("Hair01"));
     CHECK_EQ(m.meshes[0].vertices[3].bidx[0], 3u);       // Hair02, remapped
 }
+
+CM_TEST(vrchat, clip_tracks_follow_the_renamed_joints) {
+    ModelPreview m;
+    auto joint = [](const char* n, int parent) { ModelJoint j; j.name = n; j.parent = parent; return j; };
+    m.joints = {joint("bone:root", -1), joint("bone:COG", 0), joint("bone:Hair01", 1)};
+    ModelMeshCPU me;
+    GVertex v{};
+    v.bidx[0] = 2;
+    v.bwt[0] = 1;
+    me.vertices = {v, v, v};
+    me.indices = {0, 1, 2};
+    me.hasSkin = true;
+    m.meshes = {me};
+    m.materials.resize(1);
+    castlemist::granny::Anim clip;
+    for (const char* n : {"bone:COG", "bone:Hair01", "bone:Gone"}) {
+        castlemist::granny::Track t;
+        t.name = n;
+        clip.tracks.push_back(t);
+    }
+    m.animClips = {clip};
+    make_vrchat_ready(m);
+    CHECK_EQ(m.animClips[0].tracks[0].name, std::string("Hips"));
+    CHECK_EQ(m.animClips[0].tracks[1].name, std::string("Hair01"));
+    CHECK_EQ(m.animClips[0].tracks[2].name, std::string("bone:Gone"));  // no joint: left alone
+}

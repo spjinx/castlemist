@@ -94,6 +94,7 @@
 #include "castlemist/native/gw2_atex_encode.hpp"
 #include "castlemist/native/BinaryParser.h"
 #include "castlemist/native/gw2model.hpp"
+#include "castlemist/native/gw2_audio.hpp"
 #include "castlemist/native/granny_anim.hpp"
 #include "castlemist/format/chat_link.h"
 #include "castlemist/format/sdk_image.h"
@@ -127,6 +128,7 @@
 #include "castlemist/ripper/assemble.h"
 #include "castlemist/ripper/look.h"
 #include "castlemist/ripper/vrchat.h"
+#include "castlemist/ripper/animator.h"
 #include "castlemist/ripper/character_export.h"
 #include "castlemist/world/anim.h"
 #include "castlemist/world/load_world.h"
@@ -491,6 +493,80 @@ void cmd_extract(const Args& a) {
     emit(j);
 }
 
+// The audio of each --file-ids (comma separated) as <out-dir>/<fileId>.<mp3|ogg|wav|flac> (ASND / ABNK:
+// the first decodable clip), e.g. a music playlist's files (2026-10-26).
+void cmd_audio_extract(const Args& a) {
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    const std::filesystem::path dir(need(a, "out-dir"));
+    std::filesystem::create_directories(dir);
+    json files = json::array();
+    std::string all = need(a, "file-ids"), cur;
+    std::vector<std::string> ids;
+    for (char ch : all + ",") { if (ch == ',') { if (!cur.empty()) ids.push_back(cur); cur.clear(); } else cur.push_back(ch); }
+    for (const std::string& id : ids) {
+        Args one = a;
+        one["file-id"] = id;
+        uint32_t idx = 0;
+        std::vector<uint8_t> data;
+        try { data = extract_bytes(dat, one, idx); } catch (const std::exception& ex) { files.push_back({{"fileId", id}, {"error", ex.what()}}); continue; }
+        const std::vector<castlemist::audio::Clip> clips = castlemist::audio::extract(data.data(), data.size());
+        const castlemist::audio::Clip* c = nullptr;
+        for (const auto& k : clips) if (!k.data.empty() && k.codec != castlemist::audio::CODEC_UNKNOWN) { c = &k; break; }
+        if (!c) { files.push_back({{"fileId", id}, {"error", "no decodable audio"}}); continue; }
+        const char* ext = c->codec == castlemist::audio::CODEC_MP3 ? ".mp3" : c->codec == castlemist::audio::CODEC_OGG ? ".ogg"
+                        : c->codec == castlemist::audio::CODEC_WAV ? ".wav" : ".flac";
+        const std::filesystem::path out = dir / (id + ext);
+        std::ofstream of(out, std::ios::binary);
+        of.write(reinterpret_cast<const char*>(c->data.data()), static_cast<std::streamsize>(c->data.size()));
+        files.push_back({{"fileId", id}, {"path", out.generic_string()}, {"bytes", c->data.size()}});
+    }
+    emit({{"ok", true}, {"files", files}});
+}
+
+// Research aid (2026-10-27): every AMSP sound script in the index DB whose metaSound names or
+// categories contain one of --contains (comma separated, case-insensitive; detokenized names), as one
+// JSON line each on stdout: {"script", "sounds": [{name, category, files}]}. Progress on stderr.
+void open_index(const Args& a);
+void cmd_soundscan(const Args& a) {
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    std::ifstream tin(need(a, "template"), std::ios::binary);
+    if (!tin) fail("cannot open template");
+    json tpl; tin >> tpl;
+    open_index(a);
+    if (!castlemist::db::is_open()) fail("no index DB: pass --index");
+    std::vector<std::string> want;
+    { std::string all = need(a, "contains"), cur;
+      for (char ch : all + ",") { if (ch == ',') { if (!cur.empty()) want.push_back(cur); cur.clear(); } else cur.push_back((char)std::tolower((unsigned char)ch)); } }
+    const std::vector<uint32_t> bases = castlemist::db::query_base_ids("", "AMSP", 0, false, false, 1000000);
+    size_t done = 0, hits = 0;
+    for (uint32_t b : bases) {
+        if (++done % 2000 == 0) std::cerr << done << "/" << bases.size() << " (" << hits << " hits)" << std::endl;
+        if (b == 0 || b - 1 >= dat.mft_data_list.size()) continue;
+        std::vector<uint8_t> data;
+        try { data = decompress_entry(read_entry_bytes(dat.file_info.file_path, dat.mft_data_list[b - 1]), dat.mft_data_list[b - 1].compression_flag); }
+        catch (...) { continue; }
+        castlemist::model::SoundScript script;
+        try { script = castlemist::model::Extractor(data, tpl).parseSoundScript(); } catch (...) { continue; }
+        json sounds = json::array();
+        for (const auto& m : script.sounds) {
+            const std::string name = castlemist::model::detokenizeName64(m.name), cat = castlemist::model::detokenizeName64(m.category);
+            bool ok = false;
+            for (const std::string& w : want) if (name.find(w) != std::string::npos || cat.find(w) != std::string::npos) ok = true;
+            if (!ok) continue;
+            json files = json::array();
+            for (const auto& f : m.files) files.push_back(f.fileId);
+            sounds.push_back({{"name", name}, {"category", cat}, {"files", files}});
+        }
+        if (sounds.empty()) continue;
+        ++hits;
+        std::vector<uint32_t> f = get_by_file_id(dat, b);
+        std::cout << json{{"baseId", b}, {"script", f.empty() ? 0u : *std::min_element(f.begin(), f.end())}, {"sounds", sounds}}.dump() << std::endl;
+    }
+    std::cerr << "done: " << done << " scripts, " << hits << " hits" << std::endl;
+}
+
 void cmd_sniff(const Args& a) {
     Gw2Dat dat;
     load_dat_file(dat, need(a, "dat"));
@@ -507,6 +583,73 @@ void cmd_sniff(const Args& a) {
 // (one per line). --mode headers (default) prints each texture's magic, format and size;
 // --mode png also writes <out>/<baseId>.png for each whose largest side is within
 // [--min-dim, --max-dim] (ATEX family through gw2_atex, RIFF/PNG/JPEG through sdk_image).
+// Research aid (2026-10-25): every model in --base-ids (one base id per line) whose mesh names or
+// material names contain one of --contains (comma separated, case-insensitive), as one JSON line
+// each on stdout: {"baseId", "meshes": [[meshName, materialName]...]}. Progress on stderr.
+// 2026-10-27: --textures (comma separated fileIds) also matches a model whose materials use one of
+// them (either option may be given alone). --sound-scripts (comma separated fileIds): a model whose
+// ModelFileData.soundScript is one of them (the waypoint's "waypoint" sound sits in script 106173).
+void cmd_modelscan(const Args& a) {
+    std::ifstream tin(need(a, "template"), std::ios::binary);
+    if (!tin) fail("cannot open template");
+    json tpl; tin >> tpl;
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    std::ifstream in(need(a, "base-ids"));
+    if (!in) fail("cannot read --base-ids");
+    std::vector<std::string> needles;
+    std::set<uint32_t> textures;
+    if (has(a, "textures")) {
+        std::string cur;
+        for (char c : a.at("textures") + ",") {
+            if (c == ',') { if (!cur.empty()) textures.insert(static_cast<uint32_t>(std::stoul(cur))); cur.clear(); }
+            else cur.push_back(c);
+        }
+    }
+    std::set<uint32_t> scripts;
+    if (has(a, "sound-scripts")) {
+        std::string cur;
+        for (char c : a.at("sound-scripts") + ",") {
+            if (c == ',') { if (!cur.empty()) scripts.insert(static_cast<uint32_t>(std::stoul(cur))); cur.clear(); }
+            else cur.push_back(c);
+        }
+    }
+    if (has(a, "contains") || (textures.empty() && scripts.empty())) {
+        std::string all = need(a, "contains"), cur;
+        for (char c : all + ",") {
+            if (c == ',') { if (!cur.empty()) needles.push_back(cur); cur.clear(); }
+            else cur.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        }
+    }
+    auto lower = [](std::string s) { for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); return s; };
+    size_t scanned = 0, hits = 0, failed = 0;
+    for (std::string line; std::getline(in, line);) {
+        const uint64_t base = std::strtoull(line.c_str(), nullptr, 10);
+        if (base == 0 || base - 1 >= dat.mft_data_list.size()) continue;
+        if (++scanned % 5000 == 0) { std::fprintf(stderr, "scanned %zu hits %zu failed %zu\n", scanned, hits, failed); std::fflush(stderr); }
+        try {
+            const MftData& e = dat.mft_data_list[base - 1];
+            const std::vector<uint8_t> d = decompress_entry(read_entry_bytes(dat.file_info.file_path, e), e.compression_flag);
+            const castlemist::model::Model m = castlemist::model::Extractor(d, tpl).extract();
+            bool hit = false;
+            json meshes = json::array();
+            for (const auto& mesh : m.meshes) {
+                meshes.push_back({mesh.meshName, mesh.materialName});
+                const std::string s = lower(mesh.meshName + " " + mesh.materialName);
+                for (const auto& n : needles) hit = hit || s.find(n) != std::string::npos;
+            }
+            for (const auto& mat : m.materials)
+                for (const auto& t : mat.textures) hit = hit || textures.count(t.fileId) > 0;
+            hit = hit || (m.soundScript && scripts.count(m.soundScript) > 0);
+            if (!hit) continue;
+            ++hits;
+            std::printf("%s\n", json{{"baseId", base}, {"soundScript", m.soundScript}, {"meshes", meshes}}.dump().c_str());
+            std::fflush(stdout);
+        } catch (const std::exception&) { ++failed; }
+    }
+    std::fprintf(stderr, "done: scanned %zu hits %zu failed %zu\n", scanned, hits, failed);
+}
+
 void cmd_texbatch(const Args& a) {
     Gw2Dat dat;
     load_dat_file(dat, need(a, "dat"));
@@ -776,6 +919,8 @@ void cmd_amat(const Args& a) {
         if (set.transPsIndex >= 0 && set.transPsIndex < (int)set.shaders.size())
             j["transparent"]["psSamplers"] = sampJson(set.shaders[set.transPsIndex]);
     }
+    j["prepassCutout"] = set.prepassCutout;
+    j["prepassTextureCutout"] = set.prepassTextureCutout;
     if (has(a, "out-dir")) j["outDir"] = a.at("out-dir");
     emit(j);
 }
@@ -1368,15 +1513,44 @@ void cmd_effscan(const Args& a) {
 }
 
 // ---------------------------------------------------------------------------
-//  animmach: dump a `mach` packfile's animation-machine graph, undecoded
+//  animmach: dump a `mach` packfile's animation-machine graph
 // ---------------------------------------------------------------------------
 
 json animActionsJson(const std::vector<castlemist::model::AnimMachineAction>& actions) {
+    using Action = castlemist::model::AnimMachineAction;
     json arr = json::array();
     for (const auto& a : actions) {
-        char hex[16];
-        std::snprintf(hex, sizeof hex, "0x%08X", a.actionData);
-        arr.push_back({{"raw", a.actionData}, {"hex", hex}});
+        json j{{"kind", a.kind}, {"type", a.type}};
+        switch (a.kind) {
+        case Action::PlayAnimation:
+            j["sequence"] = a.sequence;
+            j["sequenceName"] = castlemist::model::detokenizeName64(a.sequence);
+            j["blendInTime"] = a.blendInTime;
+            j["blendOutTime"] = a.blendOutTime;
+            j["flags"] = a.flags;
+            break;
+        case Action::PlayBlendTree: {
+            char hex[33];
+            for (int i = 0; i < 16; ++i) std::snprintf(hex + 2 * i, 3, "%02x", a.blendTree[i]);
+            j["blendTree"] = hex;  // GUID bytes as stored; `cgraph --find` takes the same hex
+            j["blendInTime"] = a.blendInTime;
+            break;
+        }
+        case Action::PlayBlendTreeAlias:
+            j["blendTreeAlias"] = a.sequence;
+            j["blendTreeAliasName"] = castlemist::model::detokenizeName64(a.sequence);
+            j["blendInTime"] = a.blendInTime;
+            break;
+        case Action::SetAnimationOptions:
+            j["blendInTime"] = a.blendInTime;
+            j["blendOutTime"] = a.blendOutTime;
+            j["flags"] = a.flags;
+            break;
+        case Action::SetRotation:
+            j["rotation"] = {a.rotation[0], a.rotation[1], a.rotation[2], a.rotation[3]};
+            break;
+        }
+        arr.push_back(std::move(j));
     }
     return arr;
 }
@@ -1407,11 +1581,9 @@ json animStateVariantsJson(const std::vector<castlemist::model::AnimMachineState
 }
 
 // Dump a `mach` (PackAnimMachinesV0/V1) packfile's animation-machine graph:
-// every named state, its transitions, and the per-action `actionData` dword
-// left completely RAW (decimal + hex). No bit layout for actionData is
-// decoded anywhere in this codebase -- this tool does not guess one, it only
-// surfaces it so it can be eyeballed against known skill VFX (see
-// docs/research/gw2-animation-banks.md).
+// every named state, its transitions, and each action decoded from its
+// `actionData` variant (play a sequence, play a blend tree by GUID or alias,
+// set options, set rotation; see docs/research/gw2-anim-blend-trees.md).
 //
 //   gw2dat_cli animmach --dat <Gw2.dat> --template <json> (--index N | --file-id N | --base-id N) [--out <path>]
 void cmd_animmach(const Args& a) {
@@ -2797,8 +2969,9 @@ void cmd_cgraph(const Args& a) {
     if (!castlemist::db::is_open()) fail("no index DB (build it in castlemist, or pass --index)");
     Gw2Dat dat;
     load_dat_file(dat, need(a, "dat"));
-    const uint32_t root_type = has(a, "prefix") || has(a, "files") || has(a, "find") || has(a, "hex-of") ? 0 : static_cast<uint32_t>(to_u64(need(a, "content-type")));
-    const uint32_t root_id = has(a, "prefix") || has(a, "files") || has(a, "find") || has(a, "hex-of") ? 0 : static_cast<uint32_t>(to_u64(need(a, "content-id")));
+    const bool no_root = has(a, "prefix") || has(a, "files") || has(a, "find") || has(a, "hex-of") || has(a, "hex-type");
+    const uint32_t root_type = no_root ? 0 : static_cast<uint32_t>(to_u64(need(a, "content-type")));
+    const uint32_t root_id = no_root ? 0 : static_cast<uint32_t>(to_u64(need(a, "content-id")));
     const int max_depth = has(a, "depth") ? static_cast<int>(to_u64(a.at("depth"))) : 3;
     const size_t max_nodes = has(a, "max") ? to_u64(a.at("max")) : 300;
 
@@ -2826,24 +2999,34 @@ void cmd_cgraph(const Args& a) {
     // --find HEX: every object whose bytes contain that byte string (e.g. an object's
     // uid or GUID, little-endian hex), with the field offset of each hit.
     // --hex-of CODENAME: the first 64 bytes of the object carrying that string.
-    if (has(a, "hex-of")) {
-        const std::string want = a.at("hex-of");
+    // --hex-type T: the same for every object of content type T.
+    // --len N widens either dump past 64 bytes (capped at the object's end). Pointers
+    // inside an object are offsets into its pack's content, so `offset` locates them.
+    if (has(a, "hex-of") || has(a, "hex-type")) {
+        const bool by_type = has(a, "hex-type");
+        const std::string want = by_type ? std::string() : a.at("hex-of");
+        const uint32_t want_type = by_type ? static_cast<uint32_t>(to_u64(a.at("hex-type"))) : 0;
+        const uint64_t hex_len = has(a, "len") ? to_u64(a.at("len")) : 64;
+        auto matches = [&](const nd::Object& o) {
+            if (by_type) return o.type == want_type;
+            for (const auto& [field, s] : o.strings)
+                if (s == want) return true;
+            return false;
+        };
         json found = json::array();
         for (size_t pi = 0; pi < set.packs.size(); ++pi)
             for (const nd::Object& o : set.packs[pi].objects)
-                for (const auto& [field, s] : o.strings)
-                    if (s == want) {
-                        std::string hex;
-                        char b[4];
-                        for (uint32_t i = o.begin; i < o.end && i < o.begin + 64; ++i) {
-                            std::snprintf(b, sizeof b, "%02x", set.packs[pi].content[i]);
-                            hex += b;
-                        }
-                        json j = node_json(pi, o);
-                        j["hex"] = hex;
-                        found.push_back(std::move(j));
-                        break;
+                if (matches(o)) {
+                    std::string hex;
+                    char b[4];
+                    for (uint32_t i = o.begin; i < o.end && i < o.begin + hex_len; ++i) {
+                        std::snprintf(b, sizeof b, "%02x", set.packs[pi].content[i]);
+                        hex += b;
                     }
+                    json j = node_json(pi, o);
+                    j["hex"] = hex;
+                    found.push_back(std::move(j));
+                }
         emit({{"ok", true}, {"objects", found}});
         return;
     }
@@ -3282,6 +3465,9 @@ void cmd_character_assemble(const Args& a) {
 // stowed|hands|none (default none)] [--blender <blender.exe>] -- the saved look,
 // one combined model in metres with humanoid bone names, face keys and
 // visemes; Blender (found or given) turns it into an .fbx for Unity.
+// --animator [--stance u,w,g]: also the race's GW2 locomotion (ripper/animator.h):
+// the clips its animation machine plays for each stance, and <name>.animator.json
+// beside the .fbx for the Unity menu Castlemist > Character > Build GW2 Animator.
 void cmd_character_vrchat(const Args& a) {
     namespace rp = castlemist::ripper;
     namespace ch = castlemist::character;
@@ -3300,12 +3486,40 @@ void cmd_character_vrchat(const Args& a) {
     if (store.load(ch::default_look_file(), &err)) look = store.get(m.name).value_or(ch::CharacterLook{});
     ensure_cmap(a);
     rp::apply_look(opt, look, m.race, m.gender);
+    json animator;
+    size_t an_clips = 0;
+    if (has(a, "animator")) {
+        Gw2Dat dat;
+        load_dat_file(dat, need(a, "dat"));
+        std::string stances = has(a, "stance") ? a.at("stance") : std::string("u");
+        stances.erase(std::remove(stances.begin(), stances.end(), ','), stances.end());
+        rp::CharacterAnimator an = rp::plan_character_animator(dat, m.race + m.gender, stances, true);
+        if (!an.ok) fail(an.error);
+        opt.animations = true;
+        opt.clip_select = an.clipSelect;
+        an_clips = an.clipSelect.size();
+        animator = std::move(an.json);
+    }
     rp::VrchatOptions vo;
     if (has(a, "blender")) vo.blender_exe = utf8_arg("--blender");
     rp::VrchatReport r = rp::export_vrchat(m, need(a, "dat"), utf8_arg("--out"), opt, vo);
     if (!r.ok) fail(r.error);
-    emit({{"ok", true}, {"glb", r.glb}, {"fbx", r.fbx}, {"notes", r.notes}, {"blender", r.blender},
-          {"joints", r.joints}, {"physbone_chains", r.physbone_chains}});
+    json out{{"ok", true}, {"glb", r.glb}, {"fbx", r.fbx}, {"notes", r.notes}, {"blender", r.blender},
+             {"joints", r.joints}, {"physbone_chains", r.physbone_chains}};
+    if (!animator.is_null()) {
+        const std::string path = r.glb.substr(0, r.glb.size() - std::string(".glb").size()) + ".animator.json";
+        std::ofstream f(std::filesystem::u8path(path), std::ios::binary);
+        if (!f) fail("cannot write " + path);
+        f << animator.dump(1);
+        out["animator"] = path;
+        json per = json::array();
+        for (const json& st : animator["stances"])
+            per.push_back({{"stance", st["stance"]}, {"states", st["states"].size()}, {"clips", st["clips"].size()},
+                           {"missing", st["missing"]}, {"extras", st["extras"]}});
+        out["animator_stances"] = per;
+        out["animator_clips"] = an_clips;
+    }
+    emit(out);
 }
 
 // A race's Composite appearance entries by piece type (0-3 bare body, 5 face,
@@ -3768,6 +3982,12 @@ void cmd_world(const Args& a) {
     const uint32_t fileId = static_cast<uint32_t>(to_u64(need(a, "file-id")));
     const castlemist::world::WorldScene scene = castlemist::world::load_world(dat, fileId, tpl);
     json j = castlemist::world::world_summary(scene);
+    // --model-ids: every distinct prop model's fileId (2026-10-25, surveying a map's models).
+    if (has(a, "model-ids")) {
+        json ids = json::array();
+        for (const auto& m : scene.models) ids.push_back(m.fileId);
+        j["modelIds"] = ids;
+    }
     // --props <fileId,...>: every placement of those models -- prop index (the world export's
     // "<model>_<prop>" object names), map-space matrix and the clip it plays -- so a model the
     // export skipped can be placed by hand.
@@ -3833,10 +4053,10 @@ void cmd_world(const Args& a) {
 ///              [--no-terrain] [--no-props] [--collision] [--no-textures]
 ///              [--animations] [--scale <s>] [--threads <n>]
 /// Task 10: --out-dir writes the whole export folder through export_world_folder.
-///   --out-dir <dir> [--texels-per-chunk 64|128|256|512] [--max-texture <n>]
+///   --out-dir <dir> [--texels-per-chunk 64|128|256|512|1024] [--max-texture <n>]
 ///   [--region cx0,cy0,cx1,cy1] [--cell-max-chunks <n>] [--cell-max-tris <n>]
 ///   [--cell-max-texture-mb <mb>] [--no-sky] [--sky-approx] [--no-collision] [--overwrite]
-///   [--foliage off|colliders|all] [--no-unity-terrain] [--threads <n>] [--no-fbx] [--blender <exe>]
+///   [--foliage off|colliders|all] [--no-unity-terrain] [--no-sounds] [--threads <n>] [--no-fbx] [--blender <exe>]
 /// --foliage (world-foliage spec D7, default all): which zone instances become
 /// foliage/<cell>.bin records -- none, the collider trees only, or every one the
 /// world build made.
@@ -3862,7 +4082,8 @@ void cmd_world_export_folder(const Args& a) {
     eg::WorldFolderOptions opts;
     opts.texelsPerChunk = intFlag("texels-per-chunk", opts.texelsPerChunk);
     const int tpc = opts.texelsPerChunk;
-    if (tpc != 64 && tpc != 128 && tpc != 256 && tpc != 512) fail("--texels-per-chunk must be one of 64, 128, 256, 512");
+    if (tpc != 64 && tpc != 128 && tpc != 256 && tpc != 512 && tpc != 1024)
+        fail("--texels-per-chunk must be one of 64, 128, 256, 512, 1024");
     opts.maxTextureSize = intFlag("max-texture", opts.maxTextureSize);
     const int mt = opts.maxTextureSize;
     if (mt < 64 || mt > 4096 || (mt & (mt - 1)) != 0) fail("--max-texture must be a power of two from 64 to 4096");
@@ -3890,6 +4111,7 @@ void cmd_world_export_folder(const Args& a) {
     opts.collision = !has(a, "no-collision");
     opts.overwrite = has(a, "overwrite");
     opts.unityTerrain = !has(a, "no-unity-terrain");
+    opts.sounds = !has(a, "no-sounds");   // models' sound scripts and audio (sound_export.h)
     if (has(a, "foliage")) {   // world-foliage spec D7: zone foliage records, default all
         const std::string& f = a.at("foliage");
         if (f == "off") opts.foliage = eg::FoliageExport::Off;
@@ -4099,8 +4321,10 @@ int main(int argc, char** argv) {
         else if (cmd == "extract") cmd_extract(a);
         else if (cmd == "texture") cmd_texture(a);
         else if (cmd == "texbatch") cmd_texbatch(a);
+        else if (cmd == "modelscan") cmd_modelscan(a);
         else if (cmd == "parse") cmd_parse(a);
         else if (cmd == "sniff") cmd_sniff(a);
+        else if (cmd == "audio-extract") cmd_audio_extract(a);
         else if (cmd == "resolve") cmd_resolve(a);
         else if (cmd == "model") cmd_model(a);
         else if (cmd == "amatscan") cmd_amatscan(a);
@@ -4112,6 +4336,7 @@ int main(int argc, char** argv) {
         else if (cmd == "world-export") cmd_world_export(a);
         else if (cmd == "world-fbx") cmd_world_fbx(a);
         else if (cmd == "scanpf") cmd_scanpf(a);
+        else if (cmd == "soundscan") cmd_soundscan(a);
         else if (cmd == "scancloth") cmd_scancloth(a);
         else if (cmd == "scananim") cmd_scananim(a);
         else if (cmd == "amat") cmd_amat(a);

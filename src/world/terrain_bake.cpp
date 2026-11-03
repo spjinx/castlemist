@@ -145,6 +145,70 @@ bool bake_chunk_albedo(const TerrainChunk& c, const TextureLookup& tex, const Ba
     return true;
 }
 
+bool bake_chunk_normal(const TerrainChunk& c, const TextureLookup& tex, const BakeSettings& s,
+                       std::vector<uint8_t>& rgbOut, std::vector<uint8_t>* specOut, std::vector<uint8_t>* wetOut) {
+    const int T = std::max(1, s.texelsPerChunk);
+    rgbOut.assign(static_cast<size_t>(T) * T * 3, 128);
+    for (size_t i = 2; i < rgbOut.size(); i += 3) rgbOut[i] = 255;
+    if (specOut) specOut->assign(static_cast<size_t>(T) * T, 0);
+    if (wetOut) wetOut->assign(static_cast<size_t>(T) * T, 0);
+    const TerrainMaterial& m = c.material;
+    if (!m.resolved) return false;
+    auto get = [&](uint32_t id) -> const CappedTexture* {
+        if (id == 0 || !tex) return nullptr;
+        const CappedTexture* t = tex(id);
+        return (t && !t->mips.empty()) ? t : nullptr;
+    };
+    const CappedTexture* ground[4] = {};
+    const CappedTexture* normal[4] = {};
+    int mip[4] = {}, nmip[4] = {};
+    bool anyGround = false, anyNormal = false;
+    for (int k = 0; k < 4; ++k) {
+        if (static_cast<size_t>(k) < m.textureFileIds.size()) ground[k] = get(m.textureFileIds[k]);
+        if (static_cast<size_t>(k) < m.normalFileIds.size()) normal[k] = get(m.normalFileIds[k]);
+        if (ground[k]) { anyGround = true; mip[k] = ground_mip_level(ground[k]->width, s.groundRepeats, T, static_cast<int>(ground[k]->mips.size())); }
+        if (normal[k]) { anyNormal = true; nmip[k] = ground_mip_level(normal[k]->width, s.groundRepeats, T, static_cast<int>(normal[k]->mips.size())); }
+    }
+    if (!anyGround || !anyNormal) return false;
+    const CappedTexture* picker = get(m.pickerFileId);
+    const CappedTexture* modx = get(m.picker2FileId);
+    const BlendTexel pickerSolid = solid_texel(m.pickerSolid), modxSolid = solid_texel(m.picker2Solid);
+    for (int j = 0; j < T; ++j)
+        for (int i = 0; i < T; ++i) {
+            const float sx = (i + 0.5f) / T, ty = (j + 0.5f) / T;
+            float puv[2], guv[2];
+            page_uv(m, sx, ty, puv);
+            ground_uv(sx, ty, s.groundRepeats, guv);
+            TerrainBlendInput in{};
+            in.picker = picker ? sample_bilinear(*picker, 0, puv[0], puv[1], false, false) : pickerSolid;
+            in.modx = modx ? sample_bilinear(*modx, 0, puv[0], puv[1], false, false) : modxSolid;
+            for (int k = 0; k < 4; ++k) {
+                in.present[k] = ground[k] != nullptr;
+                if (ground[k]) in.ground[k] = sample_bilinear(*ground[k], mip[k], guv[0], guv[1], true, s.srgbColour);
+            }
+            float alb[3], w[4];
+            terrain_blend(in, alb, w);   // the colour's weights (alpha-biased), applied to the normals
+            float nx = 0, ny = 0, spec = 0;
+            for (int k = 0; k < 4; ++k) {
+                if (!(w[k] > 0) || !normal[k]) continue;   // absent: flat, adds nothing to x / y
+                const BlendTexel n = sample_bilinear(*normal[k], nmip[k], guv[0], guv[1], true, false);
+                nx += w[k] * (n.rgba[0] * 2.0f - 1.0f);
+                ny += w[k] * (n.rgba[1] * 2.0f - 1.0f);
+                spec += w[k] * n.rgba[3];
+            }
+            if (specOut) (*specOut)[static_cast<size_t>(j) * T + i] = to_byte(std::clamp(spec * kTerrainSpecularScale, 0.0f, 1.0f));
+            if (wetOut) (*wetOut)[static_cast<size_t>(j) * T + i] = to_byte(std::clamp((in.modx.rgba[1] - 0.5f) * 2.0f, 0.0f, 1.0f));
+            const float len2 = nx * nx + ny * ny;
+            if (len2 > 1.0f) { const float r = 1.0f / std::sqrt(len2); nx *= r; ny *= r; }
+            const float nz = std::sqrt(std::max(0.0f, 1.0f - nx * nx - ny * ny));
+            uint8_t* o = &rgbOut[(static_cast<size_t>(j) * T + i) * 3];
+            o[0] = to_byte(nx * 0.5f + 0.5f);
+            o[1] = to_byte(-ny * 0.5f + 0.5f);   // Unity's Y+ (the props' kFlipNormalGreen)
+            o[2] = to_byte(nz * 0.5f + 0.5f);
+        }
+    return true;
+}
+
 bool water_has_preset(const WorldScene& s) {
     const int pi = s.environment.light.presetIndex;
     return pi >= 0 && static_cast<size_t>(pi) < s.environment.water.size();
@@ -192,7 +256,9 @@ bool bake_cell_water(const WorldScene& s, const float rect[4], int texelsW, int 
                 const float v = sh[k] + (dp[k] - sh[k]) * mix;
                 o[k] = to_byte(srgbColour ? linear_to_srgb(v) : v);
             }
-            o[3] = static_cast<uint8_t>(std::lround(kFlatWaterAlpha * 255.0f));
+            // 2026-10-25: alpha = the depth mix (0 at the shore .. 1 at depthAttenuation), the water
+            // shader's depth (GW2 Water); a flat material reads it as its opacity.
+            o[3] = to_byte(kFlatWaterAlpha + (1.0f - kFlatWaterAlpha) * mix);
         }
     rgbaOut = std::move(out);
     return true;
