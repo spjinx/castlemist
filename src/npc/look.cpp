@@ -177,6 +177,29 @@ std::optional<NpcAssembly> npc_assembly(const NpcRecord& npc, size_t look_index,
             }
     }
 
+    // 2026-11-02: the record's weapons, in the hands: slot 200 the main hand, 208 the off-hand (by the catalogue's
+    // counts: 200 on 18711 weapons, 208 on 5307; the Mad Prince's staff is 200). 192 (3287) is not placed: its role
+    // is unproven (the Lunatic Boatmaster carries his torch in 200 and something else in 192).
+    for (const Weapon& w : npc.weapons) {
+        const char* slot = w.slot == 200 ? "WeaponA1" : w.slot == 208 ? "WeaponA2" : nullptr;
+        if (!w.model) continue;
+        if (!slot) {
+            out.notes.push_back("weapon slot " + std::to_string(w.slot) + " (model " + std::to_string(w.model) + "): role unknown, left off");
+            continue;
+        }
+        bool taken = false;
+        for (const character::ManifestPiece& p : out.manifest.pieces) taken = taken || p.slot == slot;
+        if (taken) continue;
+        character::ManifestPiece p;
+        p.slot = slot;
+        p.skin_type = "Weapon";
+        p.skin_id = w.skin;
+        p.file_ids = {w.model};
+        p.status = character::PieceStatus::Ok;
+        out.manifest.pieces.push_back(std::move(p));
+        opt.weapons = ripper::WeaponPlacement::Hands;
+    }
+
     // boneScaleIndex is never applied as a physique: real values run to 153 against 14 presets, so what it
     // indexes is unknown. 0xFFFFFFFF is "none" (743 of 1315 HumanFemale variants) and stays silent.
     opt.physique = -1;

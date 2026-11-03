@@ -823,6 +823,35 @@ CM_TEST(npc_look, a_type_13_helm_is_worn_when_the_look_has_no_type_11_helm) {
     CHECK_EQ(aquatic, 1);
 }
 
+// 2026-11-02: an NPC look carries its record's weapons in the hands: slot 200 the main hand (WeaponA1), 208 the
+// off-hand (WeaponA2); other slots (192, 3287 of the catalogue's weapons) are left off with a note. The Mad
+// Prince's staff and the Lunatic Boatmaster's torch were missing.
+CM_TEST(npc_look, weapons_go_in_the_hands) {
+    NpcRecord n = look_npc("humanfemale", "banditvar");
+    n.weapons = {{200, 1, 2, 648137}, {208, 3, 4, 499374}, {192, 5, 6, 61723}, {200, 7, 8, 0}};
+    auto a = npc_assembly(n, 0, look_composite());
+    CHECK(a.has_value());
+    if (!a) return;
+    const castlemist::character::ManifestPiece* main = nullptr;
+    const castlemist::character::ManifestPiece* off = nullptr;
+    for (const auto& p : a->manifest.pieces) {
+        if (p.slot == "WeaponA1") main = &p;
+        if (p.slot == "WeaponA2") off = &p;
+    }
+    CHECK(main != nullptr);
+    CHECK(off != nullptr);
+    if (main) {
+        CHECK_EQ(main->skin_type, std::string("Weapon"));
+        CHECK_EQ(main->file_ids.size(), size_t{1});
+        if (!main->file_ids.empty()) CHECK_EQ(main->file_ids[0], 648137u);
+    }
+    if (off && !off->file_ids.empty()) CHECK_EQ(off->file_ids[0], 499374u);
+    CHECK(a->options.weapons == castlemist::ripper::WeaponPlacement::Hands);
+    bool noted = false;
+    for (const std::string& t : a->notes) noted = noted || t.find("slot 192") != std::string::npos;
+    CHECK(noted);
+}
+
 CM_TEST(npc_look, truncated_race_token_resolves) {
     castlemist::composite::Composite c = look_composite();
     c.races[0].name = "SylvariFemale";
