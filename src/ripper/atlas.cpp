@@ -233,6 +233,37 @@ std::pair<AtlasRegion, AtlasRegion> split_face(const AtlasRegion& region, const 
     return {f, rest};
 }
 
+void seal_seams(ImageRgba& img, const std::vector<uint8_t>& used, int rings) {
+    const size_t n = static_cast<size_t>(img.w) * static_cast<size_t>(img.h);
+    if (used.size() < n || img.px.size() < n * 4) return;
+    std::vector<uint8_t> done(used.begin(), used.begin() + static_cast<std::ptrdiff_t>(n));
+    for (int ring = 0; ring < rings; ++ring) {
+        std::vector<size_t> grown;
+        std::vector<uint8_t> next = img.px;
+        for (int y = 0; y < img.h; ++y)
+            for (int x = 0; x < img.w; ++x) {
+                const size_t i = static_cast<size_t>(y) * img.w + x;
+                if (done[i]) continue;
+                int sum[4] = {0, 0, 0, 0}, k = 0;
+                for (int dy = -1; dy <= 1; ++dy)
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const int nx = x + dx, ny = y + dy;
+                        if ((!dx && !dy) || nx < 0 || ny < 0 || nx >= img.w || ny >= img.h) continue;
+                        const size_t j = static_cast<size_t>(ny) * img.w + nx;
+                        if (!done[j]) continue;
+                        for (int c = 0; c < 4; ++c) sum[c] += img.px[j * 4 + c];
+                        ++k;
+                    }
+                if (!k) continue;
+                for (int c = 0; c < 4; ++c) next[i * 4 + c] = static_cast<uint8_t>((sum[c] + k / 2) / k);
+                grown.push_back(i);
+            }
+        if (grown.empty()) break;
+        img.px = std::move(next);
+        for (size_t i : grown) done[i] = 1;
+    }
+}
+
 ImageRgba with_mask_alpha(const ImageRgba& tex, const ImageRgba& mask) {
     ImageRgba out = tex;
     if (mask.w <= 0 || mask.h <= 0) return out;

@@ -809,15 +809,41 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
                 workflow = armor_surface(*model, *baked, region, part.skin_meshes_are_part);
             } else {
                 // Bare skin's alpha (body, face, ears) carries shine, not
-                // coverage, like armor's; hair and undergarments are cut out at
-                // the same 0.25 the glTF uses: opaque from there up, a hole below
-                // -- so formats without an alpha mode (FBX) and blended shaders
-                // don't show them see-through.
-                for_region(region, kAtlas, kAtlas, [&](size_t i) {
+                // coverage, like armor's: opaque (2026-11-02: cut at 0.25 it
+                // holed the Mad Prince's ears once the atlas was Cutout). Hair
+                // and undergarments are cut out at the same 0.25 the glTF uses:
+                // opaque from there up, a hole below -- so formats without an
+                // alpha mode (FBX) and blended shaders don't show them
+                // see-through; hair in its own rects only (over the face it
+                // keeps the face's).
+                const bool coverage = part.name == "hair" || part.undergarment;
+                const AtlasRegion own = part.name == "hair" && set ? split_face(region, *set).second : region;
+                for_region(coverage ? own : region, kAtlas, kAtlas, [&](size_t i) {
                     uint8_t& a = diffuse.px[i + 3];
-                    a = a < 64 ? 0 : 255;
+                    a = !coverage || a >= 64 ? 255 : 0;
                 });
             }
+            // 2026-11-02: the eyelashes ("Eyelashes", AMAT 15206) multiply in game: white leaves the skin, the lashes
+            // darken it. On the one cut-out atlas their strip's white drew as a card: the texels their meshes sample
+            // take alpha = 255 - brightness, so the lashes stay and the white cuts away.
+            if (!part.piece && part.name == "face") {
+                ModelPreview lashes;
+                for (const ModelMeshCPU& mesh : model->meshes) {
+                    std::string mat = mesh.materialIndex < model->materials.size()
+                                          ? model->materials[mesh.materialIndex].materialName : std::string();
+                    std::transform(mat.begin(), mat.end(), mat.begin(), [](unsigned char c) { return std::tolower(c); });
+                    if (mat.find("lash") != std::string::npos) lashes.meshes.push_back(mesh);
+                }
+                if (!lashes.meshes.empty()) {
+                    const std::vector<uint8_t> cov = detail::uv_coverage(lashes, kAtlas, kAtlas, true);
+                    for_region(region, kAtlas, kAtlas, [&](size_t i) {
+                        if (!cov[i / 4]) return;
+                        const int lum = (diffuse.px[i] * 299 + diffuse.px[i + 1] * 587 + diffuse.px[i + 2] * 114) / 1000;
+                        diffuse.px[i + 3] = static_cast<uint8_t>(255 - lum);
+                    });
+                }
+            }
+
             if (pattern_glowing && pattern_mask) blit_glow(pattern_mask, BlitMode::Replace, false);
             if (glowing && sylvari && !part.piece && !part.undergarment)
                 blit_glow(own_glow_mask(*model), BlitMode::Add, true);
@@ -872,6 +898,16 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
 
     // One material for everything that samples the atlas.
     if (!atlas_meshes.empty()) {
+        // 2026-11-02: seams sealed: texels no mesh samples take their sampled neighbours' colour and alpha, so
+        // filtering and mipmaps at a mesh's edge read its own (the Mad Prince's ears had orange fringes from the
+        // coat beside them and see-through gaps from cut-away texels).
+        if (!sel.preview) {
+            ModelPreview sampled;
+            for (size_t mi : atlas_meshes) sampled.meshes.push_back(out.meshes[mi]);
+            const std::vector<uint8_t> used = detail::uv_coverage(sampled, kAtlas, kAtlas, true);
+            seal_seams(diffuse, used, 8);
+            seal_seams(normal, used, 8);
+        }
         int d = detail::add_texture(out, diffuse, 0, false);
         int n = sel.preview ? -1 : detail::add_texture(out, normal, 0, true);
         ModelMaterialCPU mat;

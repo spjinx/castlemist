@@ -137,6 +137,10 @@ PieceRegions piece_regions(const composite::BlitRectSet& set, uint8_t type, uint
 /// `region` split into its rects that are the face slot's and the rest; both keep its anchor.
 std::pair<AtlasRegion, AtlasRegion> split_face(const AtlasRegion& region, const composite::BlitRectSet& set);
 
+/// Seals the seams of a baked atlas: for `rings` passes, every texel `used` marks 0 that touches a used (or
+/// already sealed) texel takes the average colour and alpha of those neighbours. `used` is one byte per texel.
+void seal_seams(ImageRgba& img, const std::vector<uint8_t>& used, int rings);
+
 /// `tex` with its alpha replaced by `mask`'s red (nearest-resized to `tex` when the sizes differ).
 ImageRgba with_mask_alpha(const ImageRgba& tex, const ImageRgba& mask);
 

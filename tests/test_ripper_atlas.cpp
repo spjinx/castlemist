@@ -349,3 +349,23 @@ CM_TEST(atlas, split_face_separates_the_face_slots_rects) {
     CHECK_EQ(face.ax, 0u);   // both keep the anchor
     CHECK_EQ(rest.ay, 0u);
 }
+
+// 2026-11-02: texels no mesh samples take the nearest sampled texel's colour and alpha, a few rings out, so
+// filtering and mipmaps at a mesh's edge read its own colour: the Mad Prince's ears showed orange fringes from
+// the coat's red beside them, and see-through gaps from cut-away texels.
+CM_TEST(atlas, seal_seams_grows_used_texels_into_unused_ones) {
+    ImageRgba im{8, 1, std::vector<uint8_t>(8 * 4, 0)};
+    std::vector<uint8_t> cov(8, 0);
+    cov[2] = cov[3] = 1;
+    im.px[2 * 4] = 200; im.px[2 * 4 + 3] = 255;
+    im.px[3 * 4] = 100; im.px[3 * 4 + 3] = 255;
+    im.px[7 * 4] = 9;                                  // unused, beyond reach: left as it is
+    seal_seams(im, cov, 2);
+    CHECK_EQ(im.px[1 * 4], 200);                       // one ring out
+    CHECK_EQ(im.px[0 * 4], 200);                       // two rings out
+    CHECK_EQ(im.px[0 * 4 + 3], 255);
+    CHECK_EQ(im.px[5 * 4], 100);
+    CHECK_EQ(im.px[6 * 4], 0);                         // three rings: not reached
+    CHECK_EQ(im.px[7 * 4], 9);
+    CHECK_EQ(im.px[2 * 4], 200);                       // used texels unchanged
+}
