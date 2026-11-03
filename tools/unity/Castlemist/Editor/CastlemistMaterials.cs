@@ -500,7 +500,9 @@ namespace Castlemist
         /// glow(UV + (perturb x 2 - 1) x gloptrb) x glofade x 2, added.
         static void PerturbedGlow(MaterialContext ctx, Material mat, string tag, string folder, MaterialsFile.MaterialEntry e)
         {
-            if (!e.Gw2.ContainsKey("glofade") || e.Profile != "default") return;
+            // 2026-11-02: legacy-spec too (Mad King Thorn's body, AMAT 498990, ps 96): it left with the exporter's
+            // average-of-the-glow colour, (1, 0.38, 0.03) on an orange fire, which dimmed it to red.
+            if (!e.Gw2.ContainsKey("glofade") || (e.Profile != "default" && e.Profile != "legacy-spec")) return;
             Glow(mat, e);
             MaterialsFile.Extra perturb = e.ExtraOf("perturb");
             if (perturb == null || !e.Gw2.ContainsKey("gloptrb")) return;
@@ -1367,7 +1369,12 @@ namespace Castlemist
             if (!e.Gw2.ContainsKey("glofade") || !mat.GetTexture("_EmissionMap")) return;
             SetF(mat, "_UseEmission", 1f);
             SetF(mat, "_EmissionStrength", (float)(2.0 * e.Const("glofade", 0, 0.0)));
-            SetColor(mat, "_EmissionColor", Color.white);
+            // ps 96 (legacy-spec, uniforms named in its bgfx blob): glow x glofade x 2 x repcolr.rgb x 2.
+            if (e.Profile == "legacy-spec" && e.Gw2.ContainsKey("repcolr"))
+                SetColor(mat, "_EmissionColor", new Color(2f * (float)e.Const("repcolr", 0, 0.5), 2f * (float)e.Const("repcolr", 1, 0.5),
+                                                          2f * (float)e.Const("repcolr", 2, 0.5), 1f));
+            else
+                SetColor(mat, "_EmissionColor", Color.white);
         }
 
         /// The ramp glows (GW2 fx-ramp-glow 1998356, fx-perturb-mod-glow 574526; formulas in

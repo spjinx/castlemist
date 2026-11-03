@@ -292,6 +292,86 @@ CM_TEST(exportgltf, particle_sidecar_written_for_model_with_effects) {
     CHECK_NEAR(doc["effectLights"][0]["intensity"].get<double>(), 2.0, 1e-9);
 }
 
+// D: castlemist's reference particle statistics go beside the sidecar (seed 1, 4 s at 1/60 s),
+// the numbers a Unity port is measured against.
+CM_TEST(exportgltf, fxstats_written_beside_the_sidecar) {
+    ModelPreview model = make_quad_with_effects();
+    fs::path dir = make_temp_dir("fxstats");
+    GltfExportResult result = export_model_gltf(model, (dir / "fx.glb").string());
+    CHECK(result.ok);
+    CHECK(fs::exists(dir / "fx_fxstats.json"));
+    std::ifstream in(dir / "fx_fxstats.json");
+    json doc = json::parse(in);
+    CHECK_EQ(doc["live"].size(), size_t(240));
+    CHECK_EQ(doc["emitters"].size(), model.emitters.size());
+    CHECK_EQ(doc["seed"].get<int>(), 1);
+    CHECK(doc.contains("approximations"));
+}
+
+// The 2026-10-28 effect fields go out beside the old keys, which keep their meaning.
+CM_TEST(exportgltf, particle_sidecar_carries_v70_mesh_streak_obstacle_wind_and_tracks) {
+    ModelPreview model = make_quad_with_effects();
+    ParticleEmitterCPU& e = model.emitters[0];
+    e.extra.present = true;
+    e.extra.velocityInherit[0] = 0.25f; e.extra.velocityInherit[1] = 0.5f;
+    e.extra.velocityDistRange[1] = 3.0f;
+    e.extra.affinity = 7;
+    e.extra.mesh.present = true;
+    e.extra.mesh.fileId = 1234;
+    e.extra.mesh.spin[2][1] = 90.0f;
+    model.clouds[0].obstacleIndices = {0};
+    StreakCPU st; st.materialIndex = 0; st.anchorIndices = {0, 1}; st.spawnDist = 4.0f;
+    model.streaks = {st};
+    StreakAnchorCPU an; an.lifetime = 0.5f; an.colorStart = 0xff00ff00u;
+    model.streakAnchors = {an, an};
+    ObstacleCPU ob; ob.type = 2; ob.radius = 10.0f;
+    model.obstacles = {ob};
+    EffectWindCPU w; w.intensity = 3.0f;
+    model.effectWinds = {w};
+    castlemist::granny::Anim clip; clip.valid = true; clip.name = "idle"; clip.duration = 1.0f;
+    model.animClips = {clip};
+    EffectTrackCPU tr; tr.target = EffectTrackTarget::Light; tr.type = 3; tr.initial[0] = 0.5f;
+    model.animClipEffectTracks = {{tr}};
+
+    fs::path dir = make_temp_dir("particles_v70");
+    GltfExportResult result = export_model_gltf(model, (dir / "fx.glb").string());
+    CHECK(result.ok);
+    std::ifstream in(result.particlesJsonPath);
+    json doc = json::parse(in);
+
+    const json& em = doc["clouds"][0]["emitters"][0];
+    CHECK_NEAR(em["velocityInherit"][1].get<double>(), 0.5, 1e-9);
+    CHECK_NEAR(em["velocityDistRange"][1].get<double>(), 3.0, 1e-9);
+    CHECK_EQ(em["affinity"].get<int>(), 7);
+    CHECK_EQ(em["mesh"]["fileId"].get<int>(), 1234);
+    CHECK_NEAR(em["mesh"]["spin"][2][1].get<double>(), 90.0, 1e-9);
+    CHECK(!doc["clouds"][0]["emitters"][1].contains("mesh"));
+    CHECK(!doc["clouds"][0]["emitters"][1].contains("velocityInherit"));   // pre-V70: absent, not zero
+    CHECK_EQ(doc["clouds"][0]["obstacleIndices"].size(), size_t(1));
+    CHECK_EQ(doc["streaks"].size(), size_t(1));
+    CHECK_EQ(doc["streaks"][0]["anchorIndices"].size(), size_t(2));
+    CHECK_NEAR(doc["streaks"][0]["spawnDist"].get<double>(), 4.0, 1e-9);
+    CHECK_EQ(doc["streakAnchors"][0]["colorStart"].get<uint32_t>(), 0xff00ff00u);
+    CHECK_EQ(doc["obstacles"][0]["type"].get<int>(), 2);
+    CHECK_NEAR(doc["effectWinds"][0]["intensity"].get<double>(), 3.0, 1e-9);
+    const json& t = doc["clips"][0]["effectTracks"][0];
+    CHECK_EQ(t["target"].get<std::string>(), std::string("light"));
+    CHECK_EQ(t["type"].get<int>(), 3);
+    CHECK_NEAR(t["initial"][0].get<double>(), 0.5, 1e-9);
+}
+
+// A model whose only effect is a streak still gets its sidecar.
+CM_TEST(exportgltf, particle_sidecar_written_for_streak_only_model) {
+    ModelPreview model = make_static_quad();
+    StreakCPU st; st.anchorIndices = {0};
+    model.streaks = {st};
+    model.streakAnchors = {StreakAnchorCPU{}};
+    fs::path dir = make_temp_dir("streak_only");
+    GltfExportResult result = export_model_gltf(model, (dir / "s.glb").string());
+    CHECK(result.ok);
+    CHECK(!result.particlesJsonPath.empty());
+}
+
 CM_TEST(exportgltf, no_particle_sidecar_without_baked_effects) {
     ModelPreview model = make_static_quad();
     fs::path dir = make_temp_dir("no_particles");
@@ -301,6 +381,7 @@ CM_TEST(exportgltf, no_particle_sidecar_without_baked_effects) {
     CHECK(result.ok);
     CHECK(result.particlesJsonPath.empty());
     CHECK(!fs::exists(dir / "plain_particles.json"));
+    CHECK(!fs::exists(dir / "plain_fxstats.json"));
 }
 
 // A model with no effects but a mesh that names a visibility bone still gets its sidecar: meshVis

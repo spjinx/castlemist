@@ -150,6 +150,128 @@ void blit(ImageRgba& atlas, const ImageRgba& tex, const AtlasRegion& region, flo
     }
 }
 
+std::vector<composite::BlitRect> slot_rects(const composite::BlitRectSet& set, size_t slot) {
+    if (slot + 1 >= set.rect_index.size()) return {};
+    const size_t a = set.rect_index[slot], b = set.rect_index[slot + 1];
+    if (a > b || b > set.rects.size()) return {};
+    return {set.rects.begin() + static_cast<std::ptrdiff_t>(a), set.rects.begin() + static_cast<std::ptrdiff_t>(b)};
+}
+
+std::vector<size_t> armor_slots(uint8_t type) {
+    switch (type) {
+        case 9: return {0};
+        case 12: return {1};
+        case 8: return {2, 3};
+        case 10: return {4, 5};
+        case 11: return {6};
+        case 13: return {7};
+        case 14: return {8};
+        default: return {};
+    }
+}
+
+size_t flag_slot(int bit) {
+    if (bit >= 0 && bit <= 10) return static_cast<size_t>(bit);
+    if (bit >= 11 && bit <= 14) return static_cast<size_t>(bit + 1);
+    if (bit == 16) return 11;
+    return kNoSlot;
+}
+
+bool is_skin_slot(size_t slot) { return slot == kFaceSlot || slot == 11 || (slot >= 12 && slot <= 15); }
+
+PieceRegions piece_regions(const composite::BlitRectSet& set, uint8_t type, uint32_t hide_flags, uint32_t skin_flags,
+                           const std::vector<size_t>& lost, int tw, int th, float scale) {
+    const std::vector<size_t> own = armor_slots(type);
+    if (own.empty() || set.rect_index.empty() || tw <= 0 || th <= 0) return {};
+    auto is_lost = [&](size_t s) { return std::find(lost.begin(), lost.end(), s) != lost.end(); };
+    std::vector<size_t> named = own, paint, skin, over;
+    for (size_t s : own)
+        if (!is_lost(s)) paint.push_back(s);
+    for (int bit = 0; bit < 32; ++bit) {
+        const bool hide = (hide_flags >> bit) & 1u, sk = (skin_flags >> bit) & 1u;
+        const size_t s = flag_slot(bit);
+        if ((!hide && !sk) || s == kNoSlot || std::find(named.begin(), named.end(), s) != named.end()) continue;
+        named.push_back(s);
+        if (is_lost(s)) continue;
+        // Slots its hideFlags take: its own paint; skin over the skin by its alpha (the Mad Prince's coat is
+        // clear over the chest, which keeps his neck). Skin named by skinFlags alone: through the cut mask
+        // (his helm's face paint).
+        if (hide && is_skin_slot(s)) over.push_back(s);
+        else if (hide) paint.push_back(s);
+        else if (is_skin_slot(s)) skin.push_back(s);
+    }
+    bool any = false;
+    uint32_t ax = 0, ay = 0;
+    for (size_t s : named)
+        for (const composite::BlitRect& r : slot_rects(set, s)) {
+            ax = any ? std::min(ax, r.x0) : r.x0;
+            ay = any ? std::min(ay, r.y0) : r.y0;
+            any = true;
+        }
+    if (!any) return {};
+    PieceRegions out{{{}, ax, ay}, {{}, ax, ay}, {{}, ax, ay}};
+    for (size_t s : paint) for (const composite::BlitRect& r : slot_rects(set, s)) out.paint.rects.push_back(r);
+    for (size_t s : skin) for (const composite::BlitRect& r : slot_rects(set, s)) out.skin.rects.push_back(r);
+    for (size_t s : over) for (const composite::BlitRect& r : slot_rects(set, s)) out.over.rects.push_back(r);
+    const float x1 = static_cast<float>(ax) + scale * static_cast<float>(tw);
+    const float y1 = static_cast<float>(ay) + scale * static_cast<float>(th);
+    for (const AtlasRegion* g : {&out.paint, &out.skin, &out.over})
+        for (const composite::BlitRect& r : g->rects)
+            if (static_cast<float>(r.x1) > x1 + 0.5f || static_cast<float>(r.y1) > y1 + 0.5f) return {};
+    return out;
+}
+
+std::pair<AtlasRegion, AtlasRegion> split_face(const AtlasRegion& region, const composite::BlitRectSet& set) {
+    const std::vector<composite::BlitRect> face = slot_rects(set, kFaceSlot);
+    AtlasRegion f{{}, region.ax, region.ay}, rest{{}, region.ax, region.ay};
+    for (const composite::BlitRect& r : region.rects) {
+        const bool is_face = std::any_of(face.begin(), face.end(), [&](const composite::BlitRect& q) {
+            return q.x0 == r.x0 && q.y0 == r.y0 && q.x1 == r.x1 && q.y1 == r.y1;
+        });
+        (is_face ? f : rest).rects.push_back(r);
+    }
+    return {f, rest};
+}
+
+void seal_seams(ImageRgba& img, const std::vector<uint8_t>& used, int rings) {
+    const size_t n = static_cast<size_t>(img.w) * static_cast<size_t>(img.h);
+    if (used.size() < n || img.px.size() < n * 4) return;
+    std::vector<uint8_t> done(used.begin(), used.begin() + static_cast<std::ptrdiff_t>(n));
+    for (int ring = 0; ring < rings; ++ring) {
+        std::vector<size_t> grown;
+        std::vector<uint8_t> next = img.px;
+        for (int y = 0; y < img.h; ++y)
+            for (int x = 0; x < img.w; ++x) {
+                const size_t i = static_cast<size_t>(y) * img.w + x;
+                if (done[i]) continue;
+                int sum[4] = {0, 0, 0, 0}, k = 0;
+                for (int dy = -1; dy <= 1; ++dy)
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const int nx = x + dx, ny = y + dy;
+                        if ((!dx && !dy) || nx < 0 || ny < 0 || nx >= img.w || ny >= img.h) continue;
+                        const size_t j = static_cast<size_t>(ny) * img.w + nx;
+                        if (!done[j]) continue;
+                        for (int c = 0; c < 4; ++c) sum[c] += img.px[j * 4 + c];
+                        ++k;
+                    }
+                if (!k) continue;
+                for (int c = 0; c < 4; ++c) next[i * 4 + c] = static_cast<uint8_t>((sum[c] + k / 2) / k);
+                grown.push_back(i);
+            }
+        if (grown.empty()) break;
+        img.px = std::move(next);
+        for (size_t i : grown) done[i] = 1;
+    }
+}
+
+ImageRgba with_mask_alpha(const ImageRgba& tex, const ImageRgba& mask) {
+    ImageRgba out = tex;
+    if (mask.w <= 0 || mask.h <= 0) return out;
+    const ImageRgba m = mask.w == tex.w && mask.h == tex.h ? mask : resize_nearest(mask, tex.w, tex.h);
+    for (size_t i = 0; i + 3 < out.px.size() && i < m.px.size(); i += 4) out.px[i + 3] = m.px[i];
+    return out;
+}
+
 ImageRgba resize_bilinear(const ImageRgba& src, int w, int h) {
     ImageRgba out{w, h, std::vector<uint8_t>(static_cast<size_t>(w) * h * 4, 0)};
     if (src.w <= 0 || src.h <= 0) return out;

@@ -92,7 +92,7 @@ castlemist_add_test(extract
 # absent, so it is safe to leave enabled; GW2_TEST_DAT overrides the location.
 castlemist_add_test(dat
     SOURCES test_extract_dat.cpp test_exportgltf_world_dat.cpp
-    DEPS    castlemist::extract castlemist::exportgltf castlemist::world ext::json ext::stb)
+    DEPS    castlemist::extract castlemist::exportgltf castlemist::world castlemist::fxsim ext::json ext::stb)
 set_tests_properties(dat PROPERTIES TIMEOUT 600)
 # world_export_dat.spirit_vale runs tools/world/validate_manifest.py from the source tree.
 target_compile_definitions(cm_test_dat PRIVATE CM_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
@@ -121,6 +121,14 @@ castlemist_add_test(npc
     SOURCES test_npc.cpp
     DEPS    castlemist::npc
     PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/npc")
+
+castlemist_add_test(fx
+    SOURCES test_fx.cpp
+    DEPS    castlemist::fx)
+
+castlemist_add_test(fxsim
+    SOURCES test_fxsim.cpp
+    DEPS    castlemist::fxsim ext::json)
 
 castlemist_add_test(skillfx
     SOURCES test_skillfx.cpp
@@ -340,7 +348,7 @@ if (CASTLEMIST_PYTHON)
 endif()
 
 castlemist_add_test(ripper
-    SOURCES test_ripper_dye.cpp test_ripper_shader_dye.cpp test_ripper_atlas.cpp test_ripper_export.cpp test_ripper_skeleton.cpp test_ripper_assemble.cpp test_ripper_look.cpp test_ripper_animator.cpp
+    SOURCES test_ripper_dye.cpp test_ripper_shader_dye.cpp test_ripper_atlas.cpp test_ripper_weld.cpp test_ripper_export.cpp test_ripper_skeleton.cpp test_ripper_assemble.cpp test_ripper_look.cpp test_ripper_animator.cpp
     DEPS    castlemist::ripper ext::json ext::stb
     PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/ripper")
 target_compile_definitions(cm_test_ripper PRIVATE
@@ -349,13 +357,13 @@ target_compile_definitions(cm_test_ripper PRIVATE
 castlemist_add_test(render
     SOURCES test_render_math.cpp test_render_preview_rig.cpp test_render_world_view.cpp
             test_render_world_materials.cpp test_render_world_game.cpp
-            test_render_world_sky.cpp
+            test_render_world_sky.cpp test_render_effects.cpp
     DEPS    castlemist::render
     PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/render")
 
 castlemist_add_test(ui
     SOURCES test_ui_layout.cpp test_ui_content_map_service.cpp test_ui_character_state.cpp
             test_ui_content_links.cpp test_ui_data_status.cpp
-            test_ui_map_window.cpp test_ui_texture_gallery.cpp
+            test_ui_map_window.cpp test_ui_texture_gallery.cpp test_ui_particle_browser.cpp
     DEPS    castlemist::ui
     PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/ui")

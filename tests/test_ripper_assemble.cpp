@@ -239,3 +239,37 @@ CM_TEST(assemble, holsters_main_hand_right_off_hand_left) {
     CHECK_EQ(h[1], std::string("actionpoint:LStowHip"));
     CHECK(choose_holsters({"WeaponB1"}, {{}})[0].empty());  // no stow point
 }
+
+// 2026-11-02: the Mad Prince (NPC 23542). His long coat's hideFlags (31038) take every slot of the gloves, boots,
+// leggings and shoulders worn with it: those are not drawn (the coat has his hands and boots); his horned helm
+// (hideFlags 0) leaves his hair; his ears (no texture of their own) stay, drawn by the face in the atlas.
+CM_TEST(assemble, a_coats_hide_flags_hide_the_pieces_whose_slots_it_takes) {
+    const char* dat = std::getenv("GW2_TEST_DAT");
+    if (!dat || !*dat) SKIP("set GW2_TEST_DAT to run against a real Gw2.dat");
+    ch::CharacterManifest m;
+    m.name = "Mad Prince";
+    m.race = "Human";
+    m.gender = "Male";
+    m.pieces.push_back(armor("Coat", "madprinceic", 0xd251b9328102dull));
+    m.pieces.push_back(armor("Helm", "madprinceih", 0x21251b9328102dull));
+    m.pieces.push_back(armor("Gloves", "villacig", 0x3a46163136ull));
+    m.pieces.push_back(armor("Boots", "carnieacib", 0x49184a974823ull));
+    m.pieces.push_back(armor("Leggings", "zscholarabil", 0x624419058f40e7aull));
+    m.pieces.push_back(armor("Shoulders", "zwizardacis", 0x4d2309241d26faull));
+    AssemblyOptions opt;
+    opt.face = 31;   // princefa
+    opt.hair = 27;   // gothicha
+    ModelPreview out;
+    AssemblyReport r = assemble_character_model(m, dat, out, opt);
+    CHECK(r.ok);
+    for (const char* hidden : {"Gloves", "Boots", "Leggings", "Shoulders"}) {
+        const AssemblyPart* p = part(r, hidden);
+        CHECK(p != nullptr);
+        if (p) CHECK_EQ(p->status, std::string("hidden"));
+    }
+    for (const char* used : {"Coat", "Helm", "ears", "hair"}) {
+        const AssemblyPart* p = part(r, used);
+        CHECK(p != nullptr);
+        if (p) CHECK_EQ(p->status, std::string("used"));
+    }
+}

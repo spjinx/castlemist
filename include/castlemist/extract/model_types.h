@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "castlemist/native/granny_anim.hpp"
+#include "castlemist/extract/effect_types.h"
 
 namespace castlemist::model { struct Material; }
 
@@ -477,6 +478,7 @@ struct ParticleEmitterCPU {
     ParticleFlipbookCPU flipbook;       ///< Sprite-sheet animation, if any.
     bool hasMesh = false;               ///< Emitter spawns meshes rather than billboards.
     uint32_t meshFileId = 0;            ///< The mesh's fileId when hasMesh.
+    ParticleEmitterExtraCPU extra;      ///< V70 fields and the whole mesh settings (effect_types.h).
     int boneJoint = -1;                 ///< Resolved joint index (-1 = model origin).
 };
 
@@ -489,6 +491,7 @@ struct ParticleCloudCPU {
     float velocity[3] = {0, 0, 0};          ///< Cloud-wide velocity.
     float drag = 0;                         ///< Cloud-wide damping.
     std::vector<uint32_t> emitterIndices;   ///< Indices into ModelPreview::emitters.
+    std::vector<uint32_t> obstacleIndices;  ///< Indices into ModelPreview::obstacles.
     int boneJoint = -1;                     ///< Resolved joint index (-1 = model origin).
 };
 
@@ -626,9 +629,15 @@ struct ModelPreview {
     std::vector<ParticleEmitterCPU> emitters;    ///< Baked emitters.
     std::vector<EffectLightCPU> effectLights;    ///< Baked effect lights (`lightData`).
     std::vector<LightningBoltCPU> lightning;     ///< Lightning bolts (`lightningData`), per system bolt.
+    std::vector<StreakCPU> streaks;              ///< Streaks (`streakData.streaks`).
+    std::vector<StreakAnchorCPU> streakAnchors;  ///< Their anchors (`streakData.anchors`).
+    std::vector<ObstacleCPU> obstacles;          ///< Particle obstacles (`ModelFileData.obstacles`).
+    std::vector<EffectWindCPU> effectWinds;      ///< Effect winds (`windData.effectWind`).
+    /// @brief Parallel to @ref animClips: each clip's effect tracks (gw2model AnimClip::effectTracks).
+    std::vector<std::vector<EffectTrackCPU>> animClipEffectTracks;
 
     /// @brief True when the model carries any baked particle or light effect.
-    bool hasEffects() const { return !clouds.empty() || !effectLights.empty(); }
+    bool hasEffects() const { return !clouds.empty() || !effectLights.empty() || !streaks.empty(); }
     /// @brief True when some mesh names a visibility bone (ModelMeshCPU::visBone).
     bool hasMeshVis() const {
         for (const auto& m : meshes) if (m.visBone) return true;

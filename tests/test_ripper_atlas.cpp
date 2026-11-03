@@ -237,3 +237,135 @@ CM_TEST(atlas, blit_over_layers_by_alpha_and_adds_coverage) {
     CHECK_EQ(int(px(3, 0)[0]), 200);  // under the opaque texel: the overlay
     CHECK_EQ(int(px(3, 0)[3]), 255);  // with its coverage (a hair strand stays visible)
 }
+
+namespace {
+/// ArmorLight as the dat has it (2026-11-02): rectIndex holds each slot's first rect, then the count.
+BlitRectSet armor_light() {
+    BlitRectSet s;
+    s.name = "ArmorLight";
+    s.width = s.height = 1024;
+    s.rects = {{0, 512, 384, 768},   {128, 768, 384, 1024}, {640, 0, 1024, 256},   {768, 256, 1024, 512},
+               {512, 256, 768, 512}, {512, 0, 640, 256},    {384, 384, 512, 512},  {256, 256, 384, 512},
+               {384, 256, 512, 384}, {0, 0, 384, 256},      {0, 768, 128, 1024},   {0, 256, 256, 512},
+               {384, 512, 768, 768}, {0, 0, 384, 256},      {384, 0, 512, 256},    {384, 768, 896, 1024},
+               {896, 896, 1024, 960}, {896, 960, 1024, 1024}, {768, 512, 1024, 768}, {896, 768, 1024, 896}};
+    s.rect_index = {0, 2, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20};
+    return s;
+}
+}  // namespace
+
+CM_TEST(atlas, slot_rects_follow_rect_index) {
+    BlitRectSet s = armor_light();
+    auto coat = slot_rects(s, 0);
+    CHECK_EQ(coat.size(), size_t{2});
+    CHECK_EQ(coat[1].x0, 128u);
+    auto face = slot_rects(s, kFaceSlot);
+    CHECK_EQ(face.size(), size_t{1});
+    CHECK_EQ(face[0].x0, 384u);
+    CHECK_EQ(face[0].y0, 512u);
+    CHECK(slot_rects(s, 16).empty());       // past the last slot
+    CHECK(slot_rects(BlitRectSet{}, 0).empty());
+}
+
+// Measured 2026-11-02 on the Mad Prince's pieces (HumanMale, ArmorLight): each full-size texture lands 100% inside
+// the slots it names when anchored at their common top-left.
+CM_TEST(atlas, piece_regions_anchor_at_every_named_slot) {
+    BlitRectSet s = armor_light();
+    // Helm madprinceih: type 13 (slot 7), skinFlags face; 512x256 at 2x.
+    PieceRegions h = piece_regions(s, 13, 0, kSkinFlagFace, {}, 512, 256, 2.0f);
+    CHECK_EQ(h.paint.rects.size(), size_t{1});
+    CHECK_EQ(h.paint.ax, 0u);
+    CHECK_EQ(h.paint.ay, 512u);
+    CHECK_EQ(h.skin.rects.size(), size_t{1});
+    CHECK_EQ(h.skin.rects[0].x0, 384u);
+    // Gloves villacig: type 10 (slots 4, 5), hands skin; 1024x1024 at 1x.
+    PieceRegions g = piece_regions(s, 10, 0x2000, 0x2000, {}, 1024, 1024, 1.0f);
+    CHECK_EQ(g.paint.ax, 256u);
+    CHECK_EQ(g.paint.ay, 256u);
+    CHECK_EQ(g.paint.rects.size(), size_t{3});   // slots 4, 5
+    CHECK_EQ(g.over.rects.size(), size_t{1});    // the hands skin it hides
+    // Boots carnieacib: type 8 (slots 2, 3).
+    PieceRegions b = piece_regions(s, 8, 0x1000, 0x1000, {}, 512, 1024, 1.0f);
+    CHECK_EQ(b.paint.ax, 512u);
+    CHECK_EQ(b.paint.ay, 0u);
+}
+
+// The Mad Prince's coat (hideFlags 31038: slots 1-5 and 8, the four body skins) paints the leggings, boots,
+// gloves and shoulders slots; the gloves, losing theirs, paint nothing.
+CM_TEST(atlas, hide_flags_hand_slots_to_the_coat) {
+    BlitRectSet s = armor_light();
+    PieceRegions c = piece_regions(s, 9, 31038, 0x800, {}, 1024, 1024, 1.0f);
+    CHECK_EQ(c.paint.ax, 0u);
+    CHECK_EQ(c.paint.ay, 0u);
+    // slot 0 (2) + 1 (2) + 2 (1) + 3 (1) + 4 (1) + 5 (2) + 8 (1); the skin it hides goes over the skin by its
+    // alpha -- chest, feet, hands, legs (2): clear over the chest, it keeps his neck.
+    CHECK_EQ(c.paint.rects.size(), size_t{10});
+    CHECK_EQ(c.over.rects.size(), size_t{5});
+    CHECK(c.skin.rects.empty());   // skinFlags' chest is hidden too: over the skin, not through the cut mask
+    PieceRegions g = piece_regions(s, 10, 0x2000, 0x2000, {4, 5, 14}, 1024, 1024, 1.0f);
+    CHECK(g.paint.rects.empty());
+    CHECK(g.skin.rects.empty());
+    CHECK(g.over.rects.empty());
+    CHECK_EQ(g.paint.ax, 256u);   // still laid out from its own corner
+}
+
+CM_TEST(atlas, piece_regions_are_empty_when_the_texture_does_not_reach) {
+    BlitRectSet s = armor_light();
+    PieceRegions h = piece_regions(s, 13, 0, kSkinFlagFace, {}, 64, 64, 2.0f);
+    CHECK(h.paint.rects.empty());
+    CHECK(h.skin.rects.empty());
+    CHECK(piece_regions(BlitRectSet{}, 9, 0, 0, {}, 512, 512, 2.0f).paint.rects.empty());
+    CHECK(piece_regions(s, 5, 0, 0, {}, 512, 512, 2.0f).paint.rects.empty());   // not armour
+}
+
+CM_TEST(atlas, flag_bits_name_slots) {
+    CHECK_EQ(flag_slot(0), size_t{0});
+    CHECK_EQ(flag_slot(9), kFaceSlot);
+    CHECK_EQ(flag_slot(11), size_t{12});   // chest skin
+    CHECK_EQ(flag_slot(14), size_t{15});   // legs skin
+    CHECK_EQ(flag_slot(16), size_t{11});   // ears
+    CHECK_EQ(flag_slot(15), kNoSlot);
+}
+
+CM_TEST(atlas, mask_alpha_takes_the_masks_red) {
+    ImageRgba tex = solid(4, 2, 50);
+    ImageRgba mask = solid(2, 1, 0);
+    mask.px[0] = 255;   // left half white
+    ImageRgba out = with_mask_alpha(tex, mask);
+    CHECK_EQ(out.w, 4);
+    CHECK_EQ(out.px[0], 50);
+    CHECK_EQ(out.px[3], 255);                  // under the white texel
+    CHECK_EQ(out.px[(0 * 4 + 3) * 4 + 3], 0);  // under the black one
+}
+
+CM_TEST(atlas, split_face_separates_the_face_slots_rects) {
+    BlitRectSet s = armor_light();
+    AtlasRegion hair{{{0, 0, 384, 256}, {384, 512, 768, 768}}, 0, 0};
+    auto [face, rest] = split_face(hair, s);
+    CHECK_EQ(face.rects.size(), size_t{1});
+    CHECK_EQ(face.rects[0].x0, 384u);
+    CHECK_EQ(rest.rects.size(), size_t{1});
+    CHECK_EQ(rest.rects[0].y1, 256u);
+    CHECK_EQ(face.ax, 0u);   // both keep the anchor
+    CHECK_EQ(rest.ay, 0u);
+}
+
+// 2026-11-02: texels no mesh samples take the nearest sampled texel's colour and alpha, a few rings out, so
+// filtering and mipmaps at a mesh's edge read its own colour: the Mad Prince's ears showed orange fringes from
+// the coat's red beside them, and see-through gaps from cut-away texels.
+CM_TEST(atlas, seal_seams_grows_used_texels_into_unused_ones) {
+    ImageRgba im{8, 1, std::vector<uint8_t>(8 * 4, 0)};
+    std::vector<uint8_t> cov(8, 0);
+    cov[2] = cov[3] = 1;
+    im.px[2 * 4] = 200; im.px[2 * 4 + 3] = 255;
+    im.px[3 * 4] = 100; im.px[3 * 4 + 3] = 255;
+    im.px[7 * 4] = 9;                                  // unused, beyond reach: left as it is
+    seal_seams(im, cov, 2);
+    CHECK_EQ(im.px[1 * 4], 200);                       // one ring out
+    CHECK_EQ(im.px[0 * 4], 200);                       // two rings out
+    CHECK_EQ(im.px[0 * 4 + 3], 255);
+    CHECK_EQ(im.px[5 * 4], 100);
+    CHECK_EQ(im.px[6 * 4], 0);                         // three rings: not reached
+    CHECK_EQ(im.px[7 * 4], 9);
+    CHECK_EQ(im.px[2 * 4], 200);                       // used texels unchanged
+}

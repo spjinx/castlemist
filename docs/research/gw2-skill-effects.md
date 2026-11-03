@@ -186,3 +186,48 @@ its pages 41258 → 1764455, 40635 → 1764407, 42449 → 1764300, 40015 → 176
 
 The content map (`cmap::users_of`) can't see type-183 users: it keys objects by
 (type, dataId) and effect dataIds repeat. Use `cgraph --files`.
+
+## Amendment 2026-10-28: effect kinds are client classes
+
+Read in the `gw2re` Ghidra project (2026-09 build). `EfCliContext`'s factory `FUN_141345920`
+switches on the effect object's dataId (+0x28 = +40, the `kind`) and allocates one class each:
+
+| kind | class (source file) | object bytes | constructor |
+|---|---|---|---|
+| 0 | Audio | 0xd8 | 0x141349a00 |
+| 1, 11 | Compound | 0xa0 | 0x14134ab70 |
+| 2 | Decal | 0x80 | 0x14134cc00 |
+| 3 | EfCliEffectMaterial.cpp, class A | 0x108 | 0x14134d2f0 |
+| 5 | EfCliEffectMaterial.cpp, class B | 0xe0 | 0x14134d8d0 |
+| 4, 6, 10 | Model | 0x210 | 0x141350a10 |
+| 7 | PostProc | 0x88 | 0x141354f70 |
+| 8, 9 | EfCliEffectShakeSpring.cpp (two classes; both skipped when client setting 0x49 is on) | 0xa8 / 0x90 | 0x1413554c0 / 0x141355bb0 |
+
+anything else asserts (EfCliContext.cpp line 0x356). **How the class is known:** each constructor
+installs a vtable that sits in .rdata just before its source file's name string (the Model
+constructor also asserts with "EfCliEffectModel" itself); the order is the files' alphabetical
+order. The data agrees (census below): every Model kind carries a MODL, Decal an AMAT, Audio an
+AMSP, Compounds point at effects. The object keeps a pointer at **+0x30** to its kind's data;
+the context walk `FUN_141347ca0` follows children for kinds 1 and 11 (11: two lists, at +0 and
++0x10 of that data), one effect ref at +8 for kind 3, a resource at +0x18 (kinds 4, 6) or +8
+(kind 10).
+
+**Census** (`gw2dat_cli fx-census --what effects`, live dat 2026-10-28): 46,356 effect objects.
+
+| kind | class | objects | sizes (min / median / max) | files | refs |
+|---|---|---|---|---|---|
+| 0 | audio | 6194 | 152 / 152 / 184 | +112 AMSP (5363) | +120 → type 107 (5867) |
+| 1 | compound | 5412 | 144 / 160 / 344 | — | +112, +120, … +168 → effects |
+| 2 | decal | 27 | 200 / 208 / 208 | +128 AMAT (27) | |
+| 3 | material A | 33 | 176 | — | +104 → an effect (33) |
+| 4 | model | 427 | 184 / 264 / 464 | +120 MODL, +136 AMSP | local only |
+| 5 | material B | 2271 | 240 / 952 / 4856 | rare | many local |
+| 6 | model | 30630 | 272 / 272 / 288 | +120 MODL (all), +104 AMSP | +72 → effect (1142) |
+| 7 | postproc | 65 | 192 | — | |
+| 8 / 9 | shakespring | 129 / 75 | 184 / 160 | — | |
+| 10 | model | 155 | 192 / 200 / 208 | +104 MODL, +136 AMSP | |
+| 11 | compound | 938 | 160 / 184 / 224 | — | +128 … +176 → effects |
+
+`skillfx::find_effects` now expands kind 11 like kind 1 (it dropped kind-11 trees before), and
+every exported effect carries `class`. Per-class field layouts (what a decal, material or
+shake object holds) are the next read: the per-field value census is in the command's output.

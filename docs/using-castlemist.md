@@ -279,6 +279,19 @@ game's deferred lighting or shadows.
 
 ### View
 
+**Particle Browser...** finds and runs GW2 effects. The *Models* tab lists every model that
+carries effects (the first open scans the dat's ~200k models in the background, about an hour,
+and keeps the result in `dumps/index/gw2_fx_index.bin`; later opens resume or reuse it), with
+filters for streaks, lightning, mesh particles, bursts, clip effect tracks and sprite alignment.
+The *Effects* tab lists every effect object (type 183) with its client class (audio, compound,
+decal, material, model, postproc, shakespring). Selecting a row shows its model in the preview,
+run by castlemist's reference particle sim. The right side lists the emitters with every decoded
+field and its meaning; untick emitters to hide them (tick one to solo it). Under them: what the
+sim still approximates, and a 4-second statistics run (live count, spread, speed, alpha over
+life). The bottom row pauses, restarts and scrubs time (exact: the sim is deterministic), sets the
+seed and speed, exports the model for Unity, copies the id and saves the statistics as JSON.
+
+
 **Theme:** dark (default), light, or a custom accent colour.
 
 ## The command line
@@ -316,6 +329,15 @@ gw2dat_cli world-export --dat $dat --file-id 1151420 --template dumps\packfile\g
 # What uses a file, with names and chat links (needs the content map; --names goes online)
 gw2dat_cli users --file-id 1200313 --names
 gw2dat_cli users --content-type 66 --content-id 7562                 # the reverse: a skin's files
+
+# Effects: which models use which particle features (every MODL; about 70 minutes), with
+# example fileIds per feature, and every type-183 effect object by kind (about a minute)
+gw2dat_cli fx-census --dat $dat --template dumps\packfile\gw2_packfile.json > census.json
+gw2dat_cli fx-census --what effects --dat $dat > effects.json
+#   --offset N --count N   a slice of the MODL list; --examples N  fileIds kept per feature
+# The reference particle sim on one model: stats (live count per step, spread percentiles, mean
+# speed, alpha and size over life), the approximations it ran with, and the last K steps' particles
+gw2dat_cli fx-sim --dat $dat --template dumps\packfile\gw2_packfile.json --file-id 1450958 --seconds 4 --frames 1
 
 # Characters (API key saved in the Character Ripper)
 gw2dat_cli character --key-name main                                  # list characters

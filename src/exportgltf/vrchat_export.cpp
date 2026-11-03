@@ -384,7 +384,14 @@ VrchatFolderResult write_vrchat_folder(const ModelPreview& model, const std::str
         const ModelMaterialCPU& mat = model.materials[i];
         const std::string matName = material_name(mat);
         const std::string matFile = unique_name(safe_file_name(matName), takenNames);
-        const MaterialShading shading = material_shading(mat);
+        MaterialShading shading = material_shading(mat);
+        // 2026-11-02: with no game shader the glTF clips a diffuse whose alpha cuts (material_export.cpp:
+        // MASK); the preset follows it. A character atlas (the Mad Prince's hair strands, cut-out armour) was
+        // Opaque here, so Unity drew the strands as solid cards.
+        if (!mat.hasRenderState && shading.blend.preset == BlendPreset::Opaque && mat.diffuseTex >= 0 &&
+            mat.diffuseTex < static_cast<int>(model.textures.size()) &&
+            model.textures[static_cast<size_t>(mat.diffuseTex)].hasCutout)
+            shading.blend.preset = shading.blend.nearest = BlendPreset::Cutout;
         const ShaderProfile& profile = *shading.profile;
         const BlendInfo& blend = shading.blend;
         MaterialMaps maps = build_material_maps(model, mat, blend, profile);

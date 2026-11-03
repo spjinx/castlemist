@@ -85,6 +85,9 @@
 #include <nlohmann/json.hpp>
 
 #include "castlemist/native/gw2dat.h"
+#include "castlemist/native/gw2_audio.hpp"
+#include "castlemist/format/strs_keys.h"
+#include "castlemist/core/packfile.h"
 #include "castlemist/native/cmp_decompress_method0.hpp"
 #include "castlemist/native/cmp_compress_method0.hpp"
 #include "castlemist/native/gw2_atex.hpp"
@@ -106,6 +109,8 @@
 #include "castlemist/npc/look.h"
 #include "castlemist/npc/tokens.h"
 #include "castlemist/format/cntc_pack.h"
+#include "castlemist/fxsim/features.h"
+#include "castlemist/fxsim/sim.h"
 #include "castlemist/skillfx/evtc.h"
 #include "castlemist/skillfx/export.h"
 #include "castlemist/skillfx/pairing.h"
@@ -723,6 +728,17 @@ bool peek_texture_header(Gw2Dat& dat, uint32_t idx, std::string& fourcc, int& w,
 
 void cmd_texture(const Args& a) {
     std::string out = need(a, "out");
+    if (has(a, "full")) {   // the full-resolution copy, as the character ripper bakes it (decode_texture_full)
+        Gw2Dat dat;
+        load_dat_file(dat, need(a, "dat"));
+        ModelTextureCPU t;
+        int exact = 0;
+        if (!decode_texture_full(dat, static_cast<uint32_t>(to_u64(need(a, "file-id"))), t, &exact) || t.width <= 0)
+            fail("full texture decode failed");
+        if (!stbi_write_png(out.c_str(), t.width, t.height, 4, t.rgba.data(), t.width * 4)) fail("failed to write PNG: " + out);
+        emit({{"ok", true}, {"out", out}, {"width", t.width}, {"height", t.height}, {"exactWidth", exact}});
+        return;
+    }
     int mip = has(a, "mip") ? static_cast<int>(to_u64(a.at("mip"))) : 0;
     int idx = -1;
 
@@ -1749,6 +1765,12 @@ void cmd_map(const Args& a) {
     j["uniqueModels"] = uniq.size();
     if (!props.empty()) { j["boundsMin"]={lo[0],lo[1],lo[2]}; j["boundsMax"]={hi[0],hi[1],hi[2]}; }
     j["sample"] = std::move(sample);
+    if (has(a, "models")) {   // every prop model id, sorted (map fingerprinting)
+        std::vector<uint32_t> ids;
+        for (const auto& kv : uniq) ids.push_back(kv.first);
+        std::sort(ids.begin(), ids.end());
+        j["models"] = ids;
+    }
     json tj;
     tj["present"] = terr.present;
     if (terr.present) {
@@ -2338,6 +2360,240 @@ json npc_json(const castlemist::npc::NpcRecord& n) {
             {"name", n.name}};
 }
 
+// fx census: which effect features the dat's models use, with example fileIds (the
+// curated test cases are picked from this). One feature counts a model once.
+std::vector<std::string> fx_features(const castlemist::model::Model& m) {
+    std::set<std::string> f;
+    const auto& fx = m.effects;
+    auto hex = [](uint32_t v) { char b[16]; std::snprintf(b, sizeof b, "%x", v); return std::string(b); };
+    auto nz2 = [](const float p[2]) { return p[0] != 0 || p[1] != 0; };
+    if (!fx.clouds.empty()) f.insert("clouds");
+    for (const auto& c : fx.clouds) {
+        f.insert("cloud_flags_" + hex(c.flags));
+        f.insert("cloud_fvf_" + hex(c.fvf));
+        if (!c.obstacleIndices.empty()) f.insert("cloud_obstacles");
+        if (c.drag != 0) f.insert("cloud_drag");
+    }
+    for (const auto& e : fx.emitters) {
+        f.insert(e.hasV70Extras ? "emitter_v70" : "emitter_pre_v70");
+        if (nz2(e.velocityInherit)) f.insert("velocity_inherit");
+        if (nz2(e.velocityDistRange) || nz2(e.velocityDistSpeed) || nz2(e.accelerationDistRange) || nz2(e.accelerationDistSpeed))
+            f.insert("dist_terms");
+        if (e.affinity) f.insert("affinity");
+        if (e.mesh.present) f.insert("mesh_emitter");
+        if (e.mesh.present) f.insert("mesh_alignment_" + std::to_string(e.mesh.alignment));
+        if (e.hasPlane) f.insert("alignment_" + std::to_string(e.alignmentType));
+        f.insert("spawn_shape_" + std::to_string(e.spawnShape));
+        if (e.opacityCurvePreset) f.insert("opacity_preset_" + std::to_string(e.opacityCurvePreset));
+        if (e.scaleCurvePreset) f.insert("scale_preset_" + std::to_string(e.scaleCurvePreset));
+        if (!e.opacityCurve.empty()) f.insert("opacity_curve");
+        if (!e.scaleCurve.empty()) f.insert("scale_curve");
+        for (int b = 0; b < 32; ++b) {
+            if (e.emitterFlags & (1u << b)) f.insert("emitter_flag_" + hex(1u << b));
+            if (e.flags & (1u << b)) f.insert("flag_" + hex(1u << b));
+        }
+        if (e.drag != 0) f.insert("emitter_drag");
+    }
+    if (!fx.streaks.empty()) f.insert("streak");
+    if (!fx.obstacles.empty()) f.insert("obstacle");
+    for (const auto& o : fx.obstacles) f.insert("obstacle_type_" + std::to_string(o.type) + "_response_" + std::to_string(o.response));
+    if (!fx.winds.empty()) f.insert("effect_wind");
+    if (!fx.lightningSystems.empty()) f.insert("lightning");
+    if (!fx.lights.empty()) f.insert("effect_light");
+    static const char* kTarget[] = {"cloud", "light", "streak", "lightning", "wind"};
+    for (const auto& c : m.anim.clips)
+        for (const auto& t : c.effectTracks)
+            f.insert(std::string("track_") + (t.target < 5 ? kTarget[t.target] : "other") + "_type_" + std::to_string(t.type));
+    return {f.begin(), f.end()};
+}
+
+// fx-census --dat D [--template T --offset N --count N --examples N]: every MODL entry (from the
+// index DB), effects + clips only. Prints {models, effectModels, counts, examples}.
+void cmd_fx_census(const Args& a) {
+    std::filesystem::path tpl_path = has(a, "template") ? std::filesystem::path(utf8_arg("--template"))
+        : castlemist::character::find_castlemist_root(exe_dir()) / "dumps" / "packfile" / "gw2_packfile.json";
+    std::ifstream tin(tpl_path, std::ios::binary);
+    if (!tin) fail("cannot open template: " + tpl_path.string());
+    json tpl; try { tin >> tpl; } catch (const std::exception& ex) { fail(std::string("template JSON error: ") + ex.what()); }
+    open_index(a);
+    if (!castlemist::db::is_open()) fail("no index DB: pass --index");
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    std::vector<uint32_t> bases = castlemist::db::query_base_ids("", "MODL", 0, false, false, 1000000);
+    std::sort(bases.begin(), bases.end());
+    const size_t offset = has(a, "offset") ? to_u64(a.at("offset")) : 0;
+    const size_t count = has(a, "count") ? to_u64(a.at("count")) : bases.size();
+    const size_t maxEx = has(a, "examples") ? to_u64(a.at("examples")) : 8;
+    std::map<std::string, size_t> counts;
+    std::map<std::string, std::vector<uint32_t>> examples;
+    size_t models = 0, effectModels = 0, failed = 0;
+    for (size_t i = offset; i < bases.size() && i < offset + count; ++i) {
+        const uint32_t b = bases[i];
+        if (b == 0 || b - 1 >= dat.mft_data_list.size()) continue;
+        const MftData& e = dat.mft_data_list[b - 1];
+        std::vector<uint8_t> data;
+        try { data = decompress_entry(read_entry_bytes(dat.file_info.file_path, e), e.compression_flag); }
+        catch (...) { ++failed; continue; }
+        if (data.size() < 16 || data[0] != 'P' || data[1] != 'F' || tag_at(data, 8) != "MODL") continue;
+        castlemist::model::Model model;
+        try { model = castlemist::model::Extractor(data, tpl).extractEffects(); } catch (...) { ++failed; continue; }
+        ++models;
+        std::vector<std::string> feats = fx_features(model);
+        if (feats.empty()) continue;
+        ++effectModels;
+        std::vector<uint32_t> fids = get_by_file_id(dat, b);
+        const uint32_t fid = fids.empty() ? 0 : *std::min_element(fids.begin(), fids.end());
+        for (const auto& ft : feats) {
+            ++counts[ft];
+            auto& ex = examples[ft];
+            if (ex.size() < maxEx) ex.push_back(fid);
+        }
+    }
+    emit({{"ok", true}, {"models", models}, {"effectModels", effectModels}, {"failed", failed},
+          {"counts", counts}, {"examples", examples}});
+}
+
+// fx-sim --dat D --file-id N [--template T --seconds 4 --dt 0.0166667 --seed 1 --frames K]: runs the reference
+// particle sim (fxsim) on a model's baked effects; prints its stats, the approximations it ran
+// with, and the particles of the last K steps.
+void cmd_fx_sim(const Args& a) {
+    namespace fs = castlemist::fxsim;
+    if (has(a, "template")) {  // models need it; without --template the usual locations are tried
+        std::string err;
+        if (!castlemist::tpl::load_from_file(utf8_arg("--template"), err)) fail("template: " + err);
+    }
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    const uint32_t fid = static_cast<uint32_t>(to_u64(need(a, "file-id")));
+    std::shared_ptr<ModelPreview> m = load_model_by_fileid(dat, fid, false);
+    if (!m) fail("model " + std::to_string(fid) + " did not load");
+    const float seconds = has(a, "seconds") ? std::stof(a.at("seconds")) : 4.0f;
+    const float dt = has(a, "dt") ? std::stof(a.at("dt")) : 1.0f / 60.0f;
+    const uint32_t seed = has(a, "seed") ? static_cast<uint32_t>(to_u64(a.at("seed"))) : 1u;
+    const size_t keep = has(a, "frames") ? to_u64(a.at("frames")) : 0;
+    if (!(dt > 0) || !(seconds >= 0) || !std::isfinite(dt) || !std::isfinite(seconds))
+        fail("--dt must be a finite number > 0 and --seconds a finite number >= 0");
+    fs::SimInput in = fs::make_input(*m);
+    fs::Sim sim(in, seed);
+    const size_t steps = static_cast<size_t>(std::lround(seconds / dt));
+    json frames = json::array();
+    for (size_t i = 0; i < steps; ++i) {
+        sim.step(dt);
+        if (i + keep < steps) continue;
+        json ps = json::array();
+        for (const fs::Particle& p : sim.frame().particles)
+            ps.push_back({{"e", p.emitter}, {"pos", {p.pos.x, p.pos.y, p.pos.z}}, {"vel", {p.vel.x, p.vel.y, p.vel.z}}, {"age", p.age},
+                          {"size", {p.size[0], p.size[1]}}, {"rgba", {p.colour[0], p.colour[1], p.colour[2], p.colour[3]}},
+                          {"rot", p.rotation}, {"uv", {p.uv[0], p.uv[1], p.uv[2], p.uv[3]}}});
+        frames.push_back({{"time", sim.frame().time}, {"particles", std::move(ps)}});
+    }
+    json info = json::array();
+    for (const fs::EmitterIn& ei : in.emitters) {
+        const ParticleEmitterCPU& e = ei.e;
+        info.push_back({{"cloud", ei.cloud}, {"alignmentType", e.alignmentType},
+                        {"alignmentCase", castlemist::fx::plane_alignment_case(e.alignmentType)},
+                        {"flags", e.flags}, {"emitterFlags", e.emitterFlags}, {"spawnShape", e.spawnShape},
+                        {"scaleInitial", {{e.scaleInitial[0][0], e.scaleInitial[0][1]}, {e.scaleInitial[1][0], e.scaleInitial[1][1]}}},
+                        {"scaleChange", {{e.scaleChange[0][0], e.scaleChange[0][1]}, {e.scaleChange[1][0], e.scaleChange[1][1]}}},
+                        {"hasTransform", e.hasTransform}});
+    }
+    emit({{"ok", true}, {"fileId", fid}, {"emitters", in.emitters.size()}, {"emitterInfo", info}, {"warnings", in.warnings},
+          {"approximations", sim.approximations()}, {"stats", fs::stats_json(sim.stats())}, {"frames", frames}});
+}
+
+// npc-folder --dat D --id N [--look K] --out DIR [--fbx [--blender exe]]: one NPC's body (its model,
+// or a race-body NPC dressed from look K) as a world-model folder DIR/models/<model>/ - glb,
+// materials.json, _particles.json and _fxstats.json in the world's frame, as a world export
+// writes a model - so the Unity world importer (materials, ParticleEffects) reads it unchanged.
+void cmd_npc_folder(const Args& a) {
+    namespace fs = std::filesystem;
+    castlemist::npc::Catalogue cat = ensure_npc(a);
+    const uint32_t id = static_cast<uint32_t>(to_u64(need(a, "id")));
+    const castlemist::npc::NpcRecord* n = cat.find(id);
+    if (!n) fail("no npc with id " + std::to_string(id));
+    if (has(a, "template")) {
+        std::string err;
+        if (!castlemist::tpl::load_from_file(utf8_arg("--template"), err)) fail("template: " + err);
+    }
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    const size_t look = has(a, "look") ? static_cast<size_t>(to_u64(a.at("look"))) : 0;
+    castlemist::npc::NpcModel nm = castlemist::npc::npc_model(dat, *n, look);
+    if (!nm.model) fail("npc " + std::to_string(id) + " has no body to export");
+    const uint32_t key = n->model ? n->model : 0x80000000u + id;   // a dressed body has no model fileId
+    const std::string name = n->model ? std::to_string(n->model) : "npc" + std::to_string(id);
+    const fs::path out = fs::u8path(utf8_arg("--out").empty() ? need(a, "out") : utf8_arg("--out"));
+    const fs::path folder = out / "models" / name;
+    fs::create_directories(folder);
+    castlemist::exportgltf::VrchatFolderOptions vo;
+    vo.gltf.rootMatrix = castlemist::exportgltf::map_to_gltf_root(1.0);
+    vo.gltf.uv1CopyToUv4 = true;
+    vo.gltf.vertexColors = true;
+    vo.gltf.exportLods = true;
+    const std::u8string dir = folder.u8string();
+    auto r = castlemist::exportgltf::write_vrchat_folder(*nm.model, std::string(dir.begin(), dir.end()), name, key, vo);
+    if (!r.ok) fail(r.error.empty() ? std::string("export failed") : r.error);
+    for (const auto& em : nm.model->emitters) {
+        if (!em.hasMesh || !em.meshFileId) continue;
+        const fs::path mesh = folder / (std::to_string(em.meshFileId) + ".glb");
+        if (fs::exists(mesh)) continue;
+        if (auto mm = load_model_by_fileid(dat, em.meshFileId)) castlemist::exportgltf::export_model_gltf(*mm, mesh.string());
+    }
+    json fbx = nullptr;
+    if (has(a, "fbx")) {
+        std::string log;
+        const bool ok = castlemist::ripper::convert_folder_to_fbx(std::string(dir.begin(), dir.end()), log,
+                                                                  has(a, "blender") ? a.at("blender") : std::string());
+        fbx = {{"ok", ok}, {"log_tail", log.size() > 400 ? log.substr(log.size() - 400) : log}};
+    }
+    json files = json::array();
+    for (const auto& f : fs::directory_iterator(folder)) files.push_back(f.path().filename().string());
+    emit({{"ok", true}, {"npc", id}, {"folder", folder.generic_string()}, {"clips", nm.model->animClips.size()},
+          {"emitters", nm.model->emitters.size()}, {"notes", nm.notes}, {"files", files}, {"fbx", fbx}});
+}
+
+// npc-anim-scan --dat D [--template T]: for every distinct NPC body model, what links it to others:
+// its animation-bank imports, external skeleton, joint count and texture fileIds (research: a
+// mini and its full-size NPC share a skeleton, a bank or textures).
+void cmd_npc_anim_scan(const Args& a) {
+    castlemist::npc::Catalogue cat = ensure_npc(a);
+    std::filesystem::path tpl_path = has(a, "template") ? std::filesystem::path(utf8_arg("--template"))
+        : castlemist::character::find_castlemist_root(exe_dir()) / "dumps" / "packfile" / "gw2_packfile.json";
+    std::ifstream tin(tpl_path, std::ios::binary);
+    if (!tin) fail("cannot open template: " + tpl_path.string());
+    json tpl; tin >> tpl;
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    std::set<uint32_t> models;
+    for (const auto& n : cat.npcs) if (n.model) models.insert(n.model);
+    json out = json::array();
+    for (uint32_t fid : models) {
+        const uint32_t b = get_by_base_id(dat, fid);
+        if (!b || b - 1 >= dat.mft_data_list.size()) continue;
+        const MftData& e = dat.mft_data_list[b - 1];
+        try {
+            std::vector<uint8_t> data = decompress_entry(read_entry_bytes(dat.file_info.file_path, e), e.compression_flag);
+            if (data.size() < 16 || data[0] != 'P' || data[1] != 'F') continue;
+            castlemist::model::Model m = castlemist::model::Extractor(data, tpl).extract();
+            json imports = json::array();
+            for (const auto& im : m.anim.imports) imports.push_back(im.fileId);
+            std::set<uint32_t> tex;
+            for (const auto& mat : m.materials)
+                for (const auto& t : mat.textures) if (t.fileId) tex.insert(t.fileId);
+            size_t tris = 0;
+            for (const auto& mesh : m.meshes) tris += mesh.indices.size() / 3;
+            const castlemist::fxsim::ModelFeatures f = castlemist::fxsim::summarize(m);
+            out.push_back({{"model", fid}, {"imports", imports}, {"skeleton", m.skeleton.externalRef},
+                           {"joints", m.skeleton.bones.size()}, {"meshes", m.meshes.size()}, {"triangles", tris},
+                           {"clouds", f.clouds}, {"emitters", f.emitters}, {"streaks", f.streaks},
+                           {"lights", f.lights}, {"bolts", f.lightning},
+                           {"textures", std::vector<uint32_t>(tex.begin(), tex.end())}});
+        } catch (...) {
+        }
+    }
+    emit({{"ok", true}, {"models", out}});
+}
+
 // The NPC catalogue: --model F (body model fileId), --race R, --limit N (default 100).
 void cmd_npc_list(const Args& a) {
     castlemist::npc::Catalogue cat = ensure_npc(a);
@@ -2393,6 +2649,9 @@ void cmd_npc_show(const Args& a) {
                 j["assembly"] = {{"look", li}, {"race", as->manifest.race}, {"gender", as->manifest.gender},
                                  {"pieces", pieces}, {"face", as->options.face}, {"hair", as->options.hair},
                                  {"ears", as->options.ears}, {"skin_style", as->options.skin_style},
+                                 {"skinTint", as->options.skin_tint ? json::array({as->options.skin_tint->brightness, as->options.skin_tint->contrast,
+                                                                                   as->options.skin_tint->hue, as->options.skin_tint->saturation,
+                                                                                   as->options.skin_tint->lightness}) : json()},
                                  {"physique", as->options.physique}, {"notes", as->notes}};
             } else {
                 j["assembly"] = {{"look", li}, {"error", why}};
@@ -2456,7 +2715,17 @@ void cmd_clips(const Args& a) {
     std::shared_ptr<ModelPreview> m = load_model_by_fileid(dat, fid);
     if (!m) fail("model " + std::to_string(fid) + " did not load");
     json names = json::array();
-    for (const auto& c : m->animClips) names.push_back({{"name", c.name}, {"duration", c.duration}});
+    for (const auto& c : m->animClips) {
+        json e{{"name", c.name}, {"duration", c.duration}};
+        if (has(a, "placement")) {   // track group 0's InitialPlacement / AccumulationFlags (granny_anim.hpp)
+            e["placementFlags"] = c.placementFlags;
+            e["placementPos"] = {c.placementPos[0], c.placementPos[1], c.placementPos[2]};
+            e["placementQuat"] = {c.placementQuat[0], c.placementQuat[1], c.placementQuat[2], c.placementQuat[3]};
+            e["accumulationFlags"] = c.accumulationFlags;
+            e["loopTranslation"] = {c.loopTranslation[0], c.loopTranslation[1], c.loopTranslation[2]};
+        }
+        names.push_back(e);
+    }
     emit({{"ok", true}, {"joints", m->joints.size()}, {"meshes", m->meshes.size()}, {"clips", m->animClips.size()},
           {"clip_tokens", m->animationTokens.size()},
           {"imports", m->animationImports}, {"animation_model_ref", m->animationModelRef},
@@ -2629,6 +2898,70 @@ castlemist::cntc::PackSet load_cntc_packs(Gw2Dat& dat) {
 // Research aid: the content graph around one object. From --content-type T --content-id N
 // (dataId) it follows every local/external pointer breadth-first to --depth D (default 3),
 // printing each object reached with its string slots and its file slots (fileId + container).
+// fx-census --what effects --dat D: every type-183 effect object, per kind: the client class,
+// object sizes, file containers, ref target types, examples, and per 4-byte field (offset 44..
+// min(size, --max-offset 256)) the distinct values seen and the commonest ones.
+void cmd_effect_census(const Args& a) {
+    namespace nd = castlemist::cntc;
+    open_index(a);
+    if (!castlemist::db::is_open()) fail("no index DB: pass --index");
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    const nd::PackSet set = load_cntc_packs(dat);
+    const uint32_t maxOff = has(a, "max-offset") ? static_cast<uint32_t>(to_u64(a.at("max-offset"))) : 256;
+    struct KindStats {
+        size_t count = 0;
+        std::vector<uint32_t> sizes;
+        std::map<std::string, size_t> files, refTargets;
+        json examples = json::array();
+        std::map<uint32_t, std::map<uint32_t, size_t>> fields;   // offset -> value -> count
+    };
+    std::map<uint32_t, KindStats> kinds;
+    const std::vector<uint32_t>& refs = set.shared_file_refs();
+    for (size_t pi = 0; pi < set.packs.size(); ++pi) {
+        const nd::Pack& p = set.packs[pi];
+        for (const nd::Object& o : p.objects) {
+            if (o.type != castlemist::skillfx::kEffectType) continue;
+            KindStats& k = kinds[o.data_id];
+            ++k.count;
+            const uint32_t size = o.end - o.begin;
+            k.sizes.push_back(size);
+            for (const auto& [field, idx] : o.files) {
+                const uint32_t fid = idx < refs.size() ? refs[idx] : 0;
+                const uint32_t b = fid ? get_by_base_id(dat, fid) : 0;
+                const std::string c = b ? castlemist::db::lookup(b).container : std::string();
+                ++k.files["+" + std::to_string(field) + " " + (c.empty() ? "?" : c)];
+            }
+            for (const nd::Ref& r : o.refs) {
+                auto [tp, to] = set.resolve(pi, r);
+                ++k.refTargets["+" + std::to_string(r.field) + " type " + (to ? std::to_string(to->type) : std::string("?"))];
+            }
+            for (uint32_t off = 44; off + 4 <= size && off < maxOff; off += 4) ++k.fields[off][p.u32(o, off)];
+            if (k.examples.size() < 6)
+                k.examples.push_back({{"uid", p.u32(o, 20)}, {"codename", castlemist::skillfx::codename(o)},
+                                      {"pack", p.file_id}, {"size", size}});
+        }
+    }
+    json out = json::object();
+    for (auto& [kind, k] : kinds) {
+        std::sort(k.sizes.begin(), k.sizes.end());
+        json fields = json::object();
+        for (const auto& [off, vals] : k.fields) {
+            std::vector<std::pair<size_t, uint32_t>> top;
+            for (const auto& [v, n] : vals) top.push_back({n, v});
+            std::sort(top.rbegin(), top.rend());
+            json t = json::array();
+            for (size_t q = 0; q < top.size() && q < 4; ++q) t.push_back({top[q].second, top[q].first});
+            fields[std::to_string(off)] = {{"distinct", vals.size()}, {"top", t}};
+        }
+        out[std::to_string(kind)] = {
+            {"class", castlemist::skillfx::effect_class_name(castlemist::skillfx::effect_class_of_kind(kind))},
+            {"count", k.count}, {"size", {k.sizes.front(), k.sizes[k.sizes.size() / 2], k.sizes.back()}},
+            {"files", k.files}, {"refs", k.refTargets}, {"examples", k.examples}, {"fields", fields}};
+    }
+    emit({{"ok", true}, {"kinds", out}});
+}
+
 // --reverse also lists the objects that point AT the root; --prefix P lists a codename namespace instead.
 void cmd_cgraph(const Args& a) {
     namespace nd = castlemist::cntc;
@@ -3245,6 +3578,168 @@ void cmd_composite_types(const Args& a) {
 
 // Research: where a Composite token lives, by --name (its decoded spelling): every race whose file data,
 // faces, hair or ears hold it, plus the race's variantRefRace.
+// ---- NPC voice lines (2026-11-02): the text manifest, the voice map, captured keys, the audio. ----
+
+/// The decompressed bytes of the entry that holds @p fileId.
+std::vector<uint8_t> bytes_by_fileid(Gw2Dat& dat, uint32_t fileId) {
+    uint32_t base = get_by_base_id(dat, fileId);
+    if (base == 0 || base - 1 >= dat.mft_data_list.size()) fail("no entry for fileId " + std::to_string(fileId));
+    const MftData& e = dat.mft_data_list[base - 1];
+    return decompress_entry(read_entry_bytes(dat.file_info.file_path, e), e.compression_flag);
+}
+
+/// txtv: every {textId, voiceId}.
+std::vector<std::pair<uint32_t, uint32_t>> read_text_voices(Gw2Dat& dat, uint32_t fileId) {
+    std::vector<uint8_t> d = bytes_by_fileid(dat, fileId);
+    castlemist::core::PackfileReader r; size_t root;
+    if (!castlemist::core::open_chunk(d, "txtv", r, root)) fail("fileId " + std::to_string(fileId) + " is not a txtv voice map");
+    size_t off; uint32_t n = r.array(root, off);
+    std::vector<std::pair<uint32_t, uint32_t>> out;
+    out.reserve(n);
+    for (uint32_t i = 0; i < n; ++i) out.push_back({r.u32(off + size_t(i) * 8), r.u32(off + size_t(i) * 8 + 4)});
+    return out;
+}
+
+// text-base --dat D [--file-id 110865] --out strs_textbase.csv: "fileId,baseTextId" for every language's strs
+// files (txtm: strs file j holds textIds j*stringsPerFile ..), the table castlemist::skeys decrypts with.
+void cmd_text_base(const Args& a) {
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    const uint32_t fid = has(a, "file-id") ? static_cast<uint32_t>(to_u64(a.at("file-id"))) : 110865;
+    std::vector<uint8_t> d = bytes_by_fileid(dat, fid);
+    castlemist::core::PackfileReader r; size_t root;
+    if (!castlemist::core::open_chunk(d, "txtm", r, root)) fail("not a txtm text manifest");
+    const uint32_t per = r.u32(root);
+    size_t langs; uint32_t nl = r.array(root + 4, langs);
+    std::ofstream of(need(a, "out"));
+    of << "fileId,baseTextId\n";
+    size_t rows = 0;
+    // One language (default English): the reverse lookup textId -> strs file must not mix them.
+    const std::string want = has(a, "lang") ? a.at("lang") : std::string("English");
+    json names = json::array();
+    for (uint32_t l = 0; l < nl; ++l) {
+        const std::string name = std::filesystem::path(castlemist::core::language_name(l)).string();
+        names.push_back(name);
+        if (name != want) continue;
+        size_t fn; uint32_t nf = r.array(langs + size_t(l) * r.array_ptr_size(), fn);
+        for (uint32_t j = 0; j < nf; ++j)
+            if (uint32_t f = r.fileref(fn + size_t(j) * r.pointer_size())) { of << f << "," << uint64_t(j) * per << "\n"; ++rows; }
+    }
+    emit({{"ok", true}, {"stringsPerFile", per}, {"languages", names}, {"rows", rows}});
+}
+
+// text-voices --dat D [--file-id 198300] --out voices.csv: the whole txtv as "textId,voiceId".
+void cmd_text_voices(const Args& a) {
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    auto v = read_text_voices(dat, has(a, "file-id") ? static_cast<uint32_t>(to_u64(a.at("file-id"))) : 198300);
+    std::ofstream of(need(a, "out"));
+    of << "textId,voiceId\n";
+    for (auto& [t, vo] : v) of << t << "," << vo << "\n";
+    emit({{"ok", true}, {"rows", v.size()}});
+}
+
+// text-lines --dat D --keys textkeys.csv --textbase strs_textbase.csv [--voices-file-id 198300] [--around N]:
+// for every captured textId (and N either side of it), its voiceId and decrypted English text.
+void cmd_text_lines(const Args& a) {
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    if (castlemist::skeys::load_keys(std::filesystem::u8path(need(a, "keys")).wstring()) < 0) fail("cannot read the keys");
+    if (castlemist::skeys::load_textbase(std::filesystem::u8path(need(a, "textbase")).wstring()) < 0) fail("cannot read the textbase");
+    auto voices = read_text_voices(dat, has(a, "voices-file-id") ? static_cast<uint32_t>(to_u64(a.at("voices-file-id"))) : 198300);
+    std::unordered_map<uint32_t, uint32_t> voice;
+    for (auto& [t, v] : voices) voice[t] = v;
+    const long around = has(a, "around") ? static_cast<long>(to_u64(a.at("around"))) : 0;
+    std::set<uint32_t> ids;
+    {
+        std::ifstream in(need(a, "keys"));
+        std::string line;
+        while (std::getline(in, line)) {
+            if (line.empty() || !std::isdigit(static_cast<unsigned char>(line[0]))) continue;
+            long t = std::stol(line.substr(0, line.find(',')));
+            for (long k = t - around; k <= t + around; ++k) if (k > 0) ids.insert(static_cast<uint32_t>(k));
+        }
+    }
+    std::unordered_map<uint32_t, std::vector<uint8_t>> cache;
+    json rows = json::array();
+    for (uint32_t t : ids) {
+        std::wstring text;
+        if (uint32_t f = castlemist::skeys::fileid_for_textid(t)) {
+            long long base = castlemist::skeys::base_for_fileids({f});
+            auto it = cache.find(f);
+            if (it == cache.end()) {
+                std::vector<uint8_t> b;
+                try { b = bytes_by_fileid(dat, f); } catch (...) {}
+                it = cache.emplace(f, std::move(b)).first;
+            }
+            if (base >= 0 && t >= base && it->second.size() >= 4)
+                text = castlemist::skeys::decode_record_text(it->second.data(), it->second.size(), base, uint32_t(t - base));
+        }
+        auto vi = voice.find(t);
+        rows.push_back({{"textId", t}, {"voiceId", vi != voice.end() ? json(vi->second) : json()}, {"text", std::filesystem::path(text).string()}});
+    }
+    emit({{"ok", true}, {"lines", rows}});
+}
+
+/// A spoken line's audio (the whole ASND, an MP3 inside) by its txtv voiceId (2026-11-02): the voice bank index
+/// (ABIX, BankIndexData; the 49317-entry one, fileId 184691) lists per language one bank per ten voices, its entry
+/// voiceId / 10 a filename (self-relative pointer to a fileref); the bank (ABNK / BKCK, BankFileData V0..V2) lists
+/// its AsndFileData by voiceId, each with the ASND bytes. Language 0 is English. Empty when the bank is not local.
+std::vector<uint8_t> voice_audio(Gw2Dat& dat, uint32_t voiceId, uint32_t indexFileId, uint32_t language, uint32_t* bankOut) {
+    std::vector<uint8_t> idx = bytes_by_fileid(dat, indexFileId);
+    castlemist::core::PackfileReader r; size_t root;
+    if (!castlemist::core::open_chunk(idx, "BIDX", r, root)) fail("not a BIDX bank index");
+    size_t langs; uint32_t nl = r.array(root, langs);
+    if (language >= nl) fail("no such language in the bank index");
+    size_t names; uint32_t nb = r.array(langs + size_t(language) * r.array_ptr_size(), names);
+    if (voiceId / 10 >= nb) return {};
+    const uint32_t bank = r.fileref(names + size_t(voiceId / 10) * r.pointer_size());
+    if (bankOut) *bankOut = bank;
+    if (!bank) return {};
+    std::vector<uint8_t> bk;
+    try { bk = bytes_by_fileid(dat, bank); } catch (...) { return {}; }
+    castlemist::core::PackfileReader br; size_t broot;
+    if (!castlemist::core::open_chunk(bk, "BKCK", br, broot)) return {};
+    const uint32_t ver = bk.size() > 22 ? uint32_t(bk[20] | (bk[21] << 8)) : 0;   // first chunk's header: version
+    const size_t head = ver >= 2 ? 16 : 8;                                         // reserved dwords before asndFile
+    const size_t stride = ver >= 2 ? 36 + br.array_ptr_size() : 24 + br.array_ptr_size();
+    size_t first; uint32_t n = br.array(broot + head, first);
+    for (uint32_t i = 0; i < n; ++i) {
+        const size_t e = first + size_t(i) * stride;
+        if (br.u32(e) != voiceId) continue;
+        size_t data; uint32_t len = br.array(e + stride - br.array_ptr_size(), data);
+        if (!len || data + len > bk.size()) return {};
+        return std::vector<uint8_t>(bk.begin() + static_cast<std::ptrdiff_t>(data), bk.begin() + static_cast<std::ptrdiff_t>(data + len));
+    }
+    return {};
+}
+
+// voice-export --dat D --voice-id N --out <stem> [--index-file-id 184691] [--language 0]: the spoken line's audio as
+// <stem>.<mp3|ogg|wav|flac>, from its voice bank (voice_audio).
+void cmd_voice_export(const Args& a) {
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    const uint32_t vid = static_cast<uint32_t>(to_u64(need(a, "voice-id")));
+    uint32_t bank = 0;
+    std::vector<uint8_t> d = voice_audio(dat, vid, has(a, "index-file-id") ? static_cast<uint32_t>(to_u64(a.at("index-file-id"))) : 184691,
+                                         has(a, "language") ? static_cast<uint32_t>(to_u64(a.at("language"))) : 0, &bank);
+    if (d.empty()) fail("voice " + std::to_string(vid) + ": not in bank " + std::to_string(bank) + " (or the bank is not local)");
+    auto clips = castlemist::audio::extract(d.data(), d.size());
+    if (clips.empty()) fail(std::string("no audio in voice ") + std::to_string(vid) + " (" + sniff_type(d) + ")");
+    json files = json::array();
+    const std::string stem = need(a, "out");
+    for (size_t k = 0; k < clips.size(); ++k) {
+        const auto& c = clips[k];
+        const char* ext = c.codec == castlemist::audio::CODEC_OGG ? ".ogg" : c.codec == castlemist::audio::CODEC_WAV ? ".wav"
+                        : c.codec == castlemist::audio::CODEC_FLAC ? ".flac" : ".mp3";
+        std::string out = stem + (clips.size() > 1 ? "_" + std::to_string(k) : std::string()) + ext;
+        std::ofstream of(out, std::ios::binary);
+        of.write(reinterpret_cast<const char*>(c.data.data()), static_cast<std::streamsize>(c.data.size()));
+        files.push_back({{"file", out}, {"codec", castlemist::audio::codecName(c.codec)}, {"bytes", c.data.size()}});
+    }
+    emit({{"ok", true}, {"bank", bank}, {"files", files}});
+}
+
 void cmd_composite_find(const Args& a) {
     namespace rp = castlemist::ripper;
     using castlemist::npc::decode_token;
@@ -3253,22 +3748,37 @@ void cmd_composite_find(const Args& a) {
     auto comp = rp::load_composite(dat);
     if (!comp) fail("no Composite in the dat");
     const std::string name = need(a, "name");
+    // "madprince*": every token starting with "madprince".
+    const bool prefix = !name.empty() && name.back() == '*';
+    const std::string stem = prefix ? name.substr(0, name.size() - 1) : name;
+    auto match = [&](uint64_t t) { const std::string d = decode_token(t); return prefix ? d.rfind(stem, 0) == 0 : d == name; };
     json hits = json::array(), refs = json::object();
     for (const auto& r : comp->races) {
         refs[r.name] = r.variant_ref_race ? decode_token(r.variant_ref_race) : std::string();
         for (const auto& [token, fd] : r.file_data)
-            if (decode_token(token) == name)
+            if (match(token))
                 hits.push_back({{"race", r.name}, {"in", "file_data"}, {"type", static_cast<int>(fd.type)},
-                                {"mesh", fd.mesh_base}, {"token", std::to_string(token)}});
+                                {"mesh", fd.mesh_base}, {"token", std::to_string(token)}, {"name", decode_token(token)},
+                                {"texture", fd.texture_base}, {"normal", fd.texture_normal}, {"cut", fd.mask_cut},
+                                {"dyeMasks", {fd.mask_dye[0], fd.mask_dye[1], fd.mask_dye[2], fd.mask_dye[3]}},
+                                {"dyeFlags", fd.dye_flags}, {"hideFlags", fd.hide_flags}, {"skinFlags", fd.skin_flags},
+                                {"blitSet", fd.blit_set}});
         auto list = [&](const std::vector<uint64_t>& v, const char* in) {
-            for (uint64_t t : v)
-                if (decode_token(t) == name) hits.push_back({{"race", r.name}, {"in", in}});
+            for (size_t i = 0; i < v.size(); ++i)
+                if (match(v[i])) hits.push_back({{"race", r.name}, {"in", in}, {"index", i}, {"name", decode_token(v[i])}});
         };
         list(r.faces, "faces");
         list(r.hair_styles, "hair_styles");
         list(r.ears, "ears");
     }
-    emit({{"ok", true}, {"hits", hits}, {"variant_ref_race", refs}});
+    json sets = json::array();   // the blit sets the hits use (index: name, size, rects)
+    for (size_t i = 0; i < comp->blit_sets.size(); ++i) {
+        const auto& bs = comp->blit_sets[i];
+        json rs = json::array();
+        for (const auto& r : bs.rects) rs.push_back({r.x0, r.y0, r.x1, r.y1});
+        sets.push_back({{"index", i}, {"name", bs.name}, {"size", {bs.width, bs.height}}, {"rects", rs}, {"rectIndex", bs.rect_index}});
+    }
+    emit({{"ok", true}, {"hits", hits}, {"variant_ref_race", refs}, {"blitSets", sets}});
 }
 
 // Research (like animmach): every variant colour of a race as raw byte tuples
@@ -3831,6 +4341,8 @@ int main(int argc, char** argv) {
         else if (cmd == "scananim") cmd_scananim(a);
         else if (cmd == "amat") cmd_amat(a);
         else if (cmd == "effscan") cmd_effscan(a);
+        else if (cmd == "fx-sim") cmd_fx_sim(a);
+        else if (cmd == "fx-census") (has(a, "what") && a.at("what") == "effects") ? cmd_effect_census(a) : cmd_fx_census(a);
         else if (cmd == "animmach") cmd_animmach(a);
         else if (cmd == "matcensus") cmd_matcensus(a);
         else if (cmd == "compress") cmd_compress(a);
@@ -3846,12 +4358,18 @@ int main(int argc, char** argv) {
         else if (cmd == "npc-show") cmd_npc_show(a);
         else if (cmd == "npc-export") cmd_npc_export(a);
         else if (cmd == "npc-model") cmd_npc_model(a);
+        else if (cmd == "npc-anim-scan") cmd_npc_anim_scan(a);
+        else if (cmd == "npc-folder") cmd_npc_folder(a);
         else if (cmd == "clips") cmd_clips(a);
         else if (cmd == "npc-names") cmd_npc_names(a);
         else if (cmd == "look-options") cmd_look_options(a);
         else if (cmd == "composite-types") cmd_composite_types(a);
         else if (cmd == "composite-colors") cmd_composite_colors(a);
         else if (cmd == "composite-find") cmd_composite_find(a);
+        else if (cmd == "text-base") cmd_text_base(a);
+        else if (cmd == "text-voices") cmd_text_voices(a);
+        else if (cmd == "text-lines") cmd_text_lines(a);
+        else if (cmd == "voice-export") cmd_voice_export(a);
         else if (cmd == "look-set") cmd_look_set(a);
         else if (cmd == "look-thumbs") cmd_look_thumbs(a);
         else if (cmd == "character-vrchat") cmd_character_vrchat(a);

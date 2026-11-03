@@ -180,6 +180,12 @@ CM_TEST(vrchat, profile_by_amat) {
     CHECK(lc.name == "legacy-spec");
     CHECK(lc.clips);
     CHECK(lc.maskGlowGate == Channel::R);
+    // 2026-11-02: Mad King Thorn's body (model 498997): ps 96 discards on 2a-1 of the diffuse, takes the
+    // spec alpha x128 as the exponent and gates the glow by saturate(mask.R + gloover).
+    const ShaderProfile& mk = profile_for(mat_with_file(498990), 0);
+    CHECK(mk.name == "legacy-spec");
+    CHECK(mk.clips);
+    CHECK(mk.maskGlowGate == Channel::R);
 
     const ShaderProfile& am = profile_for(mat_with_file(2449347), 0);
     CHECK(am.name == "armor-mask");
@@ -472,6 +478,26 @@ MaterialMaps build(const ModelPreview& model, const ModelMaterialCPU& mat, Blend
 }
 
 }  // namespace
+
+// 2026-11-02: a baked character atlas (no game shader) carries the ripper's per-texel surface as glTF
+// metallic-roughness (G roughness, B metal): Packed reads it, not "smoothness 0.5" everywhere (the Mad
+// Prince's matte leather coat shone silver in Unity).
+CM_TEST(vrchat, packed_reads_a_baked_metal_rough_layer) {
+    ModelPreview model;
+    ModelMaterialCPU mat;
+    mat.materialName = "CharacterAtlas";
+    mat.hasRenderState = false;
+    mat.diffuseTex = add_tex(model, solid(2, 1, {90, 20, 20, 255}, 0));
+    mat.metalRoughTex = add_tex(model, tex_from(2, 1, {{255, 170, 0, 255}, {255, 40, 255, 255}}, 0));
+    MaterialMaps m = build_material_maps(model, mat, blend_of(BlendPreset::Cutout), profile_for(mat, 0));
+    CHECK(m.packed.present);
+    CHECK(m.metalSource == "metalRough.B");
+    CHECK(m.smoothSource == "1 - metalRough.G");
+    CHECK_EQ(px(m.packed.tex, 0, 0), 0);     // leather: not metal
+    CHECK_EQ(px(m.packed.tex, 0, 1), 85);    // rough 170 -> smooth 85
+    CHECK_EQ(px(m.packed.tex, 1, 0), 255);   // a buckle: metal
+    CHECK_EQ(px(m.packed.tex, 1, 1), 215);
+}
 
 CM_TEST(vrchat, alpha_bands_with_clipping_profile) {
     ModelPreview model;
@@ -1671,6 +1697,25 @@ CM_TEST(vrchat, gltf_alpha_mask_kept_for_baked_textures_without_game_shader) {
     model.textures[static_cast<size_t>(model.materials[0].diffuseTex)].hasCutout = false;
     CHECK(export_model_gltf(model, (dir / "d.glb").string()).ok);
     CHECK(glb_json(dir / "d.glb")["materials"][0]["alphaMode"] == "BLEND");
+}
+
+// 2026-11-02: materials.json follows the glTF there: a baked character atlas whose alpha cuts is Cutout, not
+// Opaque (the Mad Prince's hair strands drew as solid cards in Unity).
+CM_TEST(vrchat, materials_json_cutout_for_baked_textures_without_game_shader) {
+    ModelPreview model = glow_quad();
+    model.materials[0].hasRenderState = false;
+    model.materials[0].materialFile = 0;
+    model.materials[0].isEffect = false;
+    model.textures[static_cast<size_t>(model.materials[0].diffuseTex)].hasCutout = true;
+    fs::path dir = fresh_dir("atlas_cutout");
+    VrchatFolderResult r = write_vrchat_folder(model, dir.string(), "Npc", 0);
+    CHECK(r.ok);
+    CHECK(read_json(dir / "materials.json")["materials"][0]["preset"] == "Cutout");
+    CHECK(any_of_warnings(r.warnings, "diffuse alpha kept as coverage"));   // the BaseColor keeps its alpha
+    model.textures[static_cast<size_t>(model.materials[0].diffuseTex)].hasCutout = false;
+    fs::path dir2 = fresh_dir("atlas_opaque");
+    CHECK(write_vrchat_folder(model, dir2.string(), "Npc", 0).ok);
+    CHECK(read_json(dir2 / "materials.json")["materials"][0]["preset"] == "Opaque");
 }
 
 CM_TEST(vrchat, materials_json_decal_entry) {

@@ -105,6 +105,9 @@ castlemist_add_layer(native DEPS ext::json)
 
 castlemist_add_layer(core   DEPS castlemist::native)
 
+# fx: the GW2 client's effect maths (particles, streaks, lightning) as pure functions.
+castlemist_add_layer(fx     DEPS castlemist::core)
+
 castlemist_add_layer(format DEPS castlemist::core castlemist::native
                                  ext::jpegturbo ext::webp ext::stb
                                  windowscodecs ole32 oleaut32 uuid)
@@ -127,6 +130,9 @@ castlemist_add_layer(media  DEPS castlemist::core castlemist::native
 castlemist_add_layer(extract DEPS castlemist::format castlemist::media
                                   castlemist::native castlemist::db)
 
+# fxsim: the reference particle sim (fx maths over a ModelPreview), for the browser and Unity checks.
+castlemist_add_layer(fxsim DEPS castlemist::extract castlemist::fx ext::json)
+
 # sim sits beside render rather than under it, but it does need extract's mesh
 # types: the solver is fed a ModelMeshCPU straight out of model extraction.
 castlemist_add_layer(sim    DEPS castlemist::extract ext::glm)
@@ -142,7 +148,7 @@ castlemist_add_layer(world DEPS castlemist::extract ext::json)
 # to encode embedded textures as PNGs, and ext::json (already used by
 # native/db) to build the glTF JSON chunk without hand-rolled escaping. world
 # is for export_world_gltf, which writes a WorldScene (world never depends back).
-castlemist_add_layer(exportgltf DEPS castlemist::extract castlemist::world ext::stb ext::json)
+castlemist_add_layer(exportgltf DEPS castlemist::extract castlemist::world castlemist::fxsim ext::stb ext::json)
 # Recorded in the VRChat export's materials.json.
 target_compile_definitions(castlemist_exportgltf PRIVATE CASTLEMIST_VERSION_STRING="${PROJECT_VERSION}")
 
@@ -160,7 +166,7 @@ castlemist_add_layer(ripper DEPS castlemist::character castlemist::extract castl
 # render reads exportgltf's material rules (profile_for, alpha_tested,
 # decode_blend) so the map view's prop alpha modes match the glTF export.
 # exportgltf is CPU-only and never depends back on render.
-castlemist_add_layer(render DEPS castlemist::extract castlemist::sim castlemist::world castlemist::exportgltf
+castlemist_add_layer(render DEPS castlemist::extract castlemist::sim castlemist::fxsim castlemist::world castlemist::exportgltf
                                  d3d11 dxgi d3dcompiler dxguid)
 
 # The "Game 1:1" surface. PRIVATE: nothing above render needs bgfx headers --
@@ -190,7 +196,7 @@ endif()
 # so the exe still starts on a Windows without it.
 castlemist_add_layer(ui     DEPS castlemist::render castlemist::db castlemist::extract
                                  castlemist::exportgltf castlemist::character castlemist::ripper castlemist::npc
-                                 ext::imgui comctl32 comdlg32 shell32 user32 gdi32 advapi32 uxtheme)
+                                 castlemist::skillfx ext::imgui comctl32 comdlg32 shell32 user32 gdi32 advapi32 uxtheme)
 
 
 # -----------------------------------------------------------------------------

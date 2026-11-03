@@ -29,10 +29,27 @@ constexpr uint32_t kBarType = 65;
 /// @brief Skill dataIds below this are boons and conditions (717 Protection, 737 Burning, ...).
 constexpr uint32_t kFirstOwnSkillId = 2000;
 
+/// @brief The client class an effect `kind` builds (EfCliContext's factory 0x141345920,
+///        2026-09 build). Each class's vtable sits just before its source file's name in
+///        .rdata; kinds 3/5 and 8/9 are two classes each in EfCliEffectMaterial.cpp and
+///        EfCliEffectShakeSpring.cpp. docs/research/gw2-skill-effects.md, 2026-10-28.
+enum class EffectClass : uint8_t { Unknown, Audio, Compound, Decal, Material, Model, PostProc, ShakeSpring };
+
+/// @brief 0 Audio; 1, 11 Compound; 2 Decal; 3, 5 Material; 4, 6, 10 Model; 7 PostProc;
+///        8, 9 ShakeSpring; anything else Unknown (the factory asserts).
+EffectClass effect_class_of_kind(uint32_t kind);
+
+/// @brief Lower-case name ("audio", "compound", ..., "unknown").
+const char* effect_class_name(EffectClass c);
+
+/// @brief True for the kinds whose refs are child effects (1 and 11).
+bool is_compound_kind(uint32_t kind);
+
 /// @brief One effect of a skill.
 struct Effect {
     uint32_t field = 0;              ///< Slot in the referring object (0 for unlinked/paired effects).
-    uint32_t kind = 0;               ///< The effect's dataId (@+40); its meaning is not known.
+    uint32_t kind = 0;               ///< The effect's dataId (@+40): the client class it builds (cls).
+    EffectClass cls = EffectClass::Unknown;
     std::string codename;            ///< Content slug, e.g. "Bmt2N.a7wVK".
     uint32_t model = 0, sound = 0;   ///< First MODL / AMSP fileId; 0 = none.
     Guid guid{};
@@ -53,9 +70,21 @@ Guid guid_of(const cntc::Pack& p, const cntc::Object& o);
 /// @brief Reads one type-183 object.
 Effect read_effect(const cntc::PackSet& s, size_t pack, const cntc::Object& o, const ContainerOf& container);
 
+/// @brief One type-183 object as the Particle Browser's Effects tab lists it.
+struct EffectRow {
+    uint32_t uid = 0;          ///< @+20
+    uint32_t kind = 0;         ///< @+40 (effect_class_of_kind)
+    uint32_t model = 0, sound = 0;
+    uint32_t children = 0;     ///< refs to other effects (compound kinds)
+    std::string codename;
+};
+
+/// @brief Every type-183 object of every pack, in pack order.
+std::vector<EffectRow> effect_rows(const cntc::PackSet& s, const ContainerOf& container);
+
 /// @brief What one skill points at.
 struct SkillLinks {
-    std::vector<Effect> effects;            ///< Field order; kind-1 groups expanded in place.
+    std::vector<Effect> effects;            ///< Field order; compound (kind 1 / 11) groups expanded in place.
     std::vector<uint32_t> related_skills;   ///< Other skills (flip skills, charges, ...).
     std::vector<uint32_t> applies;          ///< Boons/conditions (dataId < kFirstOwnSkillId).
 };

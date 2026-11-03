@@ -122,3 +122,180 @@ Read from Gw2-64.exe.
   the emitter's full 3x3 world matrix, scale included, with no normalisation. A prop placed at
   x64 (the orrery 3124726) throws its sparks 64 times as far.
 
+
+## Amendment 2026-10-28: curve presets, flags, sprite alignment, mesh particles
+
+Read in the `gw2re` Ghidra project, which holds the **2026-09 build**: the Gw2-64.exe now on
+disk is newer and its addresses differ (the bytes at 0x1409c61c0 there are another function's
+epilogue). Every address below is the project's. Coded in `castlemist::fx` (src/fx/fx_math.cpp).
+
+**Curve presets.** `FUN_1409c61c0(id, t)` jumps through an 18-entry table at 0x14257d870
+(read with tools/ghidra/ReadMem.java; the on-disk table differs). With the constants read from
+0x141b90918..0x141b9096c:
+
+| id | f(t) | function |
+|---|---|---|
+| 0 | 1 | 0x14029cdc0 |
+| 1 | t (a bare `ret`, Ghidra names it `_guard_check_icall`) | 0x140163990 |
+| 2 | A = -1.0347t + 21.174t² - 40.278t³ + 20.139t⁴ (a bump, 0 at both ends) | 0x1409c4930 |
+| 3, 4, 5 | 0.75A + 0.25, 0.5A + 0.5, 0.25A + 0.75 | 0x1409c4980, 49e0, 4a40 |
+| 6 | 8.0606t - 20.059t² + 16.354t³ - 4.3561t⁴ (bump) | 0x1409c4aa0 |
+| 7 | 9.3333t - 30.667t² + 42.667t³ - 21.333t⁴ (bump) | 0x1409c4b30 |
+| 8 | 6.3333t - 11.4t² + 5.0667t³ (bump) | 0x1409c4af0 |
+| 9, 10 | t², t⁴ | 0x1409c4d50, 4be0 |
+| 11 | E = -0.6t + 4.8t² - 3.2t³ (ease, ends at 1) | 0x1409c4bf0 |
+| 12, 13, 14 | 0.75E + 0.25, 0.5E + 0.5, 0.25E + 0.75 | 0x1409c4c30, 4c80, 4cd0 |
+| 15, 16, 17 | (1-\|2t-1\|)², ⁴, ¹ | 0x1409c4b80, 4bb0, 4d20 |
+
+A stored curve wins over the preset: the builders take the preset only when the baked curve's
+key count (`+0x42`) is 0 (`FUN_140ad3920` samples the baked curve at `(count - 1) t`).
+
+**Emitter `flags`, file → runtime** (`FUN_140d52160`): runtime bit k = file bit
+{19, 0, 1, 6, 2, 12, 8, 7, 11, 10, 9, 4, 18, 16, 17, 13, 5, 3, 20, 21}[k]; bits 22+ are dropped.
+It reproduces the three mappings of 2026-10-22 (0x4 → 0x10, 0x10 → 0x800, 0x1000 → 0x20) and adds:
+- file 0x80 (runtime 0x80): opacity preset becomes 1 - value (`FUN_140ad3a30`);
+- file 0x400 (runtime 0x200): the scale preset runs backwards, t → 1 - t (`FUN_140acf880`);
+- file 0x200 (runtime 0x400): the scale preset becomes 1 - value (`FUN_140acf880`, `FUN_140ad11b0`);
+- file 0x80000 (runtime 0x1): a facing test in the sprite builder sets a per-quad flag (meaning not read);
+- file 0x20 (runtime 0x10000): when **clear**, the sprite axes are transformed by the 3x4 at
+  `pfVar20` (with its inverse-scale fix-up); when set they are not (which space that leaves them
+  in is not read).
+
+**File → definition copy** (`FUN_140ceb0b0`): `planeEmitterSettings` @+0x122, `meshEmitterSettings`
+@+0x12a in the V70 record; a mesh emitter sets runtime flag 0x1000. Plane fields land at
+definition dwords 0x45 (alignment case), 0x46..0x48 (alignmentDir, normalised by
+`FUN_140ac8c40`), 0x49 rotationDrag, 0x4a/0x4b rotationInitial and 0x4c/0x4d rotationChange
+(both × π/180), 0x4e..0x51 scaleInitial, 0x52..0x55 scaleChange, 0x56..0x59 texCoordRect —
+the template's field order.
+
+**Sprite alignment.** The plane's `alignmentType` byte is remapped by `FUN_140d52110` (table
+0x141ee8df0): **file 0→1, 1→5, 2→4, 3→2, 4→0, 5→3** (past 5 asserts). The sprite builder
+`FUN_140ad11b0` then branches on the remapped case (particle record: position +0x84, a vector
++0x90 that the cases treat as the motion direction, sizes +0xa8/+0xac clamped at 0, remaining /
+total life +0xb8/+0xbc, runtime flags +0xd4):
+- **case 1 (file 0, the common one): camera-facing.** Half-axes in the view plane
+  u = (cos r, sin r)·sx, v = (-sin r, cos r)·sy (`FUN_140e56c60` = cos, `FUN_140e57160` = sin:
+  the latter returns its argument for tiny inputs). `fx::camera_sprite_axes`.
+- **case 0 (file 4): fixed plane.** Built from `alignmentDir` transformed by the matrix at
+  +0x20..+0x48 of the cloud instance, with the up axis swapped when the direction is ±Z, then
+  rotated by r.
+- **case 2 / 3 (file 3 / 5): faces the motion direction**, `+0x90` normalised (falling back to
+  the position term when it is near 0; ±Z handled as in case 0); case 3 negates it.
+- **case 4 (file 2): along the motion direction on screen** — `+0x90` projected on the camera's
+  first two rows, normalised (a zero projection gives the default axes).
+- **case 5 (file 1): an axis billboard** along `+0x90`, turned about that axis to face the
+  camera position (cross product with the eye vector).
+Cases 0 and 2–5 are read as above but not yet coded (B codes each as its sim needs it).
+
+**Mesh particles** (`FUN_140acf880`, record stride 0x80): life fraction t = 1 - remaining/total
+(+0x54 / +0x58, clamped); orientation = the particle quaternion (+0x5c) times a **bank** rotation
+about X when the angle between the motion direction (+0x24, + the +0x30 term) and +0x30 passes
+`bankThreshold` (emitter +0x50): bank = (angle - threshold) × 0.5 × `bankScale` (emitter +0x54),
+clamped; then the mesh `alignment` (`FUN_140d52030`: 0, 1, 2 pass through; others assert):
+0 none, 1 yaw-then-pitch toward the velocity +0x24, 2 yaw only (velocity's XY). Scale = the
+scale curve or preset (flags above) × emitter +0x1c × the particle's xyz size (+0x3c..+0x44);
+`FUN_1409c8cf0` composes scale, position (+0x18) and rotation. Colour from `FUN_140ad3a30`.
+
+## Amendment 2026-10-28 (2): the random generator, lightning
+
+**The engine's random numbers** (`FUN_140e1e6a0`, per-thread state at TLS +0x68 or a passed
+one): MINSTD — `v = 48271*s - (2^31-1)*(s / 44488)` in 32-bit arithmetic; when v > 0x7fffffff
+the client adds **0x80000000** (Schrage's method adds 2^31 - 1, so the client's sequence differs
+from textbook MINSTD after every negative step); v = 0 becomes 0x75bd924; u = v * 2^-31 (the
+constant at 0x1420b3070). The range sampler `FUN_140e1f110` returns `base` **without drawing**
+when `span` is 0, so constants do not advance the sequence. `fx::Rng`, `fx::sample`. (Which
+seed each emitter starts from is not read; B seeds its own.)
+
+**Lightning** (GrLightning.cpp, GrLightningJob.cpp):
+- **Bolt creation** `FUN_140b13cf0` walks the node tree from the root, depth < 32: every child
+  whose node flags bit 0 is clear and whose `probability` (node def +0x68) passes a draw
+  (u <= p) is followed, so a bolt forks along every passing path; each root-to-leaf path of
+  >= 2 nodes becomes one bolt instance. Its lifetime is sampled from the bolt's `lifetime`
+  range, started `dt` early; a texture offset is u × (bolt +0x3c); a second sample from the
+  range at +0x1c and one from {+0x54, +0x58} (as a {min, max} pair) are kept per instance
+  (which bolt fields these are is not settled by this read).
+- **Node points**: by node `shape` (+0x28): **0** a point on a disc, angle 2πu drawn first,
+  radius sampled from `radius` (`fx::lightning_disc_offset`); **1** a random point from
+  `FUN_140e1f170` with z forced to -|z| (the lower half); **2** the same without the fold
+  (`FUN_140e1f170`'s distribution is not read). The point is moved by the node bone's 3x4.
+- **Path** `FUN_140c08e70`: the bolt at t over its node points, **mode 0 linear, mode 1
+  Catmull-Rom** (constants 0.5, 3, 2, 5) with the end points repeated, returning position and
+  unit tangent; t past the last node gives the last node. `fx::bolt_path_point`. Which field
+  picks the mode (the bolt's `type` is the candidate) is not proven.
+- Not read: the per-segment displacement (`variance`, `noise`, `numSegments`), the strip
+  build, thickness and opacity over life.
+
+**Streaks** (GrStreak.cpp 0x14155e170..0x14155fc80, GrStreakJobCommon.cpp 0x141562eb0..):
+decompiled, not yet read.
+
+## Amendment 2026-10-28 (3): the integrator, spin drag, the live cap
+
+Found from the call graph (tools/ghidra/FindCallers.java): the cloud update `FUN_140ac9530` calls,
+per emitter with live particles, `FUN_140acb950` (sprites) or `FUN_140acac60` (mesh particles,
+runtime flag 0x1000), then the spawn loop `FUN_140ac9e90`.
+
+- **Per sprite particle** (`FUN_140acb950`, record stride 0x6c): remaining life (+0x4c) -= dt
+  (a particle flag 0x8000 scales dt by a wind-rate term); expired particles are swapped out;
+  sizes grow linearly, `size += scaleChange * dt`; **spin drag**: when the emitter's rotation
+  drag is set, `spin' = (1 - rotationDrag * dt) * spin`, kept only if it has the same sign
+  (else 0: it stops, never reverses); `rotation += spin * dt`.
+- **Motion** (`FUN_140acb1d0`), in order:
+  1. wind (emitter wind influence x the environment wind): `a += w*k - proj_v(w)` while the
+     along-velocity component is under `k` (with no velocity, `a += w*k`); a cloud-instance flag
+     8 drops the wind's z;
+  2. **`pos += v dt + a dt^2 / 2`, `v += a dt`** (exact constant-acceleration step, 0.5 at
+     0x141923c38), a = the particle's own acceleration;
+  3. a noise field (emitter +0xdc strength, +0xec scale; `FUN_140ddfa40`) moves the position;
+  4. **drag** d = cloud drag + emitter drag: `v *= 1 - d dt`; if the result's squared speed is
+     under 1e-4 (0x141b87a94) the velocity keeps its direction at speed 1e-4;
+  5. obstacles (`FUN_140ad3020`) when the cloud and particle flags ask; height cut-offs
+     (runtime flags 0x100 / 0x200) kill particles above / below.
+  `fx::integrate` is steps 2 and 4.
+- **Live cap**: 0x4000 particles per cloud instance; past it the update logs "Cloud particle
+  count ({} total, {} mesh, {} quad) exceeds maximum allowed ({})" and trims.
+
+## Amendment 2026-10-28 (4): streaks, first read
+
+`FUN_14155fc80(streak, ring, ?, dt, offset, scale)` (GrStreak.cpp), per streak per frame, dt
+clamped to the constant at 0x141932f24:
+- **Ring**: points of 0x4c bytes in a ring (head +0x3e, count +0x3c, capacity +0x3a, grown to a
+  power-of-two byte size); points whose remaining life (+0x34) is <= 0 are retired from the tail
+  first. Capacity cap 0x8000 points.
+- **Anchors** (0x8c bytes each, `ModelStreakAnchor`): each frame the largest distance any anchor
+  moved is measured (anchors with flag 4 kept apart from the rest); with the passed offset it is
+  the frame's travel.
+- **Emission**: the travel is added to an accumulator (streak +0x50); while it is positive, or a
+  forced flag is set, a **row of points, one per anchor**, is emitted at the interpolated
+  fraction f of this frame's move (clamped 0..1). Each point: remaining life = the anchor's
+  lifetime - dt f; colour from the anchor (start/end bytes; anchor flag 4 clear zeroes two of
+  them); texV and the anchor's other two values copied; the texture u = lerp(previous u, current
+  u, f) unless ring flag 2. A streak flag 1 leaves the last anchor out of the row.
+- Not yet read: the accumulator's decrement (the spacing, `spawnDist` the candidate), how
+  `jitter` / `noise` / `wind` / `velocity` / `acceleration` move points, the strip build in
+  `FUN_141562eb0`, colour over life.
+
+## Amendment 2026-10-29: streaks, motion and spacing (FUN_14155fc80, second read)
+
+- **Spacing**: after each row of points the travel accumulator drops by `scale x` the ring's
+  spacing value (ring +0x10; `spawnDist` is the field that lands there — candidate, not traced
+  through the loader); rows keep coming while the accumulator stays above a small epsilon, so a
+  row is laid every spacing of anchor travel. A forced row (first frame, or a reset flag) sets
+  the accumulator to 0.
+- **A new point's velocity** (+0x18..+0x20): with streak flag 0x10, the anchor's own velocity
+  (its position delta / dt) is added; when the streak's noise value (streak +0x68) is > 0, a
+  random vector (`FUN_140e1ec30`) is low-pass smoothed per anchor (factor the constant at
+  0x141932f24) and added times the noise value times a constant. Without either, points start
+  still. A point emitted mid-frame copies the previous row's state where the anchor did not move.
+- **Each live point, each frame**: `life -= dt` (floored at 0; the streak keeps the largest
+  remaining life); `vel += dt * (acceleration + wind x windFactor)` — the streak's `acceleration`
+  (+0x20..+0x28) plus the passed wind vector times the streak's wind value (+0x6c); then
+  `pos += vel dt` plus the frame's origin offset.
+- Points carry a flag 0x40000000 when they close a strip (the last row before a break).
+- Still not read: the strip build (`FUN_141562eb0`: width, texture u along the strip, colour
+  start -> end by life with `falloff`) and the `jitter` field.
+- **Strip build, first read** (`FUN_141562eb0`): one vertex pair per point (point +0xc position,
+  +0x24 texture u, flags +0x40). Colour: the anchor's packed `colorStart` (point +0x2c); with
+  anchor flag 4, lerped byte-wise to `colorEnd` (+0x30) by a clamped fraction (by its shape the
+  life fraction: not traced). Alpha is then multiplied by a fade from the point's u along the
+  strip, `((u - u0) / span) / 2x`, clamped 0..1, unless ring flag 2. A point with flag
+  0x40000000 ends a strip (no fade, no join to the next).

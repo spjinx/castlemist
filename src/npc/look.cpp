@@ -163,6 +163,44 @@ std::optional<NpcAssembly> npc_assembly(const NpcRecord& npc, size_t look_index,
         }
     }
 
+    // 2026-11-02: a look with no type-11 helm wears its type-13 piece as the helm. The ripper never dresses an
+    // aquatic slot, and the Mad Prince (NPC 23542) has his only helm, "madprinceih" (horns, mohawk, face paint),
+    // as type 13, worn on land in game. Whether type 13 is really the aquatic helm is not proven.
+    {
+        auto& ps = out.manifest.pieces;
+        const bool helm = std::any_of(ps.begin(), ps.end(), [](const character::ManifestPiece& p) { return p.slot == "Helm"; });
+        for (character::ManifestPiece& p : ps)
+            if (!helm && p.slot == "HelmAquatic") {
+                p.slot = "Helm";
+                out.notes.push_back("component " + decode_token(p.skin_token) + ": type 13 worn as the helm (the look has no type-11 helm)");
+                break;
+            }
+    }
+
+    // 2026-11-02: the record's weapons, stowed (on the back: NPCs carry them, the Mad Prince's and the Lunatic
+    // Boatmaster's staves are not wielded): slot 200 the main hand set, 208 the off-hand (by the catalogue's
+    // counts: 200 on 18711 weapons, 208 on 5307; the Mad Prince's staff is 200). 192 (3287) is not placed: its role
+    // is unproven (the Lunatic Boatmaster carries his torch in 200 and something else in 192).
+    for (const Weapon& w : npc.weapons) {
+        const char* slot = w.slot == 200 ? "WeaponA1" : w.slot == 208 ? "WeaponA2" : nullptr;
+        if (!w.model) continue;
+        if (!slot) {
+            out.notes.push_back("weapon slot " + std::to_string(w.slot) + " (model " + std::to_string(w.model) + "): role unknown, left off");
+            continue;
+        }
+        bool taken = false;
+        for (const character::ManifestPiece& p : out.manifest.pieces) taken = taken || p.slot == slot;
+        if (taken) continue;
+        character::ManifestPiece p;
+        p.slot = slot;
+        p.skin_type = "Weapon";
+        p.skin_id = w.skin;
+        p.file_ids = {w.model};
+        p.status = character::PieceStatus::Ok;
+        out.manifest.pieces.push_back(std::move(p));
+        opt.weapons = ripper::WeaponPlacement::Stowed;
+    }
+
     // boneScaleIndex is never applied as a physique: real values run to 153 against 14 presets, so what it
     // indexes is unknown. 0xFFFFFFFF is "none" (743 of 1315 HumanFemale variants) and stays silent.
     opt.physique = -1;

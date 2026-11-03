@@ -24,6 +24,7 @@
 #include "castlemist/format/struct_template.h"
 #include "castlemist/native/cmp_decompress_method0.hpp"
 #include "castlemist/native/gw2model.hpp"
+#include "castlemist/fxsim/sim.h"
 
 #include <algorithm>
 #include <cmath>
@@ -962,4 +963,122 @@ CM_TEST(dat, material_editor_rebuilds_with_real_amats) {
     CHECK_EQ(lookup(54620), ti);
     GameMaterial edited = *mat;
     if (!edited.samplers.empty()) CHECK(ex::set_sampler_texture(edited, edited.samplers.front().slot, ti));
+}
+
+// ---- 2026-10-28 effect decode: curated from `gw2dat_cli fx-census` (40,000-model slices) ----
+
+// 1450953: every V70 emitter field, obstacles, clouds pointing at them.
+CM_TEST(dat, effect_v70_extras_and_obstacles_1450953) {
+    if (!ensure_template()) SKIP("no gw2_packfile.json struct template");
+    auto pv = load_model_by_fileid(shared_dat(), 1450953, false);
+    if (!pv) SKIP("model 1450953 did not build on this dat");
+    CHECK_EQ(pv->emitters.size(), size_t{10});
+    bool inherit = false;
+    for (const auto& e : pv->emitters) {
+        CHECK(e.extra.present);
+        if (e.extra.velocityInherit[0] != 0 || e.extra.velocityInherit[1] != 0) inherit = true;
+    }
+    CHECK(inherit);
+    CHECK(!pv->obstacles.empty());
+    bool pointed = false;
+    for (const auto& c : pv->clouds)
+        for (uint32_t o : c.obstacleIndices) { CHECK(o < pv->obstacles.size()); pointed = true; }
+    CHECK(pointed);
+}
+
+// 1450958: streaks whose anchors and materials are in range.
+CM_TEST(dat, streaks_1450958) {
+    if (!ensure_template()) SKIP("no gw2_packfile.json struct template");
+    auto pv = load_model_by_fileid(shared_dat(), 1450958, false);
+    if (!pv) SKIP("model 1450958 did not build on this dat");
+    CHECK(!pv->streaks.empty());
+    CHECK(pv->hasEffects());
+    for (const auto& s : pv->streaks) {
+        CHECK(!s.anchorIndices.empty());
+        for (uint32_t a : s.anchorIndices) CHECK(a < pv->streakAnchors.size());
+        CHECK(s.materialIndex < pv->materials.size());
+    }
+}
+
+// 1450970: effect wind, and clips that animate its clouds (cloudAnim).
+CM_TEST(dat, effect_wind_and_cloud_tracks_1450970) {
+    if (!ensure_template()) SKIP("no gw2_packfile.json struct template");
+    auto pv = load_model_by_fileid(shared_dat(), 1450970, false);
+    if (!pv) SKIP("model 1450970 did not build on this dat");
+    CHECK(!pv->effectWinds.empty());
+    CHECK_EQ(pv->animClipEffectTracks.size(), pv->animClips.size());
+    bool cloudTrack = false, sampled = false;
+    for (const auto& clip : pv->animClipEffectTracks)
+        for (const auto& t : clip) {
+            if (t.target == EffectTrackTarget::Cloud) cloudTrack = true;
+            if (t.hasTrack) sampled = true;
+        }
+    CHECK(cloudTrack);
+    CHECK(sampled);
+}
+
+// 3630892: a mesh-particle emitter with its whole settings block.
+CM_TEST(dat, mesh_emitter_settings_3630892) {
+    if (!ensure_template()) SKIP("no gw2_packfile.json struct template");
+    auto pv = load_model_by_fileid(shared_dat(), 3630892, false);
+    if (!pv) SKIP("model 3630892 did not build on this dat");
+    CHECK_EQ(pv->emitters.size(), size_t{27});
+    size_t meshes = 0;
+    for (const auto& e : pv->emitters) {
+        if (!e.extra.mesh.present) { CHECK(!e.hasMesh); continue; }
+        ++meshes;
+        CHECK(e.hasMesh);
+        CHECK_NE(e.extra.mesh.fileId, 0u);
+        CHECK_EQ(e.extra.mesh.fileId, e.meshFileId);
+    }
+    CHECK(meshes > 0);
+}
+
+// The sand dog (1822155) still reads its 20 emitters, and its streaks (it has some: the dust
+// trails) point at anchors that exist.
+CM_TEST(dat, sand_dog_emitters_and_streaks) {
+    if (!ensure_template()) SKIP("no gw2_packfile.json struct template");
+    auto pv = load_model_by_fileid(shared_dat(), 1822155, false);
+    if (!pv) SKIP("model 1822155 did not build on this dat");
+    CHECK_EQ(pv->emitters.size(), size_t{20});
+    for (const auto& s : pv->streaks)
+        for (uint32_t a : s.anchorIndices) CHECK(a < pv->streakAnchors.size());
+}
+
+// Review fix: an effect-track read that throws (here: the track struct padded past the file's
+// end in a template copy) must not cost the model its clips or its particle clouds.
+CM_TEST(dat, effect_read_failures_stay_contained_1450970) {
+    if (!ensure_template()) SKIP("no gw2_packfile.json struct template");
+    const std::vector<uint8_t> bytes = packfile_by_file_id(1450970);
+    nlohmann::json tpl = *castlemist::tpl::get();
+    const castlemist::model::Model good = castlemist::model::Extractor(bytes, tpl).extract();
+    CHECK(!good.anim.clips.empty());
+    CHECK(!good.effects.clouds.empty());
+    auto pad = [&](const char* type) {
+        for (auto& [name, t] : tpl["types"].items())
+            if (name.rfind(type, 0) == 0 && t.contains("fields"))
+                t["fields"].insert(t["fields"].begin(), {{"name", "pad"}, {"kind", "array"}, {"element", "byte"},
+                                                         {"count", 0x40000000}});
+    };
+    pad("ModelTrackTypeData");
+    pad("MeshEmitterSettings");
+    const castlemist::model::Model bad = castlemist::model::Extractor(bytes, tpl).extract();
+    CHECK_EQ(bad.anim.clips.size(), good.anim.clips.size());
+    CHECK_EQ(bad.effects.clouds.size(), good.effects.clouds.size());
+    CHECK_EQ(bad.effects.emitters.size(), good.effects.emitters.size());
+}
+
+// fxsim on a real model: deterministic (seed 1, 4 s at 1/60 s), its 13 emitters all simulated.
+CM_TEST(dat, fx_sim_1450958_is_deterministic) {
+    if (!ensure_template()) SKIP("no gw2_packfile.json struct template");
+    auto pv = load_model_by_fileid(shared_dat(), 1450958, false);
+    if (!pv) SKIP("model 1450958 did not build on this dat");
+    const castlemist::fxsim::SimInput in = castlemist::fxsim::make_input(*pv);
+    CHECK_EQ(in.emitters.size(), size_t{13});
+    castlemist::fxsim::Sim a(in, 1), b(in, 1);
+    for (int i = 0; i < 240; ++i) { a.step(1.0f / 60.0f); b.step(1.0f / 60.0f); }
+    CHECK_EQ(a.frame().particles.size(), size_t{212});   // re-pinned 2026-10-28: spawn also draws the acceleration
+    CHECK_EQ(b.frame().particles.size(), a.frame().particles.size());
+    CHECK_EQ(a.dropped(), size_t{0});
+    CHECK(a.frame().particles.front().pos.x == b.frame().particles.front().pos.x);
 }

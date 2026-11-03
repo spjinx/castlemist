@@ -95,6 +95,55 @@ enum class BlitMode {
 void blit(ImageRgba& atlas, const ImageRgba& tex, const AtlasRegion& region, float scale = 2.0f,
           BlitMode mode = BlitMode::Replace);
 
+/// The blit set's slot that holds the face (rectIndex order: coat, leggings, ?, boots, gloves, ?, helm, aquatic
+/// helm, shoulders, face, hair, ears, then chest / feet / hands / legs skin; matched 2026-11-02 against the rects
+/// measured in section 3 of docs/research/gw2-armor-skins-and-dyes.md).
+constexpr size_t kFaceSlot = 9;
+/// fileData skinFlags / hideFlags bits (same layout: 9 face, 10 hair, 11 chest, 12 feet, 13 hands, 14 legs).
+constexpr uint32_t kSkinFlagFace = 0x200;
+constexpr uint32_t kHideFlagHair = 0x400;
+
+/// The rects of slot `slot`: rect_index holds each slot's first rect, then the rect count. Empty when out of range.
+std::vector<composite::BlitRect> slot_rects(const composite::BlitRectSet& set, size_t slot);
+
+constexpr size_t kNoSlot = static_cast<size_t>(-1);
+
+/// The slots a composite piece type owns (2026-11-02, from the Mad Prince's textures): 9 coat -> 0, 12 leggings
+/// -> 1, 8 boots -> 2, 3, 10 gloves -> 4, 5, 11 helm -> 6, 13 aquatic helm -> 7, 14 shoulders -> 8. Empty for
+/// any other type.
+std::vector<size_t> armor_slots(uint8_t type);
+
+/// The slot a hideFlags / skinFlags bit names: bits 0..10 are slots 0..10, 11..14 the chest / feet / hands /
+/// legs skin (slots 12..15), 16 the ears (slot 11). kNoSlot for any other bit.
+size_t flag_slot(int bit);
+
+/// Face, ears and the bare body: slots a piece paints only through its cut mask.
+bool is_skin_slot(size_t slot);
+
+struct PieceRegions {
+    AtlasRegion paint;  // drawn as the piece draws (its own slots and the ones its hideFlags take)
+    AtlasRegion skin;   // drawn through its cut mask
+    AtlasRegion over;   // skin its hideFlags name: drawn over it by its alpha
+};
+
+/// Where a piece's texture goes by the blit set: laid out from the top-left of every slot it names -- its own,
+/// the ones its hideFlags take and the skin its hide / skinFlags name -- it paints its own slots and the slots
+/// its hideFlags take, less `lost` (taken by another piece); the skin its hideFlags name over the skin by its
+/// alpha (`over`), and skin named by skinFlags alone through its cut mask (`skin`). All empty when the
+/// set has no rectIndex, the type is not armour, or a `tw` x `th` texture at `scale` does not reach every rect.
+PieceRegions piece_regions(const composite::BlitRectSet& set, uint8_t type, uint32_t hide_flags, uint32_t skin_flags,
+                           const std::vector<size_t>& lost, int tw, int th, float scale);
+
+/// `region` split into its rects that are the face slot's and the rest; both keep its anchor.
+std::pair<AtlasRegion, AtlasRegion> split_face(const AtlasRegion& region, const composite::BlitRectSet& set);
+
+/// Seals the seams of a baked atlas: for `rings` passes, every texel `used` marks 0 that touches a used (or
+/// already sealed) texel takes the average colour and alpha of those neighbours. `used` is one byte per texel.
+void seal_seams(ImageRgba& img, const std::vector<uint8_t>& used, int rings);
+
+/// `tex` with its alpha replaced by `mask`'s red (nearest-resized to `tex` when the sizes differ).
+ImageRgba with_mask_alpha(const ImageRgba& tex, const ImageRgba& mask);
+
 /// Atlas UV -> UV within the cropped block: u' = (u*1024 - x0) / (x1 - x0), same for v.
 void remap_uv(float& u, float& v, const composite::BlitRect& rect);
 
