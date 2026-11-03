@@ -73,6 +73,9 @@ struct WorldFolderOptions {
     FoliageExport foliage = FoliageExport::All;
     /// The unityTerrain tiles (world-foliage spec D7, world_unity_terrain.h); CLI --no-unity-terrain clears it.
     bool unityTerrain = true;
+    /// Model sounds (2026-10-25, sound_export.h): each model's sound script as a sounds sidecar
+    /// and its audio files; CLI --no-sounds clears it.
+    bool sounds = true;
     /// When set and it becomes true, export_world_folder stops at the next
     /// model, cell or stage with error "export cancelled" and no manifest.json
     /// (review I5: the GUI sets it when the app is closed during an export).
@@ -103,6 +106,8 @@ struct ManifestModel { uint32_t index = 0, fileId = 0; bool ok = false;
                        /// Loaded, but no drawable meshes: `status: "empty"` (not ok, not failed).
                        bool empty = false;
                        std::string error, folder, glb, materials;
+                       /// The model's sounds sidecar (sound_export.h), "" = none.
+                       std::string sounds;
                        uint64_t triangles = 0, textureBytes = 0; std::vector<std::string> clips, darkDecalMaterials;
                        nlohmann::json uvScroll = nlohmann::json::array();
                        int meshes = 0, materialCount = 0; nlohmann::json wind;
@@ -154,6 +159,8 @@ struct WorldManifestInput {
     nlohmann::json cloudTextures;
     /// The texture sky cards' textures written: {"<fileId>": path relative to the folder} or null.
     nlohmann::json cardTextures;
+    /// The water preset's textures written (fileId string -> "environment/water_<fileId>.png"), 2026-10-25.
+    nlohmann::json waterTextures;
 };
 
 /// @brief The manifest's `environment` (null without an env chunk): slot

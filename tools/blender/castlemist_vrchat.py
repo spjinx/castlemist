@@ -112,6 +112,11 @@ def convert(src, out, mode="character"):
     if mode not in ("character", "model"):
         raise SystemExit("unknown --mode " + mode + " (character or model)")
     bpy.ops.wm.read_factory_settings(use_empty=True)
+    # GW2 clips run at 30 fps. The importer turns key times into frames at the scene's rate and the
+    # FBX export bakes whole frames; at Blender's default 24 a clip's end lands between frames, so
+    # each loop stops short of its first pose and hitches.
+    bpy.context.scene.render.fps = 30
+    bpy.context.scene.render.fps_base = 1.0
     bpy.ops.import_scene.gltf(filepath=src, bone_heuristic='TEMPERANCE')
 
     arm = next((o for o in bpy.context.scene.objects if o.type == 'ARMATURE'), None)

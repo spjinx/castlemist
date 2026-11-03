@@ -85,6 +85,7 @@ struct PropInstance {
     float lod1 = 0, lod2 = 0;
     uint32_t flags = 0;
     std::string group;                      ///< "propArray" | "propAnimArray" | "propMetaArray" | "propInstanceArray"
+    uint64_t guid = 0;                      ///< prp2 `guid`, as stored (a propInstanceArray transform: its base record's)
 };
 
 /// @brief A collision mesh in local space.
@@ -127,6 +128,10 @@ struct Environment {
     castlemist::model::Extractor::MapEnvLight light;
     /// dataGlobal water presets as stored; light.presetIndex picks one (pairing UNPROVEN).
     std::vector<castlemist::model::Extractor::MapEnvWater> water;
+    /// The `lght` chunk's point and spot lights, as stored (2026-10-25).
+    castlemist::model::Extractor::MapLights lights;
+    /// The `laye` chunk (2026-10-25): which layers each prop / light group is on, and the layers.
+    castlemist::model::Extractor::MapLayers layers;
 };
 
 /// @brief Animated content.

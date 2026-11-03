@@ -2,7 +2,8 @@
     "name": "Castlemist.Editor",
     "rootNamespace": "Castlemist",
     "references": [
-        "Unity.Postprocessing.Runtime"
+        "Unity.Postprocessing.Runtime",
+        "UnityEngine.UI"
     ],
     "includePlatforms": [
         "Editor"

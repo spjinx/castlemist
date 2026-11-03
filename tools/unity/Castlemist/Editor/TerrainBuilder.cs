@@ -13,7 +13,11 @@
 //                                    a detail prototype: the model's one mesh, scaled by
 //                                    unityScale (Terrain sizes are in Unity units), its
 //                                    material with enableInstancing
-//   Materials/terrain/TerrainStandard.mat   the materialTemplate (Nature/Terrain/Standard)
+//   Materials/terrain/TerrainStandard.mat   the materialTemplate (Nature/Terrain/Diffuse: matte)
+// 2026-10-27: with the export's ground normals (tiles[].normal, or terrain/<id>_normal.png beside the
+// albedo) the layer gets them as its normal map, GroundSmoothness, and the template becomes
+// Nature/Terrain/Specular (lit per pixel, matte: the cobbles). "Terrain Normals
+// (in place)" does this to the open scene's tiles.
 // Details and trees come from the foliage records the plan keeps (FoliagePlan),
 // so Density applies; at density 1 with every kind shown they must equal the
 // export's _d<k>.png and _trees.bin (TERRAIN_FILES). Distances (ruling S5):
@@ -39,7 +43,105 @@ namespace Castlemist
     {
         public const int DetailResolutionPerPatch = 32;
         public const int DetailMaxCount = 255;
-        public const string TemplateShader = "Nature/Terrain/Standard";
+        /// 2026-10-25: Diffuse, not Standard: Standard reads smoothness from the albedo's alpha, and
+        /// the baked ground is opaque (alpha 1), so Lion's Arch's terrain shone like a mirror.
+        public const string TemplateShader = "Nature/Terrain/Diffuse";
+        /// 2026-10-27: with ground normals: Standard, its smoothness the layer's (the baked albedo has no
+        /// alpha, which Standard multiplies in: 1), set here rather than left to the asset.
+        /// 2026-10-27: Specular, not Standard: Standard glittered like a wet road everywhere (the user's
+        /// "slimy" ground). Specular multiplies _SpecColor by the albedo's alpha, which the export fills
+        /// with GW2's terrain specular mask (the normal maps' alpha x 0.596, AMAT 184988 ps 73): the
+        /// cobbles shine, the dirt stays matte. White: the 0.596 is in the mask. Shininess 0.25 = power
+        /// 32 (GW2's default speccp.w; the terrain's own is not in its constants).
+        public const string NormalTemplateShader = "Nature/Terrain/Specular";
+        /// 2026-10-27: GW2's own terrain shading (Shaders/GW2 Terrain.shader: specular mask, the full normal,
+        /// the wet reflection) when present; the normal map then imports as data (its alpha is the wet
+        /// mask) and the tiles draw without terrain instancing (the shader needs the mesh normals).
+        public const string GW2TerrainShader = "Castlemist/GW2 Terrain";
+        static readonly Color GroundSpecColor = Color.white;
+        public const float GroundShininess = 0.25f;
+        public const float GroundSmoothness = 0.05f;   // 2026-10-27: 0.3 read as polished, wet ground everywhere (the user)
+        public const float GroundNormalScale = 1f;   // on Specular (Standard's glints made 1 look wet)
+
+        [MenuItem("Castlemist/Terrain Normals (in place)")]
+        public static void NormalsMenu() { Debug.Log("CASTLEMIST " + ApplyNormals()); }
+
+        /// Every Unity Terrain tile of the open scene with its terrain/<id>_normal.png as the layer's normal
+        /// map, on a NormalTemplateShader template; returns a one-line report.
+        public static string ApplyNormals()
+        {
+            var scene = UnityEditor.SceneManagement.EditorSceneManager.GetActiveScene();
+            string root = Path.GetDirectoryName(scene.path).Replace('\\', '/');
+            Material template = NormalTemplate(root);
+            if (template == null) return "terrain normals: no " + NormalTemplateShader + " shader";
+            int n = 0, missing = 0;
+            foreach (Terrain t in Object.FindObjectsOfType<Terrain>(true))
+            {
+                string id = t.name.StartsWith("Tile_", StringComparison.Ordinal) ? t.name.Substring(5) : t.name;
+                if (!LayerNormal(root, root + "/terrain/" + id + "_normal.png", t.terrainData)) { ++missing; continue; }
+                t.materialTemplate = template;
+                if (template.shader.name == GW2TerrainShader) { t.drawInstanced = false; t.basemapDistance = 20000f; }
+                EditorUtility.SetDirty(t);
+                ++n;
+            }
+            UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(scene);
+            AssetDatabase.SaveAssets();
+            return "terrain normals: " + n + " tile(s) with their ground normals on " + template.shader.name + (missing > 0 ? " (" + missing + " without a normal map)" : "");
+        }
+
+        /// @p path (imported as a normal map) on the first layer of @p td, smoothness GroundSmoothness;
+        /// false without the file.
+        static bool LayerNormal(string root, string path, TerrainData td)
+        {
+            if (td == null || td.terrainLayers.Length == 0 || td.terrainLayers[0] == null || !File.Exists(path)) return false;
+            var imp = AssetImporter.GetAtPath(path) as TextureImporter;
+            bool gw2 = Shader.Find(GW2TerrainShader) != null;
+            TextureImporterType want = gw2 ? TextureImporterType.Default : TextureImporterType.NormalMap;
+            if (imp != null && (imp.textureType != want || imp.maxTextureSize < 4096 || (gw2 && (imp.sRGBTexture || imp.alphaSource != TextureImporterAlphaSource.FromInput))))
+            {
+                imp.textureType = want;
+                if (gw2) { imp.sRGBTexture = false; imp.alphaSource = TextureImporterAlphaSource.FromInput; imp.alphaIsTransparency = false; }
+                imp.maxTextureSize = 4096;
+                imp.mipmapEnabled = true;
+                imp.SaveAndReimport();
+            }
+            var tex = AssetDatabase.LoadAssetAtPath<Texture2D>(path);
+            if (tex == null) return false;
+            TerrainLayer layer = td.terrainLayers[0];
+            // the albedo's alpha is the specular mask (an RGBA export): imported as such
+            var albImp = layer.diffuseTexture != null ? AssetImporter.GetAtPath(AssetDatabase.GetAssetPath(layer.diffuseTexture)) as TextureImporter : null;
+            if (albImp != null && albImp.DoesSourceTextureHaveAlpha() && albImp.alphaSource != TextureImporterAlphaSource.FromInput)
+            {
+                albImp.alphaSource = TextureImporterAlphaSource.FromInput;
+                albImp.alphaIsTransparency = false;
+                albImp.SaveAndReimport();
+            }
+            layer.normalMapTexture = tex;
+            layer.normalScale = GroundNormalScale;
+            layer.smoothness = GroundSmoothness;
+            layer.metallic = 0f;
+            EditorUtility.SetDirty(layer);
+            return true;
+        }
+
+        static Material NormalTemplate(string root)
+        {
+            Shader sh = Shader.Find(GW2TerrainShader) ?? Shader.Find(NormalTemplateShader);
+            if (sh == null) return null;
+            string path = root + "/Materials/terrain/TerrainStandardLit.mat";
+            var m = AssetDatabase.LoadAssetAtPath<Material>(path);
+            if (m == null)
+            {
+                if (!AssetDatabase.IsValidFolder(root + "/Materials/terrain")) return new Material(sh);
+                m = new Material(sh) { enableInstancing = true };
+                AssetDatabase.CreateAsset(m, path);
+            }
+            else m.shader = sh;
+            m.SetColor("_SpecColor", GroundSpecColor);
+            m.SetFloat("_Shininess", GroundShininess);
+            EditorUtility.SetDirty(m);
+            return m;
+        }
 
         public sealed class Result
         {
@@ -134,6 +236,9 @@ namespace Castlemist
                 EditorUtility.SetDirty(layer);
                 td.alphamapResolution = 16;   // one layer: weight 1 everywhere
                 td.terrainLayers = new[] { layer };
+                // 2026-10-27: the ground normals (the export's, else beside the albedo by name)
+                string normalPath = tile.Normal != null ? P(tile.Normal) : root + "/terrain/" + tile.Id + "_normal.png";
+                bool withNormals = LayerNormal(root, normalPath, td);
                 if (albedo != null) td.baseMapResolution = Mathf.Clamp(Mathf.NextPowerOfTwo(albedo.width), 16, 2048);
 
                 FoliageTilePlan tp;
@@ -249,10 +354,13 @@ namespace Castlemist
                 go.transform.localPosition = new Vector3((float)(tile.Position[0] * unityScale), (float)(tile.Position[1] * unityScale),
                                                          (float)(tile.Position[2] * unityScale));
                 Terrain terrain = go.GetComponent<Terrain>();
-                if (template != null) terrain.materialTemplate = template;
+                Material lit = withNormals ? NormalTemplate(root) : null;
+                if (lit != null) terrain.materialTemplate = lit;
+                else if (template != null) terrain.materialTemplate = template;
                 if (treeDistance > 0f) { terrain.treeDistance = treeDistance; terrain.treeBillboardDistance = treeDistance; }
                 if (detailDistance > 0f) terrain.detailObjectDistance = detailDistance;
-                terrain.drawInstanced = true;
+                terrain.drawInstanced = lit == null || lit.shader.name != GW2TerrainShader;   // GW2 Terrain needs the mesh normals
+                if (!terrain.drawInstanced) terrain.basemapDistance = 20000f;   // no base map pass: our shader all the way
                 GameObjectUtility.SetStaticEditorFlags(go, WorldImporter.StaticFlags);
                 tiles.Add(terrain);
                 byChunk[Key(tile.Chunks[0], tile.Chunks[1])] = terrain;

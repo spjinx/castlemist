@@ -27,10 +27,10 @@ bool tex_transform_animates(const ModelTexTransformCPU& t) {
 }
 
 void water_colour(const uint8_t stored[4], float rgb[3]) {
-    // UNPROVEN (note §6): bytes 0, 1, 2 as R, G, B. The client reads the env
-    // light and haze colours B, G, R (parseMapEnv; final review I1); the water
-    // import has not been checked the same way, so this is left as it was.
-    for (int k = 0; k < 3; ++k) rgb[k] = static_cast<float>(stored[k]) / 255.0f;
+    // Bytes 2, 1, 0 as R, G, B, as the client reads the env light and haze colours (parseMapEnv;
+    // final review I1). 2026-10-25: read 0, 1, 2 Lion's Arch's sea came out tan and olive
+    // (B9 A3 60 / 46 3D 0C), B, G, R a blue and a teal. The water import itself is not traced.
+    for (int k = 0; k < 3; ++k) rgb[k] = static_cast<float>(stored[2 - k]) / 255.0f;
 }
 
 float water_depth_mix(float terrainZ, float planeZ, float depthAttenuation) {

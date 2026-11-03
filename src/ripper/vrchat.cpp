@@ -288,6 +288,13 @@ std::vector<std::string> make_vrchat_ready(ModelPreview& model) {
         if (has_parent && is_dynamic_name(renamed[static_cast<size_t>(p)])) continue;
         chains.push_back(renamed[i]);
     }
+    // Clip tracks find their joint by name (skeleton_anim_export.cpp), so they are renamed with it;
+    // otherwise every clip keeps only the tracks of joints whose names did not change.
+    std::map<std::string, std::string> rename;
+    for (size_t i = 0; i < model.joints.size(); ++i) rename[model.joints[i].name] = renamed[i];
+    for (castlemist::granny::Anim& clip : model.animClips)
+        for (castlemist::granny::Track& t : clip.tracks)
+            if (auto it = rename.find(t.name); it != rename.end()) t.name = it->second;
     for (size_t i = 0; i < model.joints.size(); ++i) model.joints[i].name = renamed[i];
     return chains;
 }

@@ -12,8 +12,8 @@
 //                    downward raycasts through the colliders, binned on a DetailCell grid, merged into boxes from just below
 //                    the floor to DetailHeight above it; weight 1, so they win over the coarse ones.
 //                    At most MaxDetailVolumes, the largest first.
-//   probes / areas   a LightProbeGroup over every walkable floor (ProbeSpacing apart, ProbeHeights
-//                    above it, none inside geometry): avatars and shaders without Light Volumes; and
+//   probes / areas   (PlaceProbes, off since 2026-10-26) a LightProbeGroup over every walkable floor
+//                    (ProbeSpacing apart, ProbeHeights above it, none inside geometry); and
 //                    one OcclusionArea per walkable region (where the camera can be) in place of the
 //                    import's one map-wide area: tighter culling, a faster occlusion bake.
 //   glow lights      a baked point light at each glowing source -- the orbs (castlemist interior
@@ -23,6 +23,11 @@
 //   sun / sky        with Bakery: a BakeryDirectLight on the Sun (indirect only: the Sun stays a
 //                    realtime light for avatars, as its Unity Mixed / Indirect Only mode), a
 //                    BakerySkyLight from the GW2 ambient, and Bakery's render mode set to Indirect.
+//   split sun        (2026-10-28) the Sun's culling mask drops the player layers, so no avatar is drawn into
+//                    its shadow map (each one a skinned mesh per cascade: the cost grows with the instance);
+//                    a child "Sun (avatars)" with no shadows and only those layers lights them instead.
+//                    Players are not shadowed by the world (sunlit in a corridor); GW2DayNight syncs it.
+//   sun glow         (2026-10-29) SunGlow.cs: a soft halo on the sun / moon in place of Silent's lens flare.
 //
 // Rerunning replaces what it made (GW2Lights, LightVolumes/Detail, the Bakery sky). Everything is a
 // reading of GW2 data for looks, not a measurement: intensities and ranges are castlemist's choices.
@@ -42,9 +47,9 @@ namespace Castlemist
     public static class ImmersiveLighting
     {
         public const int CoarseBudget = 196608;
-        public const float DetailVoxelsPerUnit = 0.5f;
+        public const float DetailVoxelsPerUnit = 0.35f;   // 2026-10-26: ~3 m (0.5 doubled the atlas once the boxes grew)
         public const float DetailCell = 24f;
-        public const float DetailHeight = 10f;
+        public const float DetailHeight = 40f;   // 2026-10-26: 10 ended the fine volumes ~30 m up: a hard line on walls above
         public const int MaxDetailVolumes = 20;
         public const int MaxLights = 64;
 
@@ -67,11 +72,13 @@ namespace Castlemist
             lines.Add(ProbesAndOcclusion(envRoot));
             lines.Add(GlowLights(envRoot));
             lines.Add(BakerySunSky(envRoot));
+            lines.Add(SplitSun());
+            lines.Add(SunGlow.Apply());
             EditorSceneManager.MarkSceneDirty(envRoot.scene);
             return "immersive lighting: " + string.Join("; ", lines) + ". Bake with Castlemist > Bake Lighting and Occlusion (Unity / Bakery)";
         }
 
-        static GameObject EnvRoot()
+        internal static GameObject EnvRoot()
         {
             return UnityEngine.SceneManagement.SceneManager.GetActiveScene().GetRootGameObjects()
                 .FirstOrDefault(g => g.name.StartsWith("GW2_") && g.name.EndsWith("_Environment"));
@@ -144,7 +151,10 @@ namespace Castlemist
 
         static Type VolumeType() { return SceneSetup.FindType("VRCLightVolumes.LightVolumeInstance"); }
 
-        static string CoarseVolumes()
+        static string CoarseVolumes() { return CoarseVolumes(CoarseBudget); }
+
+        /// Every coarse (per-cell) Light Volume's resolution set to about @p budget voxels (re-bake after).
+        public static string CoarseVolumes(int budget)
         {
             Type lv = VolumeType();
             if (lv == null) return "no Light Volumes package";
@@ -153,14 +163,14 @@ namespace Castlemist
             {
                 if (v.transform.parent != null && v.transform.parent.name == "Detail") continue;
                 Vector3 s = v.transform.lossyScale;
-                double vpu = EnvironmentMath.VoxelsPerUnit(Mathf.Abs(s.x), Mathf.Abs(s.y), Mathf.Abs(s.z), CoarseBudget, 1.0);
+                double vpu = EnvironmentMath.VoxelsPerUnit(Mathf.Abs(s.x), Mathf.Abs(s.y), Mathf.Abs(s.z), budget, 1.0);
                 Undo.RecordObject(v, "Light Volume resolution");
                 SceneSetup.SetField(v, "VoxelsPerUnit", (float)vpu);
                 Recalculate(v);
                 SceneSetup.CopyProxyToUdon(v);
                 ++n;
             }
-            return n + " coarse volume(s) at ~" + CoarseBudget + " voxels";
+            return n + " coarse volume(s) at ~" + budget + " voxels";
         }
 
         static void Recalculate(Component v)
@@ -283,7 +293,7 @@ namespace Castlemist
                 SceneSetup.SetField(comp, "VoxelsPerUnit", DetailVoxelsPerUnit);
                 SceneSetup.SetField(comp, "Bake", true);
                 SceneSetup.SetField(comp, "IsDynamic", false);
-                SceneSetup.SetField(comp, "SmoothBlending", 0.5f);
+                SceneSetup.SetField(comp, "SmoothBlending", 4f);   // metres: fades into the coarse volumes, no seam
                 MethodInfo w = comp.GetType().GetMethod("SetWeight", new[] { typeof(float) });
                 if (w != null) w.Invoke(comp, new object[] { 1f });
                 else SceneSetup.SetField(comp, "RegistryWeight", 1f);
@@ -354,7 +364,7 @@ namespace Castlemist
         }
 
         /// The package's onboarding: registers new volumes with the scene's LightVolumeManager.
-        static void Register(GameObject group)
+        internal static void Register(GameObject group)
         {
             try
             {
@@ -373,6 +383,11 @@ namespace Castlemist
             return c.name == "Terrain" && c.bounds.size.y < 0.5f;
         }
 
+        /// 2026-10-26: off. The Light Volumes light the world and the GW2 shader reads them; probes only fed
+        /// avatars and shaders outside the volumes, held the bake's daytime light at night (GW2DayNight
+        /// cannot tint them) and were 93 MB of the Lion's Arch build. Without them those use the Trilight
+        /// ambient, which the cycle drives.
+        public const bool PlaceProbes = false;
         public const float ProbeSpacing = 8f;
         static readonly float[] ProbeHeights = { 1.5f, 6f };
         public const float OcclusionHeight = 14f;
@@ -386,25 +401,8 @@ namespace Castlemist
             // Light probes: a grid over each walkable box at the probe heights, skipping points in geometry.
             Transform oldP = envRoot.transform.Find("LightProbes");
             if (oldP != null) Undo.DestroyObjectImmediate(oldP.gameObject);
-            var pgo = new GameObject("LightProbes");
-            Undo.RegisterCreatedObjectUndo(pgo, "GW2 light probes");
-            pgo.transform.SetParent(envRoot.transform, false);
             var positions = new List<Vector3>();
-            var seen = new HashSet<Vector3Int>();
-            foreach (Bounds b in boxes)
-                for (float x = b.min.x + ProbeSpacing * 0.5f; x < b.max.x; x += ProbeSpacing)
-                    for (float z = b.min.z + ProbeSpacing * 0.5f; z < b.max.z; z += ProbeSpacing)
-                        foreach (float h in ProbeHeights)
-                        {
-                            var p = new Vector3(x, b.min.y + h, z);
-                            if (p.y > b.max.y + ProbeHeights[ProbeHeights.Length - 1]) continue;
-                            var key = Vector3Int.RoundToInt(p / 2f);
-                            if (!seen.Add(key)) continue;
-                            if (Physics.CheckSphere(p, 0.3f, ~0, QueryTriggerInteraction.Ignore)) continue;
-                            positions.Add(p);
-                        }
-            var group = pgo.AddComponent<LightProbeGroup>();
-            group.probePositions = positions.Select(p => pgo.transform.InverseTransformPoint(p)).ToArray();
+            if (PlaceProbes) PlaceProbeGrid(envRoot, boxes, positions);
 
             // Occlusion areas: one per walkable box, as tall as a player can look from it.
             Transform oldA = envRoot.transform.Find("OcclusionAreas");
@@ -425,6 +423,54 @@ namespace Castlemist
                 a.size = new Vector3(b.size.x, Mathf.Max(b.size.y, OcclusionHeight), b.size.z);
             }
             return positions.Count + " light probe(s) and " + boxes.Count + " occlusion area(s) over walkable floors";
+        }
+
+        /// 2026-10-27: the probe grid alone, on the open scene (replacing its "LightProbes"). With Bakery as
+        /// the Light Volumes' baker (LightVolumeManager.BakingMode 1) the volumes come from Bakery's light
+        /// probe pass, which Bakery skips in a scene without probes (red.sim.lightvolumes BakeryEditorBridge
+        /// ClassifyProbeRender: !hasAnyProbes -> None), so they need some; they also light avatars and
+        /// shaders that do not read Light Volumes.
+        [MenuItem("Castlemist/Place Light Probes (walkable floors)")]
+        public static void ProbesMenu() { Debug.Log("CASTLEMIST " + PlaceProbesNow()); }
+
+        public static string PlaceProbesNow()
+        {
+            GameObject envRoot = EnvRoot();
+            if (envRoot == null) return "light probes: no GW2_<id>_Environment root in the open scene";
+            Physics.SyncTransforms();
+            var colliders = Object.FindObjectsByType<Collider>(FindObjectsSortMode.None)
+                .Where(c => c.enabled && !c.isTrigger && !PlaceholderTerrain(c) && c.GetComponentsInParent<Transform>(true).Any(t => t.name.StartsWith("GW2_"))).ToList();
+            List<Bounds> boxes = WalkableBoxes(colliders, DetailCell, DetailHeight);
+            Transform oldP = envRoot.transform.Find("LightProbes");
+            if (oldP != null) Undo.DestroyObjectImmediate(oldP.gameObject);
+            var positions = new List<Vector3>();
+            PlaceProbeGrid(envRoot, boxes, positions);
+            EditorSceneManager.MarkSceneDirty(envRoot.scene);
+            return "light probes: " + positions.Count + " over " + boxes.Count + " walkable box(es), " + ProbeSpacing + " m apart at " + string.Join(" / ", ProbeHeights) + " m";
+        }
+
+        /// The LightProbeGroup "LightProbes" under @p envRoot: a grid over each walkable box at the probe
+        /// heights, skipping points in geometry (only with PlaceProbes).
+        static void PlaceProbeGrid(GameObject envRoot, List<Bounds> boxes, List<Vector3> positions)
+        {
+            var pgo = new GameObject("LightProbes");
+            Undo.RegisterCreatedObjectUndo(pgo, "GW2 light probes");
+            pgo.transform.SetParent(envRoot.transform, false);
+            var seen = new HashSet<Vector3Int>();
+            foreach (Bounds b in boxes)
+                for (float x = b.min.x + ProbeSpacing * 0.5f; x < b.max.x; x += ProbeSpacing)
+                    for (float z = b.min.z + ProbeSpacing * 0.5f; z < b.max.z; z += ProbeSpacing)
+                        foreach (float h in ProbeHeights)
+                        {
+                            var p = new Vector3(x, b.min.y + h, z);
+                            if (p.y > b.max.y + ProbeHeights[ProbeHeights.Length - 1]) continue;
+                            var key = Vector3Int.RoundToInt(p / 2f);
+                            if (!seen.Add(key)) continue;
+                            if (Physics.CheckSphere(p, 0.3f, ~0, QueryTriggerInteraction.Ignore)) continue;
+                            positions.Add(p);
+                        }
+            var group = pgo.AddComponent<LightProbeGroup>();
+            group.probePositions = positions.Select(p => pgo.transform.InverseTransformPoint(p)).ToArray();
         }
 
         // ---- glow lights ------------------------------------------------------------------------------------
@@ -453,7 +499,7 @@ namespace Castlemist
         static readonly Dictionary<Texture, Color> s_avg = new Dictionary<Texture, Color>();
 
         /// The mean colour of a texture (a 1 x 1 mip via the GPU; textures need not be readable).
-        static Color AverageColour(Texture t)
+        internal static Color AverageColour(Texture t)
         {
             if (t == null) return Color.white;
             Color c;
@@ -530,6 +576,53 @@ namespace Castlemist
                 }
             }
             return merged.Count + " glow light(s) from " + glows.Count + " glowing renderer(s)" + (bpl != null ? " (+ Bakery)" : "");
+        }
+
+        // ---- split sun ----------------------------------------------------------------------------------------
+
+        public const string AvatarSunName = "Sun (avatars)";
+        // VRChat's Player, PlayerLocal and MirrorReflection layers.
+        public const int PlayerLayers = (1 << 9) | (1 << 10) | (1 << 18);
+
+        [MenuItem("Castlemist/Split Sun (no avatars in the shadow map)")]
+        public static void SplitSunMenu() { Debug.Log("CASTLEMIST " + SplitSun()); }
+
+        public static string SplitSun()
+        {
+            Light sun = RenderSettings.sun;
+            if (sun == null) return "split sun: no RenderSettings.sun";
+            Undo.RecordObject(sun, "Split sun");
+            sun.cullingMask &= ~PlayerLayers;
+            Transform t = sun.transform.Find(AvatarSunName);
+            Light av = t != null ? t.GetComponent<Light>() : null;
+            if (av == null)
+            {
+                var go = new GameObject(AvatarSunName);
+                Undo.RegisterCreatedObjectUndo(go, "Split sun");
+                go.transform.SetParent(sun.transform, false);   // turns with the Sun
+                av = go.AddComponent<Light>();
+            }
+            else Undo.RecordObject(av, "Split sun");
+            av.transform.localPosition = Vector3.zero;
+            av.transform.localRotation = Quaternion.identity;
+            av.type = LightType.Directional;
+            av.color = sun.color;
+            av.intensity = sun.intensity;
+            av.shadows = LightShadows.None;
+            av.cullingMask = PlayerLayers;
+            av.renderMode = LightRenderMode.ForcePixel;
+            av.lightmapBakeType = LightmapBakeType.Realtime;   // never in a bake (Bakery bakes only its own components)
+            string linked = "";
+            Type dn = SceneSetup.FindType("Castlemist.GW2DayNight");
+            if (dn != null)
+                foreach (Component c in Object.FindObjectsByType(dn, FindObjectsInactive.Include, FindObjectsSortMode.None))
+                {
+                    SceneSetup.SetField(c, "avatarSun", av);
+                    SceneSetup.CopyProxyToUdon(c);
+                    linked = ", synced by GW2DayNight";
+                }
+            EditorSceneManager.MarkSceneDirty(sun.gameObject.scene);
+            return "split sun: " + sun.name + " skips the player layers, " + AvatarSunName + " lights them unshadowed" + linked;
         }
 
         // ---- Bakery sun / sky --------------------------------------------------------------------------------

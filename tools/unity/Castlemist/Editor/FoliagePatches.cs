@@ -149,6 +149,7 @@ namespace Castlemist
                 LODGroup lg = go.AddComponent<LODGroup>();
                 lg.SetLODs(new[] { new LOD(cull, new Renderer[] { mr }) });
                 lg.RecalculateBounds();
+                Performance.KeepNear(lg, Performance.KeepNearMetres);   // 2026-10-26: drawn within 40 m however small
                 sum.foliagePatches++;
             }
             pending.Clear();

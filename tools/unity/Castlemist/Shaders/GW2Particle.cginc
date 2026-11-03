@@ -194,6 +194,10 @@ half4 fragParticle(v2fP i) : SV_Target
     {
         // a particle faces the camera: its normal is the view direction
         o = CM_FireCore(i.uv01, i.uv23, vcG, -UNITY_MATRIX_V[2].xyz) * soft;
+        // 2026-10-27: the flame modes (740364, 965703) take the particle colour too: the prop's ModelColor
+        // (PropColors: the start colour; GW2: rgb x ModelColor x 2), which left the Labyrinth's green and
+        // purple torches orange. White on an untinted prop: unchanged. The noise modes already have it.
+        if (_FireMode < 1.5) o.rgb *= vc.rgb;
         o.a = saturate(o.a);
     }
     else if (_PtcShader > 7.5)

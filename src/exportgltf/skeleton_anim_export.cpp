@@ -86,11 +86,15 @@ void write_animations(GltfWriter& w, const ModelPreview& model, const std::vecto
         std::unordered_map<std::string, size_t> trackByName;
         for (size_t i = 0; i < clip.tracks.size(); ++i) trackByName[clip.tracks[i].name] = i;
 
-        int frameCount = std::max(1, static_cast<int>(std::floor(static_cast<double>(clip.duration) * fps)) + 1);
+        // Frames at `fps`, and always a last sample at the exact duration: a GW2 loop returns to
+        // its first pose there, and an animation that stops a fraction of a frame early makes
+        // every cycle skip that bit -- a visible hitch at each loop.
+        int frameCount = std::max(1, static_cast<int>(std::ceil(static_cast<double>(clip.duration) * fps - 1e-4)) + 1);
         std::vector<float> sampleTimes(static_cast<size_t>(frameCount));
         for (int f = 0; f < frameCount; ++f) {
             sampleTimes[static_cast<size_t>(f)] = std::min(clip.duration, static_cast<float>(f) / static_cast<float>(fps));
         }
+        sampleTimes.back() = clip.duration;
         int timesAcc = w.add_accessor(sampleTimes.data(), sampleTimes.size() * sizeof(float), kFloat, "SCALAR",
                                       sampleTimes.size(), 0);
 

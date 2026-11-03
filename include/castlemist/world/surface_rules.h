@@ -29,9 +29,9 @@ inline constexpr float kFlatWaterTint[3] = {0.30f, 0.55f, 0.85f};
 /// @brief The flat water's alpha, also the preset water's base alpha (castlemist's choice).
 inline constexpr float kFlatWaterAlpha = 0.45f;
 
-/// @brief A water preset's stored colour as 0..1: bytes 0, 1, 2 as R, G, B
-///        divided by 255 (order UNPROVEN, docs/research/gw2-world-materials.md
-///        section 6). Byte 3 is ignored.
+/// @brief A water preset's stored colour as 0..1: bytes 2, 1, 0 as R, G, B divided by
+///        255, the env light / haze order (2026-10-25; the water import is not traced,
+///        docs/research/gw2-world-materials.md section 6). Byte 3 is ignored.
 void water_colour(const uint8_t stored[4], float rgb[3]);
 
 /// @brief How deep the water is, 0 shallow .. 1 deep: saturate((terrainZ -

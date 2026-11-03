@@ -340,7 +340,7 @@ if (CASTLEMIST_PYTHON)
 endif()
 
 castlemist_add_test(ripper
-    SOURCES test_ripper_dye.cpp test_ripper_shader_dye.cpp test_ripper_atlas.cpp test_ripper_export.cpp test_ripper_skeleton.cpp test_ripper_assemble.cpp test_ripper_look.cpp
+    SOURCES test_ripper_dye.cpp test_ripper_shader_dye.cpp test_ripper_atlas.cpp test_ripper_export.cpp test_ripper_skeleton.cpp test_ripper_assemble.cpp test_ripper_look.cpp test_ripper_animator.cpp
     DEPS    castlemist::ripper ext::json ext::stb
     PRIVATE_HEADERS "${PROJECT_SOURCE_DIR}/src/ripper")
 target_compile_definitions(cm_test_ripper PRIVATE

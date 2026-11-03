@@ -1020,10 +1020,10 @@ CM_TEST(world_materials, skinned_prop_follows_its_clip) {
 CM_TEST(world_materials, water_colour_stored_order) {
     const uint8_t stored[4] = {0xA5, 0xDF, 0x5C, 0};
     float rgb[3];
-    water_colour(stored, rgb);
-    CHECK(std::fabs(rgb[0] - 165.0f / 255.0f) < 1e-6f);
+    water_colour(stored, rgb);   // B, G, R (2026-10-25)
+    CHECK(std::fabs(rgb[0] - 92.0f / 255.0f) < 1e-6f);
     CHECK(std::fabs(rgb[1] - 223.0f / 255.0f) < 1e-6f);
-    CHECK(std::fabs(rgb[2] - 92.0f / 255.0f) < 1e-6f);
+    CHECK(std::fabs(rgb[2] - 165.0f / 255.0f) < 1e-6f);
 }
 
 CM_TEST(world_materials, water_bump_uv_units) {

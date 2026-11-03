@@ -348,8 +348,11 @@ CM_TEST(vrchat, profile_decal_modes) {
     CHECK(sd.decalGlow == DecalGlow::None);
 
     // Signature-only ids stay out of the table.
-    for (uint32_t id : {76643u, 81309u, 62170u})
-        CHECK(&profile_for(mat_with_file(id), 0) == &default_profile());
+    CHECK(&profile_for(mat_with_file(62170), 0) == &default_profile());
+    // 2026-10-25, read: 76643 a decal over the diffuse; 81309 its decal x decalmask.
+    CHECK(profile_for(mat_with_file(76643), 0).decalMode == DecalMode::DecalOverDiffuse);
+    CHECK(profile_for(mat_with_file(81309), 0).decalMaskRole == "decalmask");
+    CHECK(profile_for(mat_with_file(62552), 0).clips);
     // 69623, read (2026-10-23): prop-decal with holes.
     const ShaderProfile& ch = profile_for(mat_with_file(69623), 0);
     CHECK(ch.name == "prop-decal");
@@ -374,6 +377,20 @@ CM_TEST(vrchat, profile_by_untagged_trait) {
     const ShaderProfile& p = profile_for(m, 0x6565000);
     CHECK(p.name == "legacy-untagged");
     CHECK_EQ(p.opacityTexture, 2);
+}
+
+CM_TEST(vrchat, profile_default_cuts_when_game_shader_discards) {
+    // Lion's Arch's foliage (AMAT 184994, 189570): outside the table, but the prepass or the
+    // colour pass discards, so the diffuse alpha is holes.
+    ModelMaterialCPU m = mat_with_file(184994);
+    m.shaderDiscards = true;
+    const ShaderProfile& p = profile_for(m, 0);
+    CHECK(&p == &default_cutout_profile());
+    CHECK(p.name == "default");
+    CHECK(p.clips);
+    CHECK(alpha_tested(p));
+    m.shaderDiscards = false;
+    CHECK(&profile_for(m, 0) == &default_profile());
 }
 
 CM_TEST(vrchat, profile_default_for_unknown) {

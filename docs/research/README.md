@@ -46,6 +46,7 @@ names an address, that is `Gw2-64.exe` with ASLR disabled, imagebase
 | [vertex-fvf.md](vertex-fvf.md) | GrFvf, the flexible vertex format, and how a vertex declaration is read |
 | [gw2-skeleton.md](gw2-skeleton.md) | bind pose from SKEL (inverse of the inverse-world), embedded animation, GPU skinning |
 | [gw2-animation-banks.md](gw2-animation-banks.md) | **a rigged model does not contain its animation** — it keeps a zeropose and *imports* the rest by fileId through `ModelFileAnimationBank.imports`. The imported files have no bank and no token64: one Granny clip sits inline. Also the rigid attach (bindings, no vertex weights) that leaves a sword hanging in the air |
+| [gw2-anim-blend-trees.md](gw2-anim-blend-trees.md) | **GW2 has real blend trees**, ArenaNet's own (Granny only mixes the poses). The state machine (`anic` 98781) plays clips or blend trees (content type 101, by GUID); `actionData` is a 5-way variant, not a dword. Blend-op types, the parameter switches, and clip ids as slot templates (`_gmrun____f`) |
 | [gw2-granny-64bit.md](gw2-granny-64bit.md) | granny blobs are 32- **or** 64-bit. Read a 64-bit one as 32-bit and you get zero-length arrays, not an error -- animations silently came out 0.0 s long |
 | [gw2-cloth-system.md](gw2-cloth-system.md) | the Verlet/PBD cloth solver, reconstructed |
 | [gw2-particle-system.md](gw2-particle-system.md) | baked emitters in MODL cloudData/lightData |

@@ -109,6 +109,7 @@ namespace Castlemist
             string manPath = root + "/manifest.json";
             if (!File.Exists(manPath)) throw new ManifestException(manPath + ": missing");
             WorldManifest m = WorldManifest.Parse(File.ReadAllText(manPath));
+            ApplyClipOverrides(m);
             if (!(unityScale > 0f) || float.IsInfinity(unityScale))
                 throw new ArgumentException("unityScale must be a positive number, not " + unityScale);
             sum.warnings.Add("unityScale = " + unityScale.ToString("R") + " (UNPROVEN: 'GW2 inches', spec D7)");
@@ -124,6 +125,7 @@ namespace Castlemist
             sum.warnings.Add("options: " + eff);
 
             var b = new Build(root, m, sum, eff);
+            GW2Sounds.ClearCache();
             EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
             b.Timed("fbxSettings", b.FbxBaseSettings);
             b.UnityScale = unityScale;
@@ -138,8 +140,19 @@ namespace Castlemist
             b.Timed("probe", b.Probe);
             b.Timed("environment", () => b.Environment(unityScale));
             b.Timed("demolish", () => b.Demolish(b.MapRootObject, unityScale));
+            b.Timed("water", () => sum.waterGW2 = GW2Water.Apply(b.MapRootObject, m, root, unityScale, sum.warnings));
+            b.Timed("doors", () => b.Doors(b.MapRootObject));
+            b.Timed("sounds", () => b.Sounds(b.MapRootObject));
+            b.Timed("lights", () => b.Lights(b.MapRootObject, unityScale));
+            b.Timed("dayNight", () => { try { if (Demolishables.EnsurePrograms(sum.warnings)) DayNight.Setup(b.MapRootObject, root, m.MapFileId, unityScale, sum.warnings); } catch (Exception ex) { sum.warnings.Add("day/night: " + (ex.InnerException ?? ex).Message + " (refresh again once UdonSharp has compiled)"); } });
+            b.Timed("layers", () => { try { if (Demolishables.EnsurePrograms(sum.warnings)) MapLayers.Setup(b.MapRootObject, m, sum.warnings); } catch (Exception ex) { sum.warnings.Add("layers: " + (ex.InnerException ?? ex).Message + " (refresh again once UdonSharp has compiled)"); } });
+            b.Timed("waypoints", () => { try { if (Demolishables.EnsurePrograms(sum.warnings)) Waypoints.Setup(b.MapRootObject, m, root, unityScale, sum.warnings); } catch (Exception ex) { sum.warnings.Add("waypoints: " + (ex.InnerException ?? ex).Message); } });
 
             string scenePath = root + "/GW2_" + m.MapFileId + ".unity";
+            EditorSceneManager.SaveScene(EditorSceneManager.GetActiveScene(), scenePath);
+            // 2026-10-26: unanimated skinned meshes as plain ones (needs the saved scene's folder).
+            b.Timed("staticSkinned", () => sum.warnings.Add(StaticSkinned.Convert()));
+            b.Timed("propColours", () => sum.warnings.Add(PropColors.Apply()));   // 2026-10-27: ModelColor
             EditorSceneManager.SaveScene(EditorSceneManager.GetActiveScene(), scenePath);
             AssetDatabase.SaveAssets();
             sum.seconds = sw.Elapsed.TotalSeconds;
@@ -155,12 +168,37 @@ namespace Castlemist
         /// follow them as prefab instances), particle materials and controllers; then gives each
         /// placed instance (found by its "<fileId>_<prop>" name) its clip's controller and particle
         /// timing again. Terrain, environment, lights, light volumes and probes are left as they are.
-        /// The scene is marked dirty, not saved.
+        /// 2026-10-26: then StaticSkinned (the rebuilt prefabs are skinned again); the window's Distance
+        /// (Performance.Distance, which the cull scale keeps) sets the LOD culls. The scene is marked
+        /// dirty, not saved.
         [MenuItem("Castlemist/Refresh Open World Scene In Place")]
         public static void RefreshOpenSceneMenu()
         {
             ImportSummary sum = RefreshOpenScene(null);
             Log(sum);
+        }
+
+        [MenuItem("Castlemist/Demolishables (in place)")]
+        public static void DemolishInPlaceMenu() { Debug.Log("CASTLEMIST " + DemolishInPlace()); }
+
+        /// Only the refresh's demolish step on the open scene (2026-10-27); returns a one-line report.
+        public static string DemolishInPlace()
+        {
+            var sum = new ImportSummary();
+            var scene = EditorSceneManager.GetActiveScene();
+            string root = Path.GetDirectoryName(scene.path).Replace('\\', '/');
+            string manPath = root + "/manifest.json";
+            if (string.IsNullOrEmpty(scene.path) || !File.Exists(manPath)) return "demolish: the open scene is not in a castlemist world export folder";
+            WorldManifest m = WorldManifest.Parse(File.ReadAllText(manPath));
+            ApplyClipOverrides(m);
+            GameObject mapRoot = scene.GetRootGameObjects().FirstOrDefault(g => g.name == "GW2_" + m.MapFileId);
+            if (mapRoot == null) return "demolish: no GW2_" + m.MapFileId + " root in the open scene";
+            ImportOptions eff = new ImportOptions { skipModels = EditorPrefs.GetString("Castlemist.ImportWorld.SkipModels", ""), distance = Performance.Distance() };
+            eff.Validate();
+            float unityScale = mapRoot.transform.localScale.x;
+            new Build(root, m, sum, eff) { UnityScale = unityScale }.Demolish(mapRoot, unityScale);
+            EditorSceneManager.MarkSceneDirty(scene);
+            return "demolish: " + sum.demolishables + " demolishable prop(s)" + (sum.warnings.Count > 0 ? "; " + string.Join("; ", sum.warnings) : "");
         }
 
         public static ImportSummary RefreshOpenScene(ImportOptions opts)
@@ -176,6 +214,7 @@ namespace Castlemist
                 return sum;
             }
             WorldManifest m = WorldManifest.Parse(File.ReadAllText(manPath));
+            ApplyClipOverrides(m);
             GameObject mapRoot = scene.GetRootGameObjects().FirstOrDefault(g => g.name == "GW2_" + m.MapFileId);
             if (mapRoot == null)
             {
@@ -188,7 +227,7 @@ namespace Castlemist
             {
                 // As imported: the shader mode the scene's materials use (the default is Poiyomi),
                 // the window's skipped models.
-                opts = new ImportOptions { skipModels = EditorPrefs.GetString("Castlemist.ImportWorld.SkipModels", "") };
+                opts = new ImportOptions { skipModels = EditorPrefs.GetString("Castlemist.ImportWorld.SkipModels", ""), distance = Performance.Distance() };
                 bool castlemist = mapRoot.GetComponentsInChildren<Renderer>(true)
                     .SelectMany(r => r.sharedMaterials).Any(x => x != null && x.shader != null && x.shader.name.StartsWith("Castlemist/GW2", StringComparison.Ordinal));
                 opts.shader = castlemist ? ShaderMode.Castlemist : ShaderMode.Poiyomi;
@@ -197,6 +236,7 @@ namespace Castlemist
             ImportOptions eff = opts.Clone();
             eff.Validate();
             var b = new Build(root, m, sum, eff) { UnityScale = unityScale };
+            GW2Sounds.ClearCache();
             b.Timed("fbxSettings", b.FbxBaseSettings);
             b.Timed("materials", b.Materials);
             b.Timed("modelImport", b.ModelImport);
@@ -207,11 +247,108 @@ namespace Castlemist
             b.Timed("clouds", () => b.Clouds(mapRoot, unityScale));
             b.Timed("cellColliders", () => b.RefreshCellColliders(mapRoot));
             b.Timed("demolish", () => b.Demolish(mapRoot, unityScale));
+            b.Timed("water", () => sum.waterGW2 = GW2Water.Apply(mapRoot, m, root, unityScale, sum.warnings));
+            b.Timed("doors", () => b.Doors(mapRoot));
+            b.Timed("sounds", () => b.Sounds(mapRoot));
+            b.Timed("lights", () => b.Lights(mapRoot, unityScale));
+            b.Timed("dayNight", () => { try { if (Demolishables.EnsurePrograms(sum.warnings)) DayNight.Setup(mapRoot, root, m.MapFileId, unityScale, sum.warnings); } catch (Exception ex) { sum.warnings.Add("day/night: " + (ex.InnerException ?? ex).Message + " (refresh again once UdonSharp has compiled)"); } });
+            b.Timed("layers", () => { try { if (Demolishables.EnsurePrograms(sum.warnings)) MapLayers.Setup(mapRoot, m, sum.warnings); } catch (Exception ex) { sum.warnings.Add("layers: " + (ex.InnerException ?? ex).Message + " (refresh again once UdonSharp has compiled)"); } });
+            b.Timed("waypoints", () => { try { if (Demolishables.EnsurePrograms(sum.warnings)) Waypoints.Setup(mapRoot, m, root, unityScale, sum.warnings); } catch (Exception ex) { sum.warnings.Add("waypoints: " + (ex.InnerException ?? ex).Message); } });
+            // 2026-10-26: the prefabs were rebuilt skinned: unanimated ones back to plain meshes.
+            b.Timed("staticSkinned", () => sum.warnings.Add(StaticSkinned.Convert()));
+            b.Timed("propColours", () => sum.warnings.Add(PropColors.Apply()));   // 2026-10-27: ModelColor
             EditorSceneManager.MarkSceneDirty(scene);
             AssetDatabase.SaveAssets();
             sum.seconds = sw.Elapsed.TotalSeconds;
             Debug.Log("CASTLEMIST refresh " + root + " in " + sum.seconds.ToString("F1") + " s (" + string.Join(", ", b.Times) + ")");
             return sum;
+        }
+
+        /// RefreshOpenScene for @p fileIds only (2026-10-25): their FBX settings, materials, model import,
+        /// prefabs, controllers and placed instances; nothing map-wide (no other model's material,
+        /// terrain, foliage, water, sky, sounds, doors or lights). The scene is marked dirty, not saved.
+        public static ImportSummary RefreshModels(params long[] fileIds)
+        {
+            var sw = Stopwatch.StartNew();
+            var sum = new ImportSummary();
+            var scene = EditorSceneManager.GetActiveScene();
+            string root = Path.GetDirectoryName(scene.path).Replace('\\', '/');
+            string manPath = root + "/manifest.json";
+            if (!File.Exists(manPath)) { sum.errors.Add("refresh: the open scene is not in a castlemist world export folder"); return sum; }
+            WorldManifest m = WorldManifest.Parse(File.ReadAllText(manPath));
+            ApplyClipOverrides(m);
+            GameObject mapRoot = scene.GetRootGameObjects().FirstOrDefault(g => g.name == "GW2_" + m.MapFileId);
+            if (mapRoot == null) { sum.errors.Add("refresh: no GW2_" + m.MapFileId + " root in the open scene"); return sum; }
+            float unityScale = mapRoot.transform.localScale.x;
+            CastlemistPostprocessor.ClearCache();
+            var opts = new ImportOptions { skipModels = EditorPrefs.GetString("Castlemist.ImportWorld.SkipModels", ""), distance = Performance.Distance() };
+            bool castlemist = mapRoot.GetComponentsInChildren<Renderer>(true)
+                .SelectMany(r => r.sharedMaterials).Any(x => x != null && x.shader != null && x.shader.name.StartsWith("Castlemist/GW2", StringComparison.Ordinal));
+            opts.shader = castlemist ? ShaderMode.Castlemist : ShaderMode.Poiyomi;
+            ImportOptions eff = opts.Clone();
+            eff.Validate();
+            var b = new Build(root, m, sum, eff) { UnityScale = unityScale, Only = new HashSet<long>(fileIds) };
+            b.Timed("fbxSettings", b.FbxBaseSettings);
+            b.Timed("materials", b.Materials);
+            b.Timed("modelImport", b.ModelImport);
+            b.Timed("prefabs", b.Prefabs);
+            b.Timed("controllers", b.Controllers);
+            b.Timed("instances", () => b.RefreshInstances(mapRoot, unityScale));
+            // 2026-10-27: after the instances, which put the manifest clip's controller back on the doors
+            b.Timed("doorClips", () => b.RelinkDoors(mapRoot));   // their clips' material and UV curves
+            b.Timed("staticSkinned", () => sum.warnings.Add(StaticSkinned.Convert()));
+            b.Timed("propColours", () => sum.warnings.Add(PropColors.Apply()));   // 2026-10-27: ModelColor
+            EditorSceneManager.MarkSceneDirty(scene);
+            AssetDatabase.SaveAssets();
+            sum.seconds = sw.Elapsed.TotalSeconds;
+            Debug.Log("CASTLEMIST refresh models " + string.Join(",", fileIds) + " in " + sum.seconds.ToString("F1") + " s (" + string.Join(", ", b.Times) + ")");
+            return sum;
+        }
+
+        /// Only the material assets of @p fileIds rebuilt (2026-10-26): they are updated in place at their
+        /// paths, so the prefabs and placements that use them follow; nothing else is touched (RefreshModels
+        /// also rebuilds the prefabs, which the cell proxies and switchers reference).
+        public static ImportSummary RefreshMaterials(params long[] fileIds)
+        {
+            var sw = Stopwatch.StartNew();
+            var sum = new ImportSummary();
+            var scene = EditorSceneManager.GetActiveScene();
+            string root = Path.GetDirectoryName(scene.path).Replace('\\', '/');
+            string manPath = root + "/manifest.json";
+            if (!File.Exists(manPath)) { sum.errors.Add("refresh: the open scene is not in a castlemist world export folder"); return sum; }
+            WorldManifest m = WorldManifest.Parse(File.ReadAllText(manPath));
+            GameObject mapRoot = scene.GetRootGameObjects().FirstOrDefault(g => g.name == "GW2_" + m.MapFileId);
+            float unityScale = mapRoot != null ? mapRoot.transform.localScale.x : 0.0254f;
+            CastlemistPostprocessor.ClearCache();
+            var opts = new ImportOptions { skipModels = EditorPrefs.GetString("Castlemist.ImportWorld.SkipModels", ""), distance = Performance.Distance() };
+            bool castlemist = mapRoot == null || mapRoot.GetComponentsInChildren<Renderer>(true)
+                .SelectMany(r => r.sharedMaterials).Any(x => x != null && x.shader != null && x.shader.name.StartsWith("Castlemist/GW2", StringComparison.Ordinal));
+            opts.shader = castlemist ? ShaderMode.Castlemist : ShaderMode.Poiyomi;
+            ImportOptions eff = opts.Clone();
+            eff.Validate();
+            var b = new Build(root, m, sum, eff) { UnityScale = unityScale, Only = new HashSet<long>(fileIds) };
+            b.Timed("materials", b.Materials);
+            AssetDatabase.SaveAssets();
+            sum.seconds = sw.Elapsed.TotalSeconds;
+            Debug.Log("CASTLEMIST refresh materials " + string.Join(",", fileIds) + " in " + sum.seconds.ToString("F1") + " s");
+            return sum;
+        }
+
+        /// Clips for props the map places without one, where that leaves the model where the game
+        /// never shows it (castlemist's choice, 2026-10-25): Lion's Arch's Pact airship 1768614 has no
+        /// sequence and sits at its flight pose 390 m up (the game shows it docked after Path of
+        /// Fire's story); "Docked" parks it by the harbour.
+        /// 2026-10-27: Mad King's Labyrinth's bats 81562 (and 73012, the same) have one clip, "zeropose", 10 s long on 6 joints: their
+        /// flight loop, not an edit pose (placed without a clip, they were frozen and made static).
+        static readonly Dictionary<long, string> ClipOverrides = new Dictionary<long, string> { { 1768614, "Docked" }, { 81562, "zeropose" }, { 73012, "zeropose" } };
+
+        static void ApplyClipOverrides(WorldManifest m)
+        {
+            foreach (WorldManifest.CellEntry c in m.Cells)
+                foreach (WorldManifest.InstanceEntry i in c.Instances)
+                    if (i.Clip == null && i.Model >= 0 && i.Model < m.Models.Count &&
+                        ClipOverrides.TryGetValue(m.Models[i.Model].FileId, out string clip) && m.Models[i.Model].Clips.Contains(clip))
+                        i.Clip = clip;
         }
 
         /// Task 15d: what one shared .mat is built for -- the key, and the dark
@@ -270,6 +407,9 @@ namespace Castlemist
             if (sum.clouds > 0) Debug.Log("CASTLEMIST clouds=" + sum.clouds);
             if (sum.skyCards > 0) Debug.Log("CASTLEMIST skyCards=" + sum.skyCards);
             if (sum.demolishables > 0) Debug.Log("CASTLEMIST demolishables=" + sum.demolishables);
+            if (sum.soundProps > 0) Debug.Log("CASTLEMIST soundProps=" + sum.soundProps);
+            if (sum.doors > 0) Debug.Log("CASTLEMIST doors=" + sum.doors);
+            if (sum.mapLights + sum.modelLights > 0) Debug.Log("CASTLEMIST mapLights=" + sum.mapLights + " modelLights=" + sum.modelLights);
             Debug.Log(sum.PlanLine());
         }
 
@@ -345,6 +485,9 @@ namespace Castlemist
             // Per model: each built material's materials.json entry (its constAnims, for the clips).
             readonly Dictionary<int, Dictionary<Material, MaterialsFile.MaterialEntry>> modelEntries =
                 new Dictionary<int, Dictionary<Material, MaterialsFile.MaterialEntry>>();
+            // Per model: the material of each materials.json entry, by index (= the glb's material index;
+            // null for a particle-only entry), for AssignByGlb.
+            readonly Dictionary<int, List<Material>> modelByIndex = new Dictionary<int, List<Material>>();
             readonly Dictionary<int, GameObject> prefabs = new Dictionary<int, GameObject>();
             readonly Dictionary<string, RuntimeAnimatorController> controllers = new Dictionary<string, RuntimeAnimatorController>();
             readonly Dictionary<string, Material> terrainMats = new Dictionary<string, Material>();
@@ -463,9 +606,14 @@ namespace Castlemist
                 return new string(c);
             }
 
+            /// RefreshModels (2026-10-25): only these model fileIds' assets and instances; null: all.
+            public HashSet<long> Only;
+            bool Skip(WorldManifest.ModelEntry e) { return Only != null && !Only.Contains(e.FileId); }
+
             IEnumerable<string> AllFbx()
             {
-                foreach (WorldManifest.ModelEntry e in m.Models) if (e.Ok && e.Fbx != null) yield return P(e.Fbx);
+                foreach (WorldManifest.ModelEntry e in m.Models) if (e.Ok && e.Fbx != null && !Skip(e)) yield return P(e.Fbx);
+                if (Only != null) yield break;
                 foreach (WorldManifest.CellEntry c in m.Cells) if (c.Fbx != null) yield return P(c.Fbx);
                 if (m.FrameProbe != null && m.FrameProbe.Fbx != null) yield return P(m.FrameProbe.Fbx);
             }
@@ -536,6 +684,7 @@ namespace Castlemist
                 {
                     foreach (WorldManifest.ModelEntry e in m.Models)
                     {
+                        if (Skip(e)) continue;
                         if (!e.Ok)
                         {
                             // "empty": no drawable meshes, nothing to place; not an error (final review M1).
@@ -552,8 +701,11 @@ namespace Castlemist
                         var mats = new Dictionary<string, Material>(StringComparer.Ordinal);
                         var entries = new Dictionary<Material, MaterialsFile.MaterialEntry>();
                         var seen = new Dictionary<string, int>(StringComparer.Ordinal);
+                        var cutSeen = new Dictionary<string, int>(StringComparer.Ordinal);   // Blender's 63-byte cuts
+                        var byIndex = new List<Material>();
                         foreach (MaterialsFile.MaterialEntry me in f.Materials)
                         {
+                            byIndex.Add(null);
                             int k;
                             seen.TryGetValue(me.Name, out k);
                             seen[me.Name] = k + 1;
@@ -576,11 +728,33 @@ namespace Castlemist
                             else
                                 mat = PoiyomiMaterials.BuildModelMaterial(ctx, me, folder, dark, sc,
                                     root + "/Materials/" + e.FileId + "/" + Safe(me.FileName) + ".mat");
-                            foreach (string key in FbxMaterialNames(me, k)) mats[key] = mat;
+                            // A name only a cut shares keeps the first material's claim (2026-10-25): two long
+                            // names alike in their first 63 bytes cut to one key, and the later overwrote it.
+                            string full = me.FileName ?? me.Name;
+                            foreach (string key in FbxMaterialNames(me, k))
+                                if (key == me.Name || key == me.FileName || !mats.ContainsKey(key)) mats[key] = mat;
+                            // Blender cuts a material name to 63 bytes; a cut already taken, it cuts one byte
+                            // shorter, up to four times, then numbers the 59-byte cut (1011494, six alike:
+                            // "..Mega", "..Meg", "..Me", "..M", "..LionsArch", "..LionsArch.001"), in the
+                            // file's (the glb's) material order.
+                            if (k == 0 && System.Text.Encoding.UTF8.GetByteCount(full) > 63)
+                            {
+                                string cut = CutUtf8(full, 63);
+                                cutSeen.TryGetValue(cut, out int n);
+                                cutSeen[cut] = n + 1;
+                                if (n > 0)
+                                {
+                                    string BlenderName(string s0) => n <= 4 ? CutUtf8(s0, 63 - n) : CutUtf8(s0, 59) + "." + (n - 4).ToString("D3");
+                                    mats[BlenderName(full)] = mat;
+                                    mats[BlenderName(me.Name)] = mat;
+                                }
+                            }
                             if (!entries.ContainsKey(mat)) entries[mat] = me;
+                            byIndex[byIndex.Count - 1] = mat;
                         }
                         modelMats[e.Position] = mats;
                         modelEntries[e.Position] = entries;
+                        modelByIndex[e.Position] = byIndex;
                     }
                     foreach (WorldManifest.CellEntry c in m.Cells)
                     {
@@ -629,7 +803,7 @@ namespace Castlemist
                 {
                     foreach (WorldManifest.ModelEntry e in m.Models)
                     {
-                        if (!e.Ok) continue;
+                        if (!e.Ok || Skip(e)) continue;
                         if (e.Fbx == null)
                         {
                             sum.warnings.Add("model " + e.FileId + ": no .fbx (run gw2dat_cli world-fbx --dir <folder>, or castlemist_world.py --to-fbx <folder>): no prefab");
@@ -643,8 +817,21 @@ namespace Castlemist
                         mi.importLights = false;
                         Dictionary<string, Material> mats;
                         if (modelMats.TryGetValue(e.Position, out mats))
+                        {
                             foreach (KeyValuePair<string, Material> kv in mats)
                                 mi.AddRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), kv.Key), kv.Value);
+                            // 2026-10-25: Blender suffixes a material whose name it has seen (".001") even
+                            // when materials.json lists it once (81028's cloth "BannerTEX.001" stayed on
+                            // Unity's default material and drew nothing): an FBX material left unmapped
+                            // by the last import takes the entry its name minus ".NNN" names.
+                            foreach (Object sub in AssetDatabase.LoadAllAssetRepresentationsAtPath(P(e.Fbx)))
+                            {
+                                if (!(sub is Material fm) || mats.ContainsKey(fm.name)) continue;
+                                var mm = System.Text.RegularExpressions.Regex.Match(fm.name, @"^(.*)\.\d{3}$");
+                                if (mm.Success && mats.TryGetValue(mm.Groups[1].Value, out Material target))
+                                    mi.AddRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), fm.name), target);
+                            }
+                        }
                         if (e.Clips.Count == 0 && NeedsRig(e))
                         {
                             // Skinned to a scaled joint (map 506592's rock 90608: 3280.66): only the rig
@@ -679,7 +866,7 @@ namespace Castlemist
                 EnsureFolder(root + "/Prefabs");
                 foreach (WorldManifest.ModelEntry e in m.Models)
                 {
-                    if (!e.Ok || e.Fbx == null || !File.Exists(P(e.Fbx))) continue;
+                    if (!e.Ok || Skip(e) || e.Fbx == null || !File.Exists(P(e.Fbx))) continue;
                     var asset = AssetDatabase.LoadAssetAtPath<GameObject>(P(e.Fbx));
                     if (asset == null) { sum.errors.Add(P(e.Fbx) + ": no GameObject"); continue; }
                     Dictionary<string, Material> mats;
@@ -708,12 +895,21 @@ namespace Castlemist
                         // ContributeGI with Light Probes GI, ReflectionProbeStatic; StaticFlags with Occlusion off.
                         foreach (Transform t in inst.GetComponentsInChildren<Transform>(true))
                             SceneSetup.ApplyStatic(t.gameObject, opts);
+                        RemoveUndrawn(inst, modelEntries.TryGetValue(e.Position, out var drawnEntries) ? drawnEntries : null);
+                        AttachCloth(inst);
+                        if (modelByIndex.TryGetValue(e.Position, out var byIdx) && e.Glb != null)
+                        {
+                            int fixedR = AssignByGlb(inst, P(e.Glb), byIdx);
+                            if (fixedR > 0) sum.warnings.Add("model " + e.FileId + ": " + fixedR + " renderer(s) given their glb material (a name remap had another)");
+                        }
                         // Task 15b: LOD0..LODn from the model's LOD objects and its "lod" stand-ins
                         // (LodGroups, ModelLods); every model culls at ModelLods.PropCull.
                         int built = LodGroups.Build(inst, e.LodLevels, e.FarMeshes, e.LodDistances,
                                                     size => ModelLods.PropCull(opts.distance), sum.warnings, "model " + e.FileId,
                                                     e.HiddenMeshes);
                         if (built > 1) sum.lodPrefabs++;
+                        LowerLods.Extend(inst, root);   // 2026-10-27: a simplified level after the model's own
+                        foreach (LODGroup klg in inst.GetComponentsInChildren<LODGroup>(true)) Performance.KeepNear(klg, Performance.KeepNearMetres);   // 2026-10-26
                         // 2026-10-22: the model's particle clouds as particle systems (ParticleEffects).
                         string modelFolder = e.Materials != null ? Path.GetDirectoryName(P(e.Materials)).Replace('\\', '/') : null;
                         string sidecar = modelFolder != null ? ParticleEffects.SidecarFor(modelFolder, e.FileId) : null;
@@ -727,6 +923,7 @@ namespace Castlemist
                                 EnsureFolder(pmat);
                                 sum.particleSystems += ParticleEffects.AddTo(inst, sidecar, mf, modelFolder, ctx,
                                                                              pmat, sum.warnings);
+                                Performance.ParticlesInLods(inst);   // 2026-10-26: they cull with the prop
                             }
                             catch (ManifestException ex) { sum.errors.Add(ex.Message); }
                         }
@@ -739,6 +936,115 @@ namespace Castlemist
                     }
                     finally { Object.DestroyImmediate(inst); }
                 }
+            }
+
+            /// GW2 materials the client never draws (2026-10-25): AMAT 46230 ("PlacementDiffuse", the
+            /// placement shells of fish schools and emitters, 81370 / 343537) has 40 pixel shaders, no
+            /// vertex shader, and its technique selects none (`amat` psIndex -1).
+            static readonly HashSet<long> UndrawnAmats = new HashSet<long> { 46230 };
+
+            /// Each renderer's materials from the glb it came from (2026-10-25): the node of its name lists a
+            /// material index per primitive (= Blender's material slots, in order). Name remapping cannot
+            /// tell apart materials of one name: Blender suffixes ".001" in the order meshes first use
+            /// them, not the material list's (81433's hull "Mat_20041" took the props atlas of its namesake).
+            /// Returns how many renderers changed. A node not found, or a slot count that differs, is left.
+            public static int AssignByGlb(GameObject inst, string glbPath, List<Material> byIndex)
+            {
+                var nodes = GlbNodeMaterials(glbPath);
+                if (nodes == null) return 0;
+                int n = 0;
+                foreach (Renderer r in inst.GetComponentsInChildren<Renderer>(true))
+                {
+                    if (r is ParticleSystemRenderer || !nodes.TryGetValue(r.name, out List<int> idx)) continue;
+                    Material[] cur = r.sharedMaterials;
+                    if (cur.Length != idx.Count) continue;
+                    var want = new Material[cur.Length];
+                    bool differs = false;
+                    for (int k = 0; k < cur.Length; ++k)
+                    {
+                        int mi = idx[k];
+                        want[k] = mi >= 0 && mi < byIndex.Count && byIndex[mi] != null ? byIndex[mi] : cur[k];
+                        differs |= want[k] != cur[k];
+                    }
+                    if (!differs) continue;
+                    r.sharedMaterials = want;
+                    ++n;
+                }
+                return n;
+            }
+
+            /// The glb's node name -> the material index of each primitive of its mesh (-1: none); null
+            /// when the file does not read.
+            static Dictionary<string, List<int>> GlbNodeMaterials(string glbPath)
+            {
+                try
+                {
+                    byte[] b = File.ReadAllBytes(glbPath);
+                    if (b.Length < 20 || BitConverter.ToUInt32(b, 0) != 0x46546C67) return null;   // "glTF"
+                    int len = (int)BitConverter.ToUInt32(b, 12);
+                    var j = MiniJson.Parse(System.Text.Encoding.UTF8.GetString(b, 20, len)) as Dictionary<string, object>;
+                    if (j == null || !(j.TryGetValue("nodes", out object no) && no is List<object> nodes) ||
+                        !(j.TryGetValue("meshes", out object mo) && mo is List<object> meshes)) return null;
+                    var r = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+                    foreach (object o in nodes)
+                    {
+                        if (!(o is Dictionary<string, object> node) || !node.TryGetValue("mesh", out object mi) || !node.TryGetValue("name", out object nm)) continue;
+                        int mesh = Convert.ToInt32(mi);
+                        if (mesh < 0 || mesh >= meshes.Count || !(meshes[mesh] is Dictionary<string, object> md) ||
+                            !(md.TryGetValue("primitives", out object po) && po is List<object> prims)) continue;
+                        var idx = new List<int>();
+                        foreach (object p in prims)
+                            idx.Add(p is Dictionary<string, object> pd && pd.TryGetValue("material", out object mat) ? Convert.ToInt32(mat) : -1);
+                        r[nm as string ?? ""] = idx;
+                    }
+                    return r;
+                }
+                catch (Exception) { return null; }
+            }
+
+            /// GW2 cloth (2026-10-25): the export writes a model's "cloth_<k>" meshes unskinned, so they
+            /// stayed put while the rig animated (231336's sails while the ship is demolished). Each is
+            /// moved under the skin bone nearest its bounds' centre at the bind pose (world kept): it
+            /// follows that bone. Which bone GW2's cloth hangs from (ModelClothData) is not read.
+            public static int AttachCloth(GameObject inst)
+            {
+                var bones = new HashSet<Transform>();
+                foreach (SkinnedMeshRenderer s in inst.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                    foreach (Transform b in s.bones) if (b != null) bones.Add(b);
+                if (bones.Count == 0) return 0;
+                int n = 0;
+                foreach (MeshRenderer r in inst.GetComponentsInChildren<MeshRenderer>(true))
+                {
+                    if (!r.name.StartsWith("cloth", StringComparison.OrdinalIgnoreCase)) continue;
+                    Vector3 c = r.bounds.center;
+                    Transform best = null;
+                    float bd = float.MaxValue;
+                    foreach (Transform b in bones)
+                    {
+                        float d = (b.position - c).sqrMagnitude;
+                        if (d < bd) { bd = d; best = b; }
+                    }
+                    if (best == null || r.transform.IsChildOf(best)) continue;
+                    r.transform.SetParent(best, true);
+                    ++n;
+                }
+                return n;
+            }
+
+            /// Removes @p inst's renderers whose every material is in UndrawnAmats.
+            public static int RemoveUndrawn(GameObject inst, Dictionary<Material, MaterialsFile.MaterialEntry> entries)
+            {
+                if (entries == null) return 0;
+                int n = 0;
+                foreach (Renderer r in inst.GetComponentsInChildren<Renderer>(true))
+                {
+                    if (r is ParticleSystemRenderer) continue;
+                    Material[] ms = r.sharedMaterials;
+                    if (ms.Length == 0 || !ms.All(mt => mt != null && entries.TryGetValue(mt, out var me) && UndrawnAmats.Contains(me.Amat))) continue;
+                    Object.DestroyImmediate(r, true);
+                    ++n;
+                }
+                return n;
             }
 
             static AnimationClip FindClip(string fbx, string clip)
@@ -757,7 +1063,7 @@ namespace Castlemist
                 var pairs = new SortedSet<string>(StringComparer.Ordinal);
                 foreach (WorldManifest.CellEntry c in m.Cells)
                     foreach (WorldManifest.InstanceEntry i in c.Instances)
-                        if (i.Clip != null && i.Model >= 0 && i.Model < m.Models.Count) pairs.Add(i.Model + "\n" + i.Clip);
+                        if (i.Clip != null && i.Model >= 0 && i.Model < m.Models.Count && !Skip(m.Models[i.Model])) pairs.Add(i.Model + "\n" + i.Clip);
                 if (pairs.Count > 0) EnsureFolder(root + "/Controllers");
                 foreach (string key in pairs)
                 {
@@ -815,6 +1121,7 @@ namespace Castlemist
                         if (sm == null || !entries.TryGetValue(sm, out me)) continue;
                         foreach (MaterialsFile.ConstAnim ca in me.ConstAnims)
                         {
+                            if (SuppressedConstAnim(e.FileId, me.Name)) continue;
                             if (ca.Clip != part || ca.Times.Length == 0) continue;
                             foreach (KeyValuePair<string, int> prop in CastlemistMaterials.AnimatedProperties(me, ca.Constant))
                             {
@@ -822,6 +1129,43 @@ namespace Castlemist
                                 var keys = new List<Keyframe>();
                                 for (int i = 0; i < ca.Times.Length; ++i)
                                     keys.Add(new Keyframe((float)ca.Times[i], (float)ca.Values[i][prop.Value]));
+                                if (keys.Count == 1) keys.Add(new Keyframe(Mathf.Max(src.length, 1f / 30f), keys[0].value));   // held
+                                var curve = new AnimationCurve(keys.ToArray());
+                                for (int i = 0; i < curve.length; ++i)
+                                {
+                                    AnimationUtility.SetKeyLeftTangentMode(curve, i, AnimationUtility.TangentMode.Linear);
+                                    AnimationUtility.SetKeyRightTangentMode(curve, i, AnimationUtility.TangentMode.Linear);
+                                }
+                                curves.Add(new KeyValuePair<EditorCurveBinding, AnimationCurve>(
+                                    EditorCurveBinding.FloatCurve(rpath, r.GetType(), "material." + prop.Key), curve));
+                            }
+                        }
+                        // 2026-10-27: GW2's UV animations (materials.json uvAnims). Type 4 moves V by x: haunted
+                        // door 499261's vines sit on their texture's bottom half and grow in over Unlurk (0 ->
+                        // -0.5). Unity's V is 1 - GW2's, so the offset is -x. _MainTex_ST takes all four
+                        // components (one alone leaves the others 0 in the Animator's property block: scale 0);
+                        // the normal map has no transform, so _BumpMapOffset.
+                        foreach (MaterialsFile.UvAnim ua in me.UvAnims)
+                        {
+                            if (ua.Clip != part || ua.Type != 4 || ua.Times.Length == 0) continue;
+                            Vector2 sc = sm.HasProperty("_MainTex") ? sm.GetTextureScale("_MainTex") : Vector2.one;
+                            Vector2 of = sm.HasProperty("_MainTex") ? sm.GetTextureOffset("_MainTex") : Vector2.zero;
+                            var props = new List<KeyValuePair<string, Func<double, float>>>();
+                            if (Array.IndexOf(ua.Maps, "baseColor") >= 0 && sm.HasProperty("_MainTex"))
+                            {
+                                props.Add(new KeyValuePair<string, Func<double, float>>("_MainTex_ST.x", v => sc.x));
+                                props.Add(new KeyValuePair<string, Func<double, float>>("_MainTex_ST.y", v => sc.y));
+                                props.Add(new KeyValuePair<string, Func<double, float>>("_MainTex_ST.z", v => of.x));
+                                props.Add(new KeyValuePair<string, Func<double, float>>("_MainTex_ST.w", v => -(float)v));   // absolute: the material rests at Open's (CastlemistMaterials.UvAnimRest)
+                            }
+                            if (Array.IndexOf(ua.Maps, "normal") >= 0 && sm.HasProperty("_BumpMapOffset"))
+                                props.Add(new KeyValuePair<string, Func<double, float>>("_BumpMapOffset.y", v => -(float)v));
+                            foreach (KeyValuePair<string, Func<double, float>> prop in props)
+                            {
+                                if (!done.Add(prop.Key)) continue;
+                                var keys = new List<Keyframe>();
+                                for (int i = 0; i < ua.Times.Length; ++i)
+                                    keys.Add(new Keyframe((float)ua.Times[i], prop.Value(ua.Values[i][0])));
                                 if (keys.Count == 1) keys.Add(new Keyframe(Mathf.Max(src.length, 1f / 30f), keys[0].value));   // held
                                 var curve = new AnimationCurve(keys.ToArray());
                                 for (int i = 0; i < curve.length; ++i)
@@ -869,18 +1213,31 @@ namespace Castlemist
                         curves.Add(new KeyValuePair<EditorCurveBinding, AnimationCurve>(
                             EditorCurveBinding.FloatCurve(AnimationUtility.CalculateTransformPath(r.transform, prefab.transform), r.GetType(), "m_Enabled"), curve));
                     }
-                if (curves.Count == 0) return src;
+                // 2026-10-25: the model's sound triggers for this clip (GW2Sounds: Animation Events
+                // calling GW2SoundPlayer's numbered entry points).
+                List<AnimationEvent> soundEvents = GW2Sounds.ClipEvents(e.Sounds != null ? GW2Sounds.Load(P(e.Sounds)) : null, part);
+                if (curves.Count == 0 && soundEvents.Count == 0) return src;
                 var clip = new AnimationClip { name = src.name, frameRate = src.frameRate };
                 foreach (EditorCurveBinding b in AnimationUtility.GetCurveBindings(src))
                     AnimationUtility.SetEditorCurve(clip, b, AnimationUtility.GetEditorCurve(src, b));
                 foreach (KeyValuePair<EditorCurveBinding, AnimationCurve> kv in curves)
                     AnimationUtility.SetEditorCurve(clip, kv.Key, kv.Value);
                 AnimationUtility.SetAnimationClipSettings(clip, AnimationUtility.GetAnimationClipSettings(src));
+                if (soundEvents.Count > 0) AnimationUtility.SetAnimationEvents(clip, soundEvents.ToArray());
                 string path = root + "/Controllers/" + e.FileId + "_" + Safe(part) + ".anim";
                 if (AssetDatabase.LoadAssetAtPath<AnimationClip>(path) != null) AssetDatabase.DeleteAsset(path);
                 AssetDatabase.CreateAsset(clip, path);
                 sum.constantClips++;
                 return clip;
+            }
+
+            /// 2026-10-27: the haunted doors' green aura planes (499261 / 648540 "ColorRemap", AMAT 45571 twirl): their
+            /// clips raise collow / colhi to GW2's greens, which our reading of the twirl shader draws as 22 m
+            /// streaky curtains (the user: "weird"); unanimated they stay black, invisible additively, as before
+            /// the door clips carried material curves. Until a game reference shows how GW2 bounds them.
+            static bool SuppressedConstAnim(long fileId, string material)
+            {
+                return (fileId == 499261 || fileId == 648540) && material != null && material.StartsWith("ColorRemap", StringComparison.Ordinal);
             }
 
             /// The model's sidecar meshVis (mesh node -> visBone) and clip @p part's boneVis keys; false
@@ -958,12 +1315,14 @@ namespace Castlemist
                         Place(go, prefab, new Quaternion((float)i.R[0], (float)i.R[1], (float)i.R[2], (float)i.R[3]), (float)i.S);
                         // Task 15b: OVERRIDE_LOD placements get their own heights on the instance.
                         if (i.Lod != null && LodGroups.Override(go, i.Lod)) sum.lodOverrides++;
+                        foreach (LODGroup klg in go.GetComponentsInChildren<LODGroup>(true)) Performance.KeepNear(klg, Performance.KeepNearMetres);   // at its placed scale
                         RuntimeAnimatorController ac;
                         if (i.Clip != null && controllers.TryGetValue(i.Model + "\n" + i.Clip, out ac))
                         {
                             Animator an = go.GetComponent<Animator>();
                             if (an == null) an = go.AddComponent<Animator>();
                             an.runtimeAnimatorController = ac;
+                            an.cullingMode = AnimatorCullingMode.CullCompletely;   // 2026-10-26: off screen nothing runs (doors / demolishables set their own)
                             foreach (Transform t in go.GetComponentsInChildren<Transform>(true))
                                 GameObjectUtility.SetStaticEditorFlags(t.gameObject, 0);
                             FitSkinnedBounds(go, ac);
@@ -1007,22 +1366,156 @@ namespace Castlemist
 
             public GameObject MapRootObject { get { return mapRoot; } }
 
-            /// 2026-10-25: the props of every model with a Demolish clip made demolishable
-            /// (Demolishables; after the instances, their controllers and the cell colliders).
-            public void Demolish(GameObject mapRoot, float unityScale)
+            /// 2026-10-25: every placed instance of a model with a sounds sidecar gets its AudioSources
+            /// and GW2SoundPlayer (GW2Sounds; after the controllers, which carry the clip events).
+            /// 2026-10-25: props whose model has Open and Close clips open while a player is near
+            /// (ProximityDoors; a demolishable model is left to Demolish).
+            public void Doors(GameObject mapRoot)
+            {
+                Dictionary<int, AnimatorController> models = DoorControllers();
+                if (models.Count == 0 || !Demolishables.EnsurePrograms(sum.warnings)) return;
+                int done = 0;
+                foreach (WorldManifest.CellEntry c in m.Cells)
+                {
+                    Transform props = mapRoot.transform.Find("Cell_" + c.Id + "/Props");
+                    if (props == null) continue;
+                    foreach (WorldManifest.InstanceEntry i in c.Instances)
+                    {
+                        AnimatorController ac;
+                        if (!models.TryGetValue(i.Model, out ac)) continue;
+                        Transform inst = props.Find(m.Models[i.Model].FileId + "_" + i.Prop);
+                        if (inst == null) continue;
+                        if (!ProximityDoors.SetupInstance(inst.gameObject, ac))
+                        {
+                            sum.warnings.Add("doors: Castlemist.GW2ProximityDoor is not compiled yet: refresh again once UdonSharp has compiled");
+                            return;
+                        }
+                        ++done;
+                    }
+                }
+                sum.doors = done;
+                if (done > 0) sum.warnings.Add(ProximityDoors.CutCellColliders(root));   // 2026-10-26: doorways open in the map collision
+            }
+
+            /// The door models' controllers (Controllers/<fileId>_Door.controller, from their Open / Close clips
+            /// with the material curves), by model index; RefreshModels rebuilds them for its models alone.
+            public Dictionary<int, AnimatorController> DoorControllers()
             {
                 var models = new Dictionary<int, AnimatorController>();
                 for (int k = 0; k < m.Models.Count; ++k)
                 {
                     WorldManifest.ModelEntry e = m.Models[k];
-                    if (!Demolishables.Has(e.Clips) || e.Fbx == null) continue;
-                    AnimationClip dem = FindClip(P(e.Fbx), Demolishables.ClipName);
-                    if (dem == null) { sum.warnings.Add("demolish: model " + e.FileId + ": no Demolish clip in its FBX"); continue; }
+                    if (Skip(e) || !ProximityDoors.Has(e.Clips) || Demolishables.Has(e.Clips) || e.Fbx == null) continue;
+                    AnimationClip open = FindClip(P(e.Fbx), ProximityDoors.OpenClip), close = FindClip(P(e.Fbx), ProximityDoors.CloseClip);
+                    if (open == null || close == null) { sum.warnings.Add("doors: model " + e.FileId + ": no Open / Close clip in its FBX"); continue; }
+                    EnsureFolder(root + "/Controllers");
+                    models[k] = ProximityDoors.BuildController(root + "/Controllers/" + e.FileId + "_Door.controller",
+                                                               WithConstants(k, e, open, ProximityDoors.OpenClip),
+                                                               WithConstants(k, e, close, ProximityDoors.CloseClip));
+                    // 2026-10-27: a haunted door's Lurk / Unlurk too (Controllers/<fileId>_<clip>.anim, which
+                    // HauntedDoors takes over the FBX's): 499261's vines grow in by Unlurk's UV animation.
+                    foreach (string part in new[] { "Lurk", "Unlurk" })
+                    {
+                        AnimationClip c = FindClip(P(e.Fbx), part);
+                        if (c != null) WithConstants(k, e, c, part);
+                    }
+                }
+                return models;
+            }
+
+            /// DoorControllers rebuilt, and the placed doors already set up (their ProximityDoors trigger)
+            /// pointed at them again: the controller asset is made anew, and RefreshInstances gave them
+            /// their manifest clip's.
+            public void RelinkDoors(GameObject mapRoot)
+            {
+                Dictionary<int, AnimatorController> models = DoorControllers();
+                foreach (WorldManifest.CellEntry c in m.Cells)
+                {
+                    Transform props = mapRoot.transform.Find("Cell_" + c.Id + "/Props");
+                    if (props == null) continue;
+                    foreach (WorldManifest.InstanceEntry i in c.Instances)
+                    {
+                        AnimatorController ac;
+                        if (!models.TryGetValue(i.Model, out ac)) continue;
+                        Transform inst = props.Find(m.Models[i.Model].FileId + "_" + i.Prop);
+                        Animator an = inst != null && inst.Find(ProximityDoors.TriggerName) != null ? inst.GetComponent<Animator>() : null;
+                        if (an != null) an.runtimeAnimatorController = ac;
+                    }
+                }
+            }
+
+            /// 2026-10-25: the map's lght lights and each prop's effect lights (GW2Lights).
+            public void Lights(GameObject mapRoot, float unityScale)
+            {
+                sum.mapLights = GW2Lights.MapLights(mapRoot, m, unityScale, sum.warnings);
+                foreach (WorldManifest.CellEntry c in m.Cells)
+                {
+                    Transform props = mapRoot.transform.Find("Cell_" + c.Id + "/Props");
+                    if (props == null) continue;
+                    foreach (WorldManifest.InstanceEntry i in c.Instances)
+                    {
+                        if (i.Model < 0 || i.Model >= m.Models.Count) continue;
+                        WorldManifest.ModelEntry e = m.Models[i.Model];
+                        if (e.Materials == null) continue;
+                        Transform inst = props.Find(e.FileId + "_" + i.Prop);
+                        if (inst == null) continue;
+                        string sidecar = ParticleEffects.SidecarFor(Path.GetDirectoryName(P(e.Materials)).Replace('\\', '/'), e.FileId);
+                        sum.modelLights += GW2Lights.ModelLights(inst.gameObject, sidecar);
+                    }
+                }
+            }
+
+            public void Sounds(GameObject mapRoot)
+            {
+                bool any = false;
+                foreach (WorldManifest.ModelEntry e in m.Models) any |= e.Sounds != null;
+                if (!any) return;
+                if (!Demolishables.EnsurePrograms(sum.warnings)) return;
+                int done = 0;
+                foreach (WorldManifest.CellEntry c in m.Cells)
+                {
+                    Transform props = mapRoot.transform.Find("Cell_" + c.Id + "/Props");
+                    if (props == null) continue;
+                    foreach (WorldManifest.InstanceEntry i in c.Instances)
+                    {
+                        if (i.Model < 0 || i.Model >= m.Models.Count) continue;
+                        WorldManifest.ModelEntry e = m.Models[i.Model];
+                        if (e.Sounds == null) continue;
+                        Transform inst = props.Find(e.FileId + "_" + i.Prop);
+                        if (inst == null) continue;
+                        var an = inst.GetComponent<Animator>();
+                        bool animated = an != null && an.runtimeAnimatorController != null;
+                        string folder = Path.GetDirectoryName(P(e.Sounds)).Replace('\\', '/');
+                        if (!GW2Sounds.SetupInstance(inst.gameObject, GW2Sounds.Load(P(e.Sounds)), folder, animated, i.Clip, sum.warnings))
+                        {
+                            sum.warnings.Add("sounds: Castlemist.GW2SoundPlayer is not compiled yet: refresh again once UdonSharp has compiled");
+                            return;
+                        }
+                        ++done;
+                    }
+                }
+                sum.soundProps = done;
+            }
+
+            /// 2026-10-25: the props of every model with a Demolish clip made demolishable
+            /// (Demolishables; after the instances, their controllers and the cell colliders).
+            public void Demolish(GameObject mapRoot, float unityScale)
+            {
+                var models = new Dictionary<int, AnimatorController>();
+                var clipNames = new Dictionary<int, string>();
+                for (int k = 0; k < m.Models.Count; ++k)
+                {
+                    WorldManifest.ModelEntry e = m.Models[k];
+                    string name = Demolishables.Name(e.Clips);
+                    if (name == null || e.Fbx == null) continue;
+                    AnimationClip dem = FindClip(P(e.Fbx), name);
+                    if (dem == null) { sum.warnings.Add("demolish: model " + e.FileId + ": no " + name + " clip in its FBX"); continue; }
+                    clipNames[k] = name;
                     AnimationClip idle = FindClip(P(e.Fbx), "zeropose");
                     EnsureFolder(root + "/Controllers");
                     models[k] = Demolishables.BuildController(root + "/Controllers/" + e.FileId + "_Demolish.controller",
                                                               idle != null ? WithConstants(k, e, idle, "zeropose") : null,
-                                                              WithConstants(k, e, dem, Demolishables.ClipName));
+                                                              WithConstants(k, e, dem, name));
                 }
                 if (models.Count == 0) return;
                 if (!Demolishables.EnsurePrograms(sum.warnings)) return;
@@ -1045,7 +1538,7 @@ namespace Castlemist
                         if (col == null) col = inst.Find(Demolishables.ColliderName);
                         string sidecar = e.Materials != null
                             ? ParticleEffects.SidecarFor(Path.GetDirectoryName(P(e.Materials)).Replace('\\', '/'), e.FileId) : null;
-                        if (!Demolishables.SetupInstance(inst.gameObject, ac, sidecar, unityScale, col, permissions, sum.warnings))
+                        if (!Demolishables.SetupInstance(inst.gameObject, ac, clipNames[i.Model], sidecar, unityScale, col, permissions, sum.warnings))
                         {
                             sum.warnings.Add("demolish: Castlemist.GW2Demolishable is not compiled yet: refresh again once UdonSharp has compiled");
                             return;
@@ -1074,6 +1567,7 @@ namespace Castlemist
                     if (t.parent == null || t.parent.name != "Props" || !byName.TryGetValue(t.name, out hit)) continue;
                     WorldManifest.InstanceEntry i = hit.Value;
                     WorldManifest.ModelEntry e = m.Models[hit.Key];
+                    if (Skip(e)) continue;
                     // Place() for a model whose prefab root is turned or scaled (only then: other
                     // instances keep any hand edit).
                     GameObject prefab;
@@ -1386,7 +1880,7 @@ namespace Castlemist
         DefaultAsset folder;
         float unityScale = (float)WorldManifest.DefaultUnityScale;
         const string SkipModelsPref = "Castlemist.ImportWorld.SkipModels";
-        ImportOptions opts = new ImportOptions { skipModels = EditorPrefs.GetString(SkipModelsPref, "") };
+        ImportOptions opts;   // made in OnEnable: EditorPrefs cannot be read from a field initializer
         string loadedFor;
         string status = "";
         Vector2 scroll;
@@ -1420,7 +1914,7 @@ namespace Castlemist
         // (not serialized): make them again rather than throw on every repaint.
         void OnEnable()
         {
-            if (opts == null) opts = new ImportOptions { skipModels = EditorPrefs.GetString(SkipModelsPref, "") };
+            if (opts == null) opts = new ImportOptions { skipModels = EditorPrefs.GetString(SkipModelsPref, ""), distance = Performance.Distance() };
             if (status == null) status = "";
         }
 
@@ -1458,9 +1952,11 @@ namespace Castlemist
                 (int)opts.foliage, new[] { "Off", "Collider trees", "Trees", "All" });
             opts.density = EditorGUILayout.Slider(new GUIContent("Density",
                 "Keeps a placement when fmix32(placement) < density x 2^32; trees with a collider are always kept (D9)."), opts.density, 0f, 1f);
+            EditorGUI.BeginChangeCheck();
             opts.distance = EditorGUILayout.Slider(new GUIContent("Distance",
-                "Multiplies every fade distance (fadeFar x the manifest's fadeQualityScale), for the LODGroup culls and the Terrain distances (D9)."),
+                "Multiplies every fade distance (fadeFar x the manifest's fadeQualityScale), for the LODGroup culls and the Terrain distances (D9). Remembered: Refresh uses it too."),
                 opts.distance, ImportOptions.MinDistance, ImportOptions.MaxDistance);
+            if (EditorGUI.EndChangeCheck()) EditorPrefs.SetFloat(Performance.DistancePref, opts.distance);
             EditorGUI.BeginChangeCheck();
             opts.skipModels = EditorGUILayout.TextField(new GUIContent("Skip models",
                 "Model fileIds not to place, comma separated (e.g. 3132765: the Mists vault's slabs over the walkway). Remembered."),

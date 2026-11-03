@@ -49,6 +49,9 @@ inline constexpr int kUnityTerrainCheckPoints = 32;
 struct UnityTerrainInput {
     const castlemist::world::WorldScene* scene = nullptr; const castlemist::world::CellPlan* plan = nullptr;
     const std::vector<std::vector<uint8_t>>* cellAlbedoRgb = nullptr;   // parallel to plan->cells, T*T*3 per chunk area
+    const std::vector<std::vector<uint8_t>>* cellNormalRgb = nullptr;   // the same, ground normals (2026-10-27)
+    const std::vector<std::vector<uint8_t>>* cellSpecMask = nullptr;    // the same, the specular mask, one byte per texel
+    const std::vector<std::vector<uint8_t>>* cellWetMask = nullptr;     // the same, the reflection (wet) mask
     int texelsPerChunk = 256;
     std::vector<std::vector<FoliageRecord>>* records = nullptr;          // per cell; bit 3 set here
     const std::vector<ManifestModel>* models = nullptr;                  // meshes / materialCount for terrainDetail

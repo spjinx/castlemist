@@ -140,6 +140,7 @@ namespace Castlemist
                         lg.SetLODs(new[] { new LOD(cull, rs.Where(r => r.gameObject.activeSelf).ToArray()) });
                         lg.RecalculateBounds();
                     }
+                    foreach (LODGroup klg in inst.GetComponentsInChildren<LODGroup>(true)) Performance.KeepNear(klg, Performance.KeepNearMetres);   // 2026-10-26
                     string path = folder + "/" + e.FileId + ".prefab";
                     bool ok;
                     GameObject saved = PrefabUtility.SaveAsPrefabAsset(inst, path, out ok);

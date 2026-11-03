@@ -229,6 +229,7 @@ struct MaterialTextureSlot {
     uint32_t fileId = 0;
     std::string role;  ///< the slot's token up to its first '_' ("glow", "mask", ...; may be empty)
     uint8_t uv = 0;
+    uint8_t uvAnim = 0;  ///< MatTexture::uvAnimId
 };
 
 /// @brief Roles that are layers over the base colour: mask, decal, detail, glow*.

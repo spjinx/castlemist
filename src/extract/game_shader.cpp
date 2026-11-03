@@ -274,6 +274,9 @@ GameMaterial extract_game_material(Gw2Dat& dat, const nlohmann::json& tpl, const
     out.renderState = set.renderState;
     out.shaderPassFlags = set.passFlags;
     out.prepassCutout = set.prepassCutout;
+    out.prepassTextureCutout = set.prepassTextureCutout;
+    out.colourDiscard = set.psIndex >= 0 && size_t(set.psIndex) < set.shaders.size() &&
+                        set.shaders[size_t(set.psIndex)].hasTextureDiscard;
     out.ok = true;
     return out;
 }

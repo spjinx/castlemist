@@ -25,6 +25,7 @@ Shader "Castlemist/GW2"
         [Header(Normal)]
         [ToggleUI] _UseNormalMap ("Normal map", Float) = 0
         [Normal][NoScaleOffset] _BumpMap ("Normal map", 2D) = "bump" {}
+        _BumpMapOffset ("Normal map UV offset (GW2 uvAnim)", Vector) = (0, 0, 0, 0)
         [Enum(UV0, 0, UV1, 1, UV2, 2, UV3, 3)] _BumpMapUV ("Normal UV", Float) = 0
         _BumpScale ("Normal strength", Float) = 1
         [ToggleUI] _BumpMapRawRGB ("Normal map is GW2's raw RGB (x 2 - 1), not a Unity normal map", Float) = 0
@@ -67,8 +68,10 @@ Shader "Castlemist/GW2"
         [ToggleUI] _UseMaskConstant ("Constant mask (a GW2 placeholder layer)", Float) = 0
         _MaskConstant ("Constant mask colour", Vector) = (1, 1, 1, 1)
         [NoScaleOffset] _PerturbTex ("Perturb (RG, linear)", 2D) = "black" {}
+        _PerturbScroll ("Perturb UV scroll per second (GW2 uvAnim)", Vector) = (0, 0, 0, 0)
         [Enum(UV0, 0, UV1, 1, UV2, 2, UV3, 3)] _PerturbUV ("Perturb UV", Float) = 2
         [ToggleUI] _PerturbSigned ("Perturb is signed (x 2 - 1)", Float) = 0
+        [ToggleUI] _PerturbNormalMap ("Perturb is a normal-map import (UnpackNormal xy)", Float) = 0
         _MskPtrb ("mskptrb (mask perturb strength)", Float) = 0
         _BasePtrb ("difptrb (colour perturb strength)", Float) = 0
         [ToggleUI] _PerturbAlphaOnly ("Perturb the colour's alpha only", Float) = 0
@@ -148,6 +151,7 @@ Shader "Castlemist/GW2"
         _TwirlTexMult ("texmult (x the ramp; animated by the clip)", Float) = 1
         _TwirlColLow ("collow", Color) = (1, 1, 1, 1)
         _TwirlColHi ("colhi", Color) = (0, 0, 0, 1)
+        [Toggle] _TwirlRemap ("Colour remap (45571: no discard, rgb x a)", Float) = 0
 
         [Header(Tar GW2 435467)]
         [ToggleUI] _UseTar ("Tar (layered normals, perturbed diffuse, view ramp; lit)", Float) = 0
@@ -168,7 +172,7 @@ Shader "Castlemist/GW2"
         _VegWind ("Wind (world xyz GW2 units, w speed; from the map wind bytes, UNPROVEN)", Vector) = (0, 0, 0, 0)
         _VegWindGust ("WindGust (world xyz, w speed)", Vector) = (0, 0, 0, 0)
         _VegUnityScale ("Unity units per GW2 unit", Float) = 0.0254
-        _VegNoiseAmount ("Grass jitter scale (1 = GW2's; the noise stands in for the engine texture)", Float) = 0.35
+        _VegNoiseAmount ("Grass jitter scale (1 = GW2's; the noise stands in for the engine texture)", Float) = 0.08
 
         [Header(Wave castlemist cloth wave)]
         [ToggleUI] _UseWave ("Wave", Float) = 0
@@ -218,6 +222,7 @@ Shader "Castlemist/GW2"
         [ToggleUI] _LightVolumes ("Use Light Volumes", Float) = 1
         [ToggleUI] _LightVolumeSpecular ("Light Volume speculars", Float) = 1
         _LightVolumesBias ("Light Volumes bias (along the normal)", Float) = 0
+        _AmbientFloor ("Ambient floor (x the GW2 Trilight ambient, under Light Volumes)", Range(0, 1)) = 0.6
         _PointLightVolumesShading ("Point Light Volumes shading", Float) = 2
 
         [Header(Render state)]

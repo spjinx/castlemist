@@ -122,7 +122,9 @@
 //              a = texmult x _TwirlRamp(its UV).rgb - _MainTex(its UV).rgb, worked in gamma; discard
 //              a.r < _Cutoff (GW2 AlphaRef; its runtime value is not in the export); rgb = collow x
 //              saturate(1 - a) + a x colhi, alpha a.r. texmult is animated by the model's clip
-//              (matConstAnim): 0 at rest, map 506592's vortex is invisible until its "on" clip runs
+//              (matConstAnim): 0 at rest, map 506592's vortex is invisible until its "on" clip runs.
+//              _TwirlRemap (GW2 45571 "ColorRemap", ps 12 read 2026-10-25; additive): the same a and
+//              colour, no discard, rgb = colour x a.r, alpha a.r; collow / colhi animated by the clip
 //   tar        _UseTar (GW2 435467, ps 79 read 2026-10-23; lit): n = whiteout(_BumpMap, _TarAddNormal),
 //              lerped toward _TarRampNormal by mask = _TarMask.g (UV4); the diffuse at UV0 + n.xy x mask
 //              x difptrb, x mod x 2 (the detail mod block's map); specular colour lerp(speccp.rgb x
@@ -159,7 +161,7 @@ UNITY_DECLARE_TEX2D_NOSAMPLER(_DetailMod);   float4 _DetailMod_ST;   float _Deta
 half _DetailModStrength;
 
 half _UseNormalMap, _BumpMapRawRGB, _IgnoreBaseAlpha;
-UNITY_DECLARE_TEX2D_NOSAMPLER(_BumpMap);     float _BumpMapUV;       half _BumpScale;
+UNITY_DECLARE_TEX2D_NOSAMPLER(_BumpMap);     float _BumpMapUV;       half _BumpScale;   float4 _BumpMapOffset;
 
 half _UsePacked;
 UNITY_DECLARE_TEX2D_NOSAMPLER(_PackedMap);   float _PackedMapUV;
@@ -182,9 +184,9 @@ half _UseMask;
 UNITY_DECLARE_TEX2D_NOSAMPLER(_MaskTex);     float _MaskUV;     float _MaskChannel;
 half _UseMaskConstant;   // the mask is a GW2 placeholder layer: one colour, _MaskConstant
 half4 _MaskConstant;
-UNITY_DECLARE_TEX2D_NOSAMPLER(_PerturbTex);  float _PerturbUV;
+UNITY_DECLARE_TEX2D_NOSAMPLER(_PerturbTex);  float _PerturbUV;  float4 _PerturbScroll;
 float _MskPtrb, _BasePtrb, _ModPtrb;
-half _PerturbSigned, _PerturbAlphaOnly;
+half _PerturbSigned, _PerturbAlphaOnly, _PerturbNormalMap;
 half _UseInterior, _InteriorStep, _InteriorMode;
 UNITY_DECLARE_TEX2D_NOSAMPLER(_InteriorTex); float _InteriorUV;
 float _InteriorNormalShift, _InteriorStepOffset;
@@ -251,7 +253,7 @@ half _AdditiveFog;
 
 half _UseTwirl;
 UNITY_DECLARE_TEX2D_NOSAMPLER(_TwirlRamp);   float _TwirlRampUV;
-float _TwirlTexMult;
+float _TwirlTexMult, _TwirlRemap;
 half4 _TwirlColLow, _TwirlColHi;
 
 half _UseTar;
@@ -265,7 +267,7 @@ float4 _UVAnim4;
 
 // _InteriorMode 3's specular mask (CM_Colour sets it, CM_Surface uses it); -1 when not set.
 static half cm_DecalSpec = -1;
-half _LightVolumes, _LightVolumesBias, _PointLightVolumesShading, _LightVolumeSpecular;
+half _LightVolumes, _LightVolumesBias, _PointLightVolumesShading, _LightVolumeSpecular, _AmbientFloor;
 
 struct appdata
 {
@@ -424,8 +426,14 @@ float2 CM_Perturb(float4 uv01, float4 uv23)
     float2 p = 0;
     if (_BasePtrb != 0 || _MskPtrb != 0 || _ModPtrb != 0 || _EmissionPtrb != 0)
     {
-        p = CM_TEX(_PerturbTex, CM_PickUV(uv01, uv23, _PerturbUV)).xy;
-        if (_PerturbSigned > 0.5) p = p * 2.0 - 1.0;
+        // _PerturbScroll: GW2's looping uvAnim on the perturb (48834's fire: V by a texture every 2 s)
+        half4 t = CM_TEX(_PerturbTex, CM_PickUV(uv01, uv23, _PerturbUV) + frac(_PerturbScroll.xy * _Time.y));
+        if (_PerturbNormalMap > 0.5) p = UnpackNormal(t).xy;   // a normal-map import (87345's bump)
+        else
+        {
+            p = t.xy;
+            if (_PerturbSigned > 0.5) p = p * 2.0 - 1.0;
+        }
     }
     return p;
 }
@@ -588,6 +596,14 @@ half CM_FireStep(half x, float lo, float hi)
 // GW2 does the fire in gamma space: its colour to the project's space (coverage stays linear).
 half3 CM_FireColour(half3 c) { return IsGammaSpace() ? c : pow(max(c, 0), 2.2); }
 
+// RenderSettings' Trilight ambient (SceneSetup: the GW2 env's fills; GW2DayNight lerps it) by normal:
+// sky up, equator sideways, ground down, as Unity spreads it.
+half3 CM_Trilight(float3 n)
+{
+    return n.y > 0 ? lerp(unity_AmbientEquator.rgb, unity_AmbientSky.rgb, n.y)
+                   : lerp(unity_AmbientEquator.rgb, unity_AmbientGround.rgb, -n.y);
+}
+
 // The fire (see the header): premultiplied rgb and the blend alpha (not yet saturated), from the
 // four UV sets, the vertex colour as GW2 has it (gamma) and the unflipped world normal n (GW2's
 // view-space normal fades back faces out). Every pass that draws fire calls this.
@@ -749,7 +765,7 @@ CMSurface CM_Surface(v2f i, float facing, float3 viewDir)
     half3 tn = half3(0, 0, 1);
     if (_UseNormalMap > 0.5)
     {
-        float2 nuv = CM_PickUV(i.uv01, i.uv23, _BumpMapUV);
+        float2 nuv = CM_PickUV(i.uv01, i.uv23, _BumpMapUV) + _BumpMapOffset.xy;   // GW2's uvAnims (499261's vines)
         if (_PerturbNormal > 0.5) nuv += CM_Perturb(i.uv01, i.uv23) * _BasePtrb;
         // GW2 189632 reads an RGB normal map raw (x 2 - 1, normalised); the export ships it as data.
         tn = _BumpMapRawRGB > 0.5 ? normalize(CM_TEX(_BumpMap, nuv).rgb * 2.0 - 1.0) : UnpackScaleNormal(CM_TEX(_BumpMap, nuv), _BumpScale);
@@ -957,8 +973,9 @@ half4 fragBase(v2f i, fixed facing : VFACE) : SV_Target
             c = LinearToGammaSpace(c);
         #endif
         half3 a = _TwirlTexMult * r - c;
-        clip(a.r - _Cutoff);
+        if (_TwirlRemap < 0.5) clip(a.r - _Cutoff);
         half3 col = _TwirlColLow.rgb * saturate(1.0 - a) + a * _TwirlColHi.rgb;
+        if (_TwirlRemap > 0.5) col = saturate(col) * saturate(a.r);
         #if !defined(UNITY_COLORSPACE_GAMMA)
             col = GammaToLinearSpace(max(col, 0));
         #endif
@@ -1011,9 +1028,25 @@ half4 fragBase(v2f i, fixed facing : VFACE) : SV_Target
     #else
         if (_LightVolumes > 0.5 && LightVolumesEnabled() > 0.5)
         {
+        #ifndef CASTLEMIST_NO_LIGHT_VOLUMES
+            // The baked volumes and the point lights apart (LightVolumeSHSpecular's own steps): GW2's
+            // ambient is the env's flat Trilight, never shadowed (its only darkening is screen-space AO),
+            // so the baked part darkens it in corners and interiors but never below _AmbientFloor of it;
+            // the realtime point lights add on top (under one max they vanished in dim corners).
+            float3 f0 = lerp(0.04, s.albedo, s.metallic);
+            float3 lvPos = i.worldPos + lvOffset;
+            LV_LightVolumeRegularSH(lvPos, L0, L1r, L1g, L1b);
+            LV_LightVolumeAdditiveSH(lvPos, L0, L1r, L1g, L1b);
+            ind.diffuse = max(max(0, LightVolumeEvaluate(s.normal, L0, L1r, L1g, L1b)), _AmbientFloor * CM_Trilight(s.normal));
+            lvSpec = LV_Specular(f0, s.smoothness, s.normal, viewDir, L0, L1r + L1g + L1b);
+            float3 P0 = 0, P1r = 0, P1g = 0, P1b = 0;
+            LV_PointLightVolumeSHSpecular(i.worldPos, s.normal, viewDir, s.smoothness, f0, _PointLightVolumesShading, P0, P1r, P1g, P1b, lvSpec);
+            ind.diffuse += max(0, LightVolumeEvaluate(s.normal, P0, P1r, P1g, P1b));
+        #else
             LightVolumeSHSpecular(i.worldPos, L0, L1r, L1g, L1b, lvSpec, s.albedo, s.smoothness, s.metallic,
                                   s.normal, viewDir, lvOffset, _PointLightVolumesShading);
-            ind.diffuse = max(0, LightVolumeEvaluate(s.normal, L0, L1r, L1g, L1b));
+            ind.diffuse = max(max(0, LightVolumeEvaluate(s.normal, L0, L1r, L1g, L1b)), _AmbientFloor * CM_Trilight(s.normal));
+        #endif
         }
         else
             ind.diffuse = max(0, ShadeSH9(float4(s.normal, 1)));

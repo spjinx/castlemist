@@ -69,6 +69,9 @@ namespace Castlemist
                 {
                     ti.wrapMode = TextureWrapMode.Clamp;
                     if (name.EndsWith("_water", StringComparison.Ordinal)) ti.alphaIsTransparency = true;
+                    // 2026-10-25: the baked ground read blocky under DXT1 ("crunchy and compressed",
+                    // Lion's Arch): high quality (BC7 on PC).
+                    else ti.textureCompression = TextureImporterCompression.CompressedHQ;
                 }
                 else if (name.StartsWith("clut_", StringComparison.Ordinal))
                     ApplyLutSettings(ti);   // environment/clut_<fileId>.png: a PPv2 lookup strip (SceneSetup)

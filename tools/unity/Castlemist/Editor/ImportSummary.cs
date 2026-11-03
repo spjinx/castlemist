@@ -67,6 +67,14 @@ namespace Castlemist
         public int skyCards;
         /// Props made demolishable (Demolishables); not in the PLAN line.
         public int demolishables;
+        /// Placed props given their GW2 sounds (GW2Sounds); not in the PLAN line.
+        public int soundProps;
+        /// Map lights and prop effect lights made (GW2Lights); not in the PLAN line.
+        public int mapLights, modelLights;
+        /// Props given a proximity door (ProximityDoors); not in the PLAN line.
+        public int doors;
+        /// Cell water planes on Castlemist/GW2 Water (GW2Water); not in the PLAN line.
+        public int waterGW2;
         /// Foliage records not placed (not in the PLAN line): skipped because their
         /// model failed or has no prefab or mesh.
         public int foliageSkipped;

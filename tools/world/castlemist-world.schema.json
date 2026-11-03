@@ -156,6 +156,10 @@
         "shallow": { "$ref": "#/$defs/rgba" },
         "deep": { "$ref": "#/$defs/rgba" },
         "depthAttenuation": { "type": "number" },
+        "material": {
+          "description": "The preset's surface as stored (2026-10-25): textures[k] = textureFilenames[k]'s environment/water_<fileId>.png or null (0: the runtime reflection); bump / pattern tiles, speeds and angles, fresnel, foam. Units UNPROVEN (gw2-world-materials.md §6).",
+          "type": "object"
+        },
         "flatColour": { "$ref": "#/$defs/rgba" },
         "note": { "type": "string" }
       }
@@ -253,6 +257,10 @@
       "properties": {
         "preset": { "type": "integer", "minimum": 0 },
         "hazeEffectPreset": { "type": "integer", "minimum": 0 },
+        "night": {
+          "description": "2026-10-25: dataGlobal lighting slot 1's lights (as `lights`) and haze slot 1 (as `haze`), the night of a day / night cycle (haze: the client's t = 0 slot, gw2-sky.md A.2; the lights' slot UNPROVEN). Null without a slot 1.",
+          "type": ["object", "null"]
+        },
         "wind": {
           "description": "dataGlobal->wind[] of the day slot (as haze), the raw PackMapEnvDataWind bytes; gustSpeed null before V30. How the client makes the vegetation shaders' Wind / WindGust uniforms from them is not traced. Null without a wind record. Optional.",
           "type": ["object", "null"],
@@ -512,6 +520,41 @@
         "unity": { "description": "map_to_unity(map): map units, Unity axes; the importer applies unityScale on the map root.", "$ref": "#/$defs/vec3" }
       }
     },
+    "layers": {
+      "description": "2026-10-25 (optional): the laye chunk's layers: id, metaData dword4s as stored, and how many props (instances[].layers) and light groups (mapLights.lights[].layers) are on each. What a layer is (a festival, a story state) is not in the chunk.",
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "mapLights": {
+      "description": "The lght chunk's point and spot lights (2026-10-25). Null when a value is not finite (warned).",
+      "type": ["object", "null"],
+      "properties": {
+        "present": { "type": "boolean" },
+        "portalLights": { "type": "integer", "minimum": 0 },
+        "volumeLights": { "type": "integer", "minimum": 0 },
+        "lights": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["unity", "color", "colorBytes", "intensity", "near", "far", "flags", "spot"],
+            "properties": {
+              "unity": { "description": "map_to_unity(position): map units, Unity axes, under the map root.", "$ref": "#/$defs/vec3" },
+              "color": { "description": "colorBytes 2, 1, 0 / 255 as R, G, B (the env lights' order; UNPROVEN for lght).", "$ref": "#/$defs/vec3" },
+              "colorBytes": { "type": "array", "items": { "type": "integer" }, "minItems": 3, "maxItems": 3 },
+              "intensity": { "type": "number" },
+              "near": { "description": "nearDistance, map units.", "type": "number" },
+              "far": { "description": "farDistance, map units.", "type": "number" },
+              "flags": { "type": "integer" },
+              "spot": { "type": "boolean" },
+              "unityDirection": { "$ref": "#/$defs/vec3" },
+              "innerAngle": { "type": "number" },
+              "outerAngle": { "type": "number" },
+              "curve": { "description": "The light group's first flicker curve, as stored.", "type": "object" }
+            }
+          }
+        }
+      }
+    },
     "frameProbe": {
       "description": "Null when its position is not finite (warned).",
       "type": ["object", "null"],
@@ -725,6 +768,7 @@
         "glb": { "type": ["string", "null"] },
         "fbx": { "type": ["string", "null"] },
         "materials": { "type": ["string", "null"] },
+        "sounds": { "description": "The model's sounds sidecar (<fileId>_sounds.json: its AMSP sound script's sounds, clip-keyed triggers and audio files under sounds/), or null.", "type": ["string", "null"] },
         "triangles": { "$ref": "#/$defs/count" },
         "textureBytes": { "$ref": "#/$defs/count" },
         "clips": { "type": "array", "items": { "type": "string" } },
@@ -832,6 +876,7 @@
         "holes": { "type": ["string", "null"] },
         "albedo": { "type": "string" },
         "albedoSize": { "type": "array", "items": { "type": "integer", "minimum": 1 }, "minItems": 2, "maxItems": 2 },
+        "normal": { "description": "2026-10-27: the ground normals (Unity tangent space, Y+), albedo's grid; null when none.", "type": ["string", "null"] },
         "details": {
           "type": "array",
           "items": {
@@ -913,6 +958,10 @@
         "lod": {
           "description": "Task 15b (optional): the placement's own switch distances, model units: prp2 lod1 / lod2 when its flags have bit 16 (OVERRIDE_LOD) and they are not both 0 (negatives 0, clamped to 100000). Absent: the model's lods.distances apply.",
           "type": "array", "items": { "type": "number", "minimum": 0 }, "minItems": 2, "maxItems": 2
+        },
+        "layers": {
+          "description": "2026-10-25 (optional): the laye chunk's layer ids of this prop (by its prp2 guid), as stored; see the top-level layers.",
+          "type": "array", "items": { "type": "integer", "minimum": 0 }
         }
       }
     }

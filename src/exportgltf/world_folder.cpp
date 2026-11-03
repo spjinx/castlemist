@@ -5,12 +5,14 @@
 #include "castlemist/exportgltf/world_folder.h"
 
 #include "castlemist/exportgltf/vrchat_export.h"
+#include "castlemist/exportgltf/sound_export.h"
 #include "castlemist/exportgltf/world_cell.h"
 #include "castlemist/exportgltf/world_export.h"
 #include "castlemist/exportgltf/world_foliage.h"
 #include "castlemist/exportgltf/world_lods.h"
 #include "castlemist/exportgltf/world_probe.h"
 #include "castlemist/exportgltf/world_unity_terrain.h"
+#include "castlemist/format/struct_template.h"
 #include "castlemist/world/anim.h"
 #include "castlemist/world/cells.h"
 #include "castlemist/world/dat_read.h"
@@ -237,6 +239,14 @@ void export_one_model(const cw::WorldScene& scene, uint32_t mi, ModelSource& src
         vo.materialKeys = true;
         vo.materialKeyExtras = std::move(keyExtras);
         const VrchatFolderResult r = write_vrchat_folder(*m, utf8(folder), id, fileId, vo);
+        // 2026-10-25: the model's sounds (its AMSP sound script) beside the glb.
+        std::string sounds;
+        if (r.ok && opts.sounds && m->soundScript)
+            if (const auto tpl = castlemist::tpl::get_or_auto_load()) {
+                std::vector<std::string> sw;
+                sounds = write_model_sounds(*m, [&](uint32_t f) { return src.file(f); }, *tpl, utf8(folder), id, sw);
+                for (const std::string& w : sw) out.warnings.push_back("models: " + id + ": " + w);
+            }
         m.reset();   // the preview is released once written
         for (const std::string& w : r.warnings) out.warnings.push_back("models: " + id + ": " + w);
         if (!r.ok) {
@@ -247,6 +257,7 @@ void export_one_model(const cw::WorldScene& scene, uint32_t mi, ModelSource& src
         mm.folder = "models/" + id;
         mm.glb = mm.folder + "/" + id + ".glb";
         mm.materials = mm.folder + "/materials.json";
+        if (!sounds.empty()) mm.sounds = mm.folder + "/" + sounds;
         out.materialKeys = r.materialKeys;
         for (const auto& k : r.materialKeys) mm.materialKeys.push_back(k.key);
     } catch (const cw::DatIoError&) {
@@ -269,6 +280,9 @@ struct CellOut {
     /// the unityTerrain stage, which sets their bit 3 (world-foliage spec D7).
     std::vector<FoliageRecord> records;
     std::vector<uint8_t> albedoRgb;        ///< the baked albedo, kept for the unityTerrain tiles
+    std::vector<uint8_t> normalRgb;        ///< the baked ground normals (2026-10-27), for the same tiles
+    std::vector<uint8_t> specMask;         ///< the terrain shader's specular mask (2026-10-27), W*H bytes
+    std::vector<uint8_t> wetMask;          ///< and its reflection mask, W*H bytes
 };
 
 /// What the cell stage needs to write the foliage records (world-foliage spec D7).
@@ -375,7 +389,28 @@ void export_one_cell(const cw::WorldScene& s, const cw::Cell& c, const cw::Textu
         out.mc.albedo = "cells/" + name;
         out.mc.albedoW = W;
         out.mc.albedoH = H;
-        if (opts.unityTerrain) out.albedoRgb = std::move(rgb);   // the unityTerrain tiles assemble it
+        if (opts.unityTerrain) {
+            out.albedoRgb = std::move(rgb);   // the unityTerrain tiles assemble it
+            // 2026-10-27: and the ground normals, on the same texel grid (default flat)
+            std::vector<uint8_t> nrm(size_t(W) * size_t(H) * 3, 128), spec(size_t(W) * size_t(H), 0), wet(size_t(W) * size_t(H), 0), chunkSpec, chunkWet;
+            for (size_t i = 2; i < nrm.size(); i += 3) nrm[i] = 255;
+            for (int y = c.cy0; y < c.cy0 + c.h; ++y)
+                for (int x = c.cx0; x < c.cx0 + c.w; ++x) {
+                    const auto it = chunkAt.find(int64_t(y) * (int64_t(1) << 32) + x);
+                    if (it == chunkAt.end()) continue;
+                    cw::bake_chunk_normal(s.terrain.chunks[it->second], lookup, bs, chunk, &chunkSpec, &chunkWet);
+                    if (chunk.size() < size_t(T) * T * 3 || chunkSpec.size() < size_t(T) * T || chunkWet.size() < size_t(T) * T) continue;
+                    for (int j = 0; j < T; ++j) {
+                        const size_t row = (size_t(y - c.cy0) * T + j) * W + size_t(x - c.cx0) * T;
+                        std::copy_n(chunk.begin() + ptrdiff_t(size_t(j) * T * 3), size_t(T) * 3, nrm.begin() + ptrdiff_t(row * 3));
+                        std::copy_n(chunkSpec.begin() + ptrdiff_t(size_t(j) * T), size_t(T), spec.begin() + ptrdiff_t(row));
+                        std::copy_n(chunkWet.begin() + ptrdiff_t(size_t(j) * T), size_t(T), wet.begin() + ptrdiff_t(row));
+                    }
+                }
+            out.normalRgb = std::move(nrm);
+            out.specMask = std::move(spec);
+            out.wetMask = std::move(wet);
+        }
     }
 
     if (water.vertices() > 0 && cw::water_has_preset(s)) {
@@ -715,11 +750,14 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
     json unityTerrain = nullptr;
     if (opts.unityTerrain && scene.terrain.present) {
         std::vector<std::vector<FoliageRecord>> recs(plan.cells.size());
-        std::vector<std::vector<uint8_t>> albedo(plan.cells.size());
+        std::vector<std::vector<uint8_t>> albedo(plan.cells.size()), normals(plan.cells.size()), specs(plan.cells.size()), wets(plan.cells.size());
         for (size_t k = 0; k < couts.size(); ++k) {
             if (!couts[k].written) continue;
             recs[k] = std::move(couts[k].records);
             albedo[k] = std::move(couts[k].albedoRgb);
+            normals[k] = std::move(couts[k].normalRgb);
+            specs[k] = std::move(couts[k].specMask);
+            wets[k] = std::move(couts[k].wetMask);
         }
         std::vector<ManifestModel> mm;
         mm.reserve(mouts.size());
@@ -728,6 +766,9 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
         ui.scene = &scene;
         ui.plan = &plan;
         ui.cellAlbedoRgb = &albedo;
+        ui.cellNormalRgb = &normals;
+        ui.cellSpecMask = &specs;
+        ui.cellWetMask = &wets;
         ui.texelsPerChunk = opts.texelsPerChunk;
         ui.records = &recs;
         ui.models = &mm;
@@ -945,6 +986,52 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
         }
     }
 
+    // 7f. The water preset's textures (environment/water_<fileId>.png, rows as stored), 2026-10-25:
+    // the preset light.presetIndex picks, as water_json does.
+    json waterTextures = json::object();
+    if (cw::water_has_preset(scene)) {
+        const auto& wp = scene.environment.water[size_t(scene.environment.light.presetIndex)];
+        std::vector<uint32_t> ids = wp.textureFileIds;
+        ids.push_back(wp.bumpTextureFileId);
+        ids.push_back(wp.patternTextureFileId);
+        for (uint32_t id : ids) {
+            const std::string key = std::to_string(id);
+            if (!id || waterTextures.contains(key)) continue;
+            const auto tex = src.texture(id, 2048);
+            const int w = tex ? tex->width : 0, h = tex ? tex->height : 0;
+            if (!tex || tex->mips.empty() || w <= 0 || h <= 0 || tex->mips[0].size() < size_t(w) * h * 4) {
+                warnings.push_back("water: texture " + key + " did not decode; left out");
+                continue;
+            }
+            const std::string name = "water_" + key + ".png";
+            std::error_code ec;
+            make_dirs(dir / "environment", ec);
+            const std::vector<uint8_t> png = encode_png_pixels(w, h, 4, tex->mips[0]);
+            if (ec || png.empty() || !write_bytes(dir / "environment" / name, png)) {
+                rep.error = "cannot write " + utf8(dir / "environment" / name);
+                return rep;
+            }
+            waterTextures[key] = "environment/" + name;
+        }
+    }
+
+    // 7g. The world map's point icons (environment/map_icons/<name>.png, 2026-10-25): the GW2 API's
+    // /v2/files names them by dat fileId (map_waypoint 157353, ...); the Unity waypoint map uses them.
+    for (const auto& [name, id] : std::initializer_list<std::pair<const char*, uint32_t>>{
+             {"waypoint", 157353}, {"waypoint_hover", 157354}, {"vista", 358415}, {"landmark", 97461}, {"heropoint", 156626},
+             // 2026-10-27: the map markers (MapMarkers.cs): map_special_event, map_node_mining, and the Shadow of
+             // the Mad King achievement category's jack-o'-lantern (/v2/achievements/categories 193) for carved pumpkins
+             {"event", 502087}, {"node_mining", 157334}, {"pumpkin_carved", 1862652}}) {
+        const auto tex = src.texture(id, 256);
+        const int w = tex ? tex->width : 0, h = tex ? tex->height : 0;
+        if (!tex || tex->mips.empty() || w <= 0 || h <= 0 || tex->mips[0].size() < size_t(w) * h * 4) continue;
+        std::error_code ec;
+        make_dirs(dir / "environment" / "map_icons", ec);
+        const std::vector<uint8_t> png = encode_png_pixels(w, h, 4, tex->mips[0]);
+        if (ec || png.empty() || !write_bytes(dir / "environment" / "map_icons" / (std::string(name) + ".png"), png))
+            warnings.push_back(std::string("environment: map icon ") + name + " not written");
+    }
+
     // 8. The manifest, last (not once cancelled).
     if (fatal.stopped()) { rep.error = fatal.error; return rep; }
     size_t animated = 0, resolved = 0, failedDecode = 0;
@@ -982,6 +1069,7 @@ WorldFolderReport export_world_folder_impl(const cw::WorldScene& scene, ModelSou
     in.particleFieldTextures = fieldTextures;
     in.cloudTextures = cloudTextures;
     in.cardTextures = cardTextures;
+    in.waterTextures = waterTextures;
     in.counts = {{"chunksUnbaked", unbaked}, {"animated", animated}, {"animatedResolved", resolved},
                  {"clipsFailedDecode", failedDecode},
                  {"foliage", {{"scatter", folScatter}, {"density", folDensity}, {"skipped", folSkipped},

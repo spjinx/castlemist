@@ -29,6 +29,9 @@ enum class AlphaUse {
     /// half, unlit self-illumination `rgb * saturate(2a-1) * 2` in the upper half.
     OpacityAndGlow,
     InteriorWeight,  ///< jade: lerp(diffuse, interior parallax, a)
+    /// 43833 / 69942 (2026-10-25): opaque; self-illumination `rgb * saturate(2a-1) * 2`
+    /// in the upper half (the lower half unused).
+    Glow,
     Unused
 };
 
@@ -136,7 +139,8 @@ inline bool alpha_tested(const ShaderProfile& p) { return p.clips || !p.cutoutRo
 
 /// Profile for a material: by AMAT fileId, else the legacy-untagged trait
 /// (materialId 0, flags 0, every extra texture role empty, SrcAlpha/InvSrcAlpha
-/// in `renderState`), else default_profile().
+/// in `renderState`), else default_cutout_profile() when the game's shaders discard
+/// (ModelMaterialCPU::shaderDiscards), else default_profile().
 const ShaderProfile& profile_for(const ModelMaterialCPU& mat, uint64_t renderState);
 
 /// Every AMAT fileId in the table, in table order, duplicates preserved (for integrity tests).
@@ -144,5 +148,10 @@ std::vector<uint32_t> all_profile_amats();
 
 /// Name "default": Shine, no clip, nothing interpreted.
 const ShaderProfile& default_profile();
+
+/// default_profile() with `clips` (2026-10-25): an AMAT outside the table whose normal prepass
+/// or colour pass discards (GW2's foliage cuts in the prepass, its colour pass draws where the
+/// depth matches).
+const ShaderProfile& default_cutout_profile();
 
 }  // namespace castlemist::exportgltf

@@ -107,9 +107,13 @@ namespace Castlemist
             if (lg == null) return false;
             LOD[] lods = lg.GetLODs();
             if (lods.Length < 2) return false;
-            double[] h = ModelLods.TransitionHeights(lg.size, distances, lods.Length, lods[lods.Length - 1].screenRelativeTransitionHeight);
+            // 2026-10-27: a generated last level (LowerLods) is not one of the model's: its levels get the
+            // heights, then the generated one its split again.
+            int gen = LowerLods.GeneratedLevels(lods), levels = lods.Length - gen;
+            double[] h = ModelLods.TransitionHeights(lg.size, distances, levels, lods[lods.Length - 1].screenRelativeTransitionHeight);
             // A cull that drops levels on the override keeps them (props never cull: cannot happen for them).
-            for (int k = 0; k < lods.Length - 1 && k < h.Length - 1; ++k) lods[k].screenRelativeTransitionHeight = (float)h[k];
+            for (int k = 0; k < levels - 1 && k < h.Length - 1; ++k) lods[k].screenRelativeTransitionHeight = (float)h[k];
+            if (gen > 0) LowerLods.Resplit(lods);
             lg.SetLODs(lods);
             return true;
         }

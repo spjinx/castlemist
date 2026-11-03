@@ -58,10 +58,22 @@ namespace Castlemist
         }
 
         /// GW2's lit refractions (glass-refract 49659, glass-refract-mask 63923, water-refract 57026):
-        /// the _Glass block of Castlemist/GW2 Distort.
+        /// the _Glass block of Castlemist/GW2 Distort. 74113 (ps 50 read 2026-10-25, Lion's Arch's
+        /// giant jellyfish 1011095): the scene at its UV + ((distort.zw x 2 - 1) + 1) x distort x the
+        /// screen fade, x modxcol x 2, a lit decal over it by saturate(2 decal.a); drawn as
+        /// glass-refract (its (1 - N.V)^1.5 rim is not mapped). 55669 (ps 46 read 2026-10-25, 80709's
+        /// glassware): the same refraction by its distort normal x modxcol, lit, no decal.
         public static bool IsGlass(MaterialsFile.MaterialEntry e)
         {
-            return e.Profile == "glass-refract" || e.Profile == "glass-refract-mask" || e.Profile == "water-refract";
+            return e.Profile == "glass-refract" || e.Profile == "glass-refract-mask" || IsWaterRefract(e) || e.Amat == 74113 || e.Amat == 55669;
+        }
+
+        /// water-refract 57026, and 500479 (ps 21 read 2026-10-25, Lion's Arch's "tfx_waterfall",
+        /// 1010983 / 80319): the scene refracted by normal + decalnormal (scrolled UV0 / UV1) x
+        /// distort, specular speccp, alpha mask.R (UV2) discarded below AlphaRef: the same block.
+        static bool IsWaterRefract(MaterialsFile.MaterialEntry e)
+        {
+            return e.Profile == "water-refract" || e.Amat == 500479;
         }
 
         /// A distortion material on Castlemist/GW2 Distort (formulas in its header), in either shader mode.
@@ -71,9 +83,9 @@ namespace Castlemist
             Material mat = PoiyomiMaterials.GetOrCreate(ctx.DistortShader, assetPath);
             mat.shaderKeywords = new string[0];
             bool opaqueMask = e.Profile == "fx-distort-opaque-mask";
-            bool glassOpaque = e.Profile == "glass-refract";
+            bool glassOpaque = e.Profile == "glass-refract" || e.Amat == 74113 || e.Amat == 55669;
             bool glass = glassOpaque || e.Profile == "glass-refract-mask";
-            bool water = e.Profile == "water-refract";
+            bool water = IsWaterRefract(e);
             bool opaque = e.Profile == "fx-distort-opaque" || opaqueMask || glassOpaque;
             bool soft = e.Profile == "fx-distort-soft", lit = e.Profile == "fx-distort-lit";
             // Opaque: the grabbed scene replaces the surface; the others blend it by their alpha.
@@ -269,6 +281,9 @@ namespace Castlemist
                 VertexColourFx(ctx, mat, tag, modelFolder, e);
                 MultiplyAndCubeFx(ctx, mat, tag, modelFolder, e);
                 MeshFx(ctx, mat, tag, modelFolder, e);
+                LanternFx(mat, e);
+                LabyrinthFx(ctx, mat, tag, modelFolder, e);
+                UvAnimRest(mat, e);
                 ClothWave(ctx, mat, e);
                 Vegetation(ctx, mat, e);
                 if (e.Profile == "prop-interior") Interior(ctx, mat, tag, modelFolder, e);
@@ -289,6 +304,14 @@ namespace Castlemist
 
             // A distortion map that is a perturb layer is read through _PerturbTex; a decal through the
             // interior block's decal mode.
+            // 2026-10-25: a perturb layer no block took, with the material's difptrb, offsets the base
+            // colour's UV (as 500475 / 43833; 1011602's fires, 23496, drew unperturbed).
+            if (e.Map("distortion") != null && !mat.GetTexture("_PerturbTex") && e.Gw2.ContainsKey("difptrb"))
+            {
+                Layer(ctx, mat, tag, modelFolder, e.Map("distortion"), "_PerturbTex", "_PerturbUV");
+                SetF(mat, "_PerturbSigned", 1f);
+                SetF(mat, "_BasePtrb", (float)e.Const("difptrb", 0, 0.0));
+            }
             if (e.Map("distortion") != null && !mat.GetTexture("_PerturbTex")) unmapped.Add("distortion");
             bool decalUsed = On(mat, "_UseInterior") && mat.GetFloat("_InteriorMode") > 1.5f;
             if (e.Map("decal") != null && !decalUsed) unmapped.Add("decal");
@@ -322,7 +345,11 @@ namespace Castlemist
             {
                 Layer(ctx, mat, tag, folder, packed, "_PackedMap", "_PackedMapUV");
                 SetF(mat, "_Metallic", 1f);
-                SetF(mat, "_Glossiness", 1f);
+                // 2026-10-27: GW2's specular is Blinn-Phong at speccp.w (32 on most props): a broad, soft
+                // highlight. Smoothness 1 made it a mirror-sharp one, and every edge of a coarse shine
+                // mask (69887's rocks, 506458) showed under the sun as blocks. Unity's mapping of a
+                // Blinn exponent: alpha = sqrt(2 / (p + 2)), smoothness = 1 - sqrt(alpha).
+                SetF(mat, "_Glossiness", GlossFromPower(e));
                 SetF(mat, "_UsePacked", 1f);
             }
             SetColor(mat, "_ReflectionTint", e.ReflectionTint != null ? Rgb(e.ReflectionTint) : Color.white);
@@ -512,6 +539,13 @@ namespace Castlemist
 
         static bool On(Material m, string p) { return m.HasProperty(p) && m.GetFloat(p) > 0.5f; }
 
+        /// The smoothness of GW2's Blinn-Phong power (speccp.w; 32 when the material has none): 0.51 at 32.
+        static float GlossFromPower(MaterialsFile.MaterialEntry e)
+        {
+            float p = Mathf.Max((float)e.Const("speccp", 3, 32.0), 1f);
+            return Mathf.Clamp01(1f - Mathf.Sqrt(Mathf.Sqrt(2f / (p + 2f))));
+        }
+
         /// The Mists vault's one-material shaders (read 2026-10-22):
         ///   3100353 (ps 82): lit; the diffuse and the normal at their UV + (perturb x 2 - 1) x ptrb
         ///     (x perturbmask, a constant 1 here); discard 2 x diffuse.a < 0.5 (a < 0.25).
@@ -608,9 +642,145 @@ namespace Castlemist
             }
         }
 
+        /// AMATs read 2026-10-26 (`amat` + fxc /dumpbin; Lion's Arch's Halloween lanterns, 888438), none in
+        /// the shader table, so the default profile had read their channels generically:
+        ///   72532 (ps 28): lit by the light buffer, discard below diffuse alpha 0.25; + shSunColor x
+        ///     saturate(2a - 1) x 2 x the light buffer's w (its specular: the generic shine from the diffuse
+        ///     alpha, white; corrected 2026-10-27, it was read as sun translucency and turned off); then
+        ///     + tex1 at UV1, raw (the export's emission map at UV1: no tint).
+        ///   54818 (ps 28): as 72532 without the glow (the generic reading).
+        ///   71203 (ps 30): unlit; rgb = diffuse.rgb x diffuse.a x diffade x (1 - fog), alpha
+        ///     diffuse.a x diffade; One / InvSrcColor. It samples only the diffuse: the material's
+        ///     ramp (an extra) is not its (the importer had it on as a view-angle ramp).
+        ///   23507 (ps 30, fx-alpha) already matched: unlit, alpha x ramp(|N.V|), alpha blend.
+        static void LanternFx(Material mat, MaterialsFile.MaterialEntry e)
+        {
+            if (e.Amat == 72532)
+            {
+                if (On(mat, "_UseEmission"))
+                {
+                    SetColor(mat, "_EmissionColor", Color.white);
+                    SetF(mat, "_EmissionStrength", 1f);
+                }
+            }
+            else if (e.Amat == 71203)
+            {
+                SetF(mat, "_Unlit", 1f);
+                SetF(mat, "_UseRamp", 0f);
+                SetF(mat, "_UseEmission", 0f);
+                SetF(mat, "_UsePacked", 0f);
+                SetF(mat, "_AlphaPremultiply", 1f);
+                SetF(mat, "_AdditiveFog", 1f);   // x (1 - fog)
+                float k = (float)e.Const("diffade", 0, 1.0);
+                SetColor(mat, "_Color", new Color(1f, 1f, 1f, k));   // alpha x diffade; premultiplying carries it to rgb
+            }
+        }
+
+        /// AMATs read 2026-10-26 (Mad King's Labyrinth; `amat` + fxc /dumpbin), none in the shader table:
+        ///   54038 (ps 43; the castle backdrop 506491, the pumpkin shell 500390): discard below diffuse alpha
+        ///     0.25; the decal (tex1 at its UV) lerped over the colour by saturate(2 decal.a), lit; then
+        ///     + decal.rgb x saturate(2 decal.a - 1) unlit (lit windows: done as decal.rgb x decal.a);
+        ///     saturate(2a - 1) x speccp x 2 x sun x LightBuffer.w is its specular (the generic shine).
+        ///   72125, 78363 (ps 61; tree branches): the generic reading (+ a subsurface sun wrap: not done).
+        ///   48835: unlit diffuse. 60762: + diffuse x saturate(2a - 1) unlit, no shine (done as diffuse x a).
+        ///   242074: the cutout layer x cutfade (the generic cutout takes "opacity").
+        ///   23496 (ps 12; 48834's fire perturb mesh): unlit, the diffuse at UV0 + (perturb(UV1).rg x 2 - 1)
+        ///     x perturb x saturate(1 - v0), rgb x a x diffade, One / InvSrcColor (the v fade: not done).
+        static void LabyrinthFx(MaterialContext ctx, Material mat, string tag, string folder, MaterialsFile.MaterialEntry e)
+        {
+            // 2026-10-27: the prop combine shaders that declare rimcp (45664 candy corn, 22906 / 49609 / 53721
+            // doors, 57684, 70282, 73723) add rimcp.rgb x sun x (1 - shine mask) x (1 - N.V)^rimcp.w: the
+            // default profile did not turn the rim on.
+            if (e.Profile == "default" && e.Gw2.ContainsKey("rimcp") && !On(mat, "_UseRim"))
+            {
+                SetF(mat, "_UseRim", 1f);
+                SetColor(mat, "_RimColor", new Color((float)e.Const("rimcp", 0, 0), (float)e.Const("rimcp", 1, 0), (float)e.Const("rimcp", 2, 0), 1f));
+                SetF(mat, "_RimPower", (float)e.Const("rimcp", 3, 3.0));
+            }
+            if (e.Amat == 23496 || e.Amat == 58687)   // 58687 (the pumpkins' candle flame): the same ps
+            {
+                MaterialsFile.Extra pt = e.ExtraOf("perturb");
+                MaterialsFile.MapRef pm = pt != null ? pt.Map : e.Map("distortion");
+                SetF(mat, "_Unlit", 1f);
+                SetF(mat, "_UseRamp", 0f);
+                SetF(mat, "_UseEmission", 0f);
+                SetF(mat, "_UsePacked", 0f);
+                SetF(mat, "_AlphaPremultiply", 1f);
+                SetF(mat, "_AdditiveFog", 1f);
+                SetColor(mat, "_Color", new Color(1f, 1f, 1f, (float)e.Const("diffade", 0, 1.0)));
+                if (pm != null)
+                {
+                    Layer(ctx, mat, tag, folder, pm, "_PerturbTex", "_PerturbUV");
+                    SetF(mat, "_PerturbNormalMap", 0f);
+                    SetF(mat, "_BasePtrb", (float)e.Const("perturb", 0, 0.0));
+                }
+                return;
+            }
+            if (e.Amat == 45354)
+            {
+                // ps 12 (the haunted doors' dark arch fading in, 2026-10-27): the diffuse at UV0 + (perturb x 2 - 1)
+                // x difptrb, alpha stepped by stepmin / stepcol, x (1 - fog): no lighting. 648540's diffuse is a
+                // 4 x 4 black (643053, not exported): lit, its shine and reflections streaked across it.
+                SetF(mat, "_Unlit", 1f);
+                SetF(mat, "_UsePacked", 0f);
+                return;
+            }
+            if (e.Amat == 48835)
+            {
+                // ps: the diffuse only, x (1 - fog): no lighting at all
+                SetF(mat, "_Unlit", 1f);
+                SetF(mat, "_UsePacked", 0f);
+                return;
+            }
+            if (e.Amat == 60762)
+            {
+                // ps: diffuse x light + diffuse x saturate(2a - 1), unlit (a glow mask in the alpha, no shine)
+                SetF(mat, "_UsePacked", 0f);
+                SetF(mat, "_UseEmission", 1f);
+                Layer(ctx, mat, tag, folder, e.Map("baseColor"), "_EmissionMap", "_EmissionMapUV");
+                Layer(ctx, mat, tag, folder, e.Map("baseColor"), "_EmissionMask", "_EmissionMaskUV");
+                SetF(mat, "_EmissionMaskChannel", 3f);   // a, for saturate(2a - 1)
+                SetColor(mat, "_EmissionColor", Color.white);
+                SetF(mat, "_EmissionStrength", 1f);
+                return;
+            }
+            if (e.Amat == 242074)
+            {
+                // ps: discard where cutout(UV3).r x cutfade x saturate(2a) < 0.5 (the generic cutout reads "opacity")
+                MaterialsFile.Extra cut = e.ExtraOf("cutout");
+                if (cut != null)
+                {
+                    SetF(mat, "_UseCutout", 1f);
+                    Layer(ctx, mat, tag, folder, cut.Map, "_CutoutTex", "_CutoutUV");
+                    SetF(mat, "_CutoutChannel", 0f);
+                    SetF(mat, "_CutoutScale", (float)e.Const("cutfade", 0, 1.0));
+                }
+                return;
+            }
+            if (e.Amat != 54038) return;
+            MaterialsFile.Extra decal = e.ExtraOf("decal");
+            if (decal == null || decal.Map == null) return;
+            SetF(mat, "_UseInterior", 1f);
+            SetF(mat, "_InteriorMode", 1f);   // w x saturate(2a)
+            SetF(mat, "_InteriorStep", 0f);
+            SetF(mat, "_ParDist", 0f);
+            SetF(mat, "_InteriorNormalShift", 0f);
+            Layer(ctx, mat, tag, folder, decal.Map, "_InteriorTex", "_InteriorUV");
+            SetF(mat, "_UseMaskConstant", 1f);
+            SetVec(mat, "_MaskConstant", Vector4.one);
+            SetF(mat, "_MaskChannel", 0f);
+            SetF(mat, "_UseEmission", 1f);
+            Layer(ctx, mat, tag, folder, decal.Map, "_EmissionMap", "_EmissionMapUV");
+            Layer(ctx, mat, tag, folder, decal.Map, "_EmissionMask", "_EmissionMaskUV");
+            SetF(mat, "_EmissionMaskChannel", 3f);
+            SetColor(mat, "_EmissionColor", Color.white);
+            SetF(mat, "_EmissionStrength", 1f);
+        }
+
         /// GW2 mesh effects read 2026-10-23 (map 506592's vortex and portal; AMAT DXBC, `amat --dump-all`):
         ///   55051 (ps 12): the twirl block (GW2Core.cginc); its texmult is animated by the model's
-        ///     clip (materials.json constAnims), 0 at rest.
+        ///     clip (materials.json constAnims), 0 at rest. 45571 (ps 12 read 2026-10-25, the
+        ///     Halloween door's "ColorRemap"): the twirl block's _TwirlRemap form.
         ///   54401 (ps 12): unlit; rgb = diffuse.rgb x fadedif x (1 - fog), alpha diffuse.a. Its blend
         ///     (One / One, reverse subtract) darkens what is behind it.
         ///   500475, 416173 (ps 12): unlit; the diffuse at UV0 + (perturb at UV1 x 2 - 1) x perturb,
@@ -619,9 +789,10 @@ namespace Castlemist
         /// The fades and texmult are what constAnims animate (MaterialConstantAnimation).
         static void MeshFx(MaterialContext ctx, Material mat, string tag, string folder, MaterialsFile.MaterialEntry e)
         {
-            if (e.Amat == 55051)
+            if (e.Amat == 55051 || e.Amat == 45571)
             {
                 SetF(mat, "_UseTwirl", 1f);
+                SetF(mat, "_TwirlRemap", e.Amat == 45571 ? 1f : 0f);
                 SetF(mat, "_Unlit", 1f);
                 SetF(mat, "_UseRamp", 0f);
                 SetF(mat, "_UseEmission", 0f);
@@ -654,6 +825,71 @@ namespace Castlemist
                     SetF(mat, "_PerturbSigned", 1f);
                     SetF(mat, "_BasePtrb", perturb != null ? (float)e.Const("perturb", 0, 0.0) : 0f);
                 }
+            }
+            else if (e.Amat == 43833)
+            {
+                // ps 65 read 2026-10-25 (1011602's forge flow, 1768614's beam): the diffuse at its UV
+                // + (perturb (UV1) x 2 - 1) x difptrb; its glow (diffuse saturate(2a - 1) x glofade x 2)
+                // is the export's emission (prop-glow-alpha).
+                MaterialsFile.MapRef perturb = e.Map("distortion");
+                if (perturb == null) { MaterialsFile.Extra x = e.ExtraOf("perturb"); perturb = x != null ? x.Map : null; }
+                Layer(ctx, mat, tag, folder, perturb, "_PerturbTex", "_PerturbUV");
+                SetF(mat, "_PerturbSigned", 1f);
+                SetF(mat, "_BasePtrb", perturb != null ? (float)e.Const("difptrb", 0, 0.0) : 0f);
+            }
+            else if (e.Amat == 45354)
+            {
+                // ps 12 read 2026-10-25 (the Halloween dark doors' "TESTArch", 648540 / 499261):
+                // unlit; the diffuse (a constant placeholder, black here) at UV + perturb x difptrb;
+                // alpha = smoothstep01(saturate(stepmin (a + stepcol.w - 1) / (1 - stepmin))) x
+                // stepcol.x, discarded below AlphaRef. stepcol.w is 0 at rest (invisible); the
+                // Lurk / Unlurk clips animate it (constAnims), fading the darkness in.
+                MaterialsFile.Color32Value dc;
+                // 2026-10-27: the doors' "vinealpha" vine cards draw their diffuse texture (white tint);
+                // "TESTArch", the darkness that creeps over the walls while a door rises or sinks, stays
+                // black (its diffuse is a placeholder the game does not draw as such).
+                Color c = e.LayerConstants.TryGetValue("diffuse", out dc)
+                    ? new Color((float)dc.R, (float)dc.G, (float)dc.B, (float)dc.A)
+                    : e.Map("baseColor") != null && e.Name != "TESTArch" ? Color.white : Color.black;
+                SetF(mat, "_Unlit", 1f);
+                SetF(mat, "_UseEmission", 0f);
+                SetF(mat, "_UsePacked", 0f);
+                SetF(mat, "_UseNormalMap", 0f);
+                if (mat.HasProperty("_MainTex") && e.Map("baseColor") == null) mat.SetTexture("_MainTex", null);
+                SetColor(mat, "_Color", c);
+                SetF(mat, "_UseStep", 1f);
+                SetF(mat, "_StepMin", (float)e.Const("stepmin", 0, 0.75));
+                SetVec(mat, "_StepCol", new Vector4((float)e.Const("stepcol", 0, 1.0), (float)e.Const("stepcol", 1, 1.0),
+                                                    (float)e.Const("stepcol", 2, 1.0), (float)e.Const("stepcol", 3, 0.0)));
+                SetF(mat, "_AlphaTest", 1f);
+                SetF(mat, "_Cutoff", 1f / 255f);   // AlphaRef: an engine value (UNPROVEN)
+            }
+            else if (e.Amat == 87345)
+            {
+                // ps 12 read 2026-10-25 (Lion's Arch's water sheets, 1400362; One / One): rgb =
+                // tex1(UV0 + (tex2(UV1).xy x 2 - 1) x 0.0597) x tex0(UV1) x sun x (1 - fog), alpha
+                // tex0.a; UV1 is the texTransform's (scroll). The export calls tex2 "normal" and
+                // tex1 an extra, and reads every UV as 0: tex1 is _MainTex at UV0, tex2 the perturb
+                // at UV1, tex0 the mod at UV1 (x1: _Color halves what the 2x mod doubles).
+                MaterialsFile.Extra t1 = e.Extras.Count > 0 ? e.Extras[0] : null;
+                SetF(mat, "_Unlit", 1f);
+                SetF(mat, "_UseEmission", 0f);
+                SetF(mat, "_UsePacked", 0f);
+                SetF(mat, "_UseNormalMap", 0f);
+                SetF(mat, "_PremultipliedBase", 0f);
+                SetF(mat, "_AdditiveFog", 1f);
+                if (t1 != null) Layer(ctx, mat, tag, folder, t1.Map, "_MainTex", "_MainTexUV");
+                SetF(mat, "_MainTexUV", 0f);
+                Layer(ctx, mat, tag, folder, e.Map("normal"), "_PerturbTex", "_PerturbUV");
+                SetF(mat, "_PerturbUV", 1f);
+                SetF(mat, "_PerturbNormalMap", 1f);
+                SetF(mat, "_BasePtrb", 0.059701f);
+                Layer(ctx, mat, tag, folder, e.Map("baseColor"), "_DetailMod", "_DetailModUV");
+                SetF(mat, "_DetailModUV", 1f);
+                SetF(mat, "_UseDetailMod", 1f);
+                SetF(mat, "_DetailModStrength", 1f);
+                float half_ = QualitySettings.activeColorSpace == ColorSpace.Linear ? 1f / 4.594794f : 0.5f;
+                SetColor(mat, "_Color", new Color(half_, half_, half_, 1f));
             }
             else if (e.Amat == 189632)
             {
@@ -719,7 +955,7 @@ namespace Castlemist
                 r.Add(new KeyValuePair<string, int>(prop + ".g", comp));
                 r.Add(new KeyValuePair<string, int>(prop + ".b", comp));
             }
-            if (e.Amat == 55051)
+            if (e.Amat == 55051 || e.Amat == 45571)
             {
                 if (constant == "texmult") r.Add(new KeyValuePair<string, int>("_TwirlTexMult", 0));
                 else if (constant == "collow")
@@ -735,9 +971,56 @@ namespace Castlemist
                     r.Add(new KeyValuePair<string, int>("_TwirlColHi.b", 2));
                 }
             }
+            else if (e.Amat == 45354 && constant == "stepcol")
+            {
+                // every component: an Animator writing only .w puts the vector in a property block whose
+                // other components read 0, and stepcol.x (the alpha's scale) 0 hid the vines (2026-10-27)
+                r.Add(new KeyValuePair<string, int>("_StepCol.x", 0));
+                r.Add(new KeyValuePair<string, int>("_StepCol.y", 1));
+                r.Add(new KeyValuePair<string, int>("_StepCol.z", 2));
+                r.Add(new KeyValuePair<string, int>("_StepCol.w", 3));
+            }
             else if (e.Amat == 54401 && constant == "fadedif") Rgb("_Color", 0);
             else if (e.Amat == 500475 && constant == "diffade") Rgb("_Color", 0);
             return r;
+        }
+
+        /// 2026-10-27: a material whose UVs the clips move (materials.json uvAnims, type 4: V by x) rests at
+        /// the end of its Open clip (else its last clip's), where no Animator runs (the editor, a still
+        /// prop): 499261's vines sit on their texture's bottom half and read only transparent at offset 0.
+        /// Unity's V is 1 - GW2's: the offset is -x. The clips' curves (WorldImporter.WithConstants) set it.
+        static void UvAnimRest(Material mat, MaterialsFile.MaterialEntry e)
+        {
+            PerturbScroll(mat, e);
+            MaterialsFile.UvAnim rest = e.UvAnims.FindLast(u => u.Type == 4 && u.Clip == "Open" && u.Values.Length > 0)
+                                        ?? e.UvAnims.FindLast(u => u.Type == 4 && u.Values.Length > 0);
+            if (rest == null) return;
+            float v = -(float)rest.Values[rest.Values.Length - 1][0];
+            if (System.Array.IndexOf(rest.Maps, "baseColor") >= 0 && mat.HasProperty("_MainTex"))
+                mat.SetTextureOffset("_MainTex", new Vector2(mat.GetTextureOffset("_MainTex").x, v));
+            if (System.Array.IndexOf(rest.Maps, "normal") >= 0 && mat.HasProperty("_BumpMapOffset"))
+                mat.SetVector("_BumpMapOffset", new Vector4(0f, v, 0f, 0f));
+        }
+
+        /// 2026-10-27: a perturb map that the idle clip ("zeropose") scrolls at a steady rate (uvAnims type 3 U / 4 V,
+        /// linear over the clip, looping) scrolls by the shader's clock instead (_PerturbScroll, per
+        /// second): the prop needs no Animator. 48834 / 72618's fires: V 0 -> -1 over 2 s, so +0.5 in
+        /// Unity's V (1 - GW2's).
+        static void PerturbScroll(Material mat, MaterialsFile.MaterialEntry e)
+        {
+            if (!mat.HasProperty("_PerturbScroll")) return;
+            // per second: type 3 moves U (43819's fire: +1 over 3 s), type 4 moves V (Unity's V is 1 - GW2's: negated)
+            float Rate(int type)
+            {
+                MaterialsFile.UvAnim a = e.UvAnims.Find(u => u.Type == type && u.Clip == "zeropose" && u.Values.Length > 2 &&
+                                                           System.Array.IndexOf(u.Maps, "perturb") >= 0);
+                if (a == null) return 0f;
+                double v0 = a.Values[0][0], v1 = a.Values[a.Values.Length - 1][0], mid = a.Values[a.Values.Length / 2][0];
+                double dur = a.Times[a.Times.Length - 1] - a.Times[0];
+                if (!(dur > 0) || System.Math.Abs(mid - (v0 + v1) * 0.5) > 0.05 * System.Math.Abs(v1 - v0) + 1e-4) return 0f;   // not a steady scroll
+                return (float)((v1 - v0) / dur);
+            }
+            mat.SetVector("_PerturbScroll", new Vector4(Rate(3), -Rate(4), 0f, 0f));
         }
 
         /// difscal / difcol (2600237, ps 43 read 2026-10-22): the diffuse at UV0 x difscal, x difcol x 2.
@@ -875,6 +1158,14 @@ namespace Castlemist
             }
         }
 
+        /// 2026-10-26: the noise-particle fire's uniforms (977200's code; 740416, Mad King's Labyrinth's
+        /// braziers 71674, is not in the shader table: its default profile drew the tiling noise as square
+        /// sprites). ps 34 read: mask x noise(scale) x noise(scaleb) x 4, coloured by colorl / colorh.
+        static bool IsNoiseFire(MaterialsFile.MaterialEntry e)
+        {
+            return e.Gw2.ContainsKey("scaleb") && e.Gw2.ContainsKey("colorh") && e.Gw2.ContainsKey("colorl") && e.Gw2.ContainsKey("speedp");
+        }
+
         /// GW2 fx-fire (740364, 965703, 977200, 1171331; port_fire/SPEC.md, formulas in GW2Core.cginc's
         /// fire block): unlit, premultiplied (One / InvSrcAlpha), the colour and alpha computed by the
         /// shader. The shader is told apart by its uniforms (an AMAT with the same code gets the same
@@ -885,7 +1176,7 @@ namespace Castlemist
             int mode = e.Gw2Vectors.ContainsKey("firesfl") || e.Gw2Vectors.ContainsKey("flowbuv") ? 0
                      : e.Gw2Vectors.ContainsKey("rampstp") ? 1
                      : e.Gw2Vectors.ContainsKey("dyedot") ? 3
-                     : e.Gw2Vectors.ContainsKey("scaleb") ? 2
+                     : e.Gw2Vectors.ContainsKey("scaleb") || IsNoiseFire(e) ? 2
                      : e.Amat == 965703 ? 1 : e.Amat == 977200 ? 2 : e.Amat == 1171331 ? 3 : 0;
             SetF(mat, "_UseFire", 1f);
             SetF(mat, "_FireMode", mode);
@@ -1012,7 +1303,7 @@ namespace Castlemist
             SetVec(mat, "_VegWind", ctx.VegWind);
             SetVec(mat, "_VegWindGust", ctx.VegWindGust);
             SetF(mat, "_VegUnityScale", ctx.UnityScale);
-            SetF(mat, "_VegNoiseAmount", 0.35f);   // castlemist's choice: GW2's full scale (1) with the stand-in noise waved too much (2026-10-23)
+            SetF(mat, "_VegNoiseAmount", 0.08f);   // castlemist's choice: the stand-in noise (0.25..0.75, never centred) swung grass ~1 m at 0.35 (2026-10-25: Lion's Arch)
         }
 
         /// GW2's Wind / WindGust from the map's wind bytes (environment.wind). castlemist's mapping,
@@ -1128,7 +1419,8 @@ namespace Castlemist
                                          "_UseWater", "_UseWaterCubes", "_UseVertexColor", "_UseFlow", "_FlowPremul",
                                          "_UseEnvCube", "_UseBumpShade", "_UseBumpShadeTex", "_UseFogNeutral",
                                          "_UseFire", "_FireMode", "_FireNoEdge", "_UseWave", "_UseTwirl", "_UseTar",
-                                         "_TarDifPtrb", "_TarVOffset", "_BumpMapRawRGB", "_IgnoreBaseAlpha", "_VegMode" })
+                                         "_TarDifPtrb", "_TarVOffset", "_BumpMapRawRGB", "_IgnoreBaseAlpha", "_VegMode",
+                                         "_TwirlRemap", "_PerturbNormalMap" })
                 SetF(mat, f, 0f);
             foreach (string t in new[] { "_MainTex", "_DetailMod", "_BumpMap", "_PackedMap", "_EmissionMap", "_EmissionMask",
                                          "_ParallaxTex", "_OffsetTex", "_MaskTex", "_PerturbTex", "_RampTex", "_InteriorTex",
@@ -1171,7 +1463,7 @@ namespace Castlemist
         /// declare) and profile, then its blend.
         public static ParticleFamily FamilyOf(MaterialsFile.MaterialEntry e)
         {
-            if (e.Profile == "fx-fire") return ParticleFamily.Fire;
+            if (e.Profile == "fx-fire" || IsNoiseFire(e)) return ParticleFamily.Fire;
             if (e.Gw2.ContainsKey("uvss") && e.ExtraOf("background") != null) return ParticleFamily.Nebula;
             if (e.Gw2.ContainsKey("flowuv") && e.Gw2.ContainsKey("uvscrol")) return ParticleFamily.FlowLayer;
             if (e.Gw2.ContainsKey("startcl") && e.Gw2.ContainsKey("flow")) return ParticleFamily.Flow;
@@ -1230,6 +1522,9 @@ namespace Castlemist
             SetF(mat, "_AdditiveFog", src == (int)BlendMode.One || dst == (int)BlendMode.One ? 1f : 0f);
             SetF(mat, "_UnityScale", ctx.UnityScale);
             SetF(mat, "_Cutoff", 1f / 255f);   // AlphaRef: an engine value (as the world import's)
+            // 2026-10-25: a cutout particle (Lion's Arch's fish 77157, opaque with a texture discard)
+            // drew every texel above 1/255: its alphaCutoff, as the mesh materials.
+            if (mode == PoiyomiMaterials.Cutout) SetF(mat, "_Cutoff", (float)e.AlphaCutoff);
             SetF(mat, "_FrameBlend", 1f);
             SetF(mat, "_PtcTexAlphaRgb", 1f);
             SetF(mat, "_PtcVcColour", 1f);

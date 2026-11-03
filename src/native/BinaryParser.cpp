@@ -181,8 +181,11 @@ bool BinaryParser::parse(const std::vector<uint8_t>& data,
 static const std::unordered_map<std::string,int> kScalarSize = {
     {"byte",1},{"byte3",3},{"byte4",4},{"byte16",16},{"word",2},{"word3",6},
     {"dword",4},{"dword2",8},{"dword4",16},{"qword",8},{"float",4},{"float2",8},
-    {"float3",12},{"float4",16},{"double",8},{"fileref",4},{"token32",4},{"token64",8},
+    {"float3",12},{"float4",16},{"double",8},{"token32",4},{"token64",8},
 };
+// "fileref" is not a scalar: like "filename" it is a self-relative pointer to the
+// compressed fileId pair (PackCompositeFileDataV16.meshBase/meshOverlap sit one
+// pointer apart), so gwString decodes both.
 
 bool BinaryParser::inBounds(size_t pos, size_t n) const {
     return m_buffer && pos <= m_buffer->size() && n <= m_buffer->size() - pos;
@@ -210,7 +213,7 @@ std::string BinaryParser::gwScalar(const std::string& k) {
     auto flt = [&](int off){ return std::to_string(readAt<float>(p + off)); };
     if      (k == "byte")    out = std::to_string((unsigned)readAt<uint8_t>(p));
     else if (k == "word")    out = std::to_string(readAt<uint16_t>(p));
-    else if (k == "dword" || k == "fileref") out = std::to_string(readAt<uint32_t>(p));
+    else if (k == "dword") out = std::to_string(readAt<uint32_t>(p));
     else if (k == "qword")   out = std::to_string((unsigned long long)readAt<uint64_t>(p));
     else if (k == "float")   out = flt(0);
     else if (k == "double")  out = std::to_string(readAt<double>(p));
@@ -236,7 +239,7 @@ ParsedNodePtr BinaryParser::gwString(const std::string& kind, const std::string&
     if (stored == 0) { node->valueString = "(null)"; node->size = m_cursor - node->offset; return node; }
     size_t t = ptrPos + (size_t)stored;
     if (!inBounds(t, 1)) { node->valueString = "(OOB)"; node->size = m_cursor - node->offset; return node; }
-    if (kind == "filename") {
+    if (kind == "filename" || kind == "fileref") {
         // Byte-exact port of the game's fileName->fileId decoder
         // sub_140DAB4A0 (Arena\Services\File3\FileArchive.cpp:702), verified in
         // IDA: words are low, high, third, fourth; the id is
@@ -273,7 +276,7 @@ ParsedNodePtr BinaryParser::gwString(const std::string& kind, const std::string&
 ParsedNodePtr BinaryParser::gwElement(const nlohmann::json& elem, const std::string& nodeName) {
     if (elem.is_string()) {
         std::string k = elem.get<std::string>();
-        if (k == "filename" || k == "wchar_ptr" || k == "char_ptr") return gwString(k, nodeName);
+        if (k == "filename" || k == "fileref" || k == "wchar_ptr" || k == "char_ptr") return gwString(k, nodeName);
         auto node = std::make_shared<ParsedNode>();
         node->name = nodeName; node->typeName = k; node->offset = m_cursor;
         node->valueString = kScalarSize.count(k) ? gwScalar(k) : ("<unknown elem: " + k + ">");
@@ -328,6 +331,29 @@ ParsedNodePtr BinaryParser::gwField(const nlohmann::json& f) {
         node->size = m_cursor - node->offset;
         return node;
     }
+    if (kind == "variant") {
+        // {u32 index; ptr} -> an instance of alternatives[index]
+        uint32_t index = (uint32_t)readUIntAt(m_cursor, 4);
+        size_t ptrPos = m_cursor + 4;
+        uint64_t stored = readUIntAt(ptrPos, m_ptrBytes);
+        m_cursor = ptrPos + (size_t)m_ptrBytes;
+        const nlohmann::json alts = f.value("alternatives", nlohmann::json::array());
+        node->valueString = "index=" + std::to_string(index);
+        if (stored == 0) {
+            node->valueString += " (null)";
+        } else if (index >= alts.size()) {
+            node->valueString += " (no such alternative)";
+        } else {
+            size_t target = ptrPos + (size_t)stored;
+            if (inBounds(target, 1)) {
+                size_t save = m_cursor; m_cursor = target;
+                node->children.push_back(gwStruct(alts[index].get<std::string>(), name + "*"));
+                m_cursor = save;
+            } else node->valueString += " (ptr OOB)";
+        }
+        node->size = m_cursor - node->offset;
+        return node;
+    }
     if (kind == "array_ptr" || kind == "ptr_array_ptr") {
         uint32_t count = (uint32_t)readUIntAt(m_cursor, 4);
         size_t ptrPos = m_cursor + 4;
@@ -359,7 +385,7 @@ ParsedNodePtr BinaryParser::gwField(const nlohmann::json& f) {
         node->size = m_cursor - node->offset;
         return node;
     }
-    if (kind == "filename" || kind == "wchar_ptr" || kind == "char_ptr") {
+    if (kind == "filename" || kind == "fileref" || kind == "wchar_ptr" || kind == "char_ptr") {
         auto n = gwString(kind, name);
         return n;
     }

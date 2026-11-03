@@ -281,7 +281,58 @@ json write_unity_terrain(const UnityTerrainInput& in, const std::string& dirUtf8
                 std::copy_n(src.begin() + ptrdiff_t(j * W * 3), W * 3, rgb.begin() + ptrdiff_t(((oy + j) * A + ox) * 3));
         }
         const std::string albedo = id + "_albedo.png";
-        if (!write(albedo, encode_png_pixels(A, A, 3, rgb))) return fail("cannot write " + utf8(tdir / albedo));
+        // 2026-10-27: with the specular mask, RGBA: alpha = the terrain shader's specular strength
+        // (Unity's Nature/Terrain/Specular multiplies _SpecColor by the albedo's alpha)
+        bool withSpec = false;
+        std::vector<uint8_t> rgba;
+        if (in.cellSpecMask) {
+            rgba.assign(size_t(A) * A * 4, 0);
+            for (size_t i = 0, n = size_t(A) * A; i < n; ++i) { rgba[i * 4] = rgb[i * 3]; rgba[i * 4 + 1] = rgb[i * 3 + 1]; rgba[i * 4 + 2] = rgb[i * 3 + 2]; }
+            for (size_t k : cellIdx) {
+                if (k >= in.cellSpecMask->size()) continue;
+                const cw::Cell& c = plan.cells[k];
+                const std::vector<uint8_t>& src = (*in.cellSpecMask)[k];
+                const size_t W = size_t(c.w) * T, H = size_t(c.h) * T;
+                if (src.size() != W * H) continue;
+                withSpec = true;
+                const size_t ox = size_t(c.cx0 - cx0) * T, oy = size_t(c.cy0 - cy0) * T;
+                for (size_t j = 0; j < H; ++j)
+                    for (size_t i = 0; i < W; ++i) rgba[((oy + j) * A + ox + i) * 4 + 3] = src[j * W + i];
+            }
+        }
+        if (!write(albedo, withSpec ? encode_png_pixels(A, A, 4, rgba) : encode_png_pixels(A, A, 3, rgb)))
+            return fail("cannot write " + utf8(tdir / albedo));
+        // 2026-10-27: the ground normals the same way (padded chunks flat)
+        std::string normalName;
+        if (in.cellNormalRgb) {
+            std::vector<uint8_t> nrm(size_t(A) * A * 3, 128);
+            for (size_t i = 2; i < nrm.size(); i += 3) nrm[i] = 255;
+            for (size_t k : cellIdx) {
+                if (k >= in.cellNormalRgb->size()) continue;
+                const cw::Cell& c = plan.cells[k];
+                const std::vector<uint8_t>& src = (*in.cellNormalRgb)[k];
+                const size_t W = size_t(c.w) * T, H = size_t(c.h) * T;
+                if (src.size() != W * H * 3) continue;
+                const size_t ox = size_t(c.cx0 - cx0) * T, oy = size_t(c.cy0 - cy0) * T;
+                for (size_t j = 0; j < H; ++j)
+                    std::copy_n(src.begin() + ptrdiff_t(j * W * 3), W * 3, nrm.begin() + ptrdiff_t(((oy + j) * A + ox) * 3));
+            }
+            normalName = id + "_normal.png";
+            // 2026-10-27: RGBA with the reflection (wet) mask in alpha, for Castlemist/GW2 Terrain
+            std::vector<uint8_t> nrgba(size_t(A) * A * 4, 0);
+            for (size_t i = 0, n = size_t(A) * A; i < n; ++i) { nrgba[i * 4] = nrm[i * 3]; nrgba[i * 4 + 1] = nrm[i * 3 + 1]; nrgba[i * 4 + 2] = nrm[i * 3 + 2]; }
+            for (size_t k : cellIdx) {
+                if (!in.cellWetMask || k >= in.cellWetMask->size()) continue;
+                const cw::Cell& c = plan.cells[k];
+                const std::vector<uint8_t>& src = (*in.cellWetMask)[k];
+                const size_t W = size_t(c.w) * T, H = size_t(c.h) * T;
+                if (src.size() != W * H) continue;
+                const size_t ox = size_t(c.cx0 - cx0) * T, oy = size_t(c.cy0 - cy0) * T;
+                for (size_t j = 0; j < H; ++j)
+                    for (size_t i = 0; i < W; ++i) nrgba[((oy + j) * A + ox + i) * 4 + 3] = src[j * W + i];
+            }
+            if (!write(normalName, encode_png_pixels(A, A, 4, nrgba))) return fail("cannot write " + utf8(tdir / normalName));
+        }
 
         // Details and trees.
         std::map<uint32_t, std::pair<std::vector<uint32_t>, uint64_t>> counts;   // prototype -> (cells, records)
@@ -347,6 +398,7 @@ json write_unity_terrain(const UnityTerrainInput& in, const std::string& dirUtf8
                          {"holes", holes},
                          {"albedo", "terrain/" + albedo},
                          {"albedoSize", {A, A}},
+                         {"normal", normalName.empty() ? json(nullptr) : json("terrain/" + normalName)},
                          {"details", det},
                          {"trees", treesJson}});
     }
