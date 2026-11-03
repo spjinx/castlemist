@@ -282,7 +282,8 @@ CM_TEST(atlas, piece_regions_anchor_at_every_named_slot) {
     PieceRegions g = piece_regions(s, 10, 0x2000, 0x2000, {}, 1024, 1024, 1.0f);
     CHECK_EQ(g.paint.ax, 256u);
     CHECK_EQ(g.paint.ay, 256u);
-    CHECK_EQ(g.paint.rects.size(), size_t{4});   // slots 4, 5 and the hands skin it hides
+    CHECK_EQ(g.paint.rects.size(), size_t{3});   // slots 4, 5
+    CHECK_EQ(g.over.rects.size(), size_t{1});    // the hands skin it hides
     // Boots carnieacib: type 8 (slots 2, 3).
     PieceRegions b = piece_regions(s, 8, 0x1000, 0x1000, {}, 512, 1024, 1.0f);
     CHECK_EQ(b.paint.ax, 512u);
@@ -296,13 +297,15 @@ CM_TEST(atlas, hide_flags_hand_slots_to_the_coat) {
     PieceRegions c = piece_regions(s, 9, 31038, 0x800, {}, 1024, 1024, 1.0f);
     CHECK_EQ(c.paint.ax, 0u);
     CHECK_EQ(c.paint.ay, 0u);
-    // slot 0 (2) + 1 (2) + 2 (1) + 3 (1) + 4 (1) + 5 (2) + 8 (1), and the skin it hides, painted outright:
-    // chest, feet, hands, legs (2) -- its cut-away chest drops the coat's own chest skin mesh.
-    CHECK_EQ(c.paint.rects.size(), size_t{15});
-    CHECK(c.skin.rects.empty());   // skinFlags' chest is hidden too: painted, not through the cut mask
+    // slot 0 (2) + 1 (2) + 2 (1) + 3 (1) + 4 (1) + 5 (2) + 8 (1); the skin it hides goes over the skin by its
+    // alpha -- chest, feet, hands, legs (2): clear over the chest, it keeps his neck.
+    CHECK_EQ(c.paint.rects.size(), size_t{10});
+    CHECK_EQ(c.over.rects.size(), size_t{5});
+    CHECK(c.skin.rects.empty());   // skinFlags' chest is hidden too: over the skin, not through the cut mask
     PieceRegions g = piece_regions(s, 10, 0x2000, 0x2000, {4, 5, 14}, 1024, 1024, 1.0f);
     CHECK(g.paint.rects.empty());
     CHECK(g.skin.rects.empty());
+    CHECK(g.over.rects.empty());
     CHECK_EQ(g.paint.ax, 256u);   // still laid out from its own corner
 }
 

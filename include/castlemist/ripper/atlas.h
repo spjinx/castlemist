@@ -123,12 +123,13 @@ bool is_skin_slot(size_t slot);
 struct PieceRegions {
     AtlasRegion paint;  // drawn as the piece draws (its own slots and the ones its hideFlags take)
     AtlasRegion skin;   // drawn through its cut mask
+    AtlasRegion over;   // skin its hideFlags name: drawn over it by its alpha
 };
 
 /// Where a piece's texture goes by the blit set: laid out from the top-left of every slot it names -- its own,
-/// the ones its hideFlags take and the skin its hide / skinFlags name -- it paints its own slots and every slot
-/// its hideFlags name (skin included), less `lost` (taken by another piece), and the skin named by skinFlags
-/// alone through its cut mask (`skin`). Both empty when the
+/// the ones its hideFlags take and the skin its hide / skinFlags name -- it paints its own slots and the slots
+/// its hideFlags take, less `lost` (taken by another piece); the skin its hideFlags name over the skin by its
+/// alpha (`over`), and skin named by skinFlags alone through its cut mask (`skin`). All empty when the
 /// set has no rectIndex, the type is not armour, or a `tw` x `th` texture at `scale` does not reach every rect.
 PieceRegions piece_regions(const composite::BlitRectSet& set, uint8_t type, uint32_t hide_flags, uint32_t skin_flags,
                            const std::vector<size_t>& lost, int tw, int th, float scale);

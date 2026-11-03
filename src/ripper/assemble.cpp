@@ -703,7 +703,7 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
         // names, it paints its own (less those another piece's hideFlags take: the Mad Prince's long coat paints his
         // gloves, boots, leggings and shoulders) and the skin it names through its cut mask (his helm's face paint).
         // A piece left no slot still samples the atlas. Without a rectIndex: the UV rects, anchor fitted.
-        AtlasRegion skin_region;
+        AtlasRegion skin_region, over_region;
         bool by_slots = false;
         if (part.piece && set) {
             std::vector<size_t> lost;
@@ -711,10 +711,11 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
                 if (by != part.fd) lost.push_back(sl);
             PieceRegions pr = piece_regions(*set, part.fd->type, part.fd->hide_flags, part.fd->skin_flags, lost,
                                             baked->base.width, baked->base.height, baked->scale);
-            if (!pr.paint.rects.empty() || !pr.skin.rects.empty() || !lost.empty()) {
+            if (!pr.paint.rects.empty() || !pr.skin.rects.empty() || !pr.over.rects.empty() || !lost.empty()) {
                 region = pr.paint;
                 skin_region = pr.skin;
-                by_slots = !region.rects.empty() || !skin_region.rects.empty() || !lost.empty();
+                over_region = pr.over;
+                by_slots = true;
             }
         }
         if (!region.rects.empty() && !by_slots)
@@ -770,6 +771,8 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
             }
             if (baked->normal && mode == BlitMode::Replace)
                 blit(normal, detail::to_image(*baked->normal), region, baked->normal_scale);
+            if (!over_region.rects.empty())
+                blit(diffuse, detail::to_image(baked->base), over_region, baked->scale, BlitMode::Over);
             if (!skin_region.rects.empty() && part.fd->mask_cut) {
                 ModelTextureCPU cut;
                 if (decode_texture_full(ctx.dat, part.fd->mask_cut, cut) && cut.width > 0)

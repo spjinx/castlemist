@@ -184,7 +184,7 @@ PieceRegions piece_regions(const composite::BlitRectSet& set, uint8_t type, uint
     const std::vector<size_t> own = armor_slots(type);
     if (own.empty() || set.rect_index.empty() || tw <= 0 || th <= 0) return {};
     auto is_lost = [&](size_t s) { return std::find(lost.begin(), lost.end(), s) != lost.end(); };
-    std::vector<size_t> named = own, paint, skin;
+    std::vector<size_t> named = own, paint, skin, over;
     for (size_t s : own)
         if (!is_lost(s)) paint.push_back(s);
     for (int bit = 0; bit < 32; ++bit) {
@@ -193,9 +193,11 @@ PieceRegions piece_regions(const composite::BlitRectSet& set, uint8_t type, uint
         if ((!hide && !sk) || s == kNoSlot || std::find(named.begin(), named.end(), s) != named.end()) continue;
         named.push_back(s);
         if (is_lost(s)) continue;
-        // Hidden: the piece's own paint (the Mad Prince's coat cuts its chest skin away, its leggings paint the
-        // legs' skin). Only named by skinFlags: through the cut mask (his helm's face paint).
-        if (hide) paint.push_back(s);
+        // Slots its hideFlags take: its own paint; skin over the skin by its alpha (the Mad Prince's coat is
+        // clear over the chest, which keeps his neck). Skin named by skinFlags alone: through the cut mask
+        // (his helm's face paint).
+        if (hide && is_skin_slot(s)) over.push_back(s);
+        else if (hide) paint.push_back(s);
         else if (is_skin_slot(s)) skin.push_back(s);
     }
     bool any = false;
@@ -207,12 +209,13 @@ PieceRegions piece_regions(const composite::BlitRectSet& set, uint8_t type, uint
             any = true;
         }
     if (!any) return {};
-    PieceRegions out{{{}, ax, ay}, {{}, ax, ay}};
+    PieceRegions out{{{}, ax, ay}, {{}, ax, ay}, {{}, ax, ay}};
     for (size_t s : paint) for (const composite::BlitRect& r : slot_rects(set, s)) out.paint.rects.push_back(r);
     for (size_t s : skin) for (const composite::BlitRect& r : slot_rects(set, s)) out.skin.rects.push_back(r);
+    for (size_t s : over) for (const composite::BlitRect& r : slot_rects(set, s)) out.over.rects.push_back(r);
     const float x1 = static_cast<float>(ax) + scale * static_cast<float>(tw);
     const float y1 = static_cast<float>(ay) + scale * static_cast<float>(th);
-    for (const AtlasRegion* g : {&out.paint, &out.skin})
+    for (const AtlasRegion* g : {&out.paint, &out.skin, &out.over})
         for (const composite::BlitRect& r : g->rects)
             if (static_cast<float>(r.x1) > x1 + 0.5f || static_cast<float>(r.y1) > y1 + 0.5f) return {};
     return out;
