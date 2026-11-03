@@ -99,6 +99,10 @@ struct Anim {
     float duration = 0, timeStep = 0, oversampling = 1;
     std::vector<Track> tracks;
     std::vector<VectorTrack> vectorTracks;   // every group's, group by group
+    // Track group 0's InitialPlacement (granny_transform: Flags, Position, Orientation) and AccumulationFlags
+    // (2026-11-02, read to explain the COG tracks; Granny 2.9 layout, not yet applied).
+    uint32_t placementFlags = 0, accumulationFlags = 0;
+    float placementPos[3] = {0, 0, 0}, placementQuat[4] = {0, 0, 0, 1}, loopTranslation[3] = {0, 0, 0};
     const VectorTrack* vectorTrack(uint32_t group, uint32_t index) const {
         for (const auto& v : vectorTracks) if (v.group == group && v.index == index) return &v;
         return nullptr;
@@ -541,6 +545,17 @@ inline Anim parse(const uint8_t* b, size_t n, int ptrSize = 4) {
             materializeKeyframed(v.curve);
             v.curve.vector = true;
             a.vectorTracks.push_back(std::move(v));
+        }
+        if (g == 0) {
+            // ..., TransformLODErrorCount@2p+12, TransformLODErrors@2p+16, TextTrackCount@3p+16, TextTracks@3p+20,
+            // InitialPlacement@4p+20 {Flags, Position[3], Orientation[4], ScaleShear[9]}, AccumulationFlags@4p+88,
+            // LoopTranslation[3]@4p+92.
+            const size_t ip = tg + 4*p + 20;
+            a.placementFlags = u32(b, n, ip);
+            for (int k = 0; k < 3; ++k) a.placementPos[k] = f32(b, n, ip + 4 + 4*k);
+            for (int k = 0; k < 4; ++k) a.placementQuat[k] = f32(b, n, ip + 16 + 4*k);
+            a.accumulationFlags = u32(b, n, ip + 68);
+            for (int k = 0; k < 3; ++k) a.loopTranslation[k] = f32(b, n, ip + 72 + 4*k);
         }
         uint32_t ttc = u32(b, n, tg + 2*p + 4);
         size_t   tt  = u32(b, n, tg + 2*p + 8);

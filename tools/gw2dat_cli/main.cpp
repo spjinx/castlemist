@@ -2543,7 +2543,17 @@ void cmd_clips(const Args& a) {
     std::shared_ptr<ModelPreview> m = load_model_by_fileid(dat, fid);
     if (!m) fail("model " + std::to_string(fid) + " did not load");
     json names = json::array();
-    for (const auto& c : m->animClips) names.push_back({{"name", c.name}, {"duration", c.duration}});
+    for (const auto& c : m->animClips) {
+        json e{{"name", c.name}, {"duration", c.duration}};
+        if (has(a, "placement")) {   // track group 0's InitialPlacement / AccumulationFlags (granny_anim.hpp)
+            e["placementFlags"] = c.placementFlags;
+            e["placementPos"] = {c.placementPos[0], c.placementPos[1], c.placementPos[2]};
+            e["placementQuat"] = {c.placementQuat[0], c.placementQuat[1], c.placementQuat[2], c.placementQuat[3]};
+            e["accumulationFlags"] = c.accumulationFlags;
+            e["loopTranslation"] = {c.loopTranslation[0], c.loopTranslation[1], c.loopTranslation[2]};
+        }
+        names.push_back(e);
+    }
     emit({{"ok", true}, {"joints", m->joints.size()}, {"meshes", m->meshes.size()}, {"clips", m->animClips.size()},
           {"clip_tokens", m->animationTokens.size()},
           {"imports", m->animationImports}, {"animation_model_ref", m->animationModelRef},

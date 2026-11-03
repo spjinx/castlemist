@@ -77,7 +77,7 @@ namespace Castlemist
 
         /// The model folder @p folder (an Assets path) as the prefab <folder>/<name>.prefab, placed as
         /// "<name>" at world @p at (dropped onto the collision) turned @p yaw degrees, playing @p idle
-        /// (a clip name, trailing blanks ignored; null: "ummidleb", then "idlepose"). A one-line report.
+        /// (a clip name, trailing blanks ignored; null: the first standing loop the clip list has). A one-line report.
         public static string Import(string folder, string name, string idle, Vector3 at, float yaw)
         {
             var warnings = new List<string>();
@@ -141,7 +141,11 @@ namespace Castlemist
             mi.SaveAndReimport();
 
             AnimationClip clip = null;
-            foreach (string want in idle != null ? new[] { idle } : new[] { "ummidleb", "ummidlelong", "idlepose" })
+            // 2026-11-02: standing loops first. "ummidleb" / "ummidlelong" are a crouch and a seat on the ground (their COG
+            // track holds the body at 43 % / 11 % of its rest height on a human, 50 % / 24 % on a charr): played as the
+            // default they sank the NPCs into the floor. "madglare" (the human set's standing glare), "lookout08",
+            // "npctalk04" (the charr set has no standing idle loop of its own) keep it near rest height.
+            foreach (string want in idle != null ? new[] { idle } : new[] { "madglare", "lookout08", "npctalk04", "ummidleb", "idlepose" })
                 if ((clip = FindClip(fbx, want)) != null) break;
             if (clip == null) warnings.Add("no idle clip " + (idle ?? "ummidleb/idlepose") + ": bind pose");
             AnimatorController ac = null;
