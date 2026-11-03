@@ -582,6 +582,17 @@ bool peek_texture_header(Gw2Dat& dat, uint32_t idx, std::string& fourcc, int& w,
 
 void cmd_texture(const Args& a) {
     std::string out = need(a, "out");
+    if (has(a, "full")) {   // the full-resolution copy, as the character ripper bakes it (decode_texture_full)
+        Gw2Dat dat;
+        load_dat_file(dat, need(a, "dat"));
+        ModelTextureCPU t;
+        int exact = 0;
+        if (!decode_texture_full(dat, static_cast<uint32_t>(to_u64(need(a, "file-id"))), t, &exact) || t.width <= 0)
+            fail("full texture decode failed");
+        if (!stbi_write_png(out.c_str(), t.width, t.height, 4, t.rgba.data(), t.width * 4)) fail("failed to write PNG: " + out);
+        emit({{"ok", true}, {"out", out}, {"width", t.width}, {"height", t.height}, {"exactWidth", exact}});
+        return;
+    }
     int mip = has(a, "mip") ? static_cast<int>(to_u64(a.at("mip"))) : 0;
     int idx = -1;
 
@@ -2463,6 +2474,9 @@ void cmd_npc_show(const Args& a) {
                 j["assembly"] = {{"look", li}, {"race", as->manifest.race}, {"gender", as->manifest.gender},
                                  {"pieces", pieces}, {"face", as->options.face}, {"hair", as->options.hair},
                                  {"ears", as->options.ears}, {"skin_style", as->options.skin_style},
+                                 {"skinTint", as->options.skin_tint ? json::array({as->options.skin_tint->brightness, as->options.skin_tint->contrast,
+                                                                                   as->options.skin_tint->hue, as->options.skin_tint->saturation,
+                                                                                   as->options.skin_tint->lightness}) : json()},
                                  {"physique", as->options.physique}, {"notes", as->notes}};
             } else {
                 j["assembly"] = {{"look", li}, {"error", why}};
@@ -3358,7 +3372,8 @@ void cmd_composite_find(const Args& a) {
                                 {"mesh", fd.mesh_base}, {"token", std::to_string(token)}, {"name", decode_token(token)},
                                 {"texture", fd.texture_base}, {"normal", fd.texture_normal}, {"cut", fd.mask_cut},
                                 {"dyeMasks", {fd.mask_dye[0], fd.mask_dye[1], fd.mask_dye[2], fd.mask_dye[3]}},
-                                {"dyeFlags", fd.dye_flags}, {"hideFlags", fd.hide_flags}, {"skinFlags", fd.skin_flags}});
+                                {"dyeFlags", fd.dye_flags}, {"hideFlags", fd.hide_flags}, {"skinFlags", fd.skin_flags},
+                                {"blitSet", fd.blit_set}});
         auto list = [&](const std::vector<uint64_t>& v, const char* in) {
             for (size_t i = 0; i < v.size(); ++i)
                 if (match(v[i])) hits.push_back({{"race", r.name}, {"in", in}, {"index", i}, {"name", decode_token(v[i])}});
@@ -3367,7 +3382,14 @@ void cmd_composite_find(const Args& a) {
         list(r.hair_styles, "hair_styles");
         list(r.ears, "ears");
     }
-    emit({{"ok", true}, {"hits", hits}, {"variant_ref_race", refs}});
+    json sets = json::array();   // the blit sets the hits use (index: name, size, rects)
+    for (size_t i = 0; i < comp->blit_sets.size(); ++i) {
+        const auto& bs = comp->blit_sets[i];
+        json rs = json::array();
+        for (const auto& r : bs.rects) rs.push_back({r.x0, r.y0, r.x1, r.y1});
+        sets.push_back({{"index", i}, {"name", bs.name}, {"size", {bs.width, bs.height}}, {"rects", rs}, {"rectIndex", bs.rect_index}});
+    }
+    emit({{"ok", true}, {"hits", hits}, {"variant_ref_race", refs}, {"blitSets", sets}});
 }
 
 // Research (like animmach): every variant colour of a race as raw byte tuples

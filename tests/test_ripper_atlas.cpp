@@ -237,3 +237,76 @@ CM_TEST(atlas, blit_over_layers_by_alpha_and_adds_coverage) {
     CHECK_EQ(int(px(3, 0)[0]), 200);  // under the opaque texel: the overlay
     CHECK_EQ(int(px(3, 0)[3]), 255);  // with its coverage (a hair strand stays visible)
 }
+
+namespace {
+/// ArmorLight as the dat has it (2026-11-02): rectIndex holds each slot's first rect, then the count.
+BlitRectSet armor_light() {
+    BlitRectSet s;
+    s.name = "ArmorLight";
+    s.width = s.height = 1024;
+    s.rects = {{0, 512, 384, 768},   {128, 768, 384, 1024}, {640, 0, 1024, 256},   {768, 256, 1024, 512},
+               {512, 256, 768, 512}, {512, 0, 640, 256},    {384, 384, 512, 512},  {256, 256, 384, 512},
+               {384, 256, 512, 384}, {0, 0, 384, 256},      {0, 768, 128, 1024},   {0, 256, 256, 512},
+               {384, 512, 768, 768}, {0, 0, 384, 256},      {384, 0, 512, 256},    {384, 768, 896, 1024},
+               {896, 896, 1024, 960}, {896, 960, 1024, 1024}, {768, 512, 1024, 768}, {896, 768, 1024, 896}};
+    s.rect_index = {0, 2, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20};
+    return s;
+}
+}  // namespace
+
+CM_TEST(atlas, slot_rects_follow_rect_index) {
+    BlitRectSet s = armor_light();
+    auto coat = slot_rects(s, 0);
+    CHECK_EQ(coat.size(), size_t{2});
+    CHECK_EQ(coat[1].x0, 128u);
+    auto face = slot_rects(s, kFaceSlot);
+    CHECK_EQ(face.size(), size_t{1});
+    CHECK_EQ(face[0].x0, 384u);
+    CHECK_EQ(face[0].y0, 512u);
+    CHECK(slot_rects(s, 16).empty());       // past the last slot
+    CHECK(slot_rects(BlitRectSet{}, 0).empty());
+}
+
+// The Mad Prince's helm (madprinceih, ArmorLight): its meshes sit in (0,768)-(128,1024), its 512x256 texture is laid
+// out from (0,512), the corner it shares with the face, whose paint lands on (384,512)-(768,768).
+CM_TEST(atlas, face_overlay_anchors_at_the_corner_shared_with_the_face) {
+    BlitRectSet s = armor_light();
+    AtlasRegion own{{{0, 768, 128, 1024}}, 0, 768};
+    AtlasRegion face = face_overlay(own, s, 512, 256, 2.0f);
+    CHECK_EQ(face.rects.size(), size_t{1});
+    CHECK_EQ(own.ax, 0u);
+    CHECK_EQ(own.ay, 512u);
+    CHECK_EQ(face.ax, 0u);
+    CHECK_EQ(face.ay, 512u);
+}
+
+CM_TEST(atlas, face_overlay_is_empty_when_the_texture_does_not_reach_the_face) {
+    BlitRectSet s = armor_light();
+    AtlasRegion own{{{0, 0, 384, 256}}, 0, 0};   // a helm in the hair rect: a 512x256 texture ends at y 512
+    AtlasRegion face = face_overlay(own, s, 512, 256, 2.0f);
+    CHECK(face.rects.empty());
+    CHECK_EQ(own.ay, 0u);   // unchanged
+}
+
+CM_TEST(atlas, mask_alpha_takes_the_masks_red) {
+    ImageRgba tex = solid(4, 2, 50);
+    ImageRgba mask = solid(2, 1, 0);
+    mask.px[0] = 255;   // left half white
+    ImageRgba out = with_mask_alpha(tex, mask);
+    CHECK_EQ(out.w, 4);
+    CHECK_EQ(out.px[0], 50);
+    CHECK_EQ(out.px[3], 255);                  // under the white texel
+    CHECK_EQ(out.px[(0 * 4 + 3) * 4 + 3], 0);  // under the black one
+}
+
+CM_TEST(atlas, split_face_separates_the_face_slots_rects) {
+    BlitRectSet s = armor_light();
+    AtlasRegion hair{{{0, 0, 384, 256}, {384, 512, 768, 768}}, 0, 0};
+    auto [face, rest] = split_face(hair, s);
+    CHECK_EQ(face.rects.size(), size_t{1});
+    CHECK_EQ(face.rects[0].x0, 384u);
+    CHECK_EQ(rest.rects.size(), size_t{1});
+    CHECK_EQ(rest.rects[0].y1, 256u);
+    CHECK_EQ(face.ax, 0u);   // both keep the anchor
+    CHECK_EQ(rest.ay, 0u);
+}

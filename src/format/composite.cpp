@@ -151,6 +151,8 @@ std::optional<Composite> parse_composite(std::span<const uint8_t> d) {
         s.name = r.wstr(q);
         s.width = r.u32(q + 8);
         s.height = r.u32(q + 12);
+        auto [nidx, pidx] = r.arr(q + 16, 1);
+        for (uint32_t k = 0; k < nidx && r.ok; ++k) s.rect_index.push_back(r.u8(pidx + k));
         auto [nrect, prect] = r.arr(q + 28, 16);
         for (uint32_t k = 0; k < nrect && r.ok; ++k) {
             size_t e = prect + k * 16;

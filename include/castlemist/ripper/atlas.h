@@ -95,6 +95,29 @@ enum class BlitMode {
 void blit(ImageRgba& atlas, const ImageRgba& tex, const AtlasRegion& region, float scale = 2.0f,
           BlitMode mode = BlitMode::Replace);
 
+/// The blit set's slot that holds the face (rectIndex order: coat, leggings, ?, boots, gloves, ?, helm, aquatic
+/// helm, shoulders, face, hair, ears, then chest / feet / hands / legs skin; matched 2026-11-02 against the rects
+/// measured in section 3 of docs/research/gw2-armor-skins-and-dyes.md).
+constexpr size_t kFaceSlot = 9;
+/// fileData skinFlags / hideFlags bits (same layout: 9 face, 10 hair, 11 chest, 12 feet, 13 hands, 14 legs).
+constexpr uint32_t kSkinFlagFace = 0x200;
+constexpr uint32_t kHideFlagHair = 0x400;
+
+/// The rects of slot `slot`: rect_index holds each slot's first rect, then the rect count. Empty when out of range.
+std::vector<composite::BlitRect> slot_rects(const composite::BlitRectSet& set, size_t slot);
+
+/// For a piece whose skinFlags name the face (helms): its texture is laid out from the top-left its own rects
+/// share with the face slot's. When a `tw` x `th` texture at `scale` reaches the whole face rect from there,
+/// moves `own`'s anchor to that corner and returns the face region (same anchor); else returns empty and
+/// leaves `own` as it is.
+AtlasRegion face_overlay(AtlasRegion& own, const composite::BlitRectSet& set, int tw, int th, float scale);
+
+/// `region` split into its rects that are the face slot's and the rest; both keep its anchor.
+std::pair<AtlasRegion, AtlasRegion> split_face(const AtlasRegion& region, const composite::BlitRectSet& set);
+
+/// `tex` with its alpha replaced by `mask`'s red (nearest-resized to `tex` when the sizes differ).
+ImageRgba with_mask_alpha(const ImageRgba& tex, const ImageRgba& mask);
+
 /// Atlas UV -> UV within the cropped block: u' = (u*1024 - x0) / (x1 - x0), same for v.
 void remap_uv(float& u, float& v, const composite::BlitRect& rect);
 

@@ -150,6 +150,52 @@ void blit(ImageRgba& atlas, const ImageRgba& tex, const AtlasRegion& region, flo
     }
 }
 
+std::vector<composite::BlitRect> slot_rects(const composite::BlitRectSet& set, size_t slot) {
+    if (slot + 1 >= set.rect_index.size()) return {};
+    const size_t a = set.rect_index[slot], b = set.rect_index[slot + 1];
+    if (a > b || b > set.rects.size()) return {};
+    return {set.rects.begin() + static_cast<std::ptrdiff_t>(a), set.rects.begin() + static_cast<std::ptrdiff_t>(b)};
+}
+
+AtlasRegion face_overlay(AtlasRegion& own, const composite::BlitRectSet& set, int tw, int th, float scale) {
+    std::vector<composite::BlitRect> face = slot_rects(set, kFaceSlot);
+    if (own.rects.empty() || face.empty() || tw <= 0 || th <= 0) return {};
+    uint32_t ax = own.ax, ay = own.ay;
+    for (const composite::BlitRect& r : face) {
+        ax = std::min(ax, r.x0);
+        ay = std::min(ay, r.y0);
+    }
+    const float x1 = static_cast<float>(ax) + scale * static_cast<float>(tw);
+    const float y1 = static_cast<float>(ay) + scale * static_cast<float>(th);
+    for (const composite::BlitRect& r : face)
+        if (static_cast<float>(r.x1) > x1 || static_cast<float>(r.y1) > y1) return {};
+    for (const composite::BlitRect& r : own.rects)
+        if (static_cast<float>(r.x1) > x1 || static_cast<float>(r.y1) > y1) return {};
+    own.ax = ax;
+    own.ay = ay;
+    return AtlasRegion{std::move(face), ax, ay};
+}
+
+std::pair<AtlasRegion, AtlasRegion> split_face(const AtlasRegion& region, const composite::BlitRectSet& set) {
+    const std::vector<composite::BlitRect> face = slot_rects(set, kFaceSlot);
+    AtlasRegion f{{}, region.ax, region.ay}, rest{{}, region.ax, region.ay};
+    for (const composite::BlitRect& r : region.rects) {
+        const bool is_face = std::any_of(face.begin(), face.end(), [&](const composite::BlitRect& q) {
+            return q.x0 == r.x0 && q.y0 == r.y0 && q.x1 == r.x1 && q.y1 == r.y1;
+        });
+        (is_face ? f : rest).rects.push_back(r);
+    }
+    return {f, rest};
+}
+
+ImageRgba with_mask_alpha(const ImageRgba& tex, const ImageRgba& mask) {
+    ImageRgba out = tex;
+    if (mask.w <= 0 || mask.h <= 0) return out;
+    const ImageRgba m = mask.w == tex.w && mask.h == tex.h ? mask : resize_nearest(mask, tex.w, tex.h);
+    for (size_t i = 0; i + 3 < out.px.size() && i < m.px.size(); i += 4) out.px[i + 3] = m.px[i];
+    return out;
+}
+
 ImageRgba resize_bilinear(const ImageRgba& src, int w, int h) {
     ImageRgba out{w, h, std::vector<uint8_t>(static_cast<size_t>(w) * h * 4, 0)};
     if (src.w <= 0 || src.h <= 0) return out;

@@ -31,6 +31,7 @@ struct BlitRectSet {
     std::string name;  // "ArmorHeavy", "ArmorLight", "ArmorCharrHeavy", ...
     uint32_t width = 0, height = 0;
     std::vector<BlitRect> rects;
+    std::vector<uint8_t> rect_index;  // rectIndex: one byte per entry (meaning being decoded, 2026-11-02)
 };
 
 /// One armor appearance for one race/gender. fileIds are 0 when unset.

@@ -262,6 +262,7 @@ struct Selection {
     bool hair_under_helm_scalp_only = true;
     std::vector<const ManifestPiece*> armor;  // pieces whose meshes go in
     std::set<std::string> worn;               // every armor slot the character wears
+    bool hair_hidden = false;                 // a worn piece's hideFlags hide the hair (kHideFlagHair)
     bool back = false;
     std::vector<std::string> weapons;         // slots
     bool drop_shared_holster = false;         // combined: no two weapons on one holster
@@ -359,7 +360,9 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
         head_part("face", race->faces, opt.face, 1);
         head_part("ears", race->ears, opt.ears, 5);
         head_part("hair", race->hair_styles, opt.hair, -1);
-        if (sel.hair_under_helm_scalp_only && sel.worn.count("Helm") && !parts.empty() && parts.back().name == "hair")
+        // 2026-11-02: by the worn pieces' hideFlags, not by "a helm is worn": the Mad Prince's horned helm
+        // (hideFlags 0) leaves his mohawk; hoods and helmets carry the hair bit.
+        if (sel.hair_under_helm_scalp_only && sel.hair_hidden && !parts.empty() && parts.back().name == "hair")
             parts.back().scalp_only = true;
     }
     // The undergarments (a top for female races, a bottom for all): where no
@@ -639,7 +642,13 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
             uvs.insert(uvs.end(), w.begin(), w.end());
         }
         AtlasRegion region = set ? region_for(*set, uvs) : AtlasRegion{};
-        if (!region.rects.empty())
+        // 2026-11-02: a piece whose skinFlags name the face (helms) lays its texture out from the corner its rects
+        // share with the face, and paints the face through its cut mask (the Mad Prince's face paint). Its anchor is
+        // then known: no fitting.
+        AtlasRegion face;
+        if (part.piece && set && (part.fd->skin_flags & kSkinFlagFace) && !region.rects.empty())
+            face = face_overlay(region, *set, baked->base.width, baked->base.height, baked->scale);
+        if (!region.rects.empty() && face.rects.empty())
             detail::place_texture(region, detail::to_image(baked->base), baked->scale,
                                   detail::uv_coverage(*model, kAtlas, kAtlas, part.skin_meshes_are_part));
         const bool in_atlas = !region.rects.empty();
@@ -648,9 +657,27 @@ ModelPreview build(Context& ctx, const CharacterManifest& manifest, const Assemb
             // game composites them (by their alpha), and so do the undergarments
             // over the bare body where their rects share it; everything else replaces.
             const BlitMode mode = part.name == "hair" || part.undergarment ? BlitMode::Over : BlitMode::Replace;
-            blit(diffuse, detail::to_image(baked->base), region, baked->scale, mode);
+            // 2026-11-02: hair with a cut mask paints the face through it, not its alpha: over the face rect that
+            // alpha is a flat shine value (gothicha: 140 on near-black, which greyed the Mad Prince's white face
+            // by half); the cut mask is the scalp shading of shaved sides.
+            ModelTextureCPU hair_cut;
+            if (part.name == "hair" && set && part.fd->mask_cut && decode_texture_full(ctx.dat, part.fd->mask_cut, hair_cut) &&
+                hair_cut.width > 0) {
+                auto [over_face, rest] = split_face(region, *set);
+                blit(diffuse, detail::to_image(baked->base), rest, baked->scale, mode);
+                blit(diffuse, with_mask_alpha(detail::to_image(baked->base), detail::to_image(hair_cut)), over_face,
+                     baked->scale, mode);
+            } else {
+                blit(diffuse, detail::to_image(baked->base), region, baked->scale, mode);
+            }
             if (baked->normal && mode == BlitMode::Replace)
                 blit(normal, detail::to_image(*baked->normal), region, baked->normal_scale);
+            if (!face.rects.empty() && part.fd->mask_cut) {
+                ModelTextureCPU cut;
+                if (decode_texture_full(ctx.dat, part.fd->mask_cut, cut) && cut.width > 0)
+                    blit(diffuse, with_mask_alpha(detail::to_image(baked->base), detail::to_image(cut)), face, baked->scale,
+                         BlitMode::Over);
+            }
             // Glow masks, from the region's top-left. A skin pattern's mask
             // covers the part's texture footprint; a sylvari's own glow mask
             // (face, hair, ears) covers the width of the part's atlas rects,
@@ -867,6 +894,14 @@ std::set<std::string> worn_slots(Context& ctx, const CharacterManifest& m) {
     return worn;
 }
 
+bool worn_hides_hair(Context& ctx, const CharacterManifest& m) {
+    for (const ManifestPiece& p : m.pieces)
+        if (is_armor(p) && !aquatic(p.slot) && p.status != character::PieceStatus::NoSkin && p.skin_token)
+            if (const composite::CompositeFileData* fd = ctx.entry(p.skin_token); fd && (fd->hide_flags & kHideFlagHair))
+                return true;
+    return false;
+}
+
 std::vector<const ManifestPiece*> armor_pieces(const CharacterManifest& m) {
     std::vector<const ManifestPiece*> out;
     for (const ManifestPiece& p : m.pieces)
@@ -1006,6 +1041,7 @@ Selection combined_selection(Context& ctx, const CharacterManifest& manifest, co
     Selection sel;
     sel.armor = armor_pieces(manifest);
     sel.worn = worn_slots(ctx, manifest);
+    sel.hair_hidden = worn_hides_hair(ctx, manifest);
     sel.back = true;
     sel.weapons.assign(std::begin(kWeaponSlots), std::end(kWeaponSlots));
     sel.drop_shared_holster = true;
