@@ -49,6 +49,8 @@ namespace Castlemist
     public static class ParticleEffects
     {
         public const string ObjectPrefix = "GW2 FX ";
+        /// An animated model's emitter follows its bone's position through this child of the bone.
+        public const string AnchorPrefix = "GW2 FX anchor ";
         /// Marks an emitter whose particle sizes ignore the transform's scale (flags bit 0x4).
         const string AbsoluteTag = " abs";
         const int MaxAlive = 2000;
@@ -75,6 +77,9 @@ namespace Castlemist
             if (doc == null) return 0;
             foreach (ParticleSystem old in instance.GetComponentsInChildren<ParticleSystem>(true))
                 if (old != null && old.name.StartsWith(ObjectPrefix, StringComparison.Ordinal))
+                    UnityEngine.Object.DestroyImmediate(old.gameObject);
+            foreach (Transform old in instance.GetComponentsInChildren<Transform>(true))
+                if (old != null && old.name.StartsWith(AnchorPrefix, StringComparison.Ordinal))
                     UnityEngine.Object.DestroyImmediate(old.gameObject);
 
             string tag = Path.GetFileName(modelFolder);
@@ -233,11 +238,37 @@ namespace Castlemist
             go.transform.localPosition = local;
             go.transform.localRotation = rot;
             go.transform.localScale = Vector3.one;
-            go.transform.SetParent(bone, true);
-            // Without file flags 0x4 GW2 multiplies every size (and the spawn shape and speeds) by the
-            // emitter transform's scale, the bone's included (2026-10-25: 84108's FallingDust bone is
-            // scaled x7.91 and its dust was 1/8 size): keep the bone's scale instead of cancelling it.
-            if (!Flag(e, "flags", 0x4)) go.transform.localScale = Vector3.one;
+            bool animated = bone != model && model.GetComponentInParent<Animator>(true) != null;
+            if (!animated)
+            {
+                go.transform.SetParent(bone, true);
+                // Without file flags 0x4 GW2 multiplies every size (and the spawn shape and speeds) by the
+                // emitter transform's scale, the bone's included (2026-10-25: 84108's FallingDust bone is
+                // scaled x7.91 and its dust was 1/8 size): keep the bone's scale instead of cancelling it.
+                if (!Flag(e, "flags", 0x4)) go.transform.localScale = Vector3.one;
+            }
+            else
+            {
+                // 2026-11-02: an animated model's emitter stays in the model's axes and follows only its
+                // bone's position (a PositionConstraint on an anchor under the bone): GW2 moves particles in
+                // model space. Parented to the bone it turned with it -- Mad King Thorn's clips turn his bones
+                // ~90 degrees from the bind pose, and his head fire streamed sideways instead of up.
+                if (!Flag(e, "flags", 0x4))
+                {
+                    float s = bone.lossyScale.magnitude / Mathf.Max(model.lossyScale.magnitude, 1e-6f);
+                    go.transform.localScale = new Vector3(s, s, s);
+                }
+                var anchor = new GameObject(AnchorPrefix + name.Substring(ObjectPrefix.Length));
+                anchor.transform.SetParent(bone, false);
+                anchor.transform.position = go.transform.position;
+                GameObjectUtility.SetStaticEditorFlags(anchor, 0);
+                var pc = go.AddComponent<UnityEngine.Animations.PositionConstraint>();
+                pc.AddSource(new UnityEngine.Animations.ConstraintSource { sourceTransform = anchor.transform, weight = 1f });
+                pc.translationAtRest = go.transform.localPosition;
+                pc.translationOffset = Vector3.zero;
+                pc.locked = true;
+                pc.constraintActive = true;
+            }
             GameObjectUtility.SetStaticEditorFlags(go, 0);
 
             var ps = go.AddComponent<ParticleSystem>();

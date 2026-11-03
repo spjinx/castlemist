@@ -19,6 +19,41 @@ using Object = UnityEngine.Object;
 
 namespace Castlemist
 {
+    /// 2026-11-02: an NPC .fbx's meshes with shape keys come out of Blender's FBX export with every normal
+    /// inverted against its triangles (measured on the Mad Prince: 0% agree on each shape-keyed mesh, 100% on
+    /// the one without; they agree inside Blender after the bake), so he took the light from inside. Such a mesh
+    /// gets its normals negated and its tangents recalculated; the GW2 (welded) normals are kept, not recomputed.
+    sealed class NpcModelPostprocessor : AssetPostprocessor
+    {
+        void OnPostprocessModel(GameObject root)
+        {
+            string path = assetPath.Replace('\\', '/');
+            if (path.IndexOf("/NPCs/", StringComparison.Ordinal) < 0) return;
+            var meshes = new HashSet<Mesh>();
+            foreach (SkinnedMeshRenderer r in root.GetComponentsInChildren<SkinnedMeshRenderer>(true)) if (r.sharedMesh) meshes.Add(r.sharedMesh);
+            foreach (MeshFilter f in root.GetComponentsInChildren<MeshFilter>(true)) if (f.sharedMesh) meshes.Add(f.sharedMesh);
+            int fixedMeshes = 0;
+            foreach (Mesh m in meshes)
+            {
+                Vector3[] v = m.vertices, n = m.normals;
+                if (n == null || n.Length != v.Length) continue;
+                int[] t = m.triangles;
+                int agree = 0, tris = t.Length / 3;
+                for (int i = 0; i + 2 < t.Length; i += 3)
+                {
+                    Vector3 fn = Vector3.Cross(v[t[i + 1]] - v[t[i]], v[t[i + 2]] - v[t[i]]);
+                    if (Vector3.Dot(fn, n[t[i]] + n[t[i + 1]] + n[t[i + 2]]) > 0) ++agree;
+                }
+                if (tris == 0 || agree * 2 >= tris) continue;
+                for (int i = 0; i < n.Length; ++i) n[i] = -n[i];
+                m.normals = n;
+                m.RecalculateTangents();
+                ++fixedMeshes;
+            }
+            if (fixedMeshes > 0) Debug.Log("CASTLEMIST npc " + path + ": " + fixedMeshes + " mesh(es) had inverted normals (Blender FBX + shape keys): flipped back");
+        }
+    }
+
     public static class NpcImporter
     {
         public const string RootName = "GW2 NPC Models";
