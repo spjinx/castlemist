@@ -85,6 +85,9 @@
 #include <nlohmann/json.hpp>
 
 #include "castlemist/native/gw2dat.h"
+#include "castlemist/native/gw2_audio.hpp"
+#include "castlemist/format/strs_keys.h"
+#include "castlemist/core/packfile.h"
 #include "castlemist/native/cmp_decompress_method0.hpp"
 #include "castlemist/native/cmp_compress_method0.hpp"
 #include "castlemist/native/gw2_atex.hpp"
@@ -3351,6 +3354,168 @@ void cmd_composite_types(const Args& a) {
 
 // Research: where a Composite token lives, by --name (its decoded spelling): every race whose file data,
 // faces, hair or ears hold it, plus the race's variantRefRace.
+// ---- NPC voice lines (2026-11-02): the text manifest, the voice map, captured keys, the audio. ----
+
+/// The decompressed bytes of the entry that holds @p fileId.
+std::vector<uint8_t> bytes_by_fileid(Gw2Dat& dat, uint32_t fileId) {
+    uint32_t base = get_by_base_id(dat, fileId);
+    if (base == 0 || base - 1 >= dat.mft_data_list.size()) fail("no entry for fileId " + std::to_string(fileId));
+    const MftData& e = dat.mft_data_list[base - 1];
+    return decompress_entry(read_entry_bytes(dat.file_info.file_path, e), e.compression_flag);
+}
+
+/// txtv: every {textId, voiceId}.
+std::vector<std::pair<uint32_t, uint32_t>> read_text_voices(Gw2Dat& dat, uint32_t fileId) {
+    std::vector<uint8_t> d = bytes_by_fileid(dat, fileId);
+    castlemist::core::PackfileReader r; size_t root;
+    if (!castlemist::core::open_chunk(d, "txtv", r, root)) fail("fileId " + std::to_string(fileId) + " is not a txtv voice map");
+    size_t off; uint32_t n = r.array(root, off);
+    std::vector<std::pair<uint32_t, uint32_t>> out;
+    out.reserve(n);
+    for (uint32_t i = 0; i < n; ++i) out.push_back({r.u32(off + size_t(i) * 8), r.u32(off + size_t(i) * 8 + 4)});
+    return out;
+}
+
+// text-base --dat D [--file-id 110865] --out strs_textbase.csv: "fileId,baseTextId" for every language's strs
+// files (txtm: strs file j holds textIds j*stringsPerFile ..), the table castlemist::skeys decrypts with.
+void cmd_text_base(const Args& a) {
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    const uint32_t fid = has(a, "file-id") ? static_cast<uint32_t>(to_u64(a.at("file-id"))) : 110865;
+    std::vector<uint8_t> d = bytes_by_fileid(dat, fid);
+    castlemist::core::PackfileReader r; size_t root;
+    if (!castlemist::core::open_chunk(d, "txtm", r, root)) fail("not a txtm text manifest");
+    const uint32_t per = r.u32(root);
+    size_t langs; uint32_t nl = r.array(root + 4, langs);
+    std::ofstream of(need(a, "out"));
+    of << "fileId,baseTextId\n";
+    size_t rows = 0;
+    // One language (default English): the reverse lookup textId -> strs file must not mix them.
+    const std::string want = has(a, "lang") ? a.at("lang") : std::string("English");
+    json names = json::array();
+    for (uint32_t l = 0; l < nl; ++l) {
+        const std::string name = std::filesystem::path(castlemist::core::language_name(l)).string();
+        names.push_back(name);
+        if (name != want) continue;
+        size_t fn; uint32_t nf = r.array(langs + size_t(l) * r.array_ptr_size(), fn);
+        for (uint32_t j = 0; j < nf; ++j)
+            if (uint32_t f = r.fileref(fn + size_t(j) * r.pointer_size())) { of << f << "," << uint64_t(j) * per << "\n"; ++rows; }
+    }
+    emit({{"ok", true}, {"stringsPerFile", per}, {"languages", names}, {"rows", rows}});
+}
+
+// text-voices --dat D [--file-id 198300] --out voices.csv: the whole txtv as "textId,voiceId".
+void cmd_text_voices(const Args& a) {
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    auto v = read_text_voices(dat, has(a, "file-id") ? static_cast<uint32_t>(to_u64(a.at("file-id"))) : 198300);
+    std::ofstream of(need(a, "out"));
+    of << "textId,voiceId\n";
+    for (auto& [t, vo] : v) of << t << "," << vo << "\n";
+    emit({{"ok", true}, {"rows", v.size()}});
+}
+
+// text-lines --dat D --keys textkeys.csv --textbase strs_textbase.csv [--voices-file-id 198300] [--around N]:
+// for every captured textId (and N either side of it), its voiceId and decrypted English text.
+void cmd_text_lines(const Args& a) {
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    if (castlemist::skeys::load_keys(std::filesystem::u8path(need(a, "keys")).wstring()) < 0) fail("cannot read the keys");
+    if (castlemist::skeys::load_textbase(std::filesystem::u8path(need(a, "textbase")).wstring()) < 0) fail("cannot read the textbase");
+    auto voices = read_text_voices(dat, has(a, "voices-file-id") ? static_cast<uint32_t>(to_u64(a.at("voices-file-id"))) : 198300);
+    std::unordered_map<uint32_t, uint32_t> voice;
+    for (auto& [t, v] : voices) voice[t] = v;
+    const long around = has(a, "around") ? static_cast<long>(to_u64(a.at("around"))) : 0;
+    std::set<uint32_t> ids;
+    {
+        std::ifstream in(need(a, "keys"));
+        std::string line;
+        while (std::getline(in, line)) {
+            if (line.empty() || !std::isdigit(static_cast<unsigned char>(line[0]))) continue;
+            long t = std::stol(line.substr(0, line.find(',')));
+            for (long k = t - around; k <= t + around; ++k) if (k > 0) ids.insert(static_cast<uint32_t>(k));
+        }
+    }
+    std::unordered_map<uint32_t, std::vector<uint8_t>> cache;
+    json rows = json::array();
+    for (uint32_t t : ids) {
+        std::wstring text;
+        if (uint32_t f = castlemist::skeys::fileid_for_textid(t)) {
+            long long base = castlemist::skeys::base_for_fileids({f});
+            auto it = cache.find(f);
+            if (it == cache.end()) {
+                std::vector<uint8_t> b;
+                try { b = bytes_by_fileid(dat, f); } catch (...) {}
+                it = cache.emplace(f, std::move(b)).first;
+            }
+            if (base >= 0 && t >= base && it->second.size() >= 4)
+                text = castlemist::skeys::decode_record_text(it->second.data(), it->second.size(), base, uint32_t(t - base));
+        }
+        auto vi = voice.find(t);
+        rows.push_back({{"textId", t}, {"voiceId", vi != voice.end() ? json(vi->second) : json()}, {"text", std::filesystem::path(text).string()}});
+    }
+    emit({{"ok", true}, {"lines", rows}});
+}
+
+/// A spoken line's audio (the whole ASND, an MP3 inside) by its txtv voiceId (2026-11-02): the voice bank index
+/// (ABIX, BankIndexData; the 49317-entry one, fileId 184691) lists per language one bank per ten voices, its entry
+/// voiceId / 10 a filename (self-relative pointer to a fileref); the bank (ABNK / BKCK, BankFileData V0..V2) lists
+/// its AsndFileData by voiceId, each with the ASND bytes. Language 0 is English. Empty when the bank is not local.
+std::vector<uint8_t> voice_audio(Gw2Dat& dat, uint32_t voiceId, uint32_t indexFileId, uint32_t language, uint32_t* bankOut) {
+    std::vector<uint8_t> idx = bytes_by_fileid(dat, indexFileId);
+    castlemist::core::PackfileReader r; size_t root;
+    if (!castlemist::core::open_chunk(idx, "BIDX", r, root)) fail("not a BIDX bank index");
+    size_t langs; uint32_t nl = r.array(root, langs);
+    if (language >= nl) fail("no such language in the bank index");
+    size_t names; uint32_t nb = r.array(langs + size_t(language) * r.array_ptr_size(), names);
+    if (voiceId / 10 >= nb) return {};
+    const uint32_t bank = r.fileref(names + size_t(voiceId / 10) * r.pointer_size());
+    if (bankOut) *bankOut = bank;
+    if (!bank) return {};
+    std::vector<uint8_t> bk;
+    try { bk = bytes_by_fileid(dat, bank); } catch (...) { return {}; }
+    castlemist::core::PackfileReader br; size_t broot;
+    if (!castlemist::core::open_chunk(bk, "BKCK", br, broot)) return {};
+    const uint32_t ver = bk.size() > 22 ? uint32_t(bk[20] | (bk[21] << 8)) : 0;   // first chunk's header: version
+    const size_t head = ver >= 2 ? 16 : 8;                                         // reserved dwords before asndFile
+    const size_t stride = ver >= 2 ? 36 + br.array_ptr_size() : 24 + br.array_ptr_size();
+    size_t first; uint32_t n = br.array(broot + head, first);
+    for (uint32_t i = 0; i < n; ++i) {
+        const size_t e = first + size_t(i) * stride;
+        if (br.u32(e) != voiceId) continue;
+        size_t data; uint32_t len = br.array(e + stride - br.array_ptr_size(), data);
+        if (!len || data + len > bk.size()) return {};
+        return std::vector<uint8_t>(bk.begin() + static_cast<std::ptrdiff_t>(data), bk.begin() + static_cast<std::ptrdiff_t>(data + len));
+    }
+    return {};
+}
+
+// voice-export --dat D --voice-id N --out <stem> [--index-file-id 184691] [--language 0]: the spoken line's audio as
+// <stem>.<mp3|ogg|wav|flac>, from its voice bank (voice_audio).
+void cmd_voice_export(const Args& a) {
+    Gw2Dat dat;
+    load_dat_file(dat, need(a, "dat"));
+    const uint32_t vid = static_cast<uint32_t>(to_u64(need(a, "voice-id")));
+    uint32_t bank = 0;
+    std::vector<uint8_t> d = voice_audio(dat, vid, has(a, "index-file-id") ? static_cast<uint32_t>(to_u64(a.at("index-file-id"))) : 184691,
+                                         has(a, "language") ? static_cast<uint32_t>(to_u64(a.at("language"))) : 0, &bank);
+    if (d.empty()) fail("voice " + std::to_string(vid) + ": not in bank " + std::to_string(bank) + " (or the bank is not local)");
+    auto clips = castlemist::audio::extract(d.data(), d.size());
+    if (clips.empty()) fail(std::string("no audio in voice ") + std::to_string(vid) + " (" + sniff_type(d) + ")");
+    json files = json::array();
+    const std::string stem = need(a, "out");
+    for (size_t k = 0; k < clips.size(); ++k) {
+        const auto& c = clips[k];
+        const char* ext = c.codec == castlemist::audio::CODEC_OGG ? ".ogg" : c.codec == castlemist::audio::CODEC_WAV ? ".wav"
+                        : c.codec == castlemist::audio::CODEC_FLAC ? ".flac" : ".mp3";
+        std::string out = stem + (clips.size() > 1 ? "_" + std::to_string(k) : std::string()) + ext;
+        std::ofstream of(out, std::ios::binary);
+        of.write(reinterpret_cast<const char*>(c.data.data()), static_cast<std::streamsize>(c.data.size()));
+        files.push_back({{"file", out}, {"codec", castlemist::audio::codecName(c.codec)}, {"bytes", c.data.size()}});
+    }
+    emit({{"ok", true}, {"bank", bank}, {"files", files}});
+}
+
 void cmd_composite_find(const Args& a) {
     namespace rp = castlemist::ripper;
     using castlemist::npc::decode_token;
@@ -3966,6 +4131,10 @@ int main(int argc, char** argv) {
         else if (cmd == "composite-types") cmd_composite_types(a);
         else if (cmd == "composite-colors") cmd_composite_colors(a);
         else if (cmd == "composite-find") cmd_composite_find(a);
+        else if (cmd == "text-base") cmd_text_base(a);
+        else if (cmd == "text-voices") cmd_text_voices(a);
+        else if (cmd == "text-lines") cmd_text_lines(a);
+        else if (cmd == "voice-export") cmd_voice_export(a);
         else if (cmd == "look-set") cmd_look_set(a);
         else if (cmd == "look-thumbs") cmd_look_thumbs(a);
         else if (cmd == "character-vrchat") cmd_character_vrchat(a);
