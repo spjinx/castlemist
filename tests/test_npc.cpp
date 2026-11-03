@@ -795,6 +795,34 @@ CM_TEST(npc_look, maps_a_variant_to_pieces_face_hair_and_physique) {
     CHECK(noted);
 }
 
+// 2026-11-02: the Mad Prince look (NPC 23542) has its only helm, "madprinceih" (horns, mohawk, face paint), as a
+// type-13 piece; the ripper never dresses an aquatic slot, so he stood bald with no face paint.
+CM_TEST(npc_look, a_type_13_helm_is_worn_when_the_look_has_no_type_11_helm) {
+    castlemist::composite::Composite c = look_composite();
+    c.races[0].file_data[pack_name("helmx")] = piece(pack_name("helmx"), 13);
+    c.races[0].variants[0].components.push_back({pack_name("helmx"), {}});
+    auto a = npc_assembly(look_npc("humanfemale", "banditvar"), 0, c);
+    CHECK(a.has_value());
+    if (!a) return;
+    CHECK_EQ(a->manifest.pieces.size(), size_t(2));
+    CHECK_EQ(a->manifest.pieces[1].slot, std::string("Helm"));
+    CHECK_EQ(a->manifest.pieces[1].skin_token, pack_name("helmx"));
+    bool noted = false;
+    for (const std::string& n : a->notes) noted = noted || n.find("type 13") != std::string::npos;
+    CHECK(noted);
+
+    // With a type-11 helm as well, the type-13 piece stays HelmAquatic (not dressed on land).
+    c.races[0].file_data[pack_name("helmy")] = piece(pack_name("helmy"), 11);
+    c.races[0].variants[0].components.push_back({pack_name("helmy"), {}});
+    auto b = npc_assembly(look_npc("humanfemale", "banditvar"), 0, c);
+    CHECK(b.has_value());
+    if (!b) return;
+    int helms = 0, aquatic = 0;
+    for (const auto& pc : b->manifest.pieces) { helms += pc.slot == "Helm"; aquatic += pc.slot == "HelmAquatic"; }
+    CHECK_EQ(helms, 1);
+    CHECK_EQ(aquatic, 1);
+}
+
 CM_TEST(npc_look, truncated_race_token_resolves) {
     castlemist::composite::Composite c = look_composite();
     c.races[0].name = "SylvariFemale";

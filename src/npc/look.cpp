@@ -163,6 +163,20 @@ std::optional<NpcAssembly> npc_assembly(const NpcRecord& npc, size_t look_index,
         }
     }
 
+    // 2026-11-02: a look with no type-11 helm wears its type-13 piece as the helm. The ripper never dresses an
+    // aquatic slot, and the Mad Prince (NPC 23542) has his only helm, "madprinceih" (horns, mohawk, face paint),
+    // as type 13, worn on land in game. Whether type 13 is really the aquatic helm is not proven.
+    {
+        auto& ps = out.manifest.pieces;
+        const bool helm = std::any_of(ps.begin(), ps.end(), [](const character::ManifestPiece& p) { return p.slot == "Helm"; });
+        for (character::ManifestPiece& p : ps)
+            if (!helm && p.slot == "HelmAquatic") {
+                p.slot = "Helm";
+                out.notes.push_back("component " + decode_token(p.skin_token) + ": type 13 worn as the helm (the look has no type-11 helm)");
+                break;
+            }
+    }
+
     // boneScaleIndex is never applied as a physique: real values run to 153 against 14 presets, so what it
     // indexes is unknown. 0xFFFFFFFF is "none" (743 of 1315 HumanFemale variants) and stays silent.
     opt.physique = -1;

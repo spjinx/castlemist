@@ -1579,6 +1579,12 @@ void cmd_map(const Args& a) {
     j["uniqueModels"] = uniq.size();
     if (!props.empty()) { j["boundsMin"]={lo[0],lo[1],lo[2]}; j["boundsMax"]={hi[0],hi[1],hi[2]}; }
     j["sample"] = std::move(sample);
+    if (has(a, "models")) {   // every prop model id, sorted (map fingerprinting)
+        std::vector<uint32_t> ids;
+        for (const auto& kv : uniq) ids.push_back(kv.first);
+        std::sort(ids.begin(), ids.end());
+        j["models"] = ids;
+    }
     json tj;
     tj["present"] = terr.present;
     if (terr.present) {
@@ -3339,16 +3345,23 @@ void cmd_composite_find(const Args& a) {
     auto comp = rp::load_composite(dat);
     if (!comp) fail("no Composite in the dat");
     const std::string name = need(a, "name");
+    // "madprince*": every token starting with "madprince".
+    const bool prefix = !name.empty() && name.back() == '*';
+    const std::string stem = prefix ? name.substr(0, name.size() - 1) : name;
+    auto match = [&](uint64_t t) { const std::string d = decode_token(t); return prefix ? d.rfind(stem, 0) == 0 : d == name; };
     json hits = json::array(), refs = json::object();
     for (const auto& r : comp->races) {
         refs[r.name] = r.variant_ref_race ? decode_token(r.variant_ref_race) : std::string();
         for (const auto& [token, fd] : r.file_data)
-            if (decode_token(token) == name)
+            if (match(token))
                 hits.push_back({{"race", r.name}, {"in", "file_data"}, {"type", static_cast<int>(fd.type)},
-                                {"mesh", fd.mesh_base}, {"token", std::to_string(token)}});
+                                {"mesh", fd.mesh_base}, {"token", std::to_string(token)}, {"name", decode_token(token)},
+                                {"texture", fd.texture_base}, {"normal", fd.texture_normal}, {"cut", fd.mask_cut},
+                                {"dyeMasks", {fd.mask_dye[0], fd.mask_dye[1], fd.mask_dye[2], fd.mask_dye[3]}},
+                                {"dyeFlags", fd.dye_flags}, {"hideFlags", fd.hide_flags}, {"skinFlags", fd.skin_flags}});
         auto list = [&](const std::vector<uint64_t>& v, const char* in) {
-            for (uint64_t t : v)
-                if (decode_token(t) == name) hits.push_back({{"race", r.name}, {"in", in}});
+            for (size_t i = 0; i < v.size(); ++i)
+                if (match(v[i])) hits.push_back({{"race", r.name}, {"in", in}, {"index", i}, {"name", decode_token(v[i])}});
         };
         list(r.faces, "faces");
         list(r.hair_styles, "hair_styles");
